@@ -1,12 +1,21 @@
 //! The edge pipeline, initialising, tracking each frame, mapping on keyframes and closing
 //! loops: the Rust core's mirror of `slam_it.edge.pipeline`, whose docstring states the
-//! per-frame loop, the steps' own state and the map's owner. It runs in the native program,
-//! not across the binding.
+//! per-frame loop, the steps' own state, the map's owner and the steps in threads of their own.
+//! It runs in the native program, not across the binding.
+//!
+//! Threaded, the map is shared with the view a writer publishes (`Arc<Map>`) and copied when a
+//! writer next changes it while tracking still reads that view; tracking holds the view it read
+//! for its whole frame. Inline, the view is the map itself.
 
+use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use nalgebra::Matrix4;
-use slam_it_foundations::error::{ErrorKind, Result, fail};
+use slam_it_foundations::error::{Error, ErrorKind, Result, fail};
+use slam_it_foundations::nls::Stop;
 use slam_it_foundations::vocabulary::Vocabulary;
 use slam_it_foundations::{orb, se3};
 
@@ -14,11 +23,14 @@ use crate::atlas::{Atlas, Lifetimes, Trajectory};
 use crate::database::Database;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
-use crate::loops::{self, CorrectionSummary, DetectionSummary, Pending};
+use crate::loops::{
+    self, CorrectionSummary, Detection, DetectionSummary, GlobalSummary, Loop, Pending,
+};
 use crate::map::{self, Map};
-use crate::mapping::{self, MappingSummary};
+use crate::mapping::{self, Interrupts, MappingSummary, Schedule};
 use crate::options::{Mode, Options};
 use crate::relocalization::{self, RelocalizationSummary};
+use crate::threads::{Generation, Sender, Turn, Worker, Writer, lock};
 use crate::tracking::{self, LocalMapSummary, MotionSummary, PnpSummary};
 
 /// Where the pipeline is, with the codes it is written as.
@@ -202,6 +214,46 @@ pub struct FrameResult {
     pub summary: FrameSummary,
     /// What became of each of its keypoints.
     pub fates: Fates,
+    /// The time tracking waited for the map, part of `track_seconds`: 0 inline; threaded,
+    /// relocalisation's wait for mapping to let the map go, and a lost map's for the threads.
+    pub wait_seconds: f64,
+    /// Whether it wanted a keyframe (`mapping::need_keyframe`).
+    pub asked: bool,
+    /// Whether it wanted one and mapping could not take it: stopped, or busy and its queue full
+    /// (a monocular frame's queue being none). Never inline.
+    pub refused: bool,
+    /// The keyframes waiting for mapping when it asked; 0 inline, and when it did not ask.
+    pub queue: usize,
+    /// How mapping scheduled its keyframe's steps, inline; threaded, it comes later
+    /// ([`Completion`]).
+    pub schedule: Option<Schedule>,
+}
+
+/// What a thread of its own finished after its frame's result was given
+/// (`slam_it.edge.pipeline.Completion`, threaded runs): a keyframe's mapping and loop closing on
+/// the keyframe's frame; a global BA's on the frame being tracked when it ended, or the last
+/// frame when the run's end waited for it. Each part is set only by the step that finished.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Completion {
+    /// The frame, counted from 0, one per [`Pipeline::track`].
+    pub frame: i64,
+    /// A keyframe's mapping: its time, in seconds.
+    pub map_seconds: Option<f64>,
+    /// How it went.
+    pub mapping: Option<MappingSummary>,
+    /// How its steps were scheduled.
+    pub schedule: Option<Schedule>,
+    /// The keyframe's keypoints' points made by mapping, by the run's ids, -1 where none: their
+    /// fate is [`Fate::Made`]. Empty but for a keyframe's mapping.
+    pub made: Vec<i64>,
+    /// Loop closing on a keyframe: its time, in seconds.
+    pub loop_seconds: Option<f64>,
+    /// How it went.
+    pub loop_closing: Option<LoopSummary>,
+    /// A global BA in a thread of its own, ended.
+    pub global_ba: Option<GlobalSummary>,
+    /// Its time, in seconds.
+    pub global_ba_seconds: f64,
 }
 
 /// A frame handled, as `Pipeline::initialize` and `Pipeline::track_frame` give it.
@@ -224,6 +276,23 @@ struct Step {
     lost: bool,
     /// The time loop closing took, in seconds, if it ran.
     loop_seconds: f64,
+    /// How its handshakes with local mapping went.
+    handshake: Handshake,
+    /// How mapping scheduled its keyframe's steps, inline.
+    schedule: Option<Schedule>,
+}
+
+/// How tracking's handshakes with local mapping went on a frame ([`FrameResult`]'s).
+#[derive(Debug, Clone, Copy, Default)]
+struct Handshake {
+    /// The time tracking waited for the map.
+    wait_seconds: f64,
+    /// Whether it wanted a keyframe.
+    asked: bool,
+    /// Whether mapping could not take the keyframe it wanted.
+    refused: bool,
+    /// The keyframes waiting for mapping when it asked.
+    queue: usize,
 }
 
 /// A keyframe mapped, as `Pipeline::map_keyframe` gives it.
@@ -237,6 +306,8 @@ struct KeyframeMapped {
     made: Vec<i64>,
     /// Whether a loop was corrected on it.
     corrected: bool,
+    /// How mapping scheduled its steps.
+    schedule: Option<Schedule>,
 }
 
 /// A frame placed, as `place` gives it.
@@ -247,11 +318,15 @@ struct Placed {
     summary: FrameSummary,
     /// The last stage's match for each keypoint before refinement.
     matched: Vec<i64>,
+    /// The time spent waiting for the map, 0 inline.
+    waited: f64,
 }
 
 /// Tracking's result on a frame, as `track_step` gives it (`slam_it.edge.pipeline._Tracking`).
 #[derive(Debug, Default)]
 struct Tracking {
+    /// The map tracking read, held for the frame; `None` only when there was none.
+    view: Option<Arc<Map>>,
     /// The tracked frame, if it kept enough inliers.
     tracked: Option<Tracked>,
     /// How its stages went.
@@ -260,10 +335,12 @@ struct Tracking {
     matched: Vec<i64>,
     /// The frame's reference keyframe's row, when tracked.
     reference: Option<usize>,
-    /// Whether it asks for a keyframe.
+    /// Whether it becomes a keyframe.
     keyframe: bool,
     /// Whether the frame lost the track.
     lost: bool,
+    /// How its handshakes with local mapping went.
+    handshake: Handshake,
 }
 
 /// Tracking's own state from frame to frame (`slam_it.edge.pipeline.TrackingState`,
@@ -286,6 +363,14 @@ pub struct TrackingState {
     pub since_recovery: Option<usize>,
     /// The first failed frame's time, while the track is recently lost.
     pub lost_since: Option<f64>,
+    /// The frames since the last that became a keyframe (ORB-SLAM's `mnLastKeyFrameId`).
+    pub since_keyframe: usize,
+    /// Threaded: the keyframe the last frame was tracked against, by the map's id.
+    pub anchor: Option<i64>,
+    /// Threaded: the last frame's pose relative to it, `T_last_anchor`.
+    pub anchor_relative: Option<Matrix4<f64>>,
+    /// Threaded: the corrections of the map seen ([`MapOwner::corrections`]).
+    pub corrections: u64,
 }
 
 impl TrackingState {
@@ -355,6 +440,46 @@ impl TrackingState {
             last.pose = *pose;
         }
     }
+
+    /// Keeps the last frame's pose relative to the keyframe it was tracked against
+    /// (`slam_it.edge.pipeline.TrackingState.anchor_to`, threaded).
+    ///
+    /// # Arguments
+    ///
+    /// * `view` - The map tracking read.
+    /// * `row` - The keyframe's row in it.
+    ///
+    /// # Errors
+    ///
+    /// An error if the keyframe's pose cannot be inverted.
+    pub fn anchor_to(&mut self, view: &Map, row: usize) -> Result<()> {
+        if let Some(last) = &self.last_tracked {
+            self.anchor = Some(view.kf_id[row]);
+            self.anchor_relative = Some(last.pose * se3::inverse(&view.kf_pose[row])?);
+        }
+        Ok(())
+    }
+
+    /// Moves the last frame with its anchor keyframe, if the map was corrected since
+    /// (`slam_it.edge.pipeline.TrackingState.follow`, threaded): ORB-SLAM's `UpdateLastFrame`
+    /// places the last frame by its reference keyframe; here only after a correction, as inline
+    /// only the keyframe's own frame moves.
+    ///
+    /// # Arguments
+    ///
+    /// * `view` - The map's view now.
+    /// * `corrections` - The corrections of the map so far.
+    pub fn follow(&mut self, view: &Map, corrections: u64) {
+        if corrections == self.corrections {
+            return;
+        }
+        self.corrections = corrections;
+        if let (Some(anchor), Some(relative)) = (self.anchor, self.anchor_relative)
+            && let Some(row) = view.keyframe_row(anchor)
+        {
+            self.move_last(&(relative * view.kf_pose[row]));
+        }
+    }
 }
 
 /// Loop closing's own state from keyframe to keyframe (`slam_it.edge.pipeline.LoopState`,
@@ -377,19 +502,60 @@ impl LoopState {
     }
 }
 
+/// The map and its database, which only a writer changes ([`MapOwner`]'s).
+#[derive(Debug, Default)]
+pub struct Held {
+    /// The map, once initialised: shared with the view a writer published, copied on the next
+    /// write while tracking still reads it.
+    map: Option<Arc<Map>>,
+    /// The map's keyframe database, when relocalising or closing loops and a map exists.
+    database: Option<Database>,
+}
+
+impl Held {
+    /// The map.
+    ///
+    /// # Returns
+    ///
+    /// The map, if any.
+    #[must_use]
+    pub fn map(&self) -> Option<&Map> {
+        self.map.as_deref()
+    }
+
+    /// Its keyframe database.
+    ///
+    /// # Returns
+    ///
+    /// The database, if any.
+    #[must_use]
+    pub const fn database(&self) -> Option<&Database> {
+        self.database.as_ref()
+    }
+}
+
 /// The map being tracked and its keyframe database (`slam_it.edge.pipeline.MapOwner`): every
 /// change to them goes through here. The steps change the map in place, so the owner runs each
-/// step that changes it on its map, then keeps the database in step. In one thread it holds the
-/// map between the steps; it is the one place milestone 2B's B3b gives the map one writer at a
-/// time and tracking a published view of it (the online-SLAM design, section 12).
-#[derive(Debug, Clone)]
+/// step that changes it on its map, then keeps the database in step. Inline, it holds the map
+/// between the steps, and the view is the map. Threaded (a writer given), one thread writes the
+/// map at a time ([`Writer`]), tracking reads the view the writers publish, and tracking's counts
+/// wait for local mapping to apply them ([`MapOwner::apply_counts`]). The map is shared with a
+/// view published (`Arc`), and copied when a writer next changes it while tracking still reads
+/// that view: a copy per publish at most, made only when needed.
+#[derive(Debug)]
 pub struct MapOwner {
     /// The vocabulary, when relocalising or closing loops.
     vocabulary: Option<Vocabulary>,
-    /// The map, once initialised.
-    map: Option<Map>,
-    /// The map's keyframe database, when relocalising or closing loops and a map exists.
-    database: Option<Database>,
+    /// The handshake between the threads; `None` inline.
+    writer: Option<Arc<Writer>>,
+    /// The map and its database.
+    held: Mutex<Held>,
+    /// The map as last published, threaded.
+    view: Mutex<Option<Arc<Map>>>,
+    /// Tracking's counts waiting for local mapping: the points seen, and found, per frame.
+    counts: Mutex<Vec<(Vec<i64>, Vec<i64>)>>,
+    /// The corrections applied: loops corrected, and global BAs carried onto the map.
+    corrections: AtomicU64,
 }
 
 impl MapOwner {
@@ -399,37 +565,68 @@ impl MapOwner {
     ///
     /// * `vocabulary` - The database's vocabulary; `None` when neither relocalising nor closing
     ///   loops, and there is no database.
+    /// * `threaded` - Whether the steps run in threads of their own (a writer made).
     ///
     /// # Returns
     ///
     /// The owner.
     #[must_use]
-    pub const fn new(vocabulary: Option<Vocabulary>) -> Self {
+    pub fn new(vocabulary: Option<Vocabulary>, threaded: bool) -> Self {
         Self {
             vocabulary,
-            map: None,
-            database: None,
+            writer: threaded.then(|| Arc::new(Writer::default())),
+            held: Mutex::new(Held::default()),
+            view: Mutex::new(None),
+            counts: Mutex::new(Vec::new()),
+            corrections: AtomicU64::new(0),
+        }
+    }
+
+    /// The handshake between the threads.
+    ///
+    /// # Returns
+    ///
+    /// The writer; `None` inline.
+    #[must_use]
+    pub fn writer(&self) -> Option<&Writer> {
+        self.writer.as_deref()
+    }
+
+    /// The map as last published, what tracking reads: threaded, a view the writers published;
+    /// inline, the map itself.
+    ///
+    /// # Returns
+    ///
+    /// The view, or `None` with no map.
+    pub fn view(&self) -> Option<Arc<Map>> {
+        if self.writer.is_some() {
+            lock(&self.view).clone()
+        } else {
+            lock(&self.held).map.clone()
+        }
+    }
+
+    /// Whether a map is being tracked.
+    ///
+    /// # Returns
+    ///
+    /// Whether one is.
+    pub fn has_map(&self) -> bool {
+        if self.writer.is_some() {
+            lock(&self.view).is_some()
+        } else {
+            lock(&self.held).map.is_some()
         }
     }
 
     /// The map being tracked: none until one starts, and from a lost one to the next.
+    /// Threaded, read it once the run is finished.
     ///
     /// # Returns
     ///
     /// The map, if any.
-    #[must_use]
-    pub const fn map(&self) -> Option<&Map> {
-        self.map.as_ref()
-    }
-
-    /// Its keyframe database: none when neither relocalising nor closing loops, or with no map.
-    ///
-    /// # Returns
-    ///
-    /// The database, if any.
-    #[must_use]
-    pub const fn database(&self) -> Option<&Database> {
-        self.database.as_ref()
+    pub fn map(&self) -> Option<Arc<Map>> {
+        lock(&self.held).map.clone()
     }
 
     /// The database's vocabulary, when relocalising or closing loops.
@@ -442,7 +639,16 @@ impl MapOwner {
         self.vocabulary.as_ref()
     }
 
-    /// Takes a map just started, and starts its database with its keyframes.
+    /// The corrections applied: loops corrected, and global BAs carried onto the map.
+    ///
+    /// # Returns
+    ///
+    /// The count.
+    pub fn corrections(&self) -> u64 {
+        self.corrections.load(Ordering::SeqCst)
+    }
+
+    /// Takes a map just started, publishes it, and starts its database with its keyframes.
     ///
     /// # Arguments
     ///
@@ -451,34 +657,69 @@ impl MapOwner {
     /// # Errors
     ///
     /// A quantisation's error.
-    pub fn start(&mut self, m: Map) -> Result<()> {
-        self.map = Some(m);
+    pub fn start(&self, m: Map) -> Result<()> {
+        let mut held = lock(&self.held);
+        held.map = Some(Arc::new(m));
         if self.vocabulary.is_some() {
-            self.database = Some(Database::default());
-            return self.sync_database();
+            held.database = Some(Database::default());
+        }
+        self.changed(&mut held)
+    }
+
+    /// Counts a frame tracked against the local map: the points seen, and found, in it.
+    /// Threaded, the counts wait for local mapping ([`MapOwner::apply_counts`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `view` - The map tracking read, given up inline so that the map is changed in place.
+    /// * `visible` - The points the frame's view held, by the map's ids.
+    /// * `found` - The points it tracked.
+    ///
+    /// # Returns
+    ///
+    /// The map tracking goes on with: its view threaded, the map as counted inline.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` with no map, inline.
+    pub fn count(&self, view: Arc<Map>, visible: &[i64], found: &[i64]) -> Result<Arc<Map>> {
+        if self.writer.is_some() {
+            lock(&self.counts).push((visible.to_vec(), found.to_vec()));
+            return Ok(view);
+        }
+        drop(view);
+        let mut held = lock(&self.held);
+        let Some(m) = &mut held.map else {
+            return fail(ErrorKind::InvalidInput, "count: no map");
+        };
+        add_counts(Arc::make_mut(m), visible, found)?;
+        Ok(Arc::clone(m))
+    }
+
+    /// Applies the counts tracking sent since the last (threaded; local mapping's, in its turn).
+    /// A point gone since is skipped.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` with no map.
+    pub fn apply_counts(&self) -> Result<()> {
+        let counts = std::mem::take(&mut *lock(&self.counts));
+        if counts.is_empty() {
+            return Ok(());
+        }
+        let mut held = lock(&self.held);
+        let Some(m) = &mut held.map else {
+            return fail(ErrorKind::InvalidInput, "apply_counts: no map");
+        };
+        let m = Arc::make_mut(m);
+        for (visible, found) in &counts {
+            add_counts(m, visible, found)?;
         }
         Ok(())
     }
 
-    /// Counts a frame tracked against the local map: the points seen, and found, in it.
-    ///
-    /// # Arguments
-    ///
-    /// * `visible` - The points the frame's view held, by the map's ids.
-    /// * `found` - The points it tracked.
-    ///
-    /// # Errors
-    ///
-    /// `InvalidInput` with no map, or for an id the map does not hold.
-    pub fn count(&mut self, visible: &[i64], found: &[i64]) -> Result<()> {
-        let Some(m) = &mut self.map else {
-            return fail(ErrorKind::InvalidInput, "count: no map");
-        };
-        map::count(m, visible, &vec![1; visible.len()], &vec![0; visible.len()])?;
-        map::count(m, found, &vec![0; found.len()], &vec![1; found.len()])
-    }
-
-    /// Runs a mapping step on the map, then brings the database to its keyframes.
+    /// Runs a mapping step on the map, then brings the database to its keyframes and, threaded,
+    /// publishes the map.
     ///
     /// # Arguments
     ///
@@ -491,43 +732,26 @@ impl MapOwner {
     /// # Errors
     ///
     /// The step's, the database's, or `InvalidInput` with no map.
-    pub fn apply_mapping<T>(&mut self, step: impl FnOnce(&mut Map) -> Result<T>) -> Result<T> {
-        let Some(m) = &mut self.map else {
+    pub fn apply_mapping<T>(&self, step: impl FnOnce(&mut Map) -> Result<T>) -> Result<T> {
+        let mut held = lock(&self.held);
+        let Some(m) = &mut held.map else {
             return fail(ErrorKind::InvalidInput, "mapping: no map");
         };
-        let out = step(m)?;
-        self.sync_database()?;
+        let out = step(Arc::make_mut(m))?;
+        self.changed(&mut held)?;
         Ok(out)
     }
 
-    /// Runs a loop's correction on the map, held through the handshake ([`MapOwner::stopped`]),
-    /// then brings the database to its keyframes.
+    /// The handshake: runs a change on the map held, mapping stopped and its local BA aborted,
+    /// then mapping released, as ORB-SLAM's loop closing does (`RequestStop`, `Release`; a
+    /// global BA running is superseded by the caller's new generation). A change that gives a
+    /// value corrected the map: its database is brought to it, it is published, and the
+    /// correction counted. Inline nothing runs beside the change, so there is nothing to stop.
+    /// Loop corrections, global BAs' results and milestone 2B's B4's merges all enter here.
     ///
     /// # Arguments
     ///
-    /// * `step` - The correction, given the map to change in place.
-    ///
-    /// # Returns
-    ///
-    /// The correction's result.
-    ///
-    /// # Errors
-    ///
-    /// The correction's, the database's, or `InvalidInput` with no map.
-    pub fn apply_correction<T>(&mut self, step: impl FnOnce(&mut Map) -> Result<T>) -> Result<T> {
-        let out = self.stopped(step)?;
-        self.sync_database()?;
-        Ok(out)
-    }
-
-    /// The handshake: runs a change on the map held, mapping stopped and global BA aborted, then
-    /// both released, as ORB-SLAM's loop closing does (`RequestStop`, `mbStopGBA`, `Release`).
-    /// In one thread nothing runs beside the change, so there is nothing to stop or abort: this
-    /// is the one place milestone 2B's B3b's threads do it, and its merge (B4) enters it too.
-    ///
-    /// # Arguments
-    ///
-    /// * `step` - The change, given the map to change in place.
+    /// * `step` - The change, given the map to change in place: `Some` if it corrected it.
     ///
     /// # Returns
     ///
@@ -535,59 +759,163 @@ impl MapOwner {
     ///
     /// # Errors
     ///
-    /// The change's, or `InvalidInput` with no map.
-    pub fn stopped<T>(&mut self, step: impl FnOnce(&mut Map) -> Result<T>) -> Result<T> {
-        let Some(m) = &mut self.map else {
+    /// The change's, the database's, or `InvalidInput` with no map.
+    pub fn stopped<T>(
+        &self,
+        step: impl FnOnce(&mut Map) -> Result<Option<T>>,
+    ) -> Result<Option<T>> {
+        let _stop = self.writer.as_deref().map(Writer::stopped);
+        let mut held = lock(&self.held);
+        let Some(m) = &mut held.map else {
             return fail(ErrorKind::InvalidInput, "stopped: no map");
         };
-        step(m)
+        let out = step(Arc::make_mut(m))?;
+        if out.is_some() {
+            self.changed(&mut held)?;
+            self.corrections.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok(out)
+    }
+
+    /// Publishes the map so far for tracking to read, while its writer goes on (threaded): a
+    /// copy.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map so far.
+    pub fn publish(&self, m: &Map) {
+        let copy = Arc::new(m.clone());
+        *lock(&self.view) = Some(copy);
+    }
+
+    /// Runs something with the map and its database held whole, local mapping held off (a
+    /// hold, threaded; nothing to hold inline).
+    ///
+    /// # Arguments
+    ///
+    /// * `read` - What to run, given the map and its database.
+    ///
+    /// # Returns
+    ///
+    /// What it gives.
+    pub fn reading<T>(&self, read: impl FnOnce(&Held) -> T) -> T {
+        let _hold = self.hold();
+        self.read(read)
+    }
+
+    /// Holds the map whole, local mapping held off, while the hold lives (threaded; nothing
+    /// inline): loop closing searches and then corrects under one hold.
+    ///
+    /// # Returns
+    ///
+    /// The hold; `None` inline.
+    pub fn hold(&self) -> Option<Turn<'_>> {
+        self.writer.as_deref().map(Writer::held)
+    }
+
+    /// Runs something with the map and its database, under a hold the caller has taken
+    /// ([`MapOwner::hold`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `read` - What to run, given the map and its database.
+    ///
+    /// # Returns
+    ///
+    /// What it gives.
+    pub fn read<T>(&self, read: impl FnOnce(&Held) -> T) -> T {
+        read(&lock(&self.held))
     }
 
     /// Empties the map's archive of removals, once the atlas has dated them.
-    pub fn clear_gone(&mut self) {
-        if let Some(m) = &mut self.map {
-            map::clear_gone(m);
+    pub fn clear_gone(&self) {
+        if let Some(m) = &mut lock(&self.held).map
+            && !(m.gone_pt_id.is_empty() && m.gone_kf_id.is_empty())
+        {
+            map::clear_gone(Arc::make_mut(m));
         }
     }
 
-    /// Gives up the map, lost: the database goes with it.
+    /// Gives up the map, lost: the database, the view and the counts waiting go with it.
     ///
     /// # Returns
     ///
     /// The map, if there was one.
-    pub fn close(&mut self) -> Option<Map> {
-        self.database = None;
-        self.map.take()
+    pub fn close(&self) -> Option<Arc<Map>> {
+        *lock(&self.view) = None;
+        lock(&self.counts).clear();
+        let mut held = lock(&self.held);
+        held.database = None;
+        held.map.take()
     }
 
-    /// Brings the keyframe database to the map's keyframes: adds the new, erases the culled.
+    /// After a step changed the map: brings the database to it and, threaded, publishes it.
+    ///
+    /// # Arguments
+    ///
+    /// * `held` - The map and its database, held.
     ///
     /// # Errors
     ///
     /// A quantisation's error.
-    fn sync_database(&mut self) -> Result<()> {
-        let (Some(vocabulary), Some(m), Some(database)) =
-            (&self.vocabulary, &self.map, &mut self.database)
-        else {
-            return Ok(()); // no keyframe database
-        };
-        let culled: Vec<i64> = database
-            .keyframes
-            .keys()
-            .copied()
-            .filter(|&id| m.keyframe_row(id).is_none())
-            .collect();
-        for id in culled {
-            database.erase(id)?;
-        }
-        for (k, &id) in m.kf_id.iter().enumerate() {
-            if !database.keyframes.contains_key(&id) {
-                let rows = m.kf_start[k]..m.kf_start[k + 1];
-                database.add(vocabulary, id, &m.kp_descriptor[rows])?;
-            }
+    fn changed(&self, held: &mut Held) -> Result<()> {
+        sync_database(self.vocabulary.as_ref(), held)?;
+        if self.writer.is_some() {
+            lock(&self.view).clone_from(&held.map);
         }
         Ok(())
     }
+}
+
+/// Brings the keyframe database to the map's keyframes: adds the new, erases the culled.
+///
+/// # Arguments
+///
+/// * `vocabulary` - The vocabulary, when relocalising or closing loops.
+/// * `held` - The map and its database.
+///
+/// # Errors
+///
+/// A quantisation's error.
+fn sync_database(vocabulary: Option<&Vocabulary>, held: &mut Held) -> Result<()> {
+    let (Some(vocabulary), Some(m), Some(database)) =
+        (vocabulary, held.map.as_deref(), &mut held.database)
+    else {
+        return Ok(()); // no keyframe database
+    };
+    let culled: Vec<i64> = database
+        .keyframes
+        .keys()
+        .copied()
+        .filter(|&id| m.keyframe_row(id).is_none())
+        .collect();
+    for id in culled {
+        database.erase(id)?;
+    }
+    for (k, &id) in m.kf_id.iter().enumerate() {
+        if !database.keyframes.contains_key(&id) {
+            let rows = m.kf_start[k]..m.kf_start[k + 1];
+            database.add(vocabulary, id, &m.kp_descriptor[rows])?;
+        }
+    }
+    Ok(())
+}
+
+/// Adds a frame's counts to the map: the points seen, and found, in it (a point gone is
+/// skipped).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `visible` - The points the frame's view held, by the map's ids.
+/// * `found` - The points it tracked.
+///
+/// # Errors
+///
+/// [`map::count`]'s.
+fn add_counts(m: &mut Map, visible: &[i64], found: &[i64]) -> Result<()> {
+    map::count(m, visible, &vec![1; visible.len()], &vec![0; visible.len()])?;
+    map::count(m, found, &vec![0; found.len()], &vec![1; found.len()])
 }
 
 /// Pairs a monocular frame with the reference, or makes it the reference.
@@ -648,13 +976,15 @@ fn initialize_monocular(
     initialization::initialize_monocular(camera, reference, frame, &pairs, options)
 }
 
-/// Tracks the last frame, or recovers by PnP, or relocalises.
+/// Tracks the last frame against the view, or recovers by PnP, or relocalises. Threaded,
+/// relocalisation reads the database with mapping held off, against the view published last,
+/// which the database matches; the frame goes on with that view.
 ///
 /// # Arguments
 ///
 /// * `state` - Tracking's state.
 /// * `owner` - The map's owner, for its database.
-/// * `m` - The map.
+/// * `view` - The map tracking reads; threaded, a relocalisation's view replaces it.
 /// * `camera` - The camera.
 /// * `frame` - The frame.
 /// * `mode` - The sensor mode.
@@ -662,7 +992,8 @@ fn initialize_monocular(
 ///
 /// # Returns
 ///
-/// The placed frame, if any, how it was placed, and the last stage's matches.
+/// The placed frame, if any, how it was placed, the last stage's matches, and the time spent
+/// waiting for the map.
 ///
 /// # Errors
 ///
@@ -670,7 +1001,7 @@ fn initialize_monocular(
 fn place(
     state: &TrackingState,
     owner: &MapOwner,
-    m: &Map,
+    view: &mut Arc<Map>,
     camera: &Camera,
     frame: &Frame,
     mode: Mode,
@@ -682,11 +1013,12 @@ fn place(
             "track: no last frame to track from",
         );
     };
+    let m = Arc::clone(view);
     // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM tracks
     // its reference keyframe by bag of words here; the lite pipeline's words only relocalise.
     let predicted = tracking::predict(&last_tracked.pose, state.velocity.as_ref());
     let motion = tracking::track_last_frame(
-        m,
+        &m,
         camera,
         frame,
         last_frame,
@@ -705,15 +1037,16 @@ fn place(
             tracked: motion.tracked,
             summary,
             matched: motion.matched,
+            waited: 0.0,
         });
     }
-    let recovery = tracking::relocalize_locally(m, camera, frame, &last_tracked.points, options)?;
+    let recovery = tracking::relocalize_locally(&m, camera, frame, &last_tracked.points, options)?;
     summary.pnp = Some(recovery.summary);
     // The database relocalises only with relocalization.enabled: loop closing alone keeps it.
-    let relocalizing = owner.database().filter(|_| options.relocalization.enabled);
-    let (Some(database), Some(vocabulary), None) =
-        (relocalizing, owner.vocabulary(), &recovery.tracked)
-    else {
+    let relocalizing = owner
+        .vocabulary()
+        .filter(|_| options.relocalization.enabled);
+    let (Some(vocabulary), None) = (relocalizing, &recovery.tracked) else {
         // Placed by the fallback, or not relocalising.
         if recovery.tracked.is_some() {
             summary.placed_by = Some(Placement::LocalPnp);
@@ -722,23 +1055,87 @@ fn place(
             tracked: recovery.tracked,
             summary,
             matched: recovery.matched,
+            waited: 0.0,
         });
     };
-    let found = relocalization::relocalize(m, database, vocabulary, camera, frame, options)?;
+    let asked = Instant::now();
+    let mut held_at = asked;
+    let found = owner.reading(|held| {
+        held_at = Instant::now();
+        if owner.writer().is_some()
+            && let Some(latest) = owner.view()
+        {
+            *view = latest;
+        }
+        held.database()
+            .map(|database| {
+                relocalization::relocalize(view, database, vocabulary, camera, frame, options)
+            })
+            .transpose()
+    })?;
+    let Some(found) = found else {
+        return Ok(Placed {
+            tracked: None,
+            summary,
+            matched: recovery.matched,
+            waited: 0.0,
+        });
+    };
     if found.tracked.is_some() {
         summary.placed_by = Some(Placement::Relocalization);
     }
     summary.relocalization = Some(found.summary);
+    let waited = if owner.writer().is_some() {
+        held_at.duration_since(asked).as_secs_f64()
+    } else {
+        0.0
+    };
     Ok(Placed {
         tracked: found.tracked,
         summary,
         matched: found.matched,
+        waited,
     })
 }
 
-/// Tracking's step (`slam_it.edge.pipeline._track_frame`): places a frame against the map,
-/// tracks the local map, counts its points through the owner, and asks for a keyframe; a frame
-/// not tracked is counted as a failure.
+/// Asks local mapping for a keyframe a frame wants, as ORB-SLAM's `NeedNewKeyFrame` does: none
+/// while mapping is stopped or being stopped; taken at once with mapping idle (as inline,
+/// always); busy, the local BA is interrupted, and a stereo or RGB-D keyframe is queued while
+/// fewer than `mapping.max_queued` wait, a monocular one refused.
+///
+/// # Arguments
+///
+/// * `out` - Tracking's result, its keyframe, refusal and queue set.
+/// * `threads` - The threads; `None` inline.
+/// * `idle` - Whether mapping was idle when the frame asked.
+/// * `mode` - The sensor mode.
+/// * `options` - The settings.
+fn ask_mapping(
+    out: &mut Tracking,
+    threads: Option<&Threads>,
+    idle: bool,
+    mode: Mode,
+    options: &Options,
+) {
+    let Some(threads) = threads else {
+        out.keyframe = true;
+        return;
+    };
+    out.handshake.queue = threads.waiting();
+    if threads.stopping() {
+        out.handshake.refused = true;
+    } else if idle {
+        out.keyframe = true;
+    } else {
+        threads.interrupt();
+        out.keyframe = mode != Mode::Monocular && out.handshake.queue < options.mapping.max_queued;
+        out.handshake.refused = !out.keyframe;
+    }
+}
+
+/// Tracking's step (`slam_it.edge.pipeline._track_frame`): places a frame against the map's
+/// view, tracks the local map, counts its points through the owner, and asks for a keyframe; a
+/// frame not tracked is counted as a failure.
 ///
 /// # Arguments
 ///
@@ -749,6 +1146,7 @@ fn place(
 /// * `mode` - The sensor mode.
 /// * `options` - The settings.
 /// * `keyframe_base` - The run's id of the map's keyframe 0, for the summary.
+/// * `threads` - The threads, asked whether mapping takes a keyframe; `None` inline.
 ///
 /// # Returns
 ///
@@ -757,23 +1155,30 @@ fn place(
 /// # Errors
 ///
 /// A stage's error, or `InvalidInput` with no map.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "tracking's state, the map's owner, the frame, the settings and the threads"
+)]
 fn track_step(
     state: &mut TrackingState,
-    owner: &mut MapOwner,
+    owner: &MapOwner,
     camera: &Camera,
     frame: &Frame,
     mode: Mode,
     options: &Options,
     keyframe_base: i64,
+    threads: Option<&Threads>,
 ) -> Result<Tracking> {
-    let Some(m) = owner.map() else {
+    state.since_keyframe += 1;
+    let Some(mut view) = owner.view() else {
         return fail(ErrorKind::InvalidInput, "track: no map to track against");
     };
     let Placed {
         tracked: placed,
         mut summary,
         matched,
-    } = place(state, owner, m, camera, frame, mode, options)?;
+        waited,
+    } = place(state, owner, &mut view, camera, frame, mode, options)?;
     if matches!(
         summary.placed_by,
         Some(Placement::LocalPnp | Placement::Relocalization)
@@ -789,35 +1194,41 @@ fn track_step(
         .since_recovery
         .is_some_and(|s| s < options.tracking.recovery_window_frames);
     let Some(placed) = placed else {
-        let lost = state.record_failure(frame, m.keyframes(), options);
+        let lost = state.record_failure(frame, view.keyframes(), options);
         return Ok(Tracking {
+            view: Some(view),
             summary,
             matched,
             lost,
+            handshake: Handshake {
+                wait_seconds: waited,
+                ..Handshake::default()
+            },
             ..Tracking::default()
         });
     };
-    let local = tracking::track_local_map(m, camera, frame, &placed, mode, options, wide)?;
+    let local = tracking::track_local_map(&view, camera, frame, &placed, mode, options, wide)?;
     summary.local_map = Some(local.summary(keyframe_base));
-    owner.count(&local.visible, &local.found)?;
-    let Some(m) = owner.map() else {
-        return fail(ErrorKind::InvalidInput, "track: no map to track against");
-    };
+    let view = owner.count(view, &local.visible, &local.found)?;
     let needed = if recent {
         options.tracking.recovery_tracked
     } else {
         options.tracking.min_tracked
     };
     if local.tracked.inliers() < needed {
-        let lost = state.record_failure(frame, m.keyframes(), options);
+        let lost = state.record_failure(frame, view.keyframes(), options);
         return Ok(Tracking {
+            view: Some(view),
             summary,
             matched: local.matched,
             lost,
+            handshake: Handshake {
+                wait_seconds: waited,
+                ..Handshake::default()
+            },
             ..Tracking::default()
         });
     }
-    let held = recent && m.keyframes() > options.tracking.max_frames;
     // Placed with inliers, the frame was matched to points: its reference keyframe exists.
     let Some(reference) = local.reference else {
         return fail(
@@ -825,26 +1236,40 @@ fn track_step(
             "reference: a tracked frame matched no point of the map",
         );
     };
-    let keyframe = !held
-        && mapping::need_keyframe(
-            m,
+    let mut out = Tracking {
+        summary,
+        matched: local.matched,
+        reference: Some(reference),
+        handshake: Handshake {
+            wait_seconds: waited,
+            ..Handshake::default()
+        },
+        ..Tracking::default()
+    };
+    if !(recent && view.keyframes() > options.tracking.max_frames) {
+        // none just after a recovery
+        let idle = threads.is_none_or(Threads::idle);
+        out.handshake.asked = mapping::need_keyframe(
+            &view,
             camera,
             &frame.depth,
             &local.tracked,
             reference,
             mode,
             options,
-            true,
-            None,
+            idle,
+            Some(state.since_keyframe),
         )?;
-    Ok(Tracking {
-        tracked: Some(local.tracked),
-        summary,
-        matched: local.matched,
-        reference: Some(reference),
-        keyframe,
-        lost: false,
-    })
+        if out.handshake.asked {
+            ask_mapping(&mut out, threads, idle, mode, options);
+        }
+        if out.keyframe {
+            state.since_keyframe = 0;
+        }
+    }
+    out.tracked = Some(local.tracked);
+    out.view = Some(view);
+    Ok(out)
 }
 
 /// Loop closing's step (`slam_it.edge.pipeline._close_loops`): searches the newest keyframe
@@ -868,33 +1293,40 @@ fn track_step(
 /// Detection's, the correction's or the database's.
 fn close_loops(
     state: &mut LoopState,
-    owner: &mut MapOwner,
+    owner: &MapOwner,
     camera: &Camera,
     mode: Mode,
     options: &Options,
 ) -> Result<(Option<LoopSummary>, bool)> {
-    let (Some(m), Some(database)) = (owner.map(), owner.database()) else {
+    let found = owner.read(|held| -> Result<Option<Detection>> {
+        let (Some(m), Some(database)) = (held.map(), held.database()) else {
+            return Ok(None);
+        };
+        let keyframe = m.kf_id[m.keyframes() - 1];
+        if !options.loops.enabled || keyframe == 0 {
+            return Ok(None);
+        }
+        loops::detect(
+            m,
+            database,
+            camera,
+            keyframe,
+            state.pending.as_ref(),
+            mode,
+            options,
+        )
+        .map(Some)
+    })?;
+    let Some(found) = found else {
         return Ok((None, false));
     };
-    let keyframe = m.kf_id[m.keyframes() - 1];
-    if !options.loops.enabled || keyframe == 0 {
-        return Ok((None, false));
-    }
-    let found = loops::detect(
-        m,
-        database,
-        camera,
-        keyframe,
-        state.pending.as_ref(),
-        mode,
-        options,
-    )?;
     state.pending = found.pending;
-    let mut correction = None;
-    if let Some(closed) = &found.closed {
-        correction =
-            Some(owner.apply_correction(|m| loops::correct(m, camera, closed, mode, options))?);
-    }
+    let correction = match &found.closed {
+        Some(closed) => {
+            owner.stopped(|m| loops::correct(m, camera, closed, mode, options).map(Some))?
+        }
+        None => None,
+    };
     let corrected = correction.is_some();
     Ok((
         Some(LoopSummary {
@@ -905,9 +1337,573 @@ fn close_loops(
     ))
 }
 
+/// What the threads share with tracking: the map's owner, the run's records and loop closing's
+/// state.
+#[derive(Debug)]
+struct Shared {
+    /// The map being tracked and its database.
+    owner: MapOwner,
+    /// The run's records.
+    atlas: Mutex<Atlas>,
+    /// Loop closing's own state.
+    closing: Mutex<LoopState>,
+}
+
+/// A keyframe tracking asked local mapping for (`slam_it.edge.pipeline._Request`).
+struct Request {
+    /// Its frame's number.
+    index: i64,
+    /// The frame.
+    frame: Frame,
+    /// Its pose and matches.
+    tracked: Tracked,
+}
+
+/// A keyframe mapped, given to loop closing: its frame's number and its id.
+struct Searched {
+    /// Its frame's number.
+    index: i64,
+    /// Its id in the map.
+    keyframe: i64,
+}
+
+/// What local mapping, loop closing and the global BAs share among themselves.
+#[derive(Debug)]
+struct Steps {
+    /// The sensor mode.
+    mode: Mode,
+    /// The camera.
+    camera: Camera,
+    /// The settings.
+    options: Options,
+    /// The settings, global BA left out of a loop's correction.
+    without_global_ba: Options,
+    /// The global BAs' generations.
+    generation: Generation,
+    /// The completions not yet taken.
+    completions: Mutex<Vec<Completion>>,
+    /// The global BAs' threads started and not yet joined.
+    global: Mutex<Vec<JoinHandle<()>>>,
+    /// A global BA's error, if one failed.
+    error: Mutex<Option<Error>>,
+}
+
+impl Steps {
+    /// Keeps a completion for the run.
+    ///
+    /// # Arguments
+    ///
+    /// * `completion` - The completion.
+    fn complete(&self, completion: Completion) {
+        lock(&self.completions).push(completion);
+    }
+
+    /// Keeps a global BA's error, for tracking's thread.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` - The error.
+    fn keep(&self, error: Error) {
+        lock(&self.error).get_or_insert(error);
+    }
+}
+
+/// What local mapping's thread is asked between its steps (`slam_it.edge.mapping.Interrupts`).
+struct Asked<'a> {
+    /// Local mapping's own queue.
+    queue: &'a Sender<Request>,
+    /// The map's owner, its writer and its view.
+    owner: &'a MapOwner,
+    /// The writer's abort flag.
+    abort: Stop,
+}
+
+impl Interrupts for Asked<'_> {
+    fn waiting(&self) -> bool {
+        self.queue.waiting() > 0
+    }
+
+    fn stopping(&self) -> bool {
+        self.owner.writer().is_some_and(Writer::stopping)
+    }
+
+    fn abort(&self) -> &Stop {
+        &self.abort
+    }
+
+    fn publish(&self, m: &Map) {
+        self.owner.publish(m);
+    }
+}
+
+/// A frame as tracked, its points no longer in the map dropped (`ProcessNewKeyFrame`;
+/// `slam_it.edge.pipeline._still_mapped`): threaded, mapping may cull or fuse a point a keyframe
+/// tracked before it inserts the keyframe, and ORB-SLAM skips the points gone bad.
+///
+/// # Arguments
+///
+/// * `tracked` - The frame's pose and matches.
+/// * `m` - The map.
+///
+/// # Returns
+///
+/// Its pose, and its matches still in the map.
+fn still_mapped(tracked: &Tracked, m: &Map) -> Tracked {
+    let mut out = tracked.clone();
+    for id in &mut out.points {
+        if *id >= 0 && m.point_row(*id).is_none() {
+            *id = -1;
+        }
+    }
+    out
+}
+
+/// Local mapping's thread: maps a keyframe, the one writer while it does, interrupted between
+/// its steps; then gives it to loop closing.
+///
+/// # Arguments
+///
+/// * `shared` - What the threads share with tracking.
+/// * `steps` - What they share among themselves.
+/// * `request` - The keyframe.
+/// * `queue` - Local mapping's own queue.
+/// * `searching` - Loop closing's queue.
+///
+/// # Errors
+///
+/// A step's.
+fn map_keyframe(
+    shared: &Shared,
+    steps: &Steps,
+    request: &Request,
+    queue: &Sender<Request>,
+    searching: &Sender<Searched>,
+) -> Result<()> {
+    let owner = &shared.owner;
+    let Some(writer) = owner.writer() else {
+        return fail(ErrorKind::InvalidInput, "mapping: no writer");
+    };
+    let mut done = Completion {
+        frame: request.index,
+        ..Completion::default()
+    };
+    let keyframe = {
+        let _turn = writer.mapping();
+        writer.resume();
+        owner.apply_counts()?;
+        let start = Instant::now();
+        let asked = Asked {
+            queue,
+            owner,
+            abort: writer.abort(),
+        };
+        let holding = lock(&shared.closing).held();
+        let (camera, mode, options) = (&steps.camera, steps.mode, &steps.options);
+        let (mapped, keyframe, base) = owner.apply_mapping(|m| {
+            let tracked = still_mapped(&request.tracked, m);
+            let mapped = mapping::process(
+                m,
+                camera,
+                &request.frame,
+                &tracked,
+                mode,
+                options,
+                &holding,
+                Some(&asked),
+            )?;
+            let mut atlas = lock(&shared.atlas);
+            atlas.resolve(request.index, m);
+            atlas.record(Some(m));
+            map::clear_gone(m);
+            Ok((mapped, m.kf_id[m.keyframes() - 1], atlas.point_base()))
+        })?;
+        done.map_seconds = Some(start.elapsed().as_secs_f64());
+        done.made = mapped
+            .made
+            .iter()
+            .map(|&id| if id >= 0 { base + id } else { -1 })
+            .collect();
+        done.mapping = Some(mapped.summary);
+        done.schedule = Some(mapped.schedule);
+        keyframe
+    };
+    steps.complete(done);
+    searching.put(Searched {
+        index: request.index,
+        keyframe,
+    });
+    Ok(())
+}
+
+/// A global BA started by a loop's correction.
+#[derive(Default)]
+struct GlobalStart {
+    /// The map as the correction left it, which global BA solves (`loops.global_ba`).
+    copy: Option<Map>,
+    /// Its generation.
+    generation: u64,
+    /// Its stop flag, set once a newer generation starts.
+    superseded: Stop,
+}
+
+/// Loop closing's thread: searches a keyframe for a loop with mapping held off, and corrects
+/// one that closes with mapping stopped, without global BA, which then solves a copy of the map
+/// in a thread of its own.
+///
+/// # Arguments
+///
+/// * `shared` - What the threads share with tracking.
+/// * `steps` - What they share among themselves, the global BAs' threads given this one's.
+/// * `item` - The keyframe.
+///
+/// # Errors
+///
+/// Detection's, the correction's or the database's.
+fn search_loops(shared: &Arc<Shared>, steps: &Arc<Steps>, item: &Searched) -> Result<()> {
+    if !steps.options.loops.enabled || item.keyframe == 0 {
+        return Ok(());
+    }
+    let start = Instant::now();
+    let owner = &shared.owner;
+    let mut started = GlobalStart::default();
+    let summary = {
+        let _hold = owner.hold(); // mapping held off through the search and the correction
+        let found = owner.read(|held| -> Result<Option<Detection>> {
+            let (Some(m), Some(database)) = (held.map(), held.database()) else {
+                return Ok(None); // no keyframe database
+            };
+            if m.keyframe_row(item.keyframe).is_none() {
+                return Ok(None); // culled since it was mapped
+            }
+            let closing = lock(&shared.closing);
+            let found = loops::detect(
+                m,
+                database,
+                &steps.camera,
+                item.keyframe,
+                closing.pending.as_ref(),
+                steps.mode,
+                &steps.options,
+            )?;
+            Ok(Some(found))
+        })?;
+        let Some(found) = found else {
+            return Ok(());
+        };
+        lock(&shared.closing).pending = found.pending;
+        let correction = match &found.closed {
+            Some(closed) => correct_loop(shared, steps, closed, &mut started)?,
+            None => None,
+        };
+        LoopSummary {
+            detection: found.summary,
+            correction,
+        }
+    };
+    steps.complete(Completion {
+        frame: item.index,
+        loop_seconds: Some(start.elapsed().as_secs_f64()),
+        loop_closing: Some(summary),
+        ..Completion::default()
+    });
+    if let Some(copy) = started.copy {
+        let (shared, theirs) = (Arc::clone(shared), Arc::clone(steps));
+        let (generation, superseded) = (started.generation, started.superseded);
+        let thread = thread::Builder::new()
+            .name("global BA".to_owned())
+            .spawn(move || {
+                if let Err(error) = global_ba(&shared, &theirs, copy, generation, &superseded) {
+                    theirs.keep(error);
+                }
+            })
+            .map_err(|error| Error::new(ErrorKind::InvalidInput, format!("global BA: {error}")))?;
+        lock(&steps.global).push(thread);
+    }
+    Ok(())
+}
+
+/// Corrects a loop with mapping stopped, without global BA, and takes the copy global BA
+/// solves.
+///
+/// # Arguments
+///
+/// * `shared` - What the threads share with tracking.
+/// * `steps` - What they share among themselves.
+/// * `closed` - The loop.
+/// * `started` - The global BA it starts, set.
+///
+/// # Returns
+///
+/// The correction.
+///
+/// # Errors
+///
+/// The correction's or the database's.
+fn correct_loop(
+    shared: &Shared,
+    steps: &Steps,
+    closed: &Loop,
+    started: &mut GlobalStart,
+) -> Result<Option<CorrectionSummary>> {
+    shared.owner.stopped(|m| {
+        started.generation = steps.generation.next();
+        started.superseded = steps.generation.stop();
+        let corrected = loops::correct(
+            m,
+            &steps.camera,
+            closed,
+            steps.mode,
+            &steps.without_global_ba,
+        )?;
+        lock(&shared.atlas).record(Some(m));
+        map::clear_gone(m);
+        if steps.options.loops.global_ba {
+            started.copy = Some(m.clone());
+        }
+        Ok(Some(corrected))
+    })
+}
+
+/// A global BA's thread: solves a copy, then carries the result onto the map as it has become
+/// if no newer loop superseded it, mapping stopped.
+///
+/// # Arguments
+///
+/// * `shared` - What the threads share with tracking.
+/// * `steps` - What they share among themselves.
+/// * `copy` - The map as the loop's correction left it.
+/// * `generation` - The global BA's generation.
+/// * `superseded` - Its stop flag, set once a newer generation starts.
+///
+/// # Errors
+///
+/// The solve's, or the propagation's.
+fn global_ba(
+    shared: &Shared,
+    steps: &Steps,
+    mut copy: Map,
+    generation: u64,
+    superseded: &Stop,
+) -> Result<()> {
+    let start = Instant::now();
+    let solve = loops::global_bundle_adjust(&mut copy, &steps.camera, &steps.options, superseded)?;
+    let mut frame = 0;
+    let propagation = shared.owner.stopped(|m| {
+        let mut atlas = lock(&shared.atlas);
+        frame = atlas.frame();
+        if !steps.generation.current(generation) {
+            return Ok(None);
+        }
+        let moved = loops::propagate_global_ba(m, &copy)?;
+        atlas.record(Some(m));
+        map::clear_gone(m);
+        Ok(Some(moved))
+    })?;
+    steps.complete(Completion {
+        frame,
+        global_ba: Some(GlobalSummary {
+            generation,
+            applied: propagation.is_some(),
+            solve,
+            propagation,
+        }),
+        global_ba_seconds: start.elapsed().as_secs_f64(),
+        ..Completion::default()
+    });
+    Ok(())
+}
+
+/// Local mapping, loop closing and the global BAs, each in a thread of its own
+/// (`slam_it.edge.pipeline._Threads`): tracking asks it whether mapping takes a keyframe, and
+/// gives it the keyframes; the threads give back [`Completion`] records.
+struct Threads {
+    /// What the threads share with tracking.
+    shared: Arc<Shared>,
+    /// What they share among themselves.
+    steps: Arc<Steps>,
+    /// Local mapping's thread, ended first: it gives loop closing its keyframes.
+    mapping: Worker<Request>,
+    /// Loop closing's thread.
+    loop_closing: Worker<Searched>,
+}
+
+impl Threads {
+    /// Starts the threads.
+    ///
+    /// # Arguments
+    ///
+    /// * `shared` - What they share with tracking.
+    /// * `mode` - The sensor mode.
+    /// * `camera` - The camera.
+    /// * `options` - The settings.
+    ///
+    /// # Returns
+    ///
+    /// The threads.
+    fn start(shared: &Arc<Shared>, mode: Mode, camera: &Camera, options: &Options) -> Self {
+        let mut without_global_ba = *options;
+        without_global_ba.loops.global_ba = false; // it runs in a thread of its own
+        let steps = Arc::new(Steps {
+            mode,
+            camera: camera.clone(),
+            options: *options,
+            without_global_ba,
+            generation: Generation::default(),
+            completions: Mutex::new(Vec::new()),
+            global: Mutex::new(Vec::new()),
+            error: Mutex::new(None),
+        });
+        let (theirs, their_steps) = (Arc::clone(shared), Arc::clone(&steps));
+        let loop_closing = Worker::new(
+            "loop closing",
+            move |item: Searched, _: &Sender<Searched>| search_loops(&theirs, &their_steps, &item),
+        );
+        let searching = loop_closing.sender();
+        let (theirs, their_steps) = (Arc::clone(shared), Arc::clone(&steps));
+        let mapping = Worker::new(
+            "local mapping",
+            move |request: Request, queue: &Sender<Request>| {
+                map_keyframe(&theirs, &their_steps, &request, queue, &searching)
+            },
+        );
+        Self {
+            shared: Arc::clone(shared),
+            steps,
+            mapping,
+            loop_closing,
+        }
+    }
+
+    /// The handshake between the threads.
+    ///
+    /// # Returns
+    ///
+    /// The owner's writer, `None` only inline.
+    fn writer(&self) -> Option<&Writer> {
+        self.shared.owner.writer()
+    }
+
+    /// Whether local mapping takes a keyframe at once (`AcceptKeyFrames`): none in hand, none
+    /// waiting.
+    ///
+    /// # Returns
+    ///
+    /// Whether it is idle.
+    fn idle(&self) -> bool {
+        self.mapping.unfinished() == 0
+    }
+
+    /// Whether local mapping is stopped or being stopped.
+    ///
+    /// # Returns
+    ///
+    /// Whether it is.
+    fn stopping(&self) -> bool {
+        self.writer().is_some_and(Writer::stopping)
+    }
+
+    /// The keyframes waiting for local mapping (`KeyframesInQueue`).
+    ///
+    /// # Returns
+    ///
+    /// The count.
+    fn waiting(&self) -> usize {
+        self.mapping.waiting()
+    }
+
+    /// Interrupts local mapping's local BA (`InterruptBA`).
+    fn interrupt(&self) {
+        if let Some(writer) = self.writer() {
+            writer.interrupt();
+        }
+    }
+
+    /// Queues a keyframe for local mapping, aborting its local BA (`InsertKeyFrame`).
+    ///
+    /// # Arguments
+    ///
+    /// * `request` - The keyframe.
+    fn request(&self, request: Request) {
+        self.mapping.put(request);
+        self.interrupt();
+    }
+
+    /// The completions since the last call, in the order they came.
+    ///
+    /// # Returns
+    ///
+    /// The completions.
+    fn completed(&self) -> Vec<Completion> {
+        std::mem::take(&mut *lock(&self.steps.completions))
+    }
+
+    /// The error a thread failed with, if one did.
+    ///
+    /// # Errors
+    ///
+    /// The error.
+    fn check(&self) -> Result<()> {
+        self.mapping.check()?;
+        self.loop_closing.check()?;
+        lock(&self.steps.error).clone().map_or(Ok(()), Err)
+    }
+
+    /// Waits for local mapping and loop closing to handle every keyframe given, and for the
+    /// global BAs.
+    ///
+    /// # Arguments
+    ///
+    /// * `apply` - Whether a global BA still running applies its result when it ends (the run's
+    ///   end); if not (a map lost), it is superseded.
+    ///
+    /// # Errors
+    ///
+    /// The error a thread failed with.
+    fn settle(&self, apply: bool) -> Result<()> {
+        self.mapping.drain();
+        self.loop_closing.drain();
+        if !apply {
+            self.steps.generation.next();
+        }
+        self.join_global();
+        self.check()
+    }
+
+    /// Waits for the global BAs' threads started so far.
+    fn join_global(&self) {
+        let running = std::mem::take(&mut *lock(&self.steps.global));
+        for thread in running {
+            // A global BA that panicked has no result to carry; its error is the panic's own.
+            let _ = thread.join();
+        }
+    }
+
+    /// Ends local mapping and loop closing, after the keyframes given ([`Threads::settle`]
+    /// first).
+    fn stop(&mut self) {
+        self.mapping.stop();
+        self.loop_closing.stop();
+    }
+}
+
+impl fmt::Debug for Threads {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Threads").finish_non_exhaustive()
+    }
+}
+
+impl Drop for Threads {
+    fn drop(&mut self) {
+        self.steps.generation.next();
+        self.stop();
+        self.join_global();
+    }
+}
+
 /// The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`): tracking, local
-/// mapping and loop closing as steps over state of their own, called in turn.
-#[derive(Debug, Clone)]
+/// mapping and loop closing as steps over state of their own, called in turn, or each in a
+/// thread of its own (threaded).
+#[derive(Debug)]
 pub struct Pipeline {
     /// The sensor mode.
     mode: Mode,
@@ -919,12 +1915,12 @@ pub struct Pipeline {
     state: State,
     /// Tracking's own state.
     tracking: TrackingState,
-    /// Loop closing's own state.
-    closing: LoopState,
-    /// The map being tracked and its database.
-    owner: MapOwner,
-    /// The run's records.
-    atlas: Atlas,
+    /// The map's owner, the run's records and loop closing's state, shared with the threads.
+    shared: Arc<Shared>,
+    /// The threads, threaded.
+    threads: Option<Threads>,
+    /// Whether the run is finished ([`Pipeline::finish`]).
+    finished: bool,
 }
 
 impl Pipeline {
@@ -937,6 +1933,8 @@ impl Pipeline {
     /// * `options` - The settings.
     /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalization.enabled`
     ///   or `loops.enabled` on, refused with both off.
+    /// * `threaded` - Whether the steps run in threads of their own; inline, a run repeats
+    ///   exactly.
     ///
     /// # Returns
     ///
@@ -952,6 +1950,7 @@ impl Pipeline {
         camera: Camera,
         options: Options,
         vocabulary: Option<Vocabulary>,
+        threaded: bool,
     ) -> Result<Self> {
         check_setup(&camera, &options)?;
         if mode != Mode::Monocular && !(camera.baseline > 0.0) {
@@ -973,15 +1972,21 @@ impl Pipeline {
                 "vocabulary: given, but relocalization.enabled and loops.enabled are both off",
             );
         }
+        let shared = Arc::new(Shared {
+            owner: MapOwner::new(vocabulary, threaded),
+            atlas: Mutex::new(Atlas::new(options)),
+            closing: Mutex::new(LoopState::default()),
+        });
+        let threads = threaded.then(|| Threads::start(&shared, mode, &camera, &options));
         Ok(Self {
             mode,
             camera,
             options,
             state: State::NotInitialized,
             tracking: TrackingState::default(),
-            closing: LoopState::default(),
-            owner: MapOwner::new(vocabulary),
-            atlas: Atlas::new(options),
+            shared,
+            threads,
+            finished: false,
         })
     }
 
@@ -1007,17 +2012,29 @@ impl Pipeline {
         self.state
     }
 
-    /// The current map: none until one starts, and from a lost one to the next.
+    /// The current map: none until one starts, and from a lost one to the next. Threaded, read
+    /// it once the run is finished.
     ///
     /// # Returns
     ///
     /// The map, if any.
     #[must_use]
-    pub const fn map(&self) -> Option<&Map> {
-        self.owner.map()
+    pub fn map(&self) -> Option<Arc<Map>> {
+        self.shared.owner.map()
     }
 
-    /// Tracks one frame (and maps, if it becomes a keyframe).
+    /// The handshake between the threads, threaded: a test holds a stop through it.
+    ///
+    /// # Returns
+    ///
+    /// The writer, shared; `None` inline.
+    #[must_use]
+    pub fn writer(&self) -> Option<Arc<Writer>> {
+        self.shared.owner.writer.clone()
+    }
+
+    /// Tracks one frame (and maps, if it becomes a keyframe; threaded, local mapping is given
+    /// it).
     ///
     /// # Arguments
     ///
@@ -1029,20 +2046,49 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// A stage's error.
+    /// A stage's error, the error a thread failed with, or `InvalidInput` once the run is
+    /// finished.
     pub fn track(&mut self, frame: &Frame) -> Result<FrameResult> {
+        if self.finished {
+            return fail(ErrorKind::InvalidInput, "track: the run is finished");
+        }
         let start = Instant::now();
         // Between frames the state is never `Lost`: a lost track closes its map on its frame.
-        let step = if self.state == State::Tracking {
+        let tracking_map = self.state == State::Tracking;
+        let step = if tracking_map {
             self.track_frame(frame)?
         } else {
             self.initialize(frame)?
         };
-        self.atlas.date(self.owner.map());
-        self.owner.clear_gone();
+        let mut waited = step.handshake.wait_seconds;
+        let owner = &self.shared.owner;
+        if let Some(threads) = &self.threads {
+            threads.check()?;
+            if !tracking_map && owner.has_map() {
+                // A map started on it: the threads have none of it.
+                let m = owner.map();
+                lock(&self.shared.atlas).record(m.as_deref());
+                drop(m);
+                owner.clear_gone();
+            }
+            if step.lost && owner.has_map() {
+                // The threads end the map's work first.
+                let settling = Instant::now();
+                threads.settle(false)?;
+                waited += settling.elapsed().as_secs_f64();
+            }
+            lock(&self.shared.atlas).tick();
+        } else {
+            let m = owner.map();
+            lock(&self.shared.atlas).date(m.as_deref());
+            drop(m);
+            owner.clear_gone();
+        }
         let state = if step.lost { State::Lost } else { self.state };
-        let map_id = self.atlas.map_id();
-        let base = self.atlas.point_base();
+        let (map_id, base) = {
+            let atlas = lock(&self.shared.atlas);
+            (atlas.map_id(), atlas.point_base())
+        };
         let mut fates = Fates {
             fate: vec![Fate::Unmatched; frame.size()],
             point: vec![-1; frame.size()],
@@ -1054,7 +2100,7 @@ impl Pipeline {
         fates.mark(Fate::Made, &step.made, base);
         let mut summary = step.summary;
         if step.lost
-            && let Some(lost) = self.owner.close()
+            && let Some(lost) = self.shared.owner.close()
         {
             summary.lost = Some(self.close(&lost));
         }
@@ -1072,7 +2118,45 @@ impl Pipeline {
             loop_seconds: step.loop_seconds,
             summary,
             fates,
+            wait_seconds: waited,
+            asked: step.handshake.asked,
+            refused: step.handshake.refused,
+            queue: step.handshake.queue,
+            schedule: step.schedule,
         })
+    }
+
+    /// Ends the run: threaded, waits for the threads to finish their work, then ends them.
+    /// Local mapping and loop closing handle every keyframe given, and each global BA running
+    /// ends, the latest carried onto the map. Inline, nothing waits. No frame is tracked after.
+    ///
+    /// # Errors
+    ///
+    /// The error a thread failed with.
+    pub fn finish(&mut self) -> Result<()> {
+        let already = std::mem::replace(&mut self.finished, true);
+        let Some(threads) = &mut self.threads else {
+            return Ok(());
+        };
+        if already {
+            return Ok(());
+        }
+        lock(&self.shared.atlas).end();
+        let settled = threads.settle(true);
+        threads.stop();
+        settled
+    }
+
+    /// What the threads finished since the last call (threaded; none inline).
+    ///
+    /// # Returns
+    ///
+    /// The completions, in the order they came.
+    #[must_use]
+    pub fn completed(&self) -> Vec<Completion> {
+        self.threads
+            .as_ref()
+            .map_or_else(Vec::new, Threads::completed)
     }
 
     /// Every point and keyframe the run has made, with their lives ([`Atlas::lifetimes`], with
@@ -1084,7 +2168,9 @@ impl Pipeline {
     /// the others where they last were.
     #[must_use]
     pub fn lifetimes(&self) -> Lifetimes {
-        self.atlas.lifetimes(self.owner.map())
+        self.shared
+            .owner
+            .reading(|held| lock(&self.shared.atlas).lifetimes(held.map()))
     }
 
     /// The run's trajectory so far ([`Atlas::trajectory`], with the current map).
@@ -1094,7 +2180,9 @@ impl Pipeline {
     /// The frames tracked, but a reset map's.
     #[must_use]
     pub fn trajectory(&self) -> Trajectory {
-        self.atlas.trajectory(self.owner.map())
+        self.shared
+            .owner
+            .reading(|held| lock(&self.shared.atlas).trajectory(held.map()))
     }
 
     /// Closes the map the track was lost in, on this frame: keeps it, or resets it if it has
@@ -1110,9 +2198,10 @@ impl Pipeline {
     /// The closed map's summary.
     fn close(&mut self, m: &Map) -> LostSummary {
         let reset = m.kf_id.len() <= self.options.loss.reset_keyframes;
-        self.atlas.close(m, reset);
+        lock(&self.shared.atlas).close(m, reset);
         self.tracking = TrackingState::default();
-        self.closing = LoopState::default();
+        // Shared with loop closing's thread, settled by now.
+        *lock(&self.shared.closing) = LoopState::default();
         self.state = State::NotInitialized;
         LostSummary {
             keyframes: m.kf_id.len(),
@@ -1151,29 +2240,30 @@ impl Pipeline {
             });
         };
         let reference = map.kf_id[map.keyframes() - 1];
-        self.owner.start(map)?;
-        self.atlas.start();
+        lock(&self.shared.atlas).start();
         self.state = State::Tracking;
-        if let Some(m) = self.owner.map() {
-            self.atlas
-                .place_frame(m, frame.timestamp, reference, &tracked.pose)?;
-        }
+        lock(&self.shared.atlas).place_frame(&map, frame.timestamp, reference, &tracked.pose)?;
+        let row = map.keyframes() - 1;
+        self.shared.owner.start(map)?;
         self.tracking.accept(frame, &tracked)?;
+        if self.threads.is_some()
+            && let Some(view) = self.shared.owner.view()
+        {
+            self.tracking.anchor_to(&view, row)?;
+            self.tracking.corrections = self.shared.owner.corrections();
+        }
         summary.placed_by = Some(Placement::Initialization);
         Ok(Step {
             made: tracked.points.clone(), // every point the frame observes was made of it
             tracked: Some(tracked),
             keyframe: true,
-            map_seconds: 0.0,
             summary,
-            matched: Vec::new(),
-            lost: false,
-            loop_seconds: 0.0,
+            ..Step::default()
         })
     }
 
     /// Runs the steps on a frame: tracks it, and maps and closes loops if it becomes a
-    /// keyframe.
+    /// keyframe. Threaded, a keyframe goes to local mapping's thread instead.
     ///
     /// # Arguments
     ///
@@ -1188,48 +2278,107 @@ impl Pipeline {
     ///
     /// A stage's error.
     fn track_frame(&mut self, frame: &Frame) -> Result<Step> {
-        let found = track_step(
+        if self.threads.is_some()
+            && let Some(view) = self.shared.owner.view()
+        {
+            self.tracking.follow(&view, self.shared.owner.corrections());
+        }
+        let keyframe_base = lock(&self.shared.atlas).keyframe_base();
+        let mut found = track_step(
             &mut self.tracking,
-            &mut self.owner,
+            &self.shared.owner,
             &self.camera,
             frame,
             self.mode,
             &self.options,
-            self.atlas.keyframe_base(),
+            keyframe_base,
+            self.threads.as_ref(),
         )?;
-        let (Some(tracked), Some(reference)) = (found.tracked, found.reference) else {
-            return Ok(Step {
-                summary: found.summary,
-                matched: found.matched,
-                lost: found.lost,
-                ..Step::default()
-            });
+        let mut step = Step {
+            summary: std::mem::take(&mut found.summary),
+            matched: std::mem::take(&mut found.matched),
+            lost: found.lost,
+            handshake: found.handshake,
+            ..Step::default()
         };
-        let mut summary = found.summary;
+        let (Some(tracked), Some(reference), Some(view)) =
+            (found.tracked, found.reference, found.view)
+        else {
+            return Ok(step);
+        };
+        step.keyframe = found.keyframe;
+        if self.threads.is_some() {
+            self.hand_over(frame, &view, &tracked, reference, found.keyframe)?;
+            step.tracked = Some(tracked);
+            return Ok(step);
+        }
+        drop(view); // inline, the view is the map itself, which mapping changes in place
         let mut mapped = KeyframeMapped::default();
         if found.keyframe {
-            mapped = self.map_keyframe(frame, &tracked, &mut summary)?;
-        } else if let Some(m) = self.owner.map() {
-            self.atlas
-                .place_frame(m, frame.timestamp, m.kf_id[reference], &tracked.pose)?;
+            mapped = self.map_keyframe(frame, &tracked, &mut step.summary)?;
+        } else if let Some(m) = self.shared.owner.map() {
+            lock(&self.shared.atlas).place_frame(
+                &m,
+                frame.timestamp,
+                m.kf_id[reference],
+                &tracked.pose,
+            )?;
         }
         self.tracking.accept(frame, &tracked)?;
         if mapped.corrected
-            && let Some(m) = self.owner.map()
+            && let Some(m) = self.shared.owner.map()
         {
             // The last frame, the new keyframe's own, moved with it.
             self.tracking.move_last(&m.kf_pose[m.keyframes() - 1]);
         }
-        Ok(Step {
-            tracked: Some(tracked),
-            keyframe: found.keyframe,
-            map_seconds: mapped.map_seconds,
-            summary,
-            matched: found.matched,
-            made: mapped.made,
-            lost: false,
-            loop_seconds: mapped.loop_seconds,
-        })
+        step.tracked = Some(tracked);
+        step.map_seconds = mapped.map_seconds;
+        step.loop_seconds = mapped.loop_seconds;
+        step.made = mapped.made;
+        step.schedule = mapped.schedule;
+        Ok(step)
+    }
+
+    /// Threaded: places a tracked frame, and gives local mapping its keyframe if it is one.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame.
+    /// * `view` - The map tracking read.
+    /// * `tracked` - Its pose and matches.
+    /// * `reference` - Its reference keyframe's row in the view.
+    /// * `keyframe` - Whether it becomes a keyframe.
+    ///
+    /// # Errors
+    ///
+    /// An error if a pose cannot be inverted.
+    fn hand_over(
+        &mut self,
+        frame: &Frame,
+        view: &Map,
+        tracked: &Tracked,
+        reference: usize,
+        keyframe: bool,
+    ) -> Result<()> {
+        {
+            let mut atlas = lock(&self.shared.atlas);
+            if keyframe {
+                let index = atlas.frames();
+                atlas.place_pending(index, frame.timestamp, &tracked.pose);
+                drop(atlas);
+                if let Some(threads) = &self.threads {
+                    threads.request(Request {
+                        index,
+                        frame: frame.clone(),
+                        tracked: tracked.clone(),
+                    });
+                }
+            } else {
+                atlas.place_frame(view, frame.timestamp, view.kf_id[reference], &tracked.pose)?;
+            }
+        }
+        self.tracking.accept(frame, tracked)?;
+        self.tracking.anchor_to(view, reference)
     }
 
     /// Maps a new keyframe and closes loops on it, timing each: its place in the trajectory is
@@ -1243,7 +2392,8 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The times, the points made and whether a loop was corrected.
+    /// The times, the points made, how mapping scheduled its steps, and whether a loop was
+    /// corrected.
     ///
     /// # Errors
     ///
@@ -1255,26 +2405,27 @@ impl Pipeline {
         summary: &mut FrameSummary,
     ) -> Result<KeyframeMapped> {
         let start = Instant::now();
-        let holding = self.closing.held();
+        let holding = lock(&self.shared.closing).held();
         let (camera, mode, options) = (&self.camera, self.mode, &self.options);
         // Local mapping's step: insert the frame as a keyframe and map around it.
-        let mapped = self.owner.apply_mapping(|m| {
+        let mapped = self.shared.owner.apply_mapping(|m| {
             mapping::process(m, camera, frame, tracked, mode, options, &holding, None)
         })?;
         let mut out = KeyframeMapped {
             map_seconds: start.elapsed().as_secs_f64(),
             made: mapped.made,
+            schedule: Some(mapped.schedule),
             ..KeyframeMapped::default()
         };
         summary.mapping = Some(mapped.summary);
         // The frame's reference is its own keyframe, placed where the frame was.
-        if let Some(m) = self.owner.map() {
-            self.atlas.place_keyframe(m, frame.timestamp, &tracked.pose);
+        if let Some(m) = self.shared.owner.map() {
+            lock(&self.shared.atlas).place_keyframe(&m, frame.timestamp, &tracked.pose);
         }
         let searching = Instant::now();
         let (looped, corrected) = close_loops(
-            &mut self.closing,
-            &mut self.owner,
+            &mut lock(&self.shared.closing),
+            &self.shared.owner,
             &self.camera,
             self.mode,
             &self.options,

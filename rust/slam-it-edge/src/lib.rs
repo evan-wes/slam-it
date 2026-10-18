@@ -16,4 +16,5 @@ pub mod options;
 pub mod pipeline;
 pub mod relocalization;
 pub mod residuals;
+pub mod threads;
 pub mod tracking;

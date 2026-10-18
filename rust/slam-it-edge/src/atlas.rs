@@ -1,6 +1,12 @@
 //! The run's records across its maps, each frame's place and every point's and keyframe's life:
 //! the Rust core's mirror of `slam_it.edge.atlas`, whose docstring states them. It only reads a
 //! map.
+//!
+//! With the steps in threads of their own (milestone 2B's B3b), the threads that change the map
+//! record what they made and removed as they change it ([`Atlas::record`]), dated by the frame
+//! being tracked then, and tracking counts the frames ([`Atlas::tick`]); a frame that became a
+//! keyframe is placed before local mapping makes its keyframe ([`Atlas::place_pending`]), its
+//! reference set once it has ([`Atlas::resolve`]). The pipeline shares the atlas behind a lock.
 
 use std::collections::BTreeMap;
 
@@ -124,6 +130,10 @@ pub struct Atlas {
     placements: Vec<FramePlace>,
     /// Each culled keyframe's parent and pose relative to it, by the run's ids.
     culled: BTreeMap<i64, (i64, Matrix4<f64>)>,
+    /// Each frame placed before its keyframe was made: its place's index, by the frame.
+    pending: BTreeMap<i64, usize>,
+    /// Whether the run's frames have ended.
+    ended: bool,
 }
 
 impl Atlas {
@@ -148,7 +158,44 @@ impl Atlas {
             lives: Lifetimes::default(),
             placements: Vec::new(),
             culled: BTreeMap::new(),
+            pending: BTreeMap::new(),
+            ended: false,
         }
+    }
+
+    /// The frames counted so far: the number of the frame being tracked.
+    ///
+    /// # Returns
+    ///
+    /// The count.
+    #[must_use]
+    pub const fn frames(&self) -> i64 {
+        self.frames
+    }
+
+    /// The frame a record is dated by now: the one being tracked, or the last after
+    /// [`Atlas::end`].
+    ///
+    /// # Returns
+    ///
+    /// The frame's number.
+    #[must_use]
+    pub const fn frame(&self) -> i64 {
+        if self.ended {
+            self.frames - 1
+        } else {
+            self.frames
+        }
+    }
+
+    /// Ends the run's frames: what threads record after the last is dated by it.
+    pub const fn end(&mut self) {
+        self.ended = true;
+    }
+
+    /// Counts a frame: what is recorded from now on is dated by the next.
+    pub const fn tick(&mut self) {
+        self.frames += 1;
     }
 
     /// The current map's number, if a map is being tracked.
@@ -191,14 +238,25 @@ impl Atlas {
 
     /// Dates what this frame made in the current map and what it removed from it, read from its
     /// archive of removals, which the map's owner then empties. Every frame is dated, one a
-    /// frame, whether or not a map is being tracked.
+    /// frame, whether or not a map is being tracked: [`Atlas::record`], then [`Atlas::tick`].
     ///
     /// # Arguments
     ///
     /// * `m` - The current map after the frame, if there is one.
     pub fn date(&mut self, m: Option<&Map>) {
-        let frame = self.frames;
-        self.frames += 1;
+        self.record(m);
+        self.tick();
+    }
+
+    /// Records what the current map made and removed since the last record, dated by the frame
+    /// being tracked ([`Atlas::frame`]); what it removed is read from its archive, which the
+    /// map's owner then empties.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The current map, if there is one.
+    pub fn record(&mut self, m: Option<&Map>) {
+        let frame = self.frame();
         let (Some(m), Some(map_id)) = (m, self.map_id) else {
             return;
         };
@@ -280,6 +338,7 @@ impl Atlas {
             self.placements.retain(|p| Some(p.map) != closing);
         }
         self.map_id = None;
+        self.pending.clear();
     }
 
     /// Keeps a tracked frame's place: its reference keyframe and its pose relative to it.
@@ -311,6 +370,38 @@ impl Atlas {
             tracked: *pose,
         });
         Ok(())
+    }
+
+    /// Places a frame that will be the current map's next keyframe, once local mapping makes it:
+    /// its reference its own keyframe, its pose relative to it the identity, set by
+    /// [`Atlas::resolve`]; until then the trajectory gives its pose as tracked.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame's number ([`Atlas::frames`] when it was tracked).
+    /// * `timestamp` - Its time.
+    /// * `pose` - Its `T_cam_world` as tracked.
+    pub fn place_pending(&mut self, frame: i64, timestamp: f64, pose: &Matrix4<f64>) {
+        self.pending.insert(frame, self.placements.len());
+        self.placements.push(FramePlace {
+            timestamp,
+            map: self.map_id.unwrap_or(0),
+            reference: -1,
+            relative: Matrix4::identity(),
+            tracked: *pose,
+        });
+    }
+
+    /// Sets a pending frame's reference to the map's newest keyframe, the one made of it.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame's number, as [`Atlas::place_pending`] was given it.
+    /// * `m` - The current map, the frame's keyframe its last.
+    pub fn resolve(&mut self, frame: i64, m: &Map) {
+        if let Some(at) = self.pending.remove(&frame) {
+            self.placements[at].reference = self.kf_base + m.kf_id[m.keyframes() - 1];
+        }
     }
 
     /// Keeps the place of a frame that became the map's newest keyframe: its own, where it was.

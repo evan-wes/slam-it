@@ -42,7 +42,7 @@ placed on the truth by its ATE alignment."""
 TRACKED = 0.95
 """The share of the frames tracked at least: the design's bar."""
 
-THREADED = ("cpp",)
+THREADED = ("cpp", "rust")
 """The backends whose threaded runs are held to the bar."""
 
 RUNS = [

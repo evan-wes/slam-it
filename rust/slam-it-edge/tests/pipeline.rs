@@ -53,7 +53,7 @@ fn small_scene() -> Options {
 /// Runs the path through a pipeline.
 #[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn run(mode: Mode) -> (Pipeline, Vec<FrameResult>) {
-    let mut pipeline = Pipeline::new(mode, camera(), small_scene(), None).unwrap();
+    let mut pipeline = Pipeline::new(mode, camera(), small_scene(), None, false).unwrap();
     let results = (0..FRAMES)
         .map(|i| {
             let frame = Frame {
@@ -128,7 +128,7 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     for reset_keyframes in [1, 0] {
         let mut options = small_scene();
         options.loss.reset_keyframes = reset_keyframes;
-        let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, None).unwrap();
+        let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, None, false).unwrap();
         let started = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
         assert_eq!(started.map, Some(0));
         let empty = empty_frame(1.0);
@@ -179,7 +179,7 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     }
     let mut monocular = camera();
     monocular.baseline = 0.0;
-    let err = Pipeline::new(Mode::Rgbd, monocular, Options::default(), None).unwrap_err();
+    let err = Pipeline::new(Mode::Rgbd, monocular, Options::default(), None, false).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -198,7 +198,8 @@ fn relocalizing(reset_keyframes: usize) -> Options {
 /// alone loses the track.
 #[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn lose_the_track(options: &Options, step: f64, count: usize) -> Vec<FrameResult> {
-    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), *options, Some(one_word())).unwrap();
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), *options, Some(one_word()), false).unwrap();
     assert!(
         pipeline
             .track(&frame_at(&along(0), true, 0))
@@ -249,7 +250,8 @@ fn a_frame_out_of_the_fallbacks_reach_is_relocalized_in_its_map() {
     let mut options = relocalizing(0);
     options.tracking.pnp_min_inliers = 1 << 20; // the local fallback out of reach
     options.tracking.motion_window = 5.0; // 10 px widened: the 25 px back to the start out of reach
-    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, Some(one_word())).unwrap();
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), options, Some(one_word()), false).unwrap();
     for i in 0..FRAMES {
         let mut frame = frame_at(&along(i), true, 0);
         frame.timestamp = i as f64;
@@ -268,4 +270,148 @@ fn a_frame_out_of_the_fallbacks_reach_is_relocalized_in_its_map() {
     assert_eq!((found.map, found.state), (Some(0), State::Tracking));
     assert_eq!(found.summary.placed_by, Some(Placement::Relocalization));
     assert!((found.pose.unwrap() - along(0)).abs().max() < 1e-6);
+}
+
+/// The scene's settings, a first keyframe's reference ratio raised to the others' (from 0.4),
+/// so that [`thinning`]'s frames ask for a keyframe.
+fn asking() -> Options {
+    let mut out = small_scene();
+    out.keyframes.first_ref_ratio = out.keyframes.ref_ratio;
+    out
+}
+
+/// A frame of the path, RGB-D, at its time, that sees the scene's points from `2 i` on (24 at
+/// most dropped): its tracking thins as the path goes, so that with [`asking`]'s settings it
+/// asks for a keyframe once under `keyframes.ref_ratio` of its reference's points (from the
+/// eighth).
+#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
+fn thinning(i: usize) -> Frame {
+    let full = frame_at(&along(i), true, 0);
+    let dropped = (2 * i).min(24);
+    let mut features = full.features;
+    features.keypoints.drain(..dropped);
+    features.descriptors.drain(..dropped);
+    Frame::new(
+        i as f64,
+        features,
+        full.bearings[dropped..].to_vec(),
+        full.depth[dropped..].to_vec(),
+        full.right[dropped..].to_vec(),
+    )
+    .unwrap()
+}
+
+/// Tracks the path's thinning frames through a pipeline.
+fn track_path(pipeline: &mut Pipeline, frames: std::ops::Range<usize>) -> Vec<FrameResult> {
+    frames
+        .map(|i| pipeline.track(&thinning(i)).unwrap())
+        .collect()
+}
+
+/// Threaded, RGB-D (`tests/edge/test_pipeline_threads.py`): every frame tracked on the true path;
+/// each keyframe given mapped once, a completion on its frame with its schedule; the lives count
+/// the first keyframe and each mapped one; the trajectory places every frame, in order; a
+/// finished run tracks no more; and inline, nothing completes later.
+#[test]
+fn threaded_the_path_is_tracked_and_every_keyframe_mapped() {
+    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), asking(), None, true).unwrap();
+    let results = track_path(&mut pipeline, 0..FRAMES);
+    pipeline.finish().unwrap();
+    for (i, r) in results.iter().enumerate() {
+        let pose = r.pose.expect("every frame tracked");
+        assert!(
+            (pose - along(i)).abs().max() < 1e-6,
+            "frame {i} on the true path"
+        );
+        assert!(r.map_seconds == 0.0 && r.loop_seconds == 0.0);
+    }
+    let given: Vec<i64> = (1..FRAMES)
+        .filter(|&i| results[i].keyframe)
+        .map(|i| i64::try_from(i).unwrap())
+        .collect();
+    assert!(!given.is_empty(), "a keyframe was asked for");
+    let done = pipeline.completed();
+    let mut mapped: Vec<i64> = done
+        .iter()
+        .filter(|c| c.mapping.is_some())
+        .map(|c| c.frame)
+        .collect();
+    mapped.sort_unstable();
+    assert_eq!(mapped, given);
+    assert!(
+        done.iter()
+            .filter(|c| c.mapping.is_some())
+            .all(|c| c.schedule.is_some() && c.map_seconds.is_some())
+    );
+    let lives = pipeline.lifetimes();
+    assert_eq!(lives.keyframe_times.len(), 1 + given.len());
+    let trajectory = pipeline.trajectory();
+    assert_eq!(trajectory.timestamps.len(), results.len());
+    assert!(trajectory.timestamps.windows(2).all(|w| w[0] < w[1]));
+    let err = pipeline.track(&thinning(0)).unwrap_err();
+    assert_eq!(
+        err.kind,
+        ErrorKind::InvalidInput,
+        "a finished run tracks no more"
+    );
+    let (mut inline, _) = run(Mode::Rgbd);
+    inline.finish().unwrap();
+    assert!(
+        inline.completed().is_empty(),
+        "inline, nothing completes later"
+    );
+}
+
+/// While mapping is stopped, every keyframe tracking asks for is refused
+/// (`test_a_stop_refuses_every_keyframe_asked`).
+#[test]
+fn threaded_a_stop_refuses_every_keyframe_asked() {
+    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), asking(), None, true).unwrap();
+    track_path(&mut pipeline, 0..FRAMES / 2);
+    let writer = pipeline.writer().unwrap();
+    let held = {
+        let _stop = writer.stopped();
+        track_path(&mut pipeline, FRAMES / 2..FRAMES)
+    };
+    pipeline.finish().unwrap();
+    assert!(held.iter().any(|r| r.asked));
+    assert!(
+        held.iter()
+            .filter(|r| r.asked)
+            .all(|r| r.refused && !r.keyframe)
+    );
+}
+
+/// A frame's state, map and lost map, as a run's outcome is compared.
+type Outcome = (State, Option<i64>, Option<LostSummary>);
+
+/// Threaded, a lost map waits for the threads, then closes as inline: kept, and the next frame
+/// starts map 1 (`test_a_lost_map_settles_the_threads_then_closes`).
+#[test]
+fn threaded_a_lost_map_settles_the_threads_then_closes() {
+    let mut options = small_scene();
+    options.loss.reset_keyframes = 0;
+    let outcomes: Vec<Vec<Outcome>> = [false, true]
+        .into_iter()
+        .map(|threaded| {
+            let mut pipeline =
+                Pipeline::new(Mode::Rgbd, camera(), options, None, threaded).unwrap();
+            let mut results = track_path(&mut pipeline, 0..1);
+            for t in 1..=options.loss.lost_frames {
+                #[allow(clippy::cast_precision_loss, reason = "a few frames")]
+                results.push(pipeline.track(&empty_frame(t as f64)).unwrap());
+            }
+            results.extend(track_path(&mut pipeline, 1..2));
+            pipeline.finish().unwrap();
+            results
+                .iter()
+                .map(|r| (r.state, r.map, r.summary.lost))
+                .collect()
+        })
+        .collect();
+    assert_eq!(outcomes[0], outcomes[1]);
+    assert_eq!(
+        outcomes[1].last().map(|o| (o.0, o.1)),
+        Some((State::Tracking, Some(1)))
+    );
 }
