@@ -15,6 +15,17 @@ The design, the ladder and the milestones are in
 [`docs/design/2026-10-02-slam-it-ladder.md`](docs/design/2026-10-02-slam-it-ladder.md), and
 each component's note in [`docs/notes/`](docs/notes/).
 
+## How it's built
+
+SLAM It! is built by Claude Code agents, directed by its owner. Agents research the reference
+systems, write the code in three languages and review it; the owner decides every design fork,
+every review finding and every merge (in amber below). Each review panel's report, with every
+finding and how it was resolved, is kept in [`docs/reviews/`](docs/reviews/) and linked from its
+pull request.
+
+<!-- Drawn by scripts/draw_workflow.py: edit its stages() and run it again. -->
+![How SLAM It! is built: design, build, verify, ship](docs/workflow.svg)
+
 ## Layout
 
 | Path | What |
