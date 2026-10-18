@@ -502,7 +502,7 @@ Files:
 | **Range** | `5d857bbb6a03daa913665c7c51cc6d22a289b052..eedb319` (the fixes of run 1) |
 | **Reviewers** | hygiene (sonnet), architecture (opus); the algorithm reviewer's area changed little |
 | **How they ran** | registered slam-it-* agents |
-| **Layer 1** | running on `eedb319` when the reviewers started |
+| **Layer 1** | running on `eedb319` when the reviewers started; that run then failed (exit 1), so the reviewers had no passing layer 1 (see [After run 2](#after-run-2----2026-10-18)) |
 
 ### Findings and resolutions
 
@@ -517,14 +517,14 @@ Files:
 | H24 | should-fix | hygiene | `loops.py` `refine`, `detect`, `global_bundle_adjust`, `correct`; `loops.hpp` | `NotConvergedError` not listed where it now escapes | fix | fixed (1588dde) -- decided by evan-wes, 2026-10-17 |
 | H25 | should-fix | hygiene | `CHANGELOG.md` 0.3.12.0 | The fixes' visible changes not recorded (same as A25) | fix | fixed (db8a0b6: Changed and Tests, the vocabulary contract included) -- decided by evan-wes, 2026-10-17 |
 | H26 | note | hygiene | `tests/test_measure_testset.py:238-283` | `slam_it.eval.loops`' tests live in the script's test file (same as A23) | fix | fixed (9c439ad: tests/eval/test_loops.py, sharing tests/eval/synthetic_runs.line_run) -- decided by evan-wes, 2026-10-17 |
-| H27 | note | hygiene | `generate_graphs.py`, `test_check_layers.py` | Dead or unexplained items in the new tests and generator | fix | fixed (7512bd0: the generator's two; 331c15a: check_layers' dead setup) -- decided by evan-wes, 2026-10-17 |
+| H27 | note | hygiene | `generate_graphs.py`, `test_check_layers.py` | Dead or unexplained items in the new tests and generator | fix | fixed (7512bd0: the generator's two; 331c15a: the dead setup in `tests/test_check_layers.py`) -- decided by evan-wes, 2026-10-17 |
 | H28 | note | hygiene | `pipeline.rs:1087`, `options.py:489-492`, two long lines | Smaller readability and format items | fix | fixed (5de9e2f: Rust's gate stated, LoopOptions' docstring; ee3ac3c: the two long lines; 38327f2: the shape test's caveat in its docstring) -- decided by evan-wes, 2026-10-17 |
 | H29 | note | hygiene | the ladder's deferred `loops` split | "About 2,200 lines in each language"; C++ is 1,685 | fix | fixed (ee3ac3c: 2,208 / 2,284 / 1,685 at eedb319) -- decided by evan-wes, 2026-10-17 |
 | H30 | note | hygiene | `.github/workflows/test.yml` | The GitHub runner's memory against the wrapper's >8 GB (with A22) | defer: try by workflow_dispatch before the next release | deferred (the ladder's open items, Deferred from milestone 2B's B3 review panel: run the workflow by workflow_dispatch before the next release, or name a larger runner) -- decided by evan-wes, 2026-10-17 |
-| A17 | should-fix | architecture | `scripts/check_layers.py:953-1003`, `test_check_layers.py:514` | The native GTSAM check allows rung 0's public header to include GTSAM | fix | fixed (331c15a: GTSAM's headers only in graphs.cpp and graphs_bridge.cpp; row 514 expects a report) -- decided by evan-wes, 2026-10-17 |
+| A17 | should-fix | architecture | `scripts/check_layers.py:953-1003`, `test_check_layers.py:514` | The native GTSAM check allows rung 0's public header to include GTSAM | fix | fixed (331c15a: GTSAM's headers only in graphs.cpp and graphs_bridge.cpp; row 514 expects a report; ee3ac3c: the ladder says GTSAM is in no header) -- decided by evan-wes, 2026-10-17 |
 | A18 | should-fix | architecture | `test_loop_room.py:117-130` | The A8 shape check never sees the relocalisation, PnP or loss records | fix | fixed (38327f2: the lost and found rooms' runs too) -- decided by evan-wes, 2026-10-17 |
 | A19 | should-fix | architecture | `generate_graphs.py:40`, `graphs.json`, `test_graphs.py:504-521` | The graphs fixture's own tolerance shape and loop (same as H22) | fix (with H22) | fixed (7512bd0, with H22) -- decided by evan-wes, 2026-10-17 |
-| A20 | should-fix | architecture | `pipeline.rs:1087-1092`, native pipeline tests | Rust's (and C++'s) new relocalisation gate has no core test | fix | fixed (5de9e2f: each core's gate tested natively; each test fails with its gate dropped) -- decided by evan-wes, 2026-10-17 |
+| A20 | should-fix | architecture | `pipeline.rs:1087-1092`, native pipeline tests | Rust's (and C++'s) new relocalisation gate has no core test | fix | fixed (5de9e2f: each core's gate tested natively; each test was seen to fail with its gate removed while fixing -- C++ exit 1, Rust exit 101 -- a check not kept in history) -- decided by evan-wes, 2026-10-17 |
 | A21 | should-fix | architecture | ladder:122-128, 436-457, 459-466 | The ladder's GTSAM entry trails the worker image and the new contracts | fix (docs) | fixed (ee3ac3c: the GTSAM entry, Dependency contracts and check_layers' list) -- decided by evan-wes, 2026-10-17 |
 | A22 | note | architecture | `offline_ci.sh`, `test.yml` | The sibling 16 GB scope not yet run; the GitHub runner's memory (with H30) | offline CI runs it before this merge; the runner deferred with H30 | deferred (the ladder's open items, Deferred from milestone 2B's B3 review panel, with H30); offline CI runs the 16 GB scope before this merge -- decided by evan-wes, 2026-10-17 |
 | A23 | note | architecture | `tests/test_measure_testset.py:245,270` | `eval.loops`' tests belong in `tests/eval/test_loops.py` (same as H26) | fix (with H26) | fixed (9c439ad, with H26) -- decided by evan-wes, 2026-10-17 |
@@ -871,3 +871,36 @@ Files:
 - .github/workflows/test.yml
 - tests/test_measure_testset.py
 - CHANGELOG.md
+
+## After run 2 -- 2026-10-18
+
+**No run 3.** The owner decided (2026-10-18) not to run the panel a third time. Run 2's fixes
+are tests, docs and small refactors, and the golden records are unchanged. Instead, each fix was
+checked against its finding and its decision, from git history alone, by an agent outside the
+panel:
+
+- All 19 fixed findings are done as decided, in every location and language they name; none
+  contradicts its finding.
+- The 3 deferrals (H30, A22's runner, A24) are recorded in the ladder's open items.
+- The golden records are unchanged since `eedb319`: under `tests/fixtures`, only `graphs.json`
+  and its generator changed. In all 8 of `graphs.json`'s cases, the inputs and expected values
+  are bit-identical; only the layout and the tolerance policy changed.
+- Three resolution notes were imprecise (A17, H27, A20) and are corrected above.
+- One observation, not a defect: A18's shape test now covers the lost and found rooms, so it
+  fails if a native language stops relocalising or losing a frame where Python does. That leans
+  toward requiring the same decisions across languages; its docstring records the caveat (H28).
+
+**Layer 1 during run 2.** The run on `eedb319` exited 1: jscpd found a clone in B3's tests
+(`test_compare_testsets.py`), and 83 tests refused a Rust program older than its source, because run 1's fixes were edited in the
+same checkout while it ran. Run 2's reviewers therefore worked without a passing layer 1.
+
+**Layer 1 on `a625280`** (run 2's fixes) exited 1, with all 4,609 tests passing:
+
+- `mypy --strict` failed on a stale cache in the checkout; with a fresh cache it passes. The
+  cache was moved out of the checkout.
+- jscpd found four clones in B3's tests (the Rust pipeline tests twice, `test_check_layers.py`,
+  `test_compare_testsets.py`). `5b417bc` gives each clone's repeated setup one helper; every
+  test makes the same assertions, and jscpd finds none.
+
+Layer 1 and offline CI on the final head are recorded in the pull request's Verification
+section.
