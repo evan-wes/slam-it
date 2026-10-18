@@ -1,17 +1,19 @@
 /// @file
 /// @brief The edge pipeline, initialising, tracking each frame and mapping on keyframes: the
 ///        C++ core's mirror of `slam_it.edge.pipeline`, whose docstring states the per-frame
-///        loop. It runs in the native program, not across the binding.
+///        loop, the steps' own state and the map's owner. It runs in the native program, not
+///        across the binding.
 #pragma once
 
 #include <Eigen/Core>
 #include <array>
 #include <cstdint>
-#include <map>
 #include <optional>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "slam_it/edge/atlas.hpp"
 #include "slam_it/edge/database.hpp"
 #include "slam_it/edge/frames.hpp"
 #include "slam_it/edge/initialization.hpp"
@@ -162,52 +164,187 @@ struct FrameResult {
   Fates fates;
 };
 
-/// @brief A life: the frame that made a point or keyframe, the frame that removed it or -1, and
-///        why (a `Removal` code) or -1.
-using Life = std::array<std::int64_t, 3>;
-
-/// @brief Every point and keyframe a run made, by the run's id (continuing across maps), where
-///        each last was, its life and its map (`slam_it.edge.pipeline.Lifetimes`).
-struct Lifetimes {
-  /// @brief Every point, its last position in the world frame.
-  std::vector<Eigen::Vector3d> points;
-  /// @brief Their lives.
-  std::vector<Life> point_lives;
-  /// @brief Every keyframe's time, ascending.
-  std::vector<double> keyframe_times;
-  /// @brief Its last `T_cam_world`.
-  std::vector<Eigen::Matrix4d> keyframe_poses;
-  /// @brief Their lives.
-  std::vector<Life> keyframe_lives;
-  /// @brief Each one's last parent in its map's spanning tree, by the run's id, or -1.
-  std::vector<std::int64_t> keyframe_parents;
-  /// @brief Each map's strong links when it closed, and the current map's now, by the run's
-  ///        ids, ascending.
-  std::vector<std::array<std::int64_t, 3>> keyframe_links;
-  /// @brief Each map's loop edges, the older keyframe first, by the run's ids, in the order
-  ///        closed.
-  std::vector<std::array<std::int64_t, 2>> keyframe_loops;
-  /// @brief The map each point was made in.
-  std::vector<std::int64_t> point_maps;
-  /// @brief The map each keyframe was made in.
-  std::vector<std::int64_t> keyframe_maps;
+/// @brief Tracking's own state from frame to frame (`slam_it.edge.pipeline.TrackingState`,
+///        ORB-SLAM's `Tracking`'s). A map closed takes it with it.
+struct TrackingState {
+  /// @brief The last tracked frame.
+  std::optional<Frame> last_frame;
+  /// @brief Its pose and matches.
+  std::optional<Tracked> last_tracked;
+  /// @brief The last motion `T_last_previous`, if the last two frames were tracked.
+  std::optional<Eigen::Matrix4d> velocity;
+  /// @brief The monocular initialisation's reference frame.
+  std::optional<Frame> reference;
+  /// @brief Where each of the reference's keypoints was last matched.
+  std::vector<std::array<double, 2>> previous;
+  /// @brief Frames in a row not tracked.
+  std::int64_t failures{0};
+  /// @brief Frames since the last recovery, if any.
+  std::optional<std::int64_t> since_recovery;
+  /// @brief The first failed frame's time, while the track is recently lost.
+  std::optional<double> lost_since;
 };
 
-/// @brief The run's trajectory: each tracked frame's final pose, and its pose as tracked
-///        (`slam_it.edge.pipeline.Trajectory`); a reset map's frames are left out.
-struct Trajectory {
-  /// @brief Each tracked frame's time, in the order tracked.
-  std::vector<double> timestamps;
-  /// @brief Its final `T_cam_world`: its pose relative to its reference keyframe, carried by
-  ///        the keyframe's last pose.
-  std::vector<Eigen::Matrix4d> poses;
-  /// @brief Its `T_cam_world` as tracked.
-  std::vector<Eigen::Matrix4d> tracked;
-  /// @brief The map it was tracked in.
-  std::vector<std::int64_t> maps;
+/// @brief Make a tracked frame the last one; the velocity only spans consecutive frames
+///        (`slam_it.edge.pipeline.TrackingState.accept`).
+/// @param state Tracking's state.
+/// @param frame The frame.
+/// @param tracked Its pose and matches.
+/// @return Nothing, or an error if the last pose cannot be inverted.
+foundations::Result<void> accept(TrackingState& state, const Frame& frame, const Tracked& tracked);
+
+/// @brief Count a frame that was not tracked, which ends the velocity
+///        (`slam_it.edge.pipeline.TrackingState.fail`).
+/// @param state Tracking's state.
+/// @param frame The frame.
+/// @param keyframes The map's keyframes.
+/// @param options The settings.
+/// @return Whether it loses the track: past `loss.relocalize_seconds` since the first failure,
+///         or for a small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th
+///         in a row.
+bool record_failure(TrackingState& state, const Frame& frame, std::size_t keyframes,
+                    const Options& options);
+
+/// @brief Make a frame the monocular reference, each keypoint searched from its own position.
+/// @param state Tracking's state.
+/// @param frame The frame.
+void set_reference(TrackingState& state, const Frame& frame);
+
+/// @brief Move the last frame tracked to its keyframe's pose, after a correction moved it
+///        (`slam_it.edge.pipeline.TrackingState.move_last`).
+/// @param state Tracking's state.
+/// @param pose Its new `T_cam_world`.
+void move_last(TrackingState& state, const Eigen::Matrix4d& pose);
+
+/// @brief Loop closing's own state from keyframe to keyframe (`slam_it.edge.pipeline.LoopState`,
+///        ORB-SLAM3's `LoopClosing`'s). A map closed takes it with it.
+struct LoopState {
+  /// @brief The loop being confirmed in the map, if any.
+  std::optional<loops::Pending> pending;
 };
 
-/// @brief The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`).
+/// @brief The keyframes the loop being confirmed holds, which mapping's culling spares
+///        (`slam_it.edge.pipeline.LoopState.held`).
+/// @param state Loop closing's state.
+/// @return Their ids in the map; none when no loop is being confirmed.
+[[nodiscard]] std::vector<std::int64_t> held(const LoopState& state);
+
+/// @brief The map being tracked and its keyframe database (`slam_it.edge.pipeline.MapOwner`):
+///        every change to them goes through here. The steps change the map in place, so the
+///        owner runs each step that changes it on its map, then keeps the database in step. In
+///        one thread it holds the map between the steps; it is the one place milestone 2B's B3b
+///        gives the map one writer at a time and tracking a published view of it (the
+///        online-SLAM design, section 12).
+class MapOwner {
+ public:
+  /// @brief An owner with no map yet.
+  /// @param vocabulary The database's vocabulary; none when neither relocalising nor closing
+  ///        loops, and there is no database.
+  explicit MapOwner(std::optional<foundations::vocabulary::Vocabulary> vocabulary)
+      : vocabulary_(std::move(vocabulary)) {}
+
+  /// @brief The map being tracked: none until one starts, and from a lost one to the next.
+  /// @return The map, if any.
+  [[nodiscard]] const std::optional<Map>& map() const { return map_; }
+
+  /// @brief Its keyframe database: none when neither relocalising nor closing loops, or with no
+  ///        map.
+  /// @return The database, if any.
+  [[nodiscard]] const std::optional<Database>& database() const { return database_; }
+
+  /// @brief The database's vocabulary, when relocalising or closing loops.
+  /// @return The vocabulary, if any.
+  [[nodiscard]] const std::optional<foundations::vocabulary::Vocabulary>& vocabulary() const {
+    return vocabulary_;
+  }
+
+  /// @brief Take a map just started, and start its database with its keyframes.
+  /// @param m The new map.
+  /// @return Nothing; a quantisation's error.
+  foundations::Result<void> start(Map m);
+
+  /// @brief Count a frame tracked against the local map: the points seen, and found, in it.
+  /// @param visible The points the frame's view held, by the map's ids.
+  /// @param found The points it tracked.
+  /// @return Nothing; `InvalidInput` with no map, or for an id the map does not hold.
+  foundations::Result<void> count(const std::vector<std::int64_t>& visible,
+                                  const std::vector<std::int64_t>& found);
+
+  /// @brief Run a mapping step on the map, then bring the database to its keyframes.
+  /// @tparam Step A callable taking the map, changed in place, and giving a `Result`.
+  /// @param step The step.
+  /// @return The step's result; `InvalidInput` with no map, or the database's error.
+  template <typename Step>
+  auto apply_mapping(Step&& step) -> std::invoke_result_t<Step, Map&> {
+    if (!map_) {
+      return foundations::fail(foundations::ErrorKind::kInvalidInput, "mapping: no map");
+    }
+    return synced(std::forward<Step>(step)(*map_));
+  }
+
+  /// @brief Run a loop's correction on the map, held through the handshake (`stopped`), then
+  ///        bring the database to its keyframes.
+  /// @tparam Step A callable taking the map, changed in place, and giving a `Result`.
+  /// @param step The correction.
+  /// @return The correction's result; `InvalidInput` with no map, or the database's error.
+  template <typename Step>
+  auto apply_correction(Step&& step) -> std::invoke_result_t<Step, Map&> {
+    return synced(stopped(std::forward<Step>(step)));
+  }
+
+  /// @brief The handshake: run a change on the map held, mapping stopped and global BA aborted,
+  ///        then both released, as ORB-SLAM's loop closing does (`RequestStop`, `mbStopGBA`,
+  ///        `Release`). In one thread nothing runs beside the change, so there is nothing to
+  ///        stop or abort: this is the one place milestone 2B's B3b's threads do it, and its
+  ///        merge (B4) enters it too.
+  /// @tparam Step A callable taking the map, changed in place, and giving a `Result`.
+  /// @param step The change.
+  /// @return The change's result; `InvalidInput` with no map.
+  template <typename Step>
+  auto stopped(Step&& step) -> std::invoke_result_t<Step, Map&> {
+    if (!map_) {
+      return foundations::fail(foundations::ErrorKind::kInvalidInput, "stopped: no map");
+    }
+    return std::forward<Step>(step)(*map_);
+  }
+
+  /// @brief Empty the map's archive of removals, once the atlas has dated them.
+  void clear_gone();
+
+  /// @brief Give up the map, lost: the database goes with it.
+  /// @return The map, if there was one.
+  std::optional<Map> close();
+
+ private:
+  /// @brief Bring the database to the map after a step that changed it.
+  /// @tparam T The step's value.
+  /// @param out The step's result.
+  /// @return It, or the database's error.
+  template <typename T>
+  foundations::Result<T> synced(foundations::Result<T> out) {
+    if (!out) {
+      return out;
+    }
+    if (auto ok = sync_database(); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
+    return out;
+  }
+
+  /// @brief Bring the keyframe database to the map's keyframes: add the new, erase the culled.
+  /// @return Nothing; a quantisation's error.
+  foundations::Result<void> sync_database();
+
+  /// @brief The vocabulary, when relocalising or closing loops.
+  std::optional<foundations::vocabulary::Vocabulary> vocabulary_;
+  /// @brief The map, once initialised.
+  std::optional<Map> map_;
+  /// @brief The map's keyframe database, when relocalising or closing loops and a map exists.
+  std::optional<Database> database_;
+};
+
+/// @brief The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`): tracking, local
+///        mapping and loop closing as steps over state of their own, called in turn.
 class Pipeline {
  public:
   /// @brief Start a pipeline.
@@ -239,18 +376,15 @@ class Pipeline {
 
   /// @brief The current map: none until one starts, and from a lost one to the next.
   /// @return The map, if any.
-  [[nodiscard]] const std::optional<Map>& map() const { return map_; }
+  [[nodiscard]] const std::optional<Map>& map() const { return owner_.map(); }
 
   /// @brief Every point and keyframe the run has made, with their lives and maps
-  ///        (`slam_it.edge.pipeline.Pipeline.lifetimes`).
+  ///        (`Atlas::lifetimes`, with the current map).
   /// @return The points and keyframes by the run's id: those in the current map where it has
   ///         them, the others where they last were.
   [[nodiscard]] Lifetimes lifetimes() const;
 
-  /// @brief The run's trajectory so far (`slam_it.edge.pipeline.Pipeline.trajectory`): each
-  ///        tracked frame placed by its reference keyframe's last pose, through the keyframe's
-  ///        culled ancestors where it was culled; a frame whose chain ends at none keeps its
-  ///        pose as tracked.
+  /// @brief The run's trajectory so far (`Atlas::trajectory`, with the current map).
   /// @return The frames tracked, but a reset map's.
   [[nodiscard]] Trajectory trajectory() const;
 
@@ -276,101 +410,6 @@ class Pipeline {
     bool lost{false};
   };
 
-  /// @brief A frame placed, as `place` gives it.
-  struct Placed {
-    /// @brief The placed frame, if any.
-    std::optional<Tracked> tracked;
-    /// @brief How it was placed.
-    FrameSummary summary;
-    /// @brief The last stage's match for each keypoint before refinement.
-    std::vector<std::int64_t> matched;
-  };
-
-  /// @brief A tracked frame's place, for the final trajectory (`slam_it.edge.pipeline
-  ///        ._Placement`).
-  struct FramePlace {
-    /// @brief The frame's time.
-    double timestamp{0.0};
-    /// @brief The map it was tracked in.
-    std::int64_t map{0};
-    /// @brief The run's id of its reference keyframe.
-    std::int64_t reference{0};
-    /// @brief Its pose relative to the reference, `T_cam_ref`.
-    Eigen::Matrix4d relative{Eigen::Matrix4d::Identity()};
-    /// @brief Its `T_cam_world` as tracked.
-    Eigen::Matrix4d tracked{Eigen::Matrix4d::Identity()};
-  };
-
-  /// @brief A placed frame tracked against the local map, as `refine` gives it.
-  struct Refined {
-    /// @brief The tracked frame, if it kept enough inliers.
-    std::optional<Tracked> tracked;
-    /// @brief How the stage went.
-    LocalMapSummary summary;
-    /// @brief Its match for each keypoint before refinement.
-    std::vector<std::int64_t> matched;
-    /// @brief The frame's reference keyframe's row.
-    std::int64_t reference{-1};
-  };
-
-  /// @brief A pipeline before its first frame.
-  /// @param mode The sensor mode.
-  /// @param camera The camera.
-  /// @param options The settings.
-  /// @param vocabulary The keyframe database's vocabulary, when relocalising or closing loops.
-  Pipeline(Mode mode, Camera camera, Options options,
-           std::optional<foundations::vocabulary::Vocabulary> vocabulary)
-      : mode_(mode),
-        camera_(std::move(camera)),
-        options_(options),
-        vocabulary_(std::move(vocabulary)) {}
-
-  /// @brief Try to start the map with a frame.
-  /// @param frame The frame.
-  /// @return The frame tracked if it started the map, and how the attempt went; a stage's
-  ///         error.
-  foundations::Result<Step> initialize(const Frame& frame);
-
-  /// @brief Pair a monocular frame with the reference, or make it the reference.
-  /// @param frame The frame.
-  /// @return The started map, if any, and how the attempt went; a stage's error.
-  foundations::Result<Initialization> initialize_monocular(const Frame& frame);
-
-  /// @brief Make a frame the monocular reference, each keypoint searched from its own position.
-  /// @param frame The frame.
-  void set_reference(const Frame& frame);
-
-  /// @brief Make a tracked frame the last one; the velocity only spans consecutive frames.
-  /// @param frame The frame.
-  /// @param tracked Its pose and matches.
-  /// @return Nothing, or an error if the last pose cannot be inverted.
-  foundations::Result<void> accept(const Frame& frame, const Tracked& tracked);
-
-  /// @brief Count a frame that was not tracked, which ends the velocity
-  ///        (`slam_it.edge.pipeline.Pipeline._record_failure`).
-  /// @param frame The frame.
-  /// @param keyframes The map's keyframes.
-  /// @return Whether it loses the track: past `loss.relocalize_seconds` since the first failure, or
-  ///         for a small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in
-  ///         a row.
-  bool record_failure(const Frame& frame, std::size_t keyframes);
-
-  /// @brief Keep a tracked frame's place: its reference keyframe and pose relative to it
-  ///        (`slam_it.edge.pipeline.Pipeline._place_frame`).
-  /// @param m The map the frame was tracked in.
-  /// @param frame The frame.
-  /// @param tracked Its pose.
-  /// @param reference The reference keyframe's id in the map.
-  void place_frame(const Map& m, const Frame& frame, const Tracked& tracked,
-                   std::int64_t reference);
-
-  /// @brief Search the newest keyframe for a loop, and correct one that closes
-  ///        (`slam_it.edge.pipeline.Pipeline._close_loops`).
-  /// @param m The map, corrected in place.
-  /// @return How it went (none when loop closing is off, there is no database, or the keyframe
-  ///         is the map's first), and whether a loop was corrected; a stage's error.
-  foundations::Result<std::pair<std::optional<LoopSummary>, bool>> close_loops(Map& m);
-
   /// @brief A keyframe mapped and searched for loops, as `make_keyframe` gives it.
   struct Keyframed {
     /// @brief The time mapping it took, in seconds.
@@ -383,62 +422,47 @@ class Pipeline {
     std::vector<std::int64_t> made;
   };
 
-  /// @brief Insert a tracked frame as a keyframe, map it, place it, and close loops on it.
+  /// @brief A pipeline before its first frame.
+  /// @param mode The sensor mode.
+  /// @param camera The camera.
+  /// @param options The settings.
+  /// @param vocabulary The keyframe database's vocabulary, when relocalising or closing loops.
+  Pipeline(Mode mode, Camera camera, Options options,
+           std::optional<foundations::vocabulary::Vocabulary> vocabulary)
+      : mode_(mode),
+        camera_(std::move(camera)),
+        options_(options),
+        owner_(std::move(vocabulary)),
+        atlas_(options) {}
+
+  /// @brief Try to start the map with a frame.
+  /// @param frame The frame.
+  /// @return The frame tracked if it started the map, and how the attempt went; a stage's
+  ///         error.
+  foundations::Result<Step> initialize(const Frame& frame);
+
+  /// @brief Run the steps on a frame: track it, and map and close loops if it becomes a
+  ///        keyframe.
+  /// @param frame The frame.
+  /// @return The tracked frame, if any, whether it became a keyframe, the times mapping and
+  ///         loop closing took, and how its stages went; a stage's error.
+  foundations::Result<Step> track_frame(const Frame& frame);
+
+  /// @brief Map a tracked frame as a keyframe, place it, and close loops on it.
   /// @param m The map.
   /// @param frame The frame.
   /// @param tracked Its pose and matches.
   /// @param summary Its frame's summary, given the mapping's and the loop's.
   /// @return The times, whether a loop was corrected, and the points made; a stage's error.
-  foundations::Result<Keyframed> make_keyframe(Map& m, const Frame& frame, const Tracked& tracked,
-                                               FrameSummary& summary);
-
-  /// @brief Bring the keyframe database to the map's keyframes: add the new, erase the culled.
-  /// @return Nothing; a quantisation's error.
-  foundations::Result<void> sync_database();
-
-  /// @brief Track the last frame, or recover by PnP.
-  /// @param m The map.
-  /// @param frame The frame.
-  /// @return The placed frame, if any, how it was placed, and the last stage's matches; a
-  ///         stage's error.
-  [[nodiscard]] foundations::Result<Placed> place(const Map& m, const Frame& frame) const;
-
-  /// @brief Track the local map from a placed frame and count its points.
-  /// @param m The map, its counts changed.
-  /// @param frame The frame.
-  /// @param placed The placed frame.
-  /// @param wide Whether the frame is a recovery's or the next (the search widened).
-  /// @param recent Whether a recovery was recent (more inliers needed).
-  /// @return The tracked frame, if it keeps enough inliers, how the stage went, and its
-  ///         matches; a stage's error.
-  [[nodiscard]] foundations::Result<Refined> refine(Map& m, const Frame& frame,
-                                                    const Tracked& placed, bool wide,
-                                                    bool recent) const;
-
-  /// @brief Date what this frame made and removed, and empty the map's archive of removals.
-  void date();
+  foundations::Result<Keyframed> make_keyframe(const Map& m, const Frame& frame,
+                                               const Tracked& tracked, FrameSummary& summary);
 
   /// @brief Close the map the track was lost in, on this frame: keep it, or reset it if it has
-  ///        `loss.reset_keyframes` keyframes or fewer (its lives end, as `Removal::kReset`). The
-  ///        tracking state goes with it, so the next frame starts a new map. A stand-in until
-  ///        milestone 2B's B4: the map's strong links are counted here, for the run's record,
-  ///        inside the frame's timed step (58 to 360 ms on the test set's largest maps); B4's
-  ///        atlas keeps maps whole, and the record moves with it (the online-SLAM design,
-  ///        section 4).
-  /// @param m The map, taken out of the pipeline.
+  ///        `loss.reset_keyframes` keyframes or fewer (`Atlas::close`). Tracking's and loop
+  ///        closing's state go with it, so the next frame starts a new map.
+  /// @param m The map, given up by the owner.
   /// @return The closed map's summary.
   LostSummary close(const Map& m);
-
-  /// @brief A parent of the current map, by the run's id.
-  /// @param parent Its id in the map, or -1.
-  /// @return The run's id, or -1.
-  [[nodiscard]] std::int64_t run_id(std::int64_t parent) const;
-
-  /// @brief Track a frame against the map; insert a keyframe if one is needed (and time it).
-  /// @param frame The frame.
-  /// @return The tracked frame, if any, whether it became a keyframe, the time mapping it
-  ///         took, and how its stages went; a stage's error.
-  foundations::Result<Step> track_frame(const Frame& frame);
 
   /// @brief The sensor mode.
   Mode mode_;
@@ -448,65 +472,14 @@ class Pipeline {
   Options options_;
   /// @brief Where the pipeline is.
   State state_{State::kNotInitialized};
-  /// @brief The map, once initialised.
-  std::optional<Map> map_;
-  /// @brief The last tracked frame.
-  std::optional<Frame> last_frame_;
-  /// @brief Its pose and matches.
-  std::optional<Tracked> last_tracked_;
-  /// @brief The last motion `T_last_previous`, if the last two frames were tracked.
-  std::optional<Eigen::Matrix4d> velocity_;
-  /// @brief The monocular initialisation's reference frame.
-  std::optional<Frame> reference_;
-  /// @brief Where each of the reference's keypoints was last matched.
-  std::vector<std::array<double, 2>> previous_;
-  /// @brief Frames in a row not tracked.
-  std::int64_t failures_{0};
-  /// @brief The vocabulary, when relocalising or closing loops.
-  std::optional<foundations::vocabulary::Vocabulary> vocabulary_;
-  /// @brief The map's keyframe database, when relocalising or closing loops and a map exists.
-  std::optional<Database> database_;
-  /// @brief The first failed frame's time, while the track is recently lost.
-  std::optional<double> lost_since_;
-  /// @brief Frames since the last recovery, if any.
-  std::optional<std::int64_t> since_recovery_;
-  /// @brief Frames given so far.
-  std::int64_t frames_{0};
-  /// @brief The current map's id, if there is one.
-  std::optional<std::int64_t> map_id_;
-  /// @brief The maps started so far: the next one's id.
-  std::int64_t maps_{0};
-  /// @brief The run's id of the current map's keyframe 0.
-  std::int64_t kf_base_{0};
-  /// @brief The run's id of the current map's point 0.
-  std::int64_t pt_base_{0};
-  /// @brief Each point's life, by the run's id.
-  std::vector<Life> point_lives_;
-  /// @brief Each keyframe's life, by the run's id.
-  std::vector<Life> keyframe_lives_;
-  /// @brief The map each point was made in, by the run's id.
-  std::vector<std::int64_t> point_maps_;
-  /// @brief The map each keyframe was made in, by the run's id.
-  std::vector<std::int64_t> keyframe_maps_;
-  /// @brief Where each point no longer in the current map last was, by the run's id: removed,
-  ///        or in a closed map (unset for the others).
-  std::vector<Eigen::Vector3d> past_points_;
-  /// @brief The same keyframes' times (unset for the others).
-  std::vector<double> past_times_;
-  /// @brief Their last poses (unset for the others).
-  std::vector<Eigen::Matrix4d> past_poses_;
-  /// @brief Their last parents, by the run's id (unset for the others).
-  std::vector<std::int64_t> past_parents_;
-  /// @brief The closed maps' strong links, by the run's ids.
-  std::vector<std::array<std::int64_t, 3>> past_links_;
-  /// @brief The closed maps' loop edges, by the run's ids.
-  std::vector<std::array<std::int64_t, 2>> past_loops_;
-  /// @brief The loop being confirmed in the current map, if any.
-  std::optional<loops::Pending> pending_;
-  /// @brief Each tracked frame's place, for the final trajectory.
-  std::vector<FramePlace> placements_;
-  /// @brief Each culled keyframe's parent and its pose relative to it, by the run's ids.
-  std::map<std::int64_t, std::pair<std::int64_t, Eigen::Matrix4d>> culled_;
+  /// @brief Tracking's own state.
+  TrackingState tracking_;
+  /// @brief Loop closing's own state.
+  LoopState closing_;
+  /// @brief The map being tracked and its database.
+  MapOwner owner_;
+  /// @brief The run's records.
+  Atlas atlas_;
 };
 
 }  // namespace slam_it::edge
