@@ -10,7 +10,7 @@ fusion and local BA take from the graph (:func:`mapping.fuse_targets`,
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 
 import numpy as np
@@ -330,3 +330,109 @@ def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
     for call in calls:
         with pytest.raises(InvalidInputError):
             call()
+
+
+@dataclass
+class _Asked:
+    """Local mapping's thread, as a test sets it: a keyframe waiting, a stop, an abort."""
+
+    queued: bool = False
+    stop: bool = False
+    abort: bool = False
+    published: list[Map] = field(default_factory=list)
+
+    def waiting(self) -> bool:
+        """Return whether a keyframe waits."""
+        return self.queued
+
+    def stopping(self) -> bool:
+        """Return whether a stop is requested."""
+        return self.stop
+
+    def aborted(self) -> bool:
+        """Return whether the local BA is to stop."""
+        return self.abort
+
+    def publish(self, m: Map) -> None:
+        """Keep the map published."""
+        self.published.append(m)
+
+
+def _scheduled(mapped: Mapped, asked: _Asked | None) -> mapping.Mapped:
+    """Map the frame with `asked` interrupting (None: inline)."""
+    return mapping.process(
+        mapped.map, CAMERA, mapped.frame, mapped.tracked, mode="rgbd", options=OPTIONS,
+        interrupts=asked,
+    )  # fmt: skip
+
+
+def test_inline_every_step_runs(mapped: Mapped) -> None:
+    """Uninterrupted, the schedule says every step ran, and the map is as with no thread."""
+    inline = _scheduled(mapped, None)
+    quiet = _scheduled(mapped, _Asked())
+    ran = mapping.Scheduled.RAN
+    assert inline.schedule == quiet.schedule == mapping.Schedule(ran, ran, ran)
+    assert_maps_match(quiet.map, inline.map)
+    assert quiet.summary == inline.summary
+
+
+def test_a_waiting_keyframe_skips_fusion_ba_and_culling(mapped: Mapped) -> None:
+    """With another keyframe queued, only the points are made, then published for tracking."""
+    asked = _Asked(queued=True)
+    out = _scheduled(mapped, asked)
+    skipped = mapping.Scheduled.SKIPPED
+    assert out.schedule == mapping.Schedule(skipped, skipped, skipped)
+    assert (out.summary.fused, out.summary.solves, out.summary.culled_keyframes) == (0, (), 0)
+    assert out.summary.triangulated > 0
+    assert len(asked.published) == 1
+    assert asked.published[0].points == out.map.points  # the points made, then nothing removed
+
+
+def test_a_stop_skips_ba_and_culling_not_fusion(mapped: Mapped) -> None:
+    """A stop requested passes over the local BA and culling; fusion still runs."""
+    out = _scheduled(mapped, _Asked(stop=True))
+    scheduled = mapping.Scheduled
+    assert out.schedule == mapping.Schedule(scheduled.RAN, scheduled.SKIPPED, scheduled.SKIPPED)
+    assert out.summary.solves == ()
+
+
+def test_an_abort_stops_the_local_ba(mapped: Mapped) -> None:
+    """Aborted from its start, the local BA solves nothing; culling still runs."""
+    out = _scheduled(mapped, _Asked(abort=True))
+    scheduled = mapping.Scheduled
+    assert out.schedule == mapping.Schedule(scheduled.RAN, scheduled.ABORTED, scheduled.RAN)
+    assert out.summary.solves == ()
+
+
+def test_a_compiled_backend_refuses_interrupts(mapped: Mapped) -> None:
+    """Only the Python reference is interrupted so far: a compiled one is refused, not ignored."""
+    with pytest.raises(InvalidInputError, match="interrupts"):
+        mapping.process(
+            mapped.map, CAMERA, mapped.frame, mapped.tracked, mode="rgbd", options=OPTIONS,
+            interrupts=_Asked(), backend="cpp",
+        )  # fmt: skip
+
+
+def test_mapping_busy_asks_for_a_keyframe_less_often(mapped: Mapped) -> None:
+    """Busy, a wanted keyframe also needs the frames since the last, or with depth, poor tracking.
+
+    The frame tracks 60 of its reference's points: wanted while idle; busy, monocular wants it
+    only once ``tracking.max_frames`` frames have passed; with depth, it is under a quarter
+    (ORB-SLAM's ``c1c``) only if the reference sees more than 240.
+    """
+    m, frame, tracked = mapped.map, mapped.frame, mapped.tracked
+    matched = np.flatnonzero(tracked.points >= 0)
+    thin = replace(tracked, points=np.where(np.isin(np.arange(len(tracked.points)), matched[:60]),
+                                            tracked.points, -1))  # fmt: skip
+    ask = partial(mapping.need_keyframe, m, CAMERA, frame.depth, thin,
+                  reference=mapped.reference, options=OPTIONS)  # fmt: skip
+    seen = m.kp_point[m.keypoint_rows(mapped.reference)]
+    rows = m.point_rows(seen[seen >= 0])
+    reference_points = int(np.count_nonzero(maps.observation_weight(m, rows[rows >= 0]) >= 3))
+    assert ask(mode="monocular")  # idle: wanted
+    assert not ask(mode="monocular", idle=False, since_keyframe=0)
+    assert ask(mode="monocular", idle=False, since_keyframe=OPTIONS.tracking.max_frames)
+    poor = mapping.BUSY_REF_RATIO * reference_points > 60
+    assert ask(mode="rgbd", idle=False, since_keyframe=0) == poor
+    with pytest.raises(InvalidInputError, match="idle"):
+        ask(mode="rgbd", idle=False, backend="cpp")

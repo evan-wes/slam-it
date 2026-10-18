@@ -25,11 +25,20 @@ second keyframe sees it.
 
 The result (:class:`Adjustment`) records how each solve went (:class:`Solve`) and how many
 observations were dropped, which a run records per keyframe.
+
+**Stopped early** (milestone 2B's B3b, local mapping in a thread of its own): given an ``abort``
+check, the adjustment asks it before its first solve, and returns the map untouched if it says
+stop, as ORB-SLAM3's ``LocalBundleAdjustment`` returns when its ``pbStopFlag`` is set; and again
+after the first solve, where a stop skips the refining solve, the outliers of the first dropped
+and its result kept, as ORB-SLAM2's ``bDoMore``. ORB-SLAM's g2o also stops between the
+iterations of a solve; rung 0's solver runs each solve whole (only the Python reference takes the
+check, until B3b's compiled ports).
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -44,6 +53,7 @@ from slam_it.edge.map import Map
 from slam_it.edge.options import Options
 from slam_it.foundations import ba, nls, se3
 from slam_it.foundations.arrays import as_indices, as_mask
+from slam_it.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -125,6 +135,9 @@ class Adjustment:
     fixed : int
         The keyframes held fixed: those given that were, and every other observing their
         points.
+    aborted : bool
+        Whether an abort stopped it early: before its first solve (none ran) or before the
+        refining one (the module docstring).
     """
 
     map: Map
@@ -132,6 +145,7 @@ class Adjustment:
     outliers: int
     free: int = 0
     fixed: int = 0
+    aborted: bool = False
 
 
 class Implementation(Protocol):
@@ -235,8 +249,14 @@ def _problem(
     return problem, rows, observing
 
 
-def _bundle_adjust(
-    m: Map, camera: Camera, keyframes: IntArray, fixed: Mask, options: Options
+def _bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the settings, the stop
+    m: Map,
+    camera: Camera,
+    keyframes: IntArray,
+    fixed: Mask,
+    options: Options,
+    *,
+    abort: Callable[[], bool] | None = None,
 ) -> Adjustment:
     """Bundle-adjust keyframes and the points they observe (reference)."""
     points = m.observed_by(keyframes)
@@ -245,10 +265,17 @@ def _bundle_adjust(
     problem, rows, observing = _problem(m, camera, keyframes, points, fixed)
     if not np.any(problem.fixed_poses):  # no gauge: ORB-SLAM3 skips it
         return Adjustment(map=m, solves=(), outliers=0)
+    if abort is not None and abort():  # stopped before it started: ORB-SLAM3 returns
+        return Adjustment(map=m, solves=(), outliers=0, aborted=True)
     loss = nls.Loss("huber", math.sqrt(options.adjustment.chi2_mono))
     first = ba.solve(problem, _options(loss, options.adjustment.iterations))
     solved = replace(problem, poses=first.poses, points=first.points)
     outlier = _outliers(m, camera, solved, rows, options)
+    if abort is not None and abort():  # ORB-SLAM2's bDoMore: the first solve kept
+        return _written_back(
+            m, problem, points=points, observing=observing, result=first,
+            dropped=rows[outlier], solves=(Solve.of(first.summary.solve),), aborted=True,
+        )  # fmt: skip
     # A point left with fewer than two inlier views is left out of the second solve: it goes
     # back to where it was, not where its outliers pulled it.
     alone = np.bincount(problem.pt_idx[~outlier], minlength=len(points)) < 2
@@ -263,20 +290,42 @@ def _bundle_adjust(
     )
     final = replace(problem, poses=second.poses, points=second.points)
     dropped = rows[_outliers(m, camera, final, rows, options)]
+    return _written_back(
+        m, problem, points=points, observing=observing, result=second, dropped=dropped,
+        solves=(Solve.of(first.summary.solve), Solve.of(second.summary.solve)), aborted=False,
+    )  # fmt: skip
+
+
+def _written_back(  # noqa: PLR0913 -- the map, the problem, its result, what it dropped
+    m: Map,
+    problem: ba.BAProblem,
+    *,
+    points: IntArray,
+    observing: IntArray,
+    result: ba.BAResult,
+    dropped: IntArray,
+    solves: tuple[Solve, ...],
+    aborted: bool,
+) -> Adjustment:
+    """Write a solve's free poses and points back to the map, forgetting the dropped observations.
+
+    `points` are the problem's point rows in the map and `observing` its keyframe rows.
+    """
     free = observing[~problem.fixed_poses]
     poses = m.kf_pose.copy()
-    poses[free] = se3.inverse(second.poses[~problem.fixed_poses])
+    poses[free] = se3.inverse(result.poses[~problem.fixed_poses])
     xyz = m.pt_xyz.copy()
-    xyz[points] = second.points
+    xyz[points] = result.points
     ids = m.pt_id[points]
     adjusted = maps.forget_observations(replace(m, kf_pose=poses, pt_xyz=xyz), dropped)
     kept = adjusted.point_rows(ids)
     return Adjustment(
         map=maps.refresh_points(adjusted, kept[kept >= 0]),
-        solves=(Solve.of(first.summary.solve), Solve.of(second.summary.solve)),
+        solves=solves,
         outliers=len(dropped),
         free=int(np.count_nonzero(~problem.fixed_poses)),
         fixed=int(np.count_nonzero(problem.fixed_poses)),
+        aborted=aborted,
     )
 
 
@@ -287,6 +336,7 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
     fixed: ArrayLike,
     options: Options,
     *,
+    abort: Callable[[], bool] | None = None,
     backend: str = "python",
 ) -> Adjustment:
     """Bundle-adjust keyframes and the points they observe (``LocalBundleAdjustment``).
@@ -311,6 +361,9 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
         Keyframes held fixed even among `keyframes` (the map's first, for the gauge).
     options : Options
         The iterations and thresholds.
+    abort : callable, optional
+        Asked before each solve whether to stop (the module docstring's "Stopped early");
+        default: never.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -319,13 +372,16 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
     Adjustment
         The map with adjusted poses and points and the outlier observations forgotten; the
         two solves (none, the map as it was, if no point was observed or no keyframe was held
-        fixed) and the outliers dropped.
+        fixed, and one if it was stopped before the second) and the outliers dropped.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If a keyframe row is out of range, or `fixed` is not one flag per keyframe.
+        If a keyframe row is out of range, `fixed` is not one flag per keyframe, or `abort` is
+        given to a compiled backend.
     """
+    if abort is not None and backend != "python":
+        raise InvalidInputError("abort: only the Python reference stops early so far")
     given = np.asarray(keyframes)
     chosen = as_indices(given, given.size, m.keyframes, "keyframes")
     held = as_mask(fixed, (m.keyframes,), "fixed")
@@ -333,7 +389,7 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
         backend,
         __name__,
         "bundle_adjust",
-        reference=lambda: _bundle_adjust(m, camera, chosen, held, options),
+        reference=lambda: _bundle_adjust(m, camera, chosen, held, options, abort=abort),
         arguments={
             "m": m.as_dict(),
             "camera": camera.as_dict(),

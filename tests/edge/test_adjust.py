@@ -148,3 +148,42 @@ def test_rejects_malformed_arguments(backend: str, truth: Truth) -> None:
     for call in calls:
         with pytest.raises(InvalidInputError):
             call()
+
+
+def test_an_abort_before_the_first_solve_leaves_the_map(truth: Truth) -> None:
+    """Stopped before it starts, the adjustment solves nothing (ORB-SLAM3's early return)."""
+    m = _perturbed(truth.map)
+    every = np.arange(m.keyframes)
+    adjusted = adjust.bundle_adjust(m, CAMERA, every, _first_fixed(m), OPTIONS, abort=lambda: True)
+    assert adjusted.map is m
+    assert (adjusted.solves, adjusted.outliers, adjusted.aborted) == ((), 0, True)
+
+
+def test_an_abort_after_the_first_solve_keeps_it(truth: Truth) -> None:
+    """Stopped between its solves: the first's result written back, no refining solve."""
+    m = _perturbed(truth.map)
+    every = np.arange(m.keyframes)
+    asked: list[bool] = []
+
+    def abort() -> bool:
+        asked.append(True)
+        return len(asked) > 1  # go on once, then stop
+
+    stopped = adjust.bundle_adjust(m, CAMERA, every, _first_fixed(m), OPTIONS, abort=abort)
+    whole = adjust.bundle_adjust(m, CAMERA, every, _first_fixed(m), OPTIONS)
+    assert len(asked) == 2
+    assert stopped.aborted
+    assert not whole.aborted
+    assert stopped.solves == whole.solves[:1]
+    assert not np.array_equal(stopped.map.kf_pose, m.kf_pose)  # the first solve moved them
+    assert not np.array_equal(stopped.map.kf_pose, whole.map.kf_pose)  # and no second did
+
+
+def test_a_compiled_backend_refuses_an_abort(truth: Truth) -> None:
+    """Only the Python reference stops early so far: a compiled one is refused, not ignored."""
+    m = truth.map
+    with pytest.raises(InvalidInputError, match="abort"):
+        adjust.bundle_adjust(
+            m, CAMERA, np.arange(m.keyframes), _first_fixed(m), OPTIONS,
+            abort=lambda: False, backend="cpp",
+        )  # fmt: skip
