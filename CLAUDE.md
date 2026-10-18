@@ -28,6 +28,10 @@ Consequences:
 - Wrap builds and test suites in a memory cap and cap parallelism at 4 jobs:
   `CMAKE_BUILD_PARALLEL_LEVEL=4 CARGO_BUILD_JOBS=4 systemd-run --user --scope -p MemoryMax=8G -- ...`
 - Datasets and run outputs live outside the repo, in `../datasets/` and `../runs/`.
+- A dashcam's recordings, and what is measured of them (its masks, lenses, rig and GPS
+  tracks), live outside the repo too, named by a config kept with them; the repo holds only
+  its template, `docs/dashcam.template.toml` (`slam_it.eval.dashcam`). Tesseract, the
+  overlay's OCR, comes from conda-forge with the env.
 
 ## Languages
 

@@ -4,6 +4,44 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [Unreleased]
+
+A dashcam's recordings as SLAM It! datasets (`slam_it.eval.dashcam`, `docs/notes/dashcam.md`),
+built for the Terunsoul D016, and a GPS track to score a run against (`slam_it.eval.gnss`).
+The owner's recordings, masks, lenses and results stay outside the repo, in a config whose
+template is `docs/dashcam.template.toml`.
+
+### Added
+
+- **`slam_it.eval.dashcam`**, run as `python -m slam_it.eval.dashcam <step> CONFIG`:
+  - `drives`: a card's segments grouped into drives, front and rear paired;
+  - `mask`: a camera's static mask measured from a drive (persistent edges), with drawn
+    parts and a preview;
+  - `overlay`: the burned-in overlay read with Tesseract into a fix a second and each
+    camera's lag (its overlay clock against its segments' names);
+  - `calibrate`: each camera's fisheye lens self-calibrated by COLMAP's sequential SfM, then
+    the front-rear rig: the clocks' offset from the two cameras' turns, the rotation from
+    their turns' axes and directions of travel, and the translation and rear scale by a
+    linear MAP with a baseline prior, the front map's scale from the GPS speed;
+  - `import`: one camera's share of a drive as one TUM-format sequence on its overlay clock.
+  The D016's formats are a built-in profile (`dashcam.d016`), its data stream's GPS records
+  read for their time, speed and course (`dashcam.stream`).
+- **`slam_it.eval.gnss`**: a gated constant-velocity Kalman filter with an RTS smoother over
+  GNSS fixes, and a run's maps scored against the track in their plane of motion, in metres.
+- **The `dashcam` extra** (PyAV, pytesseract, pycolmap) and Tesseract in the conda layer;
+  import-linter contracts keep pytesseract in `dashcam.overlay` and pycolmap in
+  `dashcam.calibrate` (and the BA reference), and the pipelines out of both.
+- **`eval.video` reads recorded segments**: sampled in time, their data packets, and joined
+  into one sequence (`import_segments`), sharing the video import's frame writing.
+
+### Tests
+
+- Synthetic only: MPEG-TS segments written with PyAV (a moving scene under a static hood,
+  a data stream of records, a burned-in overlay), the drives, the mask, the record decoder,
+  the drive import and its timing, the config and the command line; the overlay's reading
+  with Tesseract (skipped without it) and the lag from reads; the filter's gating, restart
+  and smoothing and the planar scoring; each calibration stage on a synthetic rig drive.
+
 ## [0.3.12.0] - 2026-10-17
 
 Milestone 2B's third part, B3: loop closure (`docs/design/2026-10-14-online-slam.md`, section
