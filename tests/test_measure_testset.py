@@ -267,6 +267,22 @@ def test_a_loop_is_judged_by_the_reference() -> None:
     assert unjudged[0]["poor_pose"] is None
 
 
+def test_a_loop_turned_about_its_view_is_in_the_right_place() -> None:
+    """Keyframes 1 m apart, one rolled 90 degrees about its viewing direction, saw one place.
+
+    The judge measures the angle between the viewing directions, not the whole turn between
+    the two keyframes (TUM's fr2_360_hemisphere: 88 degrees of turn, 18 between the views).
+    """
+    run, (times, poses) = _line_run(30)
+    rolled = poses.copy()
+    rolled[10, :3, :3] = so3.exp([0.0, 0.0, np.radians(90.0)])
+    run = replace(run, keyframe_loops=np.array([[0, 1]]))
+    scored = runs.evaluate_absolute(run, times, rolled)
+    (judged,) = _script().judge_loops(run, (times, rolled), scored)
+    assert judged["angle"] == pytest.approx(0.0, abs=1e-6)
+    assert judged["wrong_place"] is False
+
+
 def test_the_keyframes_ate_is_their_own() -> None:
     """The final keyframes' ATE is scored on them alone: a keyframe moved 1 m shows."""
     run, truth = _line_run(30)

@@ -40,9 +40,11 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
   (:func:`slam_it.eval.runs.evaluate_absolute`): the measure reports no relative error, and a
   reference too sparse for one still scores;
 - ``loops``: each loop closed, ``keyframes`` (the older first), judged against the reference
-  (:func:`judge_loops`): ``distance`` and ``angle`` (degrees) between the two keyframes by the
-  reference, ``wrong_place`` when more than :data:`WRONG_DISTANCE` or :data:`WRONG_ANGLE`
-  apart (they cannot have seen the same place); and, the map aligned as its ATE aligns it, the
+  (:func:`judge_loops`): ``distance`` between the two keyframes by the reference and
+  ``angle`` (degrees) between their viewing directions, ``wrong_place`` when more than
+  :data:`WRONG_DISTANCE` or :data:`WRONG_ANGLE` apart (they cannot have seen the same place; a
+  turn about the viewing direction leaves the place seen); and, the map aligned as its ATE
+  aligns it, the
   two keyframes' relative pose after the run against the reference's, ``translation_error``
   and ``rotation_error`` (degrees), ``poor_pose`` when the first is more than
   :data:`POOR_FACTOR` times the map's median error or the second more than :data:`POOR_ANGLE`
@@ -263,6 +265,11 @@ def _turn(rotation: np.ndarray) -> float:
     return math.degrees(math.acos(float(np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0))))
 
 
+def _looking_apart(a: np.ndarray, b: np.ndarray) -> float:
+    """Return the angle between two cameras' viewing directions (their z axes), in degrees."""
+    return math.degrees(math.acos(float(np.clip(a[:3, 2] @ b[:3, 2], -1.0, 1.0))))
+
+
 def judge_loops(
     run: runs.Run, truth: runs.Truth | None, scored: runs.Evaluation | None
 ) -> list[dict[str, Any]]:
@@ -295,7 +302,7 @@ def judge_loops(
             continue
         a, b = poses[rows[0]], poses[rows[1]]
         distance = float(np.linalg.norm(a[:3, 3] - b[:3, 3]))
-        angle = _turn(a[:3, :3].T @ b[:3, :3])
+        angle = _looking_apart(a, b)
         judged.update(
             distance=distance,
             angle=angle,

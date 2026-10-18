@@ -40,7 +40,8 @@ WRONG_DISTANCE = 3.0
 """Two keyframes farther apart than this, in metres, by the truth, are at different places."""
 
 WRONG_ANGLE = math.radians(60.0)
-"""Two keyframes looking further apart than this, by the truth, are at different places."""
+"""Two keyframes whose viewing directions are further apart than this, by the truth, are at
+different places; a turn about the viewing direction leaves the place seen."""
 
 
 def _truth_at(folders: Room, times: np.ndarray) -> np.ndarray:
@@ -80,8 +81,7 @@ def test_no_loop_closes_at_a_wrong_place(
     for older, newer in run.keyframe_loops.tolist():
         a, b = truth[older], truth[newer]
         assert np.linalg.norm(a[:3, 3] - b[:3, 3]) < WRONG_DISTANCE
-        turn = a[:3, :3].T @ b[:3, :3]
-        assert math.acos(np.clip((np.trace(turn) - 1.0) / 2.0, -1.0, 1.0)) < WRONG_ANGLE
+        assert math.acos(np.clip(a[:3, 2] @ b[:3, 2], -1.0, 1.0)) < WRONG_ANGLE
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
