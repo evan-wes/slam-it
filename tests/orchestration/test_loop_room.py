@@ -17,6 +17,8 @@ otherwise.
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -84,3 +86,45 @@ def test_the_points_lie_on_the_walls(
     alignment = placed.absolute.alignment
     points = run.final_points() @ alignment[:3, :3].T + alignment[:3, 3]
     assert float(np.median(room.surface_distance(points))) < SURFACE[mode]
+
+
+def _shapes(records: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Return every key path in the records, with the types of the values found at it.
+
+    A list's items share one path (``[]``); null is no type, so a value null on one frame and an
+    object on another reads as the object.
+    """
+    shapes: dict[str, set[str]] = {}
+
+    def visit(value: Any, path: str) -> None:  # noqa: ANN401 -- any JSON value
+        kinds = shapes.setdefault(path, set())
+        if isinstance(value, dict):
+            kinds.add("object")
+            for key, item in value.items():
+                visit(item, f"{path}.{key}")
+        elif isinstance(value, list):
+            kinds.add("array")
+            for item in value:
+                visit(item, f"{path}[]")
+        elif value is not None:
+            kinds.add(type(value).__name__)
+
+    for record in records:
+        visit(record, "")
+    return shapes
+
+
+@pytest.mark.parametrize("backend", [b for b in backends.BACKENDS if b != "python"])
+@pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
+def test_every_program_writes_pythons_diagnostics(
+    dataset: str, mode: str, backend: str, loop_runs: RoomRun
+) -> None:
+    """Each frame's diagnostics have Python's key paths, with its value types.
+
+    Shapes, not decisions (B3's review panel, A8): the languages may decide differently, but the
+    viewer and the measures read the stages' records by name, so a key a program's writer
+    misses, misspells or writes as another type fails here, where each language's golden record
+    alone would take it in.
+    """
+    expected = _shapes(loop_runs(dataset, mode, "python").diagnostics)
+    assert _shapes(loop_runs(dataset, mode, backend).diagnostics) == expected
