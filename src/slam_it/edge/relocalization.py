@@ -37,11 +37,18 @@ behind the camera, which ORB-SLAM's projects regardless.
 
 Each candidate tried reports how far it got (:class:`CandidateSummary`), and the frame how the
 search went (:class:`RelocalizationSummary`), which a run records.
+
+**In every map** (:func:`relocalize_across`, milestone 2B's B4; the online-SLAM design, section
+14, item 2), as ORB-SLAM3's paper describes relocalisation, where its source searches the
+active map alone: each map's database finds its own candidates, its words counted within the
+map, and every map's candidates are tried together, best score first (one vocabulary scores
+them all); the map whose candidate places the frame is the one tracking goes on in.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -586,3 +593,97 @@ def _decode_relocalized(raw: dict[str, Any], codes: backends.Codes) -> Relocaliz
         ),
         matched=backends.checked_array(raw["matched"], np.int64, 1, "relocalize matched"),
     )
+
+
+@dataclass(frozen=True)
+class Across:
+    """Relocalisation in every map: the map that placed the frame, and how the search went.
+
+    Attributes
+    ----------
+    map : int or None
+        The number of the map whose candidate placed the frame; None if none did.
+    relocalized : Relocalized
+        The frame placed, in that map's world; the search over every map's candidates, as
+        one map's search reports it, each candidate's keyframe an id in its own map; and the
+        last candidate's matches, points of its map.
+    maps : tuple of int
+        Each candidate tried's map number, in the summary's order.
+    """
+
+    map: int | None
+    relocalized: Relocalized
+    maps: tuple[int, ...]
+
+
+def relocalize_across(
+    searched: Sequence[database.Indexed], camera: Camera, frame: Frame, options: Options
+) -> Across:
+    """Place a frame in whichever map looks like it (the module docstring's "In every map").
+
+    Each map's candidates (:func:`slam_it.edge.database.candidates`, its words counted within
+    it), all of them together by their group's score, descending (ties: the lower map number,
+    then the lower id), each tried as one map's are, the first to place the frame ending the
+    search.
+
+    *Python's reference alone* until milestone 2B's B4 ports it to C++ and Rust.
+
+    Parameters
+    ----------
+    searched : sequence of slam_it.edge.database.Indexed
+        The maps, each with its database (one vocabulary for all) and number.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    frame : slam_it.edge.frames.Frame
+        The frame.
+    options : slam_it.edge.options.Options
+        :func:`relocalize`'s settings.
+
+    Returns
+    -------
+    Across
+        The map that placed the frame, if one did, and how the search went.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If no map is given, two share a number, their databases' vocabularies differ, or a
+        candidate's features are not its database's.
+    """
+    if not searched:
+        raise InvalidInputError("searched: expected at least one map")
+    if len({m.number for m in searched}) != len(searched):
+        raise InvalidInputError("searched: expected each map once, by its number")
+    words = searched[0].database.vocabulary
+    if any(m.database.vocabulary is not words for m in searched):
+        raise InvalidInputError("searched: expected one vocabulary for every map's database")
+    quantized, nodes = vocabulary.quantize(words, frame.features.descriptors)
+    vector = vocabulary.bow(words, quantized)
+    by_number = {m.number: m for m in searched}
+    found: list[tuple[float, int, int]] = []
+    sharing = scored = 0
+    for indexed in searched:
+        each = database.candidates(indexed.database, indexed.map, vector, options)
+        sharing += each.sharing
+        scored += each.scored
+        pairs = zip(each.keyframes.tolist(), each.scores.tolist(), strict=True)
+        found.extend((score, indexed.number, keyframe) for keyframe, score in pairs)
+    found.sort(key=lambda c: (-c[0], c[1], c[2]))
+    summary = RelocalizationSummary(len(vector[0]), sharing=sharing, scored=scored)
+    matched = np.full(frame.size, -1, dtype=np.int64)
+    tried: list[CandidateSummary] = []
+    numbers: list[int] = []
+    for score, number, keyframe in found:
+        indexed = by_number[number]
+        attempt = _try(
+            indexed.map, indexed.database, camera, frame, nodes=nodes, keyframe=keyframe,
+            score=score, options=options,
+        )  # fmt: skip
+        tried.append(attempt.summary)
+        numbers.append(number)
+        matched = attempt.matched
+        if attempt.tracked is not None:
+            placed = replace(summary, candidates=tuple(tried), placed=True)
+            return Across(number, Relocalized(attempt.tracked, placed, matched), tuple(numbers))
+    unplaced = Relocalized(None, replace(summary, candidates=tuple(tried)), matched)
+    return Across(None, unplaced, tuple(numbers))

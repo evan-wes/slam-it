@@ -17,6 +17,11 @@ then moved to where its point projects (:func:`exact_observations`), so the true
 best fit to them; then drifted (:func:`loop_drift`), each keyframe and the points it made
 carried by a drift that grows round the loop, so the loop's end is out of place and a loop
 closure has something to correct.
+
+Merging's states split the loop room's keyframes into two maps (:class:`TwoMaps`): the first
+:data:`SPLIT` the older one, in the truth's world; the rest the active one, carried into a world
+of its own (scaled too, in monocular), its last keyframes coming back over where the first map
+began.
 """
 
 from __future__ import annotations
@@ -315,17 +320,96 @@ def loop_scaled(loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map]
     return _loop(loop_keyframes, scaled=True)
 
 
+def _database(m: Map, words: vocabulary.Vocabulary) -> Database:
+    """Put a map's keyframes in a database."""
+    db = Database(words)
+    for k in range(m.keyframes):
+        db.add(int(m.kf_id[k]), m.kp_descriptor[m.keypoint_rows(k)])
+    return db
+
+
 @pytest.fixture(scope="session")
 def loop_database(
     loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map],
     words: vocabulary.Vocabulary,
 ) -> Database:
     """Put the loop map's keyframes in a database (tests must not change it)."""
-    m = loop_keyframes[2]
-    db = Database(words)
-    for k in range(m.keyframes):
-        db.add(int(m.kf_id[k]), m.kp_descriptor[m.keypoint_rows(k)])
-    return db
+    return _database(loop_keyframes[2], words)
+
+
+SPLIT = 14
+"""The loop room's keyframes in two maps: the first this many make the older, matched map; the
+rest the active map, whose last ones come back over where the first began."""
+
+MERGE_TURN = math.radians(30.0)
+"""The active map's world is the truth's turned this much about y..."""
+
+MERGE_SHIFT = (0.4, -0.1, 0.25)
+"""...shifted this much, in metres..."""
+
+MERGE_SCALE = 0.7
+"""...and, in monocular, scaled by this: its own units, as a map started apart has."""
+
+
+@dataclass(frozen=True)
+class TwoMaps:
+    """The loop room's keyframes in two maps, each with its database, to merge.
+
+    The matched map holds the first :data:`SPLIT` keyframes in the truth's world; the active
+    map the rest, mapped from the truth too (:func:`loop_map`), then carried into a world of its
+    own by ``world``, a similarity on the truth's (:func:`drift_map`, every keyframe alike).
+    ``scaled`` is the monocular variant: both maps without depth, the active map's world
+    scaled.
+    """
+
+    frames: list[frames.Frame]
+    poses: list[np.ndarray]
+    matched: Map
+    active: Map
+    matched_database: Database
+    active_database: Database
+    world: np.ndarray
+    scaled: bool
+
+
+def _two_maps(
+    keyframes: tuple[list[frames.Frame], list[np.ndarray], Map],
+    words: vocabulary.Vocabulary,
+    *,
+    scaled: bool,
+) -> TwoMaps:
+    """Split the loop room's keyframes into two maps, the active one in a world of its own."""
+    built, poses, _ = keyframes
+    matched = loop_map(built[:SPLIT], poses[:SPLIT])
+    active = loop_map(built[SPLIT:], poses[SPLIT:])
+    world = np.eye(4)
+    world[:3, :3] = (MERGE_SCALE if scaled else 1.0) * so3.exp([0.0, MERGE_TURN, 0.0])
+    world[:3, 3] = MERGE_SHIFT
+    active = drift_map(active, [world] * active.keyframes)
+    if scaled:
+        matched, active = _without_depth(matched), _without_depth(active)
+    return TwoMaps(
+        built, poses, matched, active, _database(matched, words), _database(active, words),
+        world, scaled,
+    )  # fmt: skip
+
+
+@pytest.fixture(scope="session")
+def two_rigid(
+    loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map],
+    words: vocabulary.Vocabulary,
+) -> TwoMaps:
+    """Return the two maps in RGB-D, the active one's world turned and shifted."""
+    return _two_maps(loop_keyframes, words, scaled=False)
+
+
+@pytest.fixture(scope="session")
+def two_scaled(
+    loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map],
+    words: vocabulary.Vocabulary,
+) -> TwoMaps:
+    """Return the two maps as monocular, the active one's world scaled too."""
+    return _two_maps(loop_keyframes, words, scaled=True)
 
 
 @pytest.fixture(scope="session")

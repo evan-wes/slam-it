@@ -10,12 +10,12 @@ import pytest
 
 from slam_it import backends
 from slam_it.edge import covisibility, database
-from slam_it.edge.database import Database
+from slam_it.edge.database import Database, Indexed
 from slam_it.edge.options import Options
 from slam_it.foundations import vocabulary
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
-from tests.edge.conftest import KEYFRAMES, Truth
+from tests.edge.conftest import KEYFRAMES, Truth, TwoMaps
 from tests.edge.support import OPTIONS
 
 
@@ -252,3 +252,52 @@ def test_a_keyframe_outside_the_map_or_the_database_is_refused(
     for db, keyframe in ((room_database, m.next_kf_id + 2), (Database(words), int(m.kf_id[0]))):
         with pytest.raises(InvalidInputError, match="not in"):
             compiled.loop_candidates(db.as_dict(), m.as_dict(), keyframe, OPTIONS.as_dict())
+
+
+# --- a merge's candidates (milestone 2B's B4) -----------------------------------------------
+
+
+def _matched_map(two: TwoMaps) -> list[Indexed]:
+    """Return the two maps' matched map, as a merge's candidates are looked for in it."""
+    return [Indexed(0, two.matched, two.matched_database)]
+
+
+@pytest.mark.parametrize("variant", ["rigid", "scaled"])
+def test_a_merge_s_candidates_are_where_the_path_comes_back(
+    variant: str, request: pytest.FixtureRequest
+) -> None:
+    """The second last active keyframe's candidates are the first map's start, scored there.
+
+    Of the first map's keyframes sharing a word with it, only one shares 80% of the most words
+    any shares, so one candidate is scored.
+    """
+    two: TwoMaps = request.getfixturevalue(f"two_{variant}")
+    keyframe = int(two.active.kf_id[-2])
+    found = database.merge_candidates(
+        two.active_database.vector(keyframe), _matched_map(two), OPTIONS
+    )
+    assert 1 <= len(found.keyframes) <= OPTIONS.loops.candidates
+    np.testing.assert_array_equal(found.maps, [0] * len(found.keyframes))
+    assert found.keyframes[0] <= 4
+    assert np.all(np.diff(found.scores) <= 0.0)
+    assert found.scored <= found.sharing
+
+
+def test_each_map_s_words_are_counted_within_it(two_rigid: TwoMaps) -> None:
+    """The same map twice, under two numbers: each gives its own best, ranked together.
+
+    Counted over both, the most words any keyframe shares would be the same, and the cut too;
+    counted within each, every map gives its candidates whatever another holds.
+    """
+    keyframe = int(two_rigid.active.kf_id[-2])
+    vector = two_rigid.active_database.vector(keyframe)
+    once = database.merge_candidates(vector, _matched_map(two_rigid), OPTIONS)
+    copy = Indexed(3, two_rigid.matched, two_rigid.matched_database)
+    twice = database.merge_candidates(vector, [*_matched_map(two_rigid), copy], OPTIONS)
+    assert twice.sharing == 2 * once.sharing
+    assert twice.scored == 2 * once.scored
+    assert set(twice.maps.tolist()) == {0, 3}
+    assert twice.scores[0] == twice.scores[1] == once.scores[0]
+    np.testing.assert_array_equal(twice.keyframes[:2], [once.keyframes[0]] * 2)
+    with pytest.raises(InvalidInputError, match="each map once"):
+        database.merge_candidates(vector, _matched_map(two_rigid) * 2, OPTIONS)

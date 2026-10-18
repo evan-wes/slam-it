@@ -5,18 +5,22 @@ On the room's truth map, its keyframes' words those of the committed vocabulary.
 
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 import pytest
 
 from slam_it import backends
 from slam_it.edge import frames, relocalization
-from slam_it.edge.database import Database
+from slam_it.edge import map as maps
+from slam_it.edge.database import Database, Indexed
 from slam_it.edge.frames import Frame, Tracked
 from slam_it.edge.options import Options
 from slam_it.foundations import se3
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
-from tests.edge.conftest import Truth
+from tests.edge import room
+from tests.edge.conftest import LOOP_EVERY, Truth, TwoMaps
 from tests.edge.support import CAMERA, OPTIONS, SOLVER_TOLERANCE, assert_close, assert_records_match
 
 NOISE = -1
@@ -293,3 +297,62 @@ def test_a_candidate_the_map_lacks_is_refused(
     db.add(99, truth.frames[30].features.descriptors)
     with pytest.raises(InvalidInputError, match="keyframe 99 is not in the map"):
         relocalization.relocalize(truth.map, db, CAMERA, truth.frames[30], OPTIONS, backend=chosen)
+
+
+# --- relocalisation in every map (milestone 2B's B4) --------------------------------------
+
+
+def _frame(index: int) -> tuple[Frame, np.ndarray]:
+    """Render the loop room's frame at an index, in RGB-D, and return it with its true pose."""
+    pose = room.loop_path(room.LOOP_FRAMES)[index]
+    gray, depth, _ = room.Room().render(room.SMALL, pose)
+    built = frames.rgbd(gray, depth, index / 30.0, CAMERA, OPTIONS.extraction())
+    return built, np.linalg.inv(pose)
+
+
+def _both(two: TwoMaps) -> list[Indexed]:
+    """Return the two maps, the matched one numbered 0 and the active 1."""
+    return [
+        Indexed(0, two.matched, two.matched_database),
+        Indexed(1, two.active, two.active_database),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("index", "number"),
+    [(6 * LOOP_EVERY + 5, 0), (20 * LOOP_EVERY + 5, 1)],
+    ids=["first", "active"],
+)
+def test_a_frame_is_placed_in_the_map_that_saw_its_place(
+    two_rigid: TwoMaps, index: int, number: int
+) -> None:
+    """A frame only one map saw is placed in that map, in its world, within 2 cm of its place.
+
+    Each map's candidates are tried, best first: the first map's place a frame 98 degrees round
+    the loop room, the active map's one 309 degrees round (the active map starts at 210).
+    """
+    frame, true = _frame(index)
+    across = relocalization.relocalize_across(_both(two_rigid), CAMERA, frame, OPTIONS)
+    assert across.map == number
+    assert across.relocalized.tracked is not None
+    assert across.relocalized.summary.placed
+    assert across.maps[-1] == number
+    assert len(across.maps) == len(across.relocalized.summary.candidates)
+    in_world = true if number == 0 else true @ np.linalg.inv(two_rigid.world)
+    placed = across.relocalized.tracked.pose
+    assert np.linalg.norm(maps.camera_centre(placed) - maps.camera_centre(in_world)) < 0.02
+
+
+def test_relocalisation_in_every_map_refuses_what_it_cannot_search(two_rigid: TwoMaps) -> None:
+    """No map, a map twice, or two vocabularies: InvalidInputError."""
+    frame, _ = _frame(65)
+    both = _both(two_rigid)
+    with pytest.raises(InvalidInputError, match="at least one map"):
+        relocalization.relocalize_across([], CAMERA, frame, OPTIONS)
+    with pytest.raises(InvalidInputError, match="each map once"):
+        relocalization.relocalize_across([both[0], both[0]], CAMERA, frame, OPTIONS)
+    alien = Indexed(
+        5, two_rigid.matched, Database(copy.copy(two_rigid.matched_database.vocabulary))
+    )
+    with pytest.raises(InvalidInputError, match="one vocabulary"):
+        relocalization.relocalize_across([*both, alien], CAMERA, frame, OPTIONS)
