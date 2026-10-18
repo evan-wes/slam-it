@@ -9,7 +9,7 @@ map's start. At :data:`~tests.orchestration.datasets.MERGE_OPTIONS`, each backen
 final trajectory within :data:`MERGE_ATE` of the truth; and leave its points near the room's
 walls (:data:`SURFACE`). The final trajectory is scored over the one merged map, aligned once,
 so its ATE compares with neither map's ATE as tracked, each aligned on its own. The bounds are
-about half again the first runs' (2026-10-17, the same in Python and C++): final ATE RMSE 5.46
+about half again the first runs' (2026-10-17, the same in every language): final ATE RMSE 5.46
 cm (RGB-D), 5.17 cm (stereo) and 1.85 cm (monocular); the points' median distance to the walls
 6.8, 6.2 and 6.1 cm; every frame the camera can see tracked in RGB-D and stereo, 176 of the 184
 in monocular.
@@ -20,6 +20,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from slam_it import backends
 from slam_it.edge.options import Options
 from slam_it.eval import runs
 from tests.edge import room
@@ -44,9 +45,6 @@ placed on the truth by its ATE alignment."""
 TRACKED = 0.95
 """The share of the frames the camera can see (all but the black ones) tracked at least: the
 design's bar."""
-
-MERGING = ("python", "cpp")
-"""The backends that merge maps: Rust's port of milestone 2B's B4 follows."""
 
 
 def _frames(count: int) -> list[room.Frame]:
@@ -74,7 +72,7 @@ def test_the_merge_room_is_blind_for_longer_than_the_loss_window() -> None:
     assert black[-1] < back
 
 
-@pytest.mark.parametrize("backend", MERGING)
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
 def test_every_backend_merges_the_merge_room(
     dataset: str, mode: str, backend: str, merge_folders: Room, merge_runs: RoomRun
@@ -95,7 +93,7 @@ def test_every_backend_merges_the_merge_room(
     assert merged.absolute.rmse < MERGE_ATE[mode]
 
 
-@pytest.mark.parametrize("backend", MERGING)
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
 def test_the_merged_map_s_points_lie_on_the_walls(
     dataset: str, mode: str, backend: str, merge_folders: Room, merge_runs: RoomRun
