@@ -51,6 +51,16 @@ def test_workers_take_the_highest_numbered_cpus(script: ModuleType) -> None:
             script.cpus_for(jobs, offered)
 
 
+def test_workers_take_whole_groups_of_cores(script: ModuleType) -> None:
+    """A worker's cores are a group of its own, the highest-numbered whole groups."""
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 1) == [[0], [1], [2], [3], [8], [9]]
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 4) == [[2, 3, 8, 9]]
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 2) == [[0, 1], [2, 3], [8, 9]]
+    for cores in (0, 7):
+        with pytest.raises(InvalidInputError, match="--cores: expected 1 to 6"):
+            script.groups_of([0, 1, 2, 3, 8, 9], cores)
+
+
 def test_a_sequences_frames_are_its_listed_images(script: ModuleType, tmp_path: Path) -> None:
     """Comments and blank lines are not frames; a folder without the list has none."""
     (tmp_path / "rgb.txt").write_text("# timestamp filename\n0.0 rgb/0.png\n\n0.1 rgb/1.png\n")

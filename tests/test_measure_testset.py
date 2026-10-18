@@ -130,6 +130,16 @@ def test_a_sequence_is_run_measured_and_tabled(
     assert result["deadline"] == pytest.approx(1 / 30, abs=1e-6)  # rgb.txt's microseconds
     assert result["late"] >= 0
     assert result["unjudged"] is None
+    # Section 13's measures: in order, nothing waits or is refused, and the backlog is judged.
+    assert (result["threaded"], result["locks"], result["budget"]) == (False, False, None)
+    assert result["on_time"] == 1.0 - result["late"] / FRAMES
+    assert len(result["late_frames"]) == result["late"]
+    assert result["median"] <= result["p99"] <= result["worst"]
+    assert (result["waited"], result["refused"], result["queue"], result["aborted"]) == (
+        0.0, 0, 0, 0,
+    )  # fmt: skip
+    assert result["asked"] >= 1
+    assert result["backlog"] >= 0.0
     # The run's details: nothing untracked, every frame placed (the first by the map's start),
     # and no relocalised frame to hold against the truth.
     assert (result["lost_frames"], result["stretches"]) == (Options().loss.lost_frames, [])

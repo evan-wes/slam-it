@@ -7,8 +7,9 @@ budget cannot reproduce (another microarchitecture, thermal throttling, power mo
 not claim.
 
 - :data:`BUDGETS`: the budgets by name; ``laptop-cpu`` for milestone 2.
-- :func:`cpus`: the CPUs a budget pins a program to: this machine's performance cores, on a
-  CPU that has two kinds.
+- :func:`cpus`: the CPUs a budget pins a program to: one logical CPU on each of as many
+  physical cores (a core's hyperthreads are not cores of its own), this machine's performance
+  cores on a CPU that has two kinds.
 - :func:`command`: a command line wrapped to run within a budget.
 - :func:`peak_memory`, :func:`allowed_cpus` and :func:`memory_cap`: what a program records in
   its run (:mod:`slam_it.eval.runs`) of the process that ran it: its largest resident set, the
@@ -23,8 +24,16 @@ ORB-SLAM's tracking thread does. The clock starts with the frame's images decode
 camera delivers them, so reading them is reported but not held to the deadline. Mapping a
 keyframe runs after tracking in the same thread here, so a run stays deterministic; it is
 judged as ORB-SLAM's local-mapping thread would be, by its load: its total time over the
-sequence's, which must stay below 1 for a thread of its own to keep up. Closing loops on a
-keyframe runs after mapping it, and is reported the same way, as its own thread's load.
+sequence's, which must stay below 1 for a thread of its own to keep up, and by the backlog a
+thread of its own would build, Lindley's recursion over the keyframes as they came. Closing
+loops on a keyframe runs after mapping it, and is reported the same way, as its own thread's
+load.
+
+**Threaded** (milestone 2B's B3b, the run format's handshakes), mapping runs in a thread of its
+own, and is judged as it ran: by the keyframes waiting for it when tracking asked for one
+(its queue), the keyframes it refused, and the local BAs it aborted; and tracking's latency
+holds the time it waited for the map. The load and the busiest window are still reported, and
+the backlog, a measure for runs made in order, is not.
 
 The budgeted runs are tests marked ``budget``, outside layer 1: ``python -m pytest -m budget``.
 """
@@ -59,6 +68,10 @@ that the run's average does not hide it."""
 
 PERFORMANCE_CORES = Path("/sys/devices/cpu_core/cpus")
 """Where Linux lists a hybrid CPU's performance cores (Intel's ``cpu_core``)."""
+
+TOPOLOGY = Path("/sys/devices/system/cpu")
+"""Where Linux describes each CPU, its physical core's logical CPUs among it
+(``cpu<n>/topology/thread_siblings_list``)."""
 
 
 @dataclass(frozen=True)
@@ -125,12 +138,28 @@ def _cpu_list(text: str) -> set[int]:
     return out
 
 
-def cpus(budget: Budget, *, performance: str | Path = PERFORMANCE_CORES) -> list[int]:
+def _core_of(cpu: int, topology: Path) -> int:
+    """Return a logical CPU's physical core, as its lowest sibling; itself if unlisted."""
+    siblings = topology / f"cpu{cpu}" / "topology" / "thread_siblings_list"
+    try:
+        return min(_cpu_list(siblings.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return cpu
+
+
+def cpus(
+    budget: Budget,
+    *,
+    performance: str | Path = PERFORMANCE_CORES,
+    topology: str | Path = TOPOLOGY,
+) -> list[int]:
     """Return the CPUs a budget pins a program to.
 
-    On a hybrid CPU, its performance cores (a budget's cores are fast ones), else any; of
-    those this process may run on, the highest-numbered, which leaves CPU 0, where the
-    system's interrupts land, alone.
+    A budget's cores are physical cores (PR 9's review panel, L12): one logical CPU of each,
+    the lowest this process may run on, so that the program's threads never share a core's
+    hyperthreads. On a hybrid CPU, its performance cores (a budget's cores are fast ones),
+    else any; of those this process may run on, the highest-numbered cores, which leaves
+    CPU 0, where the system's interrupts land, alone.
 
     Parameters
     ----------
@@ -139,26 +168,52 @@ def cpus(budget: Budget, *, performance: str | Path = PERFORMANCE_CORES) -> list
     performance : str or pathlib.Path, optional
         The file listing the performance cores (default :data:`PERFORMANCE_CORES`); a CPU
         without one has one kind of core.
+    topology : str or pathlib.Path, optional
+        The folder describing each CPU (default :data:`TOPOLOGY`); a CPU it does not list is
+        a core of its own.
 
     Returns
     -------
     list of int
-        ``budget.cores`` CPUs, ascending.
+        ``budget.cores`` CPUs, ascending, each on a core of its own.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If this machine offers fewer.
+        If this machine offers fewer physical cores.
     """
     offered = os.sched_getaffinity(0)
     listed = Path(performance)
     if listed.is_file():
         offered &= _cpu_list(listed.read_text(encoding="utf-8"))
-    if len(offered) < budget.cores:
+    cores = physical(offered, topology=topology)
+    if len(cores) < budget.cores:
         raise InvalidInputError(
-            f"{budget.name}: needs {budget.cores} cores, this machine offers {len(offered)}"
+            f"{budget.name}: needs {budget.cores} cores, this machine offers {len(cores)}"
         )
-    return sorted(offered)[-budget.cores :]
+    return cores[-budget.cores :]
+
+
+def physical(offered: set[int], *, topology: str | Path = TOPOLOGY) -> list[int]:
+    """Return one logical CPU of each physical core among those offered: its lowest offered.
+
+    Parameters
+    ----------
+    offered : set of int
+        Logical CPUs.
+    topology : str or pathlib.Path, optional
+        The folder describing each CPU (default :data:`TOPOLOGY`); a CPU it does not list is
+        a core of its own.
+
+    Returns
+    -------
+    list of int
+        A CPU a core, ascending.
+    """
+    one_a_core: dict[int, int] = {}
+    for cpu in sorted(offered):
+        one_a_core.setdefault(_core_of(cpu, Path(topology)), cpu)
+    return sorted(one_a_core.values())
 
 
 def command(budget: Budget, pinned: Sequence[int], argv: Sequence[str]) -> list[str]:
@@ -357,6 +412,24 @@ class Frames:
         Loop closing's time per keyframe it ran on, a correction's included; None if none.
     loop_load : float
         Loop closing's total time over the sequence's, as ``mapping_load``.
+    threaded : bool
+        Whether the run's steps ran in threads of their own.
+    waited : Spread
+        The time tracking waited for the map per frame (part of its latency); 0 in order.
+    asked : int
+        The frames that wanted a keyframe.
+    refused : int
+        Those mapping could not take: stopped, or busy and its queue full. None in order.
+    queue : int
+        The most keyframes waiting for mapping when a frame asked; 0 in order.
+    aborted : int
+        The local BAs aborted, a keyframe having been queued or a stop requested; none in order.
+    backlog : float or None
+        Run in order: the longest a keyframe would have waited for a mapping thread of its own,
+        in seconds, by Lindley's recursion over the keyframes as they came,
+        ``W' = max(0, W + S - A)`` with ``S`` a keyframe's mapping time and ``A`` the time to
+        the next (PR 9's review panel, L8): an upper bound, as ORB-SLAM also refuses keyframes
+        and aborts its local BA. None for a threaded run, whose queue was measured.
     """
 
     count: int
@@ -374,6 +447,13 @@ class Frames:
     searched: int
     looping: Spread | None
     loop_load: float
+    threaded: bool
+    waited: Spread
+    asked: int
+    refused: int
+    queue: int
+    aborted: int
+    backlog: float | None
 
 
 def _number(entry: dict[str, object], key: str, k: int) -> float:
@@ -411,6 +491,61 @@ def _steps(run: runs.Run) -> dict[str, NDArray[np.float64]]:
     return out
 
 
+def _flags(run: runs.Run, key: str) -> NDArray[np.bool_]:
+    """Return a handshake's flag per frame, checked a JSON bool."""
+    out = []
+    for k, d in enumerate(run.diagnostics):
+        if key not in d:
+            raise InvalidInputError(f"judge: a frame has no {key}")
+        if not isinstance(d[key], bool):
+            raise InvalidInputError(f"judge: frame {k}'s {key} must be true or false")
+        out.append(d[key])
+    return np.array(out, dtype=bool)
+
+
+def _aborted(run: runs.Run) -> int:
+    """Return the local BAs a run aborted: its keyframes' schedules whose BA was aborted."""
+    count = 0
+    for k, d in enumerate(run.diagnostics):
+        if "schedule" not in d:
+            raise InvalidInputError("judge: a frame has no schedule")
+        schedule = d["schedule"]
+        if schedule is None:
+            continue
+        if not isinstance(schedule, dict) or "adjustment" not in schedule:
+            raise InvalidInputError(f"judge: frame {k}'s schedule must be an object or null")
+        count += schedule["adjustment"] == "aborted"
+    return count
+
+
+def backlog(times: NDArray[np.float64], seconds: NDArray[np.float64]) -> float:
+    """Return the longest a keyframe waits for a mapping thread of its own (Lindley's recursion).
+
+    Parameters
+    ----------
+    times : ndarray of float64, shape (K,)
+        Each keyframe's arrival, its frame's time, ascending.
+    seconds : ndarray of float64, shape (K,)
+        Each one's mapping time.
+
+    Returns
+    -------
+    float
+        The largest wait ``W``, from ``W_0 = 0`` and ``W_{n+1} = max(0, W_n + S_n - A_n)``,
+        ``A_n`` the time from keyframe ``n`` to the next; 0 for fewer than two keyframes.
+
+    Examples
+    --------
+    >>> backlog(np.array([0.0, 0.5, 1.0]), np.array([0.75, 0.75, 0.75]))
+    0.5
+    """
+    wait = longest = 0.0
+    for gap, service in zip(np.diff(times), seconds[:-1], strict=True):
+        wait = max(0.0, wait + float(service) - float(gap))
+        longest = max(longest, wait)
+    return longest
+
+
 def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
     """Judge a run's frames against their real-time deadline.
 
@@ -433,9 +568,10 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the run has fewer than two frames (no period), a frame's time or a step's time is
-        missing or not a number, the frames' times are not finite and strictly increasing, a
-        step's time is negative or not finite, or `window` is not positive and finite.
+        If the run has fewer than two frames (no period), a frame's time, a step's time or a
+        handshake (:data:`slam_it.eval.runs.HANDSHAKES`) is missing or not of its type, the
+        frames' times are not finite and strictly increasing, a step's time or the wait is
+        negative or not finite, or `window` is not positive and finite.
     """
     if not (np.isfinite(window) and window > 0.0):
         raise InvalidInputError(f"judge: window: expected a positive time, got {window}")
@@ -455,6 +591,12 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
     ends = np.searchsorted(times, times + width)
     cumulative = np.concatenate([[0.0], np.cumsum(steps["map"])])
     windows = cumulative[ends] - cumulative[: len(times)]
+    waited = np.array([_number(d, "wait_seconds", k) for k, d in enumerate(entries)])
+    if np.any(~np.isfinite(waited) | (waited < 0.0)):
+        k = int(np.argmax(~np.isfinite(waited) | (waited < 0.0)))
+        raise InvalidInputError(f"judge: frame {k}'s wait_seconds must be finite and at least 0")
+    queue = np.array([_number(d, "queue", k) for k, d in enumerate(entries)])
+    keyframes = steps["map"] > 0.0
     return Frames(
         count=len(entries),
         deadline=deadline,
@@ -471,4 +613,11 @@ def judge(run: runs.Run, *, window: float = WINDOW) -> Frames:
         searched=len(looped),
         looping=_spread(looped) if len(looped) else None,
         loop_load=float(np.sum(looped) / length),
+        threaded=run.threaded,
+        waited=_spread(waited),
+        asked=int(np.sum(_flags(run, "asked"))),
+        refused=int(np.sum(_flags(run, "refused"))),
+        queue=int(np.max(queue)),
+        aborted=_aborted(run),
+        backlog=None if run.threaded else backlog(times[keyframes], steps["map"][keyframes]),
     )
