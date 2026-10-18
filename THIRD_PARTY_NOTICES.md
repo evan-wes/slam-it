@@ -60,10 +60,12 @@ These are SLAM It!'s own code, under its own licence, and are credited here:
 - **ORB-SLAM, ORB-SLAM2 and ORB-SLAM3** (Mur-Artal, Montiel and Tardós, T-RO 2015; Mur-Artal and
   Tardós, T-RO 2017; Campos et al., T-RO 2021; <https://github.com/UZ-SLAMLab/ORB_SLAM3>): the
   edge rung (`src/slam_it/edge/` and its C++ and Rust cores) implements their tracking, local
-  mapping, covisibility graph and spanning tree, keyframe database and relocalisation from the
-  papers and a reading of their code, and takes many of its parameters from that code. The front
-  end follows their ORB extractor's spreading of keypoints and their matcher's thresholds and
-  rotation check, and `slam_it.foundations.stereo` follows `Frame::ComputeStereoMatches`. Where
+  mapping, covisibility graph and spanning tree, keyframe database, relocalisation, loop
+  closing and essential graph from the papers and a reading of their code, and takes many of
+  its parameters from that code. The front end follows their ORB extractor's spreading of
+  keypoints and their matcher's thresholds and rotation check; `slam_it.foundations.stereo`
+  follows `Frame::ComputeStereoMatches`, and `slam_it.foundations.sim3` and
+  `slam_it.foundations.graphs` follow `Sim3Solver` and `Optimizer`'s solves, on GTSAM. Where
   the code departs from ORB-SLAM's, its docstrings say so.
   No ORB-SLAM code is included. ORB-SLAM's code is under the GNU General Public License v3.
 - **DBoW2** (Gálvez-López and Tardós, T-RO 2012; <https://github.com/dorian3d/DBoW2>):
@@ -125,10 +127,11 @@ wheels.
 | What | Licence | Used for |
 |---|---|---|
 | Eigen 5.0.1 | MPL 2.0 | the C++ core |
+| GTSAM 4.3.0 (<https://github.com/borglab/gtsam>), built by the setup script; with it CCOLAMD, METIS and Spectra | BSD; CCOLAMD BSD 3-Clause, METIS Apache 2.0, Spectra MPL 2.0 | factor graphs: loop closing, the essential graph, global BA |
 | numpy; Pillow | BSD 3-Clause and others; MIT-CMU | the Python package |
 | PyAV 18.1, whose wheels bundle FFmpeg built with x264 and x265 | BSD 3-Clause; the bundled FFmpeg is GPL | importing videos (the `video` extra) |
 | pycolmap 4.2 (COLMAP, Ceres) | BSD 3-Clause | the BA reference (the `colmap` extra) |
-| Rust crates (nalgebra, faer, png, pyo3, numpy, pythonize, serde and their dependencies) | MIT, Apache 2.0, or either | the Rust core and its bindings |
+| Rust crates (nalgebra, faer, png, pyo3, numpy, pythonize, serde, cxx and their dependencies) | MIT, Apache 2.0, or either | the Rust core and its bindings |
 | FastAPI, pydantic, uvicorn, boto3 and botocore, httpx | MIT, MIT, BSD 3-Clause, Apache 2.0, BSD 3-Clause | the upload server |
 | three.js 0.186.0, loaded by the page from jsDelivr | MIT | the run viewer |
 | IBM Plex Sans and Mono, loaded from Google Fonts | SIL Open Font License 1.1 | the viewer's pages |
