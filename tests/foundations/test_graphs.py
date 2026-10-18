@@ -11,7 +11,7 @@ from numpy.typing import NDArray
 
 from slam_it import backends
 from slam_it.foundations import camera, graphs, se3
-from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.errors import InvalidInputError, NotConvergedError
 from tests.conftest import require_function
 
 Array = NDArray[np.float64]
@@ -58,10 +58,10 @@ def test_a_similarity_crosses_to_gtsam_and_back() -> None:
     matrix = _similarity(
         se3.exp([0, 0, 0, 0.3, -0.2, 0.5])[:3, :3], np.array([1.0, -2.0, 0.5]), 1.7
     )
-    value = graphs.to_similarity3(matrix)
+    value = graphs._to_similarity3(matrix)
     point = np.array([0.3, -0.4, 2.0])
     np.testing.assert_allclose(value.transformFrom(point), matrix[:3, :3] @ point + matrix[:3, 3])
-    np.testing.assert_allclose(graphs.from_similarity3(value), matrix, rtol=0, atol=1e-14)
+    np.testing.assert_allclose(graphs._from_similarity3(value), matrix, rtol=0, atol=1e-14)
 
 
 @pytest.mark.parametrize("model", CAMERAS)
@@ -111,7 +111,7 @@ def test_the_similarity_factors_jacobians_are_their_derivatives(
     def moved(delta: Array) -> Array:
         if fixed_scale:
             return np.asarray(gtsam.Pose3(motion).retract(delta).matrix())
-        return graphs.from_similarity3(graphs.to_similarity3(motion).retract(delta))
+        return graphs._from_similarity3(graphs._to_similarity3(motion).retract(delta))
 
     def side(first: bool) -> Callable[[Array], Array]:
         def residual(delta: Array) -> Array:
@@ -387,3 +387,94 @@ def test_bad_graphs_are_refused() -> None:
             poses, points[:1], [0], [0], [[1.0, 2.0]], [3.0], [1.0], model="pinhole",
             intrinsics=PINHOLE[1], bf=0.0, fixed=[0],
         )  # fmt: skip
+
+
+def _matches(count: int = 12) -> tuple[Array, Array, Array, Array, Array]:
+    """Return a similarity and `count` matches it carries exactly: points1, points2, pixels."""
+    name, intrinsics = PINHOLE
+    rng = np.random.default_rng(11)
+    truth = _similarity(np.eye(3), np.array([0.1, 0.0, -0.1]), 1.1)
+    points2 = np.column_stack(
+        [rng.uniform(-1, 1, count), rng.uniform(-1, 1, count), rng.uniform(2, 5, count)]
+    )
+    points1 = points2 @ truth[:3, :3].T + truth[:3, 3]
+    return (
+        truth,
+        points1,
+        points2,
+        camera.project(name, intrinsics, points1),
+        camera.project(name, intrinsics, points2),
+    )
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("bad", [[np.nan, 210.0], [np.inf, 210.0], [300.0, -np.inf]])
+def test_a_half_unseen_or_infinite_pixels2_row_is_refused(backend: str, bad: list[float]) -> None:
+    """A row of pixels2 is finite, or wholly NaN (unseen); anything else is refused (H1, L1)."""
+    chosen = require_function(backend, graphs.__name__, "refine_similarity")
+    truth, points1, points2, pixels1, pixels2 = _matches()
+    pixels2[1] = bad
+    with pytest.raises(InvalidInputError, match="pixels2"):
+        graphs.refine_similarity(
+            truth, points1, points2, pixels1, pixels2, np.ones((12, 2)), model=PINHOLE[0],
+            intrinsics=PINHOLE[1], fixed_scale=False, huber=None, backend=chosen,
+        )  # fmt: skip
+
+
+def _refine_with(**changes: object) -> None:
+    """Refine the exact matches with one argument replaced."""
+    truth, points1, points2, pixels1, pixels2 = _matches()
+    arguments: dict[str, object] = {
+        "similarity": truth, "points1": points1, "points2": points2, "pixels1": pixels1,
+        "pixels2": pixels2, "information": np.ones((12, 2)), "model": PINHOLE[0],
+        "intrinsics": PINHOLE[1], "fixed_scale": False, "huber": None,
+    }  # fmt: skip
+    arguments.update(changes)
+    graphs.refine_similarity(**arguments)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("changes", "named"),
+    [
+        ({"points1": np.zeros((0, 3)), "points2": np.zeros((0, 3)), "pixels1": np.zeros((0, 2)),
+          "pixels2": np.zeros((0, 2)), "information": np.zeros((0, 2))}, "matches"),
+        ({"points1": np.ones((11, 3))}, "matches"),
+        ({"information": np.zeros((12, 2))}, "information"),
+        ({"huber": 0.0}, "huber"),
+        ({"huber": np.nan}, "huber"),
+        ({"similarity": -np.eye(4)}, "similarity"),
+        ({"intrinsics": np.array([520.0, 515.0])}, "intrinsics"),
+    ],
+)  # fmt: skip
+def test_bad_refinements_are_refused(changes: dict[str, object], named: str) -> None:
+    """Each bad argument of a refinement is refused by name (B3's review panel, H4)."""
+    with pytest.raises(InvalidInputError, match=named):
+        _refine_with(**changes)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_iterations", 0),
+        ("max_iterations", True),
+        ("initial_damping", 0.0),
+        ("initial_damping", np.inf),
+        ("relative_tolerance", -1.0),
+        ("absolute_tolerance", np.nan),
+    ],
+)
+def test_bad_options_are_refused(field: str, value: object) -> None:
+    """Each of a solve's options is checked, and named, when made."""
+    with pytest.raises(InvalidInputError, match=field):
+        graphs.Options(**{field: value})  # type: ignore[arg-type]
+
+
+def test_a_failure_inside_gtsam_is_not_converged() -> None:
+    """GTSAM's own errors leave a solve as NotConvergedError, as the compiled cores report them."""
+    graph = gtsam.NonlinearFactorGraph()
+    unit = gtsam.noiseModel.Unit.Create(graphs.POSE_DIM)
+    graph.add(gtsam.BetweenFactorPose3(0, 5, gtsam.Pose3(), unit))  # key 5 has no value
+    values = gtsam.Values()
+    values.insert(0, gtsam.Pose3())
+    with pytest.raises(NotConvergedError, match="GTSAM failed"):
+        graphs._solve(graph, values, graphs.Options())

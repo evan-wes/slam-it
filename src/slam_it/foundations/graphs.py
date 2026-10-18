@@ -40,7 +40,15 @@ cameras until nothing was left to cost, and the map collapsed (the loop room, 20
 **Solves.** Levenberg-Marquardt, GTSAM's, driven here one ``iterate()`` at a time so that
 every language stops by the same rule (:class:`Termination`). Each ``iterate()`` linearises,
 then raises its damping ``λ`` until a step lowers the error, or gives up at GTSAM's upper
-bound (``1e5``); a step that lowers the error divides ``λ`` by 10 (GTSAM's defaults).
+bound (``1e5``); a step that lowers the error divides ``λ`` by 10 (GTSAM's defaults). An
+error GTSAM raises while solving is :class:`~slam_it.foundations.errors.NotConvergedError`,
+as the compiled backends report it.
+
+**A Sim(3) pose graph's edges are linearised to first order.** GTSAM 4.3's ``Similarity3``
+has no Jacobian of its chart's ``Local``, so ``BetweenFactor<Similarity3>`` uses the plain
+between-Jacobians, exact only at a zero error (``Pose3``'s are exact); g2o's ``EdgeSim3``, as
+ORB-SLAM runs it, differentiates numerically. On a 30-node Sim(3) ring the two solutions
+agreed within 24 µm with 2.4x scale and 20° rotation drift (B3's review panel, L4).
 """
 
 from __future__ import annotations
@@ -48,7 +56,7 @@ from __future__ import annotations
 import enum
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any, NamedTuple, Protocol
 
 import gtsam
@@ -58,7 +66,7 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it import backends
 from slam_it.foundations import camera
 from slam_it.foundations.arrays import as_batch, as_real
-from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.errors import InvalidInputError, NotConvergedError
 from slam_it.foundations.so3 import check_rotation
 
 Array = NDArray[np.float64]
@@ -137,13 +145,8 @@ class Options:
                 raise InvalidInputError(f"{name}: expected >= 0, got {value}")
 
     def as_dict(self) -> dict[str, Any]:
-        """Return the options as the compiled backends take them."""
-        return {
-            "max_iterations": self.max_iterations,
-            "initial_damping": self.initial_damping,
-            "relative_tolerance": self.relative_tolerance,
-            "absolute_tolerance": self.absolute_tolerance,
-        }
+        """Return the options as the compiled backends take them: every field, by name."""
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -292,13 +295,13 @@ def _similarity_parts(matrix: Array) -> tuple[Array, Array, float]:
     return matrix[:3, :3] / scale, matrix[:3, 3].copy(), scale
 
 
-def to_similarity3(matrix: Array) -> gtsam.Similarity3:
+def _to_similarity3(matrix: Array) -> gtsam.Similarity3:
     """Return GTSAM's ``Similarity3`` for ``[[s R, t], [0, 1]]`` (the module docstring)."""
     rotation, translation, scale = _similarity_parts(matrix)
     return gtsam.Similarity3(gtsam.Rot3(rotation), translation / scale, scale)
 
 
-def from_similarity3(value: gtsam.Similarity3) -> Array:
+def _from_similarity3(value: gtsam.Similarity3) -> Array:
     """Return ``[[s R, t], [0, 1]]`` for GTSAM's ``Similarity3`` (the module docstring)."""
     matrix = np.asarray(value.matrix(), dtype=np.float64)
     scale = 1.0 / matrix[3, 3]
@@ -352,7 +355,11 @@ class SimilarityResiduals(NamedTuple):
         ``π(S_12⁻¹ X_1) - u_2``, and its Jacobian.
     in_front1, in_front2 : bool
         Whether each carried point is in front of its camera; one that is not contributes
-        nothing (zero residual and Jacobian), and its chi-square is infinite.
+        nothing (zero residual and Jacobian), and its chi-square is infinite. Unlike bundle
+        adjustment's constant (:class:`ProjectionResidual`), a step here that carries an inlier
+        behind its camera lowers its cost to 0; the effect limits itself, as that match's
+        infinite chi-square drops it from the inliers ORB-SLAM's refinement counts, and a
+        constant would change which matches survive its two rounds (B3's review panel, L3).
     """
 
     residual1: Array
@@ -484,12 +491,21 @@ def _solve(
     params.setlambdaInitial(options.initial_damping)
     params.setRelativeErrorTol(options.relative_tolerance)
     params.setAbsoluteErrorTol(options.absolute_tolerance)
-    optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, params)
-    initial = current = float(optimizer.error())
+    # Whatever GTSAM raises (its wrapper's RuntimeError, an index or a key it cannot find, an
+    # error inside a custom factor's callback) ends the solve as NotConvergedError, as the C++
+    # and Rust cores catch every exception GTSAM throws: so a broad catch, here alone.
+    try:
+        optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, params)
+        initial = current = float(optimizer.error())
+    except Exception as failure:
+        raise NotConvergedError(f"GTSAM failed: {failure}") from failure
     termination = Termination.MAX_ITERATIONS
     iterations = 0
     while current > 0.0 and iterations < options.max_iterations:
-        optimizer.iterate()
+        try:
+            optimizer.iterate()
+        except Exception as failure:
+            raise NotConvergedError(f"GTSAM failed: {failure}") from failure
         iterations += 1
         error = float(optimizer.error())
         if error >= current and optimizer.lambda_() >= params.getlambdaUpperBound():
@@ -601,13 +617,13 @@ def _pose_graph(  # noqa: PLR0913, PLR0917 -- the graph, its kind and the option
     if similarity:
         unit = gtsam.noiseModel.Unit.Create(SIMILARITY_DIM)
         for k, pose in enumerate(poses):
-            values.insert(k, to_similarity3(pose))
+            values.insert(k, _to_similarity3(pose))
         for (i, j), relative in zip(edges, relatives, strict=True):
             graph.add(
-                gtsam.BetweenFactorSimilarity3(int(i), int(j), to_similarity3(relative), unit)
+                gtsam.BetweenFactorSimilarity3(int(i), int(j), _to_similarity3(relative), unit)
             )
         for k in fixed:
-            graph.add(gtsam.NonlinearEqualitySimilarity3(int(k), to_similarity3(poses[k])))
+            graph.add(gtsam.NonlinearEqualitySimilarity3(int(k), _to_similarity3(poses[k])))
     else:
         unit = gtsam.noiseModel.Unit.Create(POSE_DIM)
         for k, pose in enumerate(poses):
@@ -619,7 +635,7 @@ def _pose_graph(  # noqa: PLR0913, PLR0917 -- the graph, its kind and the option
     solved, summary = _solve(graph, values, options)
     out = np.stack(
         [
-            from_similarity3(solved.atSimilarity3(k))
+            _from_similarity3(solved.atSimilarity3(k))
             if similarity
             else np.asarray(solved.atPose3(k).matrix(), dtype=np.float64)
             for k in range(poses.shape[0])
@@ -674,6 +690,8 @@ def optimize_pose_graph(  # noqa: PLR0913 -- the graph, its kind, options, backe
         If a pose or relative is not of the kind (a rotation, or a rotation and a positive
         scale, over a last row of ``[0, 0, 0, 1]``), the shapes disagree, an index is out of
         range, an edge joins a pose to itself, or no pose is fixed.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while solving.
     """
     chosen = options or Options()
     checked = _poses(poses, similarity, "poses")
@@ -731,7 +749,7 @@ def _motion_matrix(values: gtsam.Values, fixed_scale: bool) -> Array:
     """Return the refined motion's ``[[s R, t], [0, 1]]`` from GTSAM's values (key 0)."""
     if fixed_scale:
         return np.asarray(values.atPose3(0).matrix(), dtype=np.float64)
-    return from_similarity3(values.atSimilarity3(0))
+    return _from_similarity3(values.atSimilarity3(0))
 
 
 def _refine(  # noqa: PLR0913, PLR0917 -- the matches, their camera and the solve
@@ -753,7 +771,7 @@ def _refine(  # noqa: PLR0913, PLR0917 -- the matches, their camera and the solv
     if fixed_scale:
         values.insert(0, gtsam.Pose3(similarity))
     else:
-        values.insert(0, to_similarity3(similarity))
+        values.insert(0, _to_similarity3(similarity))
 
     def residuals(k: int, motion: Array) -> SimilarityResiduals:
         return similarity_residuals(
@@ -852,8 +870,10 @@ def refine_similarity(  # noqa: PLR0913, PLR0917 -- the matches, their camera an
     ------
     slam_it.foundations.errors.InvalidInputError
         If the motion is not a similarity (a rigid motion with `fixed_scale`), the shapes
-        disagree, there is no match, an information or `huber` is not positive, or the camera
-        is invalid.
+        disagree, there is no match, a row of `pixels2` is neither finite nor wholly NaN, an
+        information or `huber` is not positive, or the camera is invalid.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while solving.
     """
     chosen = options or Options()
     (motion,) = _poses(np.asarray(similarity)[None], not fixed_scale, "similarity")
@@ -862,8 +882,18 @@ def refine_similarity(  # noqa: PLR0913, PLR0917 -- the matches, their camera an
     seen1, lead3 = as_batch(pixels1, (2,), "pixels1")
     raw2 = np.asarray(pixels2, dtype=np.float64)
     shaped = raw2.ndim == 2 and raw2.shape[1] == 2
-    unseen = np.isnan(raw2).all(axis=1) if shaped else np.zeros(0, dtype=bool)
-    seen2, lead4 = as_batch(raw2.copy() if not shaped else np.nan_to_num(raw2), (2,), "pixels2")
+    unseen = (
+        np.asarray(np.isnan(raw2).all(axis=1), dtype=np.bool_)
+        if shaped
+        else np.zeros(0, dtype=np.bool_)
+    )
+    if shaped and not np.isfinite(raw2[~unseen]).all():
+        raise InvalidInputError(
+            "pixels2: expected each row finite, or wholly NaN where image 2 does not observe it"
+        )
+    seen2, lead4 = as_batch(
+        np.where(unseen[:, None], 0.0, raw2) if shaped else raw2, (2,), "pixels2"
+    )
     if shaped:
         seen2[unseen] = np.nan
     if len(lead) != 1 or lead[0] == 0 or not lead == lead2 == lead3 == lead4:
@@ -1015,8 +1045,8 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     ORB-SLAM's ``GlobalBundleAdjustemnt`` as loop closing calls it (``bRobust`` false), on
     GTSAM: each observation's reprojection through the camera model, with a right column
     ``u - bf / z`` where it has one (ORB-SLAM's stereo edge), weighted by its information; the
-    cameras in `fixed` held exactly. Every point must be seen; one seen once is constrained
-    only along its ray, which the damping holds.
+    cameras in `fixed` held exactly. Every point must be seen; one seen once is free along its
+    ray and constrained across it, and the damping holds it along the ray.
 
     Parameters
     ----------
@@ -1056,6 +1086,8 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
         If a pose is not rigid, the shapes disagree, an index is out of range, a point is not
         observed, an information is not positive, a right column is given with ``bf <= 0``, or
         the camera is invalid.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while solving.
     """
     chosen = options or Options()
     checked = _poses(poses, False, "poses")
