@@ -134,7 +134,7 @@ struct Across {
 ///        counted within it, all of them together by score, descending (ties: the lower map
 ///        number, then the lower id), each tried as one map's are, the first to place the frame
 ///        ending the search.
-/// @param searched The maps, each with its database and number.
+/// @param searched The maps, each with its database and number, held by their owners.
 /// @param vocabulary The vocabulary every database's words are of.
 /// @param camera The camera.
 /// @param frame The frame.
@@ -143,7 +143,7 @@ struct Across {
 ///         for no map, two with one number, a candidate whose features are not its database's,
 ///         or an invalid camera or settings.
 [[nodiscard]] foundations::Result<Across> relocalize_across(
-    std::span<const Indexed> searched, const foundations::vocabulary::Vocabulary& vocabulary,
+    std::span<const MapRef> searched, const foundations::vocabulary::Vocabulary& vocabulary,
     const Camera& camera, const Frame& frame, const Options& options);
 
 }  // namespace slam_it::edge

@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <mutex>
@@ -300,9 +301,8 @@ class PipelineThreads {
       atlas_.record(&m);
       owner_.clear_gone();
       keyframe = m.kf_id.back();
-      const std::int64_t base = atlas_.point_base();
       for (const std::int64_t id : mapped->made) {
-        done.made.push_back(id >= 0 ? base + id : -1);
+        done.made.push_back(atlas_.point_run_id(id));
       }
       done.mapping = std::move(mapped->summary);
       done.schedule = mapped->schedule;
@@ -515,13 +515,22 @@ namespace {
 /// @param fates The frame's fates, changed.
 /// @param fate The fate.
 /// @param ids Each keypoint's point in the map, -1 where none; empty if no stage gave them.
-/// @param base The run's id of the map's point 0.
-void mark(Fates& fates, Fate fate, const std::vector<std::int64_t>& ids, std::int64_t base) {
+/// @param atlas The atlas, for the points' run ids.
+void mark(Fates& fates, Fate fate, const std::vector<std::int64_t>& ids, const Atlas& atlas) {
   for (std::size_t j = 0; j < std::min(ids.size(), fates.fate.size()); ++j) {
     if (ids[j] >= 0) {
       fates.fate[j] = fate;
-      fates.point[j] = base + ids[j];
+      fates.point[j] = atlas.point_run_id(ids[j]);
     }
+  }
+}
+
+/// @brief Ids moved on by an offset, -1 (none) kept.
+/// @param ids The ids, changed in place.
+/// @param offset The offset.
+void offset_ids(std::vector<std::int64_t>& ids, std::int64_t offset) {
+  for (std::int64_t& id : ids) {
+    id = id >= 0 ? id + offset : id;
   }
 }
 
@@ -535,6 +544,9 @@ struct Placed {
   std::vector<std::int64_t> matched;
   /// @brief The time spent waiting for the map, 0 inline.
   double waited{0.0};
+  /// @brief The number of the kept map relocalisation found the frame in, if not the one
+  ///        tracked.
+  std::optional<std::int64_t> moved;
 };
 
 /// @brief A placed frame tracked against the local map, as `refine` gives it.
@@ -616,21 +628,61 @@ Result<Initialization> initialize_monocular(TrackingState& state, const Camera& 
   return edge::initialize_monocular(camera, *state.reference, frame, pairs, options);
 }
 
-/// @brief Track the last frame against the view, or recover by PnP, or relocalise. Threaded,
-///        relocalisation reads the database with mapping held off, against the whole map, and
-///        the frame goes on with the view of where it was placed, published for the frames
-///        after it.
+/// @brief Relocalise a frame in the map tracked, and in every kept map with it (the online-SLAM
+///        design's section 14, item 2) when there are any.
+/// @param m The map tracked.
+/// @param db Its database.
+/// @param words The vocabulary.
+/// @param atlas The atlas: the map's number, and the kept maps.
+/// @param camera The camera.
+/// @param frame The frame.
+/// @param options The settings.
+/// @return The relocalisation, and the number of the kept map it placed the frame in, if not
+///         the one tracked; a stage's error.
+Result<std::pair<Relocalized, std::optional<std::int64_t>>> relocalize_everywhere(
+    const Map& m, const Database& db, const foundations::vocabulary::Vocabulary& words,
+    const Atlas& atlas, const Camera& camera, const Frame& frame, const Options& options) {
+  using Found = std::pair<Relocalized, std::optional<std::int64_t>>;
+  const std::span<const Indexed> others = atlas.kept();
+  if (others.empty()) {
+    return relocalize(m, db, words, camera, frame, options).transform([](Relocalized found) {
+      return Found{std::move(found), std::nullopt};
+    });
+  }
+  const std::int64_t number = atlas.map_id().value_or(0);
+  std::vector<MapRef> searched{{.number = number, .map = &m, .database = &db}};
+  for (const Indexed& other : others) {
+    searched.push_back({.number = other.number, .map = &other.map, .database = &other.database});
+  }
+  return relocalize_across(searched, words, camera, frame, options).transform([number](Across a) {
+    const std::optional<std::int64_t> moved =
+        a.map && *a.map != number ? a.map : std::optional<std::int64_t>();
+    if (!a.map && !a.maps.empty() && a.maps.back() != number) {
+      // The last candidate's matches are points of another map, not this one's.
+      std::ranges::fill(a.relocalized.matched, -1);
+    }
+    return Found{std::move(a.relocalized), moved};
+  });
+}
+
+/// @brief Track the last frame against the view, or recover by PnP, or relocalise, in every
+///        kept map as well. Threaded, relocalisation reads the database with mapping held off,
+///        against the whole map, and the frame goes on with the view of where it was placed,
+///        published for the frames after it.
 /// @param state Tracking's state.
 /// @param owner The map's owner, for its database and the view of a relocalised frame.
+/// @param atlas The atlas, for the kept maps.
 /// @param view What tracking reads; where it reads views, a relocalisation's replaces it.
 /// @param camera The camera.
 /// @param frame The frame.
 /// @param mode The sensor mode.
 /// @param options The settings.
-/// @return The placed frame, if any, how it was placed, the last stage's matches and the time
-///         spent waiting for the map; a stage's error.
-Result<Placed> place(const TrackingState& state, MapOwner& owner, View& view, const Camera& camera,
-                     const Frame& frame, Mode mode, const Options& options) {
+/// @return The placed frame, if any, how it was placed, the last stage's matches, the time
+///         spent waiting for the map, and the kept map relocalisation found it in; a stage's
+///         error.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the state, as Python's _place
+Result<Placed> place(const TrackingState& state, MapOwner& owner, const Atlas& atlas, View& view,
+                     const Camera& camera, const Frame& frame, Mode mode, const Options& options) {
   const Map& m = *view.map;
   if (!state.last_frame || !state.last_tracked) {
     return fail(ErrorKind::kInvalidInput, "track: no last frame to track from");
@@ -650,7 +702,8 @@ Result<Placed> place(const TrackingState& state, MapOwner& owner, View& view, co
     return Placed{.tracked = std::move(motion->tracked),
                   .summary = std::move(summary),
                   .matched = std::move(motion->matched),
-                  .waited = 0.0};
+                  .waited = 0.0,
+                  .moved = std::nullopt};
   }
   auto recovery = relocalize_locally(m, camera, frame, state.last_tracked->points, options);
   if (!recovery) {
@@ -666,36 +719,40 @@ Result<Placed> place(const TrackingState& state, MapOwner& owner, View& view, co
     return Placed{.tracked = std::move(recovery->tracked),
                   .summary = std::move(summary),
                   .matched = std::move(recovery->matched),
-                  .waited = 0.0};
+                  .waited = 0.0,
+                  .moved = std::nullopt};
   }
   const auto asked = Clock::now();
   auto held = asked;
   const auto search = [&] {
     held = Clock::now();
-    if (!owner.views()) {
-      return relocalize(*view.map, *owner.database(), *words, camera, frame, options);
-    }
     // A view holds the part of the map its frame may read: relocalisation reads the whole map,
-    // and the frame goes on with the view of where it was placed.
-    auto found = relocalize(*owner.map(), *owner.database(), *words, camera, frame, options);
-    if (found && found->tracked) {
-      view = owner.relocalized(found->tracked->points);
+    // and a frame placed in it goes on with the view of where it was placed; one placed in a
+    // kept map goes on in that map, once tracking has taken it up.
+    const Map& whole = owner.views() ? *owner.map() : *view.map;
+    auto found =
+        relocalize_everywhere(whole, *owner.database(), *words, atlas, camera, frame, options);
+    if (found && found->first.tracked && !found->second && owner.views()) {
+      view = owner.relocalized(found->first.tracked->points);
     }
     return found;
   };
   // The baseline's tracking holds the map's lock already, through its frame.
-  auto found = owner.publishing() ? owner.reading(search) : search();
-  if (!found) {
-    return std::unexpected(std::move(found.error()));
+  auto everywhere = owner.publishing() ? owner.reading(search) : search();
+  if (!everywhere) {
+    return std::unexpected(std::move(everywhere.error()));
   }
-  summary.relocalization = found->summary;
-  if (found->tracked) {
+  auto& [found, moved] = *everywhere;
+  summary.relocalization = found.summary;
+  if (found.tracked) {
     summary.placed_by = Placement::kRelocalization;
   }
-  return Placed{.tracked = std::move(found->tracked),
+  const bool placed = found.tracked.has_value();
+  return Placed{.tracked = std::move(found.tracked),
                 .summary = std::move(summary),
-                .matched = std::move(found->matched),
-                .waited = owner.publishing() ? Seconds(held - asked).count() : 0.0};
+                .matched = std::move(found.matched),
+                .waited = owner.publishing() ? Seconds(held - asked).count() : 0.0,
+                .moved = placed ? moved : std::nullopt};
 }
 
 /// @brief Track the local map from a placed frame, and count its points through the owner.
@@ -708,12 +765,12 @@ Result<Placed> place(const TrackingState& state, MapOwner& owner, View& view, co
 /// @param recent Whether a recovery was recent (more inliers needed).
 /// @param mode The sensor mode.
 /// @param options The settings.
-/// @param keyframe_base The run's id of the map's keyframe 0, for the summary.
+/// @param atlas The atlas, for the reference keyframe's run id in the summary.
 /// @return The tracked frame, if it keeps enough inliers, how the stage went, and its
 ///         matches; a stage's error.
 Result<Refined> refine(MapOwner& owner, const Map& m, const Camera& camera, const Frame& frame,
                        const Tracked& placed, bool wide, bool recent, Mode mode,
-                       const Options& options, std::int64_t keyframe_base) {
+                       const Options& options, const Atlas& atlas) {
   auto local = track_local_map(m, camera, frame, placed, mode, options, wide);
   if (!local) {
     return std::unexpected(std::move(local.error()));
@@ -722,9 +779,10 @@ Result<Refined> refine(MapOwner& owner, const Map& m, const Camera& camera, cons
     return std::unexpected(std::move(ok.error()));
   }
   Refined out{.tracked = std::nullopt,
-              .summary = edge::summary(*local, keyframe_base),
+              .summary = edge::summary(*local),
               .matched = std::move(local->matched),
               .reference = local->reference};
+  out.summary.reference = atlas.run_id(out.summary.reference);
   const std::int64_t needed =
       recent ? options.tracking.recovery_tracked : options.tracking.min_tracked;
   if (inliers(local->tracked) >= needed) {
@@ -760,32 +818,52 @@ void ask_mapping(Tracking& out, PipelineThreads* threads, bool idle, Mode mode,
   }
 }
 
+/// @brief A map taken up by tracking (`Pipeline::switch_map`): how the map left was closed,
+///        and the time spent waiting for the threads.
+using Switched = std::pair<LostSummary, double>;
+
 /// @brief Tracking's step (`slam_it.edge.pipeline._track_frame`): place a frame against its
 ///        view, track the local map, and ask for a keyframe; a frame not tracked is counted as a
-///        failure.
+///        failure, and one relocalisation found in a kept map goes on in it.
 /// @param state Tracking's state.
 /// @param owner The map's owner, given the frame's counts.
 /// @param view The map's view, read once for the frame.
+/// @param atlas The atlas: the kept maps, and the run's ids for the summary.
 /// @param camera The camera.
 /// @param frame The frame.
 /// @param mode The sensor mode.
 /// @param options The settings.
-/// @param keyframe_base The run's id of the map's keyframe 0, for the summary.
 /// @param threads The threads, asked whether mapping takes a keyframe; null inline.
+/// @param switch_to Takes up the kept map relocalisation found the frame in, leaving the map
+///        tracked, and says how it left it and how long it waited for the threads.
 /// @return How tracking went; a stage's error, or `InvalidInput` with no map.
-Result<Tracking> track_step(TrackingState& state, MapOwner& owner, View view, const Camera& camera,
-                            const Frame& frame, Mode mode, const Options& options,
-                            std::int64_t keyframe_base, PipelineThreads* threads) {
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): Python's _track_frame, step for step
+Result<Tracking> track_step(TrackingState& state, MapOwner& owner, View view, Atlas& atlas,
+                            const Camera& camera, const Frame& frame, Mode mode,
+                            const Options& options, PipelineThreads* threads,
+                            const std::function<Result<Switched>(std::int64_t)>& switch_to) {
   ++state.since_keyframe;
   if (!view.map) {
     return fail(ErrorKind::kInvalidInput, "track: no map to track against");
   }
-  auto placed = place(state, owner, view, camera, frame, mode, options);
+  auto placed = place(state, owner, atlas, view, camera, frame, mode, options);
   if (!placed) {
     return std::unexpected(std::move(placed.error()));
   }
+  auto& [where, summary, matched, waited, moved] = *placed;
+  if (moved && where) {  // placed in a kept map: relocalisation placed it
+    auto switched = switch_to(*moved);
+    if (!switched) {
+      return std::unexpected(std::move(switched.error()));
+    }
+    summary.left = switched->first;
+    waited += switched->second;
+    view = owner.relocalized(where->points);  // the map taken up, where the frame was placed
+  }
+  if (threads != nullptr) {  // the view may hold what the threads have not recorded yet
+    atlas.extend(*view.map);
+  }
   const Map& m = *view.map;
-  auto& [where, summary, matched, waited] = *placed;
   if (summary.placed_by == Placement::kLocalPnp ||
       summary.placed_by == Placement::kRelocalization) {
     state.since_recovery = 0;
@@ -807,8 +885,7 @@ Result<Tracking> track_step(TrackingState& state, MapOwner& owner, View view, co
                .refused = false,
                .queue = 0};
   if (where) {
-    auto refined =
-        refine(owner, m, camera, frame, *where, wide, recent, mode, options, keyframe_base);
+    auto refined = refine(owner, m, camera, frame, *where, wide, recent, mode, options, atlas);
     if (!refined) {
       return std::unexpected(std::move(refined.error()));
     }
@@ -843,30 +920,124 @@ Result<Tracking> track_step(TrackingState& state, MapOwner& owner, View view, co
   return out;
 }
 
-/// @brief Loop closing's step (`slam_it.edge.pipeline._close_loops`): search the newest
-///        keyframe for a loop, and correct one that closes, through the owner.
+/// @brief Loop closing's result on a keyframe: how it went, whether a loop was corrected, and
+///        how a merge moved the map's point ids on, if one was made.
+struct Looped {
+  /// @brief How it went; none when loop closing did not run.
+  std::optional<LoopSummary> summary;
+  /// @brief Whether a loop was corrected.
+  bool corrected{false};
+  /// @brief The merge's point offset, if one was made.
+  std::optional<std::int64_t> point_offset;
+};
+
+/// @brief A loop being confirmed in the active map, as it stands in the merged map
+///        (`slam_it.edge.pipeline._carried`): its ids moved on by the merge's offsets, its
+///        similarity carried into the matched map's world, `S G^-1`.
+/// @param pending The loop, changed in place.
+/// @param merged The merge.
+/// @param to_world `G`.
+void carry_through(loops::Pending& pending, const loops::Merged& merged,
+                   const Eigen::Matrix4d& to_world) {
+  pending.matched += merged.keyframe_offset;
+  pending.last += merged.keyframe_offset;
+  pending.similarity = pending.similarity * foundations::sim3::inverse(to_world);
+  offset_ids(pending.points, merged.point_offset);
+  offset_ids(pending.matched_points, merged.point_offset);
+}
+
+/// @brief Merge the map being tracked into the kept map a merge found
+///        (`slam_it.edge.pipeline._merge_maps`): the merged map is tracked on, with the matched
+///        map's number and database; the loop being confirmed is carried into it.
 /// @param state Loop closing's state.
 /// @param owner The map's owner.
+/// @param atlas The atlas, holding the matched map.
+/// @param camera The camera.
+/// @param found The merge.
+/// @param mode The sensor mode.
+/// @param options The settings.
+/// @return The merge's summary, and its point offset; a stage's error.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the maps' holders, as Python's
+Result<std::pair<loops::MergeSummary, std::int64_t>> merge_maps(LoopState& state, MapOwner& owner,
+                                                                Atlas& atlas, const Camera& camera,
+                                                                const loops::Merge& found,
+                                                                Mode mode, const Options& options) {
+  const std::span<const Indexed> others = atlas.kept();
+  const auto matched = std::ranges::find(others, found.map, &Indexed::number);
+  if (matched == others.end()) {
+    return fail(ErrorKind::kInvalidInput, "merge: the matched map is not kept");
+  }
+  Eigen::Matrix4d to_world;
+  auto merged = owner.stopped([&](Map& m) -> Result<loops::Merged> {
+    auto transform = loops::merge_transform(m, found);
+    if (!transform) {
+      return std::unexpected(std::move(transform.error()));
+    }
+    to_world = *transform;
+    return loops::merge(m, matched->map, camera, found, name(mode), options);
+  });
+  if (!merged) {
+    return std::unexpected(std::move(merged.error()));
+  }
+  Database database = atlas.merge(found.map, to_world);  // the matched map leaves the kept
+  if (auto ok = owner.take_merged(std::move(merged->map), std::move(database)); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (state.pending) {
+    carry_through(*state.pending, *merged, to_world);
+  }
+  return std::pair{std::move(merged->summary), merged->point_offset};
+}
+
+/// @brief Loop closing's step (`slam_it.edge.pipeline._close_loops`): search the newest
+///        keyframe for a loop and, with maps kept, for a merge, and make one, through the owner;
+///        a merge goes before a loop closed on the same keyframe (`loops::merge_first`).
+/// @param state Loop closing's state.
+/// @param owner The map's owner.
+/// @param atlas The atlas: the kept maps.
 /// @param camera The camera.
 /// @param mode The sensor mode.
 /// @param options The settings.
 /// @return How it went (none when loop closing is off, there is no database, or the keyframe
-///         is the map's first), and whether a loop was corrected; a stage's error.
-Result<std::pair<std::optional<LoopSummary>, bool>> close_loops(LoopState& state, MapOwner& owner,
-                                                                const Camera& camera, Mode mode,
-                                                                const Options& options) {
+///         is the map's first), whether a loop was corrected, and the merge's point offset if
+///         one was made; a stage's error.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): Python's _close_loops, step for step
+Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, const Camera& camera,
+                           Mode mode, const Options& options) {
   const std::optional<Map>& current = owner.map();
   const std::optional<Database>& db = owner.database();
   if (!current || !db || !options.loops.enabled || current->kf_id.back() == 0) {
-    return std::pair<std::optional<LoopSummary>, bool>{std::nullopt, false};
+    return Looped{};
   }
   const std::int64_t keyframe = current->kf_id.back();
   auto found = loops::detect(*current, *db, camera, keyframe, state.pending, name(mode), options);
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
+  std::optional<loops::MergeDetection> merging;
+  if (const std::span<const Indexed> others = atlas.kept(); !others.empty()) {
+    auto searched = loops::detect_merge(*current, *db, camera, keyframe, others, state.merging,
+                                        name(mode), options);
+    if (!searched) {
+      return std::unexpected(std::move(searched.error()));
+    }
+    state.merging = searched->pending;
+    *found = loops::merge_first(std::move(*found), *searched);
+    merging = std::move(*searched);
+  }
   state.pending = std::move(found->pending);
-  std::optional<loops::CorrectionSummary> correction;
+  LoopSummary summary{.detection = std::move(found->summary),
+                      .correction = std::nullopt,
+                      .merging = merging ? std::optional(merging->summary) : std::nullopt,
+                      .merge = std::nullopt};
+  if (merging && merging->merge) {
+    auto made = merge_maps(state, owner, atlas, camera, *merging->merge, mode, options);
+    if (!made) {
+      return std::unexpected(std::move(made.error()));
+    }
+    summary.merge = std::move(made->first);
+    return Looped{.summary = std::move(summary), .corrected = false, .point_offset = made->second};
+  }
   if (found->loop) {
     const loops::Loop& loop = *found->loop;
     auto fixed = owner.apply_correction(
@@ -874,11 +1045,11 @@ Result<std::pair<std::optional<LoopSummary>, bool>> close_loops(LoopState& state
     if (!fixed) {
       return std::unexpected(std::move(fixed.error()));
     }
-    correction = std::move(*fixed);
+    summary.correction = std::move(*fixed);
   }
-  const bool corrected = correction.has_value();
-  LoopSummary summary{.detection = std::move(found->summary), .correction = std::move(correction)};
-  return std::pair<std::optional<LoopSummary>, bool>{std::move(summary), corrected};
+  const bool corrected = summary.correction.has_value();
+  return Looped{
+      .summary = std::move(summary), .corrected = corrected, .point_offset = std::nullopt};
 }
 
 }  // namespace
@@ -980,8 +1151,25 @@ void follow(TrackingState& state, const Map& view, std::int64_t corrections) {
   }
 }
 
+void change_map(TrackingState& state) {
+  if (state.last_tracked) {
+    std::ranges::fill(state.last_tracked->points, -1);
+  }
+  state.velocity.reset();
+  state.lost_since.reset();
+  state.failures = std::max<std::int64_t>(state.failures, 1);
+}
+
 std::vector<std::int64_t> held(const LoopState& state) {
-  return state.pending ? loops::held(*state.pending) : std::vector<std::int64_t>{};
+  std::vector<std::int64_t> out =
+      state.pending ? loops::held(*state.pending) : std::vector<std::int64_t>{};
+  if (state.merging) {
+    out.push_back(state.merging->pending.last);
+  }
+  std::ranges::sort(out);
+  const auto [first, last] = std::ranges::unique(out);
+  out.erase(first, last);
+  return out;
 }
 
 ViewSize size_of(const Map& m) {
@@ -1135,8 +1323,8 @@ void MapOwner::clear_gone() {
   }
 }
 
-std::optional<Map> MapOwner::close() {
-  std::optional<Map> out = std::move(map_);
+std::pair<std::optional<Map>, std::optional<Database>> MapOwner::close() {
+  std::pair<std::optional<Map>, std::optional<Database>> out{std::move(map_), std::move(database_)};
   map_.reset();
   database_.reset();
   {
@@ -1148,6 +1336,21 @@ std::optional<Map> MapOwner::close() {
   const std::scoped_lock lock(counts_mutex_);
   counts_.clear();
   return out;
+}
+
+void MapOwner::resume(Map m, std::optional<Database> database) {
+  ++corrections_;  // counted first: the view made once tracking anchors carries the new count
+  map_ = std::move(m);
+  database_ = vocabulary_ ? std::move(database) : std::nullopt;
+}
+
+Result<void> MapOwner::take_merged(Map m, Database database) {
+  map_ = std::move(m);
+  if (vocabulary_) {
+    database_ = std::move(database);
+  }
+  ++corrections_;  // counted first, as a correction: the view published next carries the new count
+  return changed();
 }
 
 Result<void> MapOwner::changed() {
@@ -1269,19 +1472,19 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
     atlas.tick();
   }
   const State state = step.lost ? State::kLost : state_;
-  const std::optional<std::int64_t> map_id = atlas.map_id();
+  const std::optional<std::int64_t> map_id = step.merged_from ? step.merged_from : atlas.map_id();
   const std::optional<Tracked>& tracked = step.tracked;
   Fates fates{.fate = std::vector<Fate>(keypoint_count(frame), Fate::kUnmatched),
               .point = std::vector<std::int64_t>(keypoint_count(frame), -1)};
-  mark(fates, Fate::kRejected, step.matched, atlas.point_base());
+  mark(fates, Fate::kRejected, step.matched, atlas);
   if (tracked) {
-    mark(fates, Fate::kTracked, tracked->points, atlas.point_base());
+    mark(fates, Fate::kTracked, tracked->points, atlas);
   }
-  mark(fates, Fate::kMade, step.made, atlas.point_base());
-  if (step.lost) {  // a lost frame was tracking, so there is a map
-    if (const std::optional<Map> lost = owner.close()) {
-      step.summary.lost = close(*lost);
-    }
+  mark(fates, Fate::kMade, step.made, atlas);
+  if (step.lost && owner.map()) {  // a lost frame was tracking a map
+    step.summary.lost = leave(true);
+    tracking_ = TrackingState{};
+    state_ = State::kNotInitialized;
   }
   const Seconds took = Clock::now() - start;
   return FrameResult{.timestamp = frame.timestamp,
@@ -1332,15 +1535,42 @@ Trajectory Pipeline::trajectory() const {
       [&] { return shared_->atlas().trajectory(owner.map() ? &*owner.map() : nullptr); });
 }
 
-LostSummary Pipeline::close(const Map& m) {
-  const bool reset = std::cmp_less_equal(keyframe_count(m), options_.loss.reset_keyframes);
-  shared_->atlas().close(m, reset);
-  tracking_ = TrackingState{};
+LostSummary Pipeline::leave(bool dated) {
+  auto [m, database] = shared_->owner().close();
+  const std::size_t keyframes = m ? keyframe_count(*m) : 0;
+  const LostSummary out{.keyframes = static_cast<std::int64_t>(keyframes),
+                        .points = m ? static_cast<std::int64_t>(point_count(*m)) : 0,
+                        .reset = std::cmp_less_equal(keyframes, options_.loss.reset_keyframes)};
+  if (m) {
+    shared_->atlas().close(std::move(*m), std::move(database), out.reset, dated);
+  }
   shared_->closing() = LoopState{};  // shared with loop closing's thread, settled by now
-  state_ = State::kNotInitialized;
-  return LostSummary{.keyframes = static_cast<std::int64_t>(keyframe_count(m)),
-                     .points = static_cast<std::int64_t>(point_count(m)),
-                     .reset = reset};
+  return out;
+}
+
+Result<std::pair<LostSummary, double>> Pipeline::switch_map(std::int64_t number,
+                                                            std::unique_lock<std::mutex>& lock) {
+  double waited = 0.0;
+  if (threads_) {  // the threads end the map's work first, as for a map lost
+    const auto settling = Clock::now();
+    const bool holding = lock.owns_lock();  // the baseline's: mapping takes it to finish
+    if (holding) {
+      lock.unlock();
+    }
+    auto settled = threads_->settle(false);
+    if (holding) {
+      lock.lock();
+    }
+    if (!settled) {
+      return std::unexpected(std::move(settled.error()));
+    }
+    waited = Seconds(Clock::now() - settling).count();
+  }
+  const LostSummary left = leave(false);
+  Indexed kept = shared_->atlas().resume(number);
+  shared_->owner().resume(std::move(kept.map), std::move(kept.database));
+  change_map(tracking_);
+  return std::pair{left, waited};
 }
 
 Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
@@ -1362,7 +1592,8 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
                         .local_map = std::nullopt,
                         .mapping = std::nullopt,
                         .loop = std::nullopt,
-                        .lost = std::nullopt},
+                        .lost = std::nullopt,
+                        .left = std::nullopt},
             .matched = {},
             .made = {},
             .lost = false,
@@ -1370,7 +1601,8 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
             .asked = false,
             .refused = false,
             .queue = 0,
-            .schedule = std::nullopt};
+            .schedule = std::nullopt,
+            .merged_from = std::nullopt};
   if (!attempt->started) {
     return step;
   }
@@ -1417,18 +1649,20 @@ Result<Pipeline::Keyframed> Pipeline::make_keyframe(const Map& m, const Frame& f
   // The frame's reference is its own keyframe, placed where the frame was.
   shared_->atlas().place_keyframe(m, frame.timestamp, tracked.pose);
   const auto searching = Clock::now();
-  auto looped = close_loops(shared_->closing(), shared_->owner(), camera_, mode_, options_);
+  auto looped =
+      close_loops(shared_->closing(), shared_->owner(), shared_->atlas(), camera_, mode_, options_);
   if (!looped) {
     return std::unexpected(std::move(looped.error()));
   }
   Keyframed out{.map_seconds = mapped.count(),
                 .loop_seconds = 0.0,
-                .corrected = looped->second,
+                .corrected = looped->corrected,
                 .made = std::move(mapping->made),
-                .schedule = mapping->schedule};
-  if (looped->first) {
+                .schedule = mapping->schedule,
+                .point_offset = looped->point_offset};
+  if (looped->summary) {
     out.loop_seconds = Seconds(Clock::now() - searching).count();
-    summary.loop = std::move(looped->first);
+    summary.loop = std::move(looped->summary);
   }
   return out;
 }
@@ -1464,7 +1698,7 @@ Result<void> Pipeline::hand_over(const Frame& frame, const View& seen, const Tra
 Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   MapOwner& owner = shared_->owner();
   const auto asked = Clock::now();
-  const std::unique_lock<std::mutex> lock = owner.locked();  // the baseline's, through the frame
+  std::unique_lock<std::mutex> lock = owner.locked();  // the baseline's, through the frame
   // The baseline's tracking waits for the map's lock as ours waits for a hold: its wait.
   const double locked = lock.owns_lock() ? Seconds(Clock::now() - asked).count() : 0.0;
   // Read once for the frame: the map and the corrections it carries, published together.
@@ -1472,8 +1706,9 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   if (threads_ && view.map) {
     follow(tracking_, *view.map, view.corrections);
   }
-  auto found = track_step(tracking_, owner, std::move(view), camera_, frame, mode_, options_,
-                          shared_->atlas().keyframe_base(), threads_.get());
+  auto found = track_step(tracking_, owner, std::move(view), shared_->atlas(), camera_, frame,
+                          mode_, options_, threads_.get(),
+                          [this, &lock](std::int64_t number) { return switch_map(number, lock); });
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
@@ -1489,11 +1724,12 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
             .asked = found->asked,
             .refused = found->refused,
             .queue = found->queue,
-            .schedule = std::nullopt};
+            .schedule = std::nullopt,
+            .merged_from = std::nullopt};
   if (!found->tracked) {
     return step;
   }
-  const Tracked& tracked = *found->tracked;
+  Tracked& tracked = *found->tracked;
   step.keyframe = found->keyframe;
   if (threads_) {
     if (auto ok = hand_over(frame, found->view, tracked, found->reference, found->keyframe); !ok) {
@@ -1518,19 +1754,29 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   }
   Keyframed keyframed;
   if (found->keyframe) {
+    const std::optional<std::int64_t> before = shared_->atlas().map_id();
     auto made = make_keyframe(m, frame, tracked, step.summary);
     if (!made) {
       return std::unexpected(std::move(made.error()));
     }
     keyframed = std::move(*made);
     step.schedule = keyframed.schedule;
+    if (keyframed.point_offset) {  // the frame's ids are the merged map's now
+      step.merged_from = before;
+      offset_ids(tracked.points, *keyframed.point_offset);
+      offset_ids(step.matched, *keyframed.point_offset);
+      offset_ids(keyframed.made, *keyframed.point_offset);
+      if (owner.views()) {  // the next frame's view follows the merged map's ids
+        owner.anchor(tracked.points, m.kf_id.back());
+      }
+    }
   } else {
     shared_->atlas().place_frame(m, frame.timestamp, reference, tracked.pose);
   }
   if (auto ok = accept(tracking_, frame, tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (keyframed.corrected) {  // the last frame, the new keyframe's own, moved with it
+  if (keyframed.corrected || keyframed.point_offset) {  // the last frame, the keyframe's own, moved
     move_last(tracking_, m.kf_pose.back());
   }
   step.tracked = std::move(found->tracked);

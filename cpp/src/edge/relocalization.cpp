@@ -444,7 +444,7 @@ Result<Relocalized> relocalize(const Map& m, const Database& db,
   return out;
 }
 
-Result<Across> relocalize_across(std::span<const Indexed> searched,
+Result<Across> relocalize_across(std::span<const MapRef> searched,
                                  const foundations::vocabulary::Vocabulary& vocabulary,
                                  const Camera& camera, const Frame& frame, const Options& options) {
   if (searched.empty()) {
@@ -462,7 +462,7 @@ Result<Across> relocalize_across(std::span<const Indexed> searched,
   Across out{.map = std::nullopt, .relocalized = unplaced(*words, frame), .maps = {}};
   for (std::size_t at = 0; at < searched.size(); ++at) {
     place[searched[at].number] = at;
-    auto each = candidates(searched[at].database, searched[at].map, words->vector, options);
+    auto each = candidates(*searched[at].database, *searched[at].map, words->vector, options);
     if (!each) {
       return std::unexpected(std::move(each.error()));
     }
@@ -475,8 +475,8 @@ Result<Across> relocalize_across(std::span<const Indexed> searched,
   }
   rank(found);
   for (const Ranked& candidate : found) {
-    const Indexed& map = searched[place.at(candidate.map)];
-    auto attempt = try_candidate(map.map, map.database, camera, frame, words->quantized.nodes,
+    const MapRef& map = searched[place.at(candidate.map)];
+    auto attempt = try_candidate(*map.map, *map.database, camera, frame, words->quantized.nodes,
                                  {candidate.keyframe, candidate.score}, options);
     if (!attempt) {
       return std::unexpected(std::move(attempt.error()));

@@ -520,17 +520,17 @@ Result<eval::runs::JsonValue> detection_json(const edge::loops::DetectionSummary
                  {"confirmations", s.confirmations}});
 }
 
-/// @brief A loop's correction as JSON (`slam_it.edge.loops.CorrectionSummary.as_dict`).
-/// @param s The summary.
-/// @return Its object.
-Result<eval::runs::JsonValue> correction_json(const edge::loops::CorrectionSummary& s) {
+/// @brief A similarity as JSON: its rows.
+/// @param similarity The similarity.
+/// @return Its four rows of four numbers; `InvalidInput` for a number that is not finite.
+Result<eval::runs::JsonValue> similarity_json(const Eigen::Matrix4d& similarity) {
   std::vector<eval::runs::JsonValue> rows;
   rows.reserve(4);
   for (Eigen::Index r = 0; r < 4; ++r) {
     std::vector<eval::runs::JsonValue> row;
     row.reserve(4);
     for (Eigen::Index c = 0; c < 4; ++c) {
-      row.emplace_back(s.similarity(r, c));
+      row.emplace_back(similarity(r, c));
     }
     auto text = eval::runs::json_array(row);
     if (!text) {
@@ -538,53 +538,8 @@ Result<eval::runs::JsonValue> correction_json(const edge::loops::CorrectionSumma
     }
     rows.emplace_back(std::move(*text));
   }
-  auto similarity = eval::runs::json_array(rows);
-  if (!similarity) {
-    return std::unexpected(std::move(similarity.error()));
-  }
-  auto essential = graph_solve_json(s.essential);
-  if (!essential) {
-    return std::unexpected(std::move(essential.error()));
-  }
-  eval::runs::JsonValue ba(nullptr);
-  if (s.global_ba) {
-    auto solved = graph_solve_json(*s.global_ba);
-    if (!solved) {
-      return std::unexpected(std::move(solved.error()));
-    }
-    ba = std::move(*solved);
-  }
-  return nested({{"current", s.current},
-                 {"matched", s.matched},
-                 {"similarity", std::move(*similarity)},
-                 {"corrected", s.corrected},
-                 {"moved", s.moved},
-                 {"replaced", s.replaced},
-                 {"fused", s.fused},
-                 {"links", s.links},
-                 {"edges", s.edges},
-                 {"essential", std::move(*essential)},
-                 {"global_ba", std::move(ba)}});
-}
-
-/// @brief How loop closing went on a keyframe, as JSON
-///        (`slam_it.edge.pipeline.LoopSummary.as_dict`).
-/// @param s The summary.
-/// @return Its object.
-Result<eval::runs::JsonValue> loop_json(const edge::LoopSummary& s) {
-  auto detection = detection_json(s.detection);
-  if (!detection) {
-    return std::unexpected(std::move(detection.error()));
-  }
-  eval::runs::JsonValue correction(nullptr);
-  if (s.correction) {
-    auto corrected = correction_json(*s.correction);
-    if (!corrected) {
-      return std::unexpected(std::move(corrected.error()));
-    }
-    correction = std::move(*corrected);
-  }
-  return nested({{"detection", std::move(*detection)}, {"correction", std::move(correction)}});
+  return eval::runs::json_array(rows).transform(
+      [](eval::runs::JsonText text) { return eval::runs::JsonValue(std::move(text)); });
 }
 
 /// @brief A stage's summary as JSON, or null if the stage did not run.
@@ -599,6 +554,136 @@ Result<eval::runs::JsonValue> or_null(const std::optional<Summary>& summary, Wri
     return eval::runs::JsonValue(nullptr);
   }
   return write(*summary);
+}
+
+/// @brief A correction's similarity, essential graph and global BA as JSON: a loop's or a merge's.
+struct Spread {
+  /// @brief The similarity.
+  eval::runs::JsonValue similarity;
+  /// @brief The essential graph's solve.
+  eval::runs::JsonValue essential;
+  /// @brief Global BA's solve, or null.
+  eval::runs::JsonValue global_ba;
+};
+
+/// @brief A correction's similarity, essential graph and global BA as JSON.
+/// @param similarity The similarity.
+/// @param essential The essential graph's solve.
+/// @param global_ba Global BA's, if it ran.
+/// @return Their values; `InvalidInput` for a number that is not finite.
+Result<Spread> spread_json(const Eigen::Matrix4d& similarity,
+                           const foundations::graphs::Summary& essential,
+                           const std::optional<foundations::graphs::Summary>& global_ba) {
+  auto placed = similarity_json(similarity);
+  if (!placed) {
+    return std::unexpected(std::move(placed.error()));
+  }
+  auto graph = graph_solve_json(essential);
+  if (!graph) {
+    return std::unexpected(std::move(graph.error()));
+  }
+  auto ba = or_null(global_ba, graph_solve_json);
+  if (!ba) {
+    return std::unexpected(std::move(ba.error()));
+  }
+  return Spread{.similarity = std::move(*placed),
+                .essential = std::move(*graph),
+                .global_ba = std::move(*ba)};
+}
+
+/// @brief A loop's correction as JSON (`slam_it.edge.loops.CorrectionSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> correction_json(const edge::loops::CorrectionSummary& s) {
+  auto spread = spread_json(s.similarity, s.essential, s.global_ba);
+  if (!spread) {
+    return std::unexpected(std::move(spread.error()));
+  }
+  return nested({{"current", s.current},
+                 {"matched", s.matched},
+                 {"similarity", std::move(spread->similarity)},
+                 {"corrected", s.corrected},
+                 {"moved", s.moved},
+                 {"replaced", s.replaced},
+                 {"fused", s.fused},
+                 {"links", s.links},
+                 {"edges", s.edges},
+                 {"essential", std::move(spread->essential)},
+                 {"global_ba", std::move(spread->global_ba)}});
+}
+
+/// @brief A merge's welding BA as JSON (`slam_it.edge.loops.WeldSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> weld_json(const edge::loops::WeldSummary& s) {
+  auto first = graph_solve_json(s.first);
+  if (!first) {
+    return std::unexpected(std::move(first.error()));
+  }
+  auto second = or_null(s.second, graph_solve_json);
+  if (!second) {
+    return std::unexpected(std::move(second.error()));
+  }
+  return nested({{"keyframes", s.keyframes},
+                 {"held", s.held},
+                 {"points", s.points},
+                 {"observations", s.observations},
+                 {"outliers", s.outliers},
+                 {"forgotten", s.forgotten},
+                 {"first", std::move(*first)},
+                 {"second", std::move(*second)}});
+}
+
+/// @brief A merge as JSON (`slam_it.edge.loops.MergeSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> merge_json(const edge::loops::MergeSummary& s) {
+  auto spread = spread_json(s.similarity, s.essential, s.global_ba);
+  if (!spread) {
+    return std::unexpected(std::move(spread.error()));
+  }
+  auto weld = weld_json(s.weld);
+  if (!weld) {
+    return std::unexpected(std::move(weld.error()));
+  }
+  return nested({{"map", s.map},
+                 {"current", s.current},
+                 {"matched", s.matched},
+                 {"similarity", std::move(spread->similarity)},
+                 {"window", s.window},
+                 {"matched_window", s.matched_window},
+                 {"fused", s.fused},
+                 {"weld", std::move(*weld)},
+                 {"edges", s.edges},
+                 {"essential", std::move(spread->essential)},
+                 {"global_ba", std::move(spread->global_ba)}});
+}
+
+/// @brief How loop closing went on a keyframe, as JSON
+///        (`slam_it.edge.pipeline.LoopSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> loop_json(const edge::LoopSummary& s) {
+  auto detection = detection_json(s.detection);
+  if (!detection) {
+    return std::unexpected(std::move(detection.error()));
+  }
+  auto correction = or_null(s.correction, correction_json);
+  if (!correction) {
+    return std::unexpected(std::move(correction.error()));
+  }
+  auto merging = or_null(s.merging, detection_json);
+  if (!merging) {
+    return std::unexpected(std::move(merging.error()));
+  }
+  auto merge = or_null(s.merge, merge_json);
+  if (!merge) {
+    return std::unexpected(std::move(merge.error()));
+  }
+  return nested({{"detection", std::move(*detection)},
+                 {"correction", std::move(*correction)},
+                 {"merging", std::move(*merging)},
+                 {"merge", std::move(*merge)}});
 }
 
 /// @brief How a frame's stages went, as a run records it
@@ -622,7 +707,7 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
   const auto lost = [](const edge::LostSummary& s) {
     return nested({{"keyframes", s.keyframes}, {"points", s.points}, {"reset", s.reset}});
   };
-  const std::array<std::pair<const char*, Result<JsonValue>>, 8> stages = {{
+  const std::array<std::pair<const char*, Result<JsonValue>>, 9> stages = {{
       {"init", or_null(summary.init, init_json)},
       {"motion", or_null(summary.motion, motion)},
       {"pnp", or_null(summary.pnp, pnp_json)},
@@ -631,6 +716,7 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
       {"mapping", or_null(summary.mapping, mapping_json)},
       {"loop", or_null(summary.loop, loop_json)},
       {"lost", or_null(summary.lost, lost)},
+      {"left", or_null(summary.left, lost)},
   }};
   eval::runs::JsonObject out;
   out.emplace_back("placed_by", summary.placed_by ? name_json(edge::name(*summary.placed_by))
@@ -737,6 +823,7 @@ Result<void> record_trajectory(eval::runs::Run& out, const edge::Trajectory& tra
     out.poses.push_back(*final_pose);
     out.tracked_poses.push_back(*tracked_pose);
     out.pose_maps.push_back(trajectory.maps[i]);
+    out.tracked_maps.push_back(trajectory.tracked_maps[i]);
   }
   return {};
 }
@@ -761,6 +848,7 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   out.keyframe_parents = lives.keyframe_parents;
   out.keyframe_links = lives.keyframe_links;
   out.keyframe_loops = lives.keyframe_loops;
+  out.keyframe_merges = lives.keyframe_merges;
   out.point_maps = lives.point_maps;
   out.keyframe_maps = lives.keyframe_maps;
   return {};

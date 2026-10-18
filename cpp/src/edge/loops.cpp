@@ -2558,6 +2558,12 @@ Detection merge_first(Detection loop, const MergeDetection& merging) {
       .pending = std::nullopt, .loop = std::nullopt, .summary = std::move(loop.summary)};
 }
 
+Result<Eigen::Matrix4d> merge_transform(const Map& active, const Merge& found) {
+  return checked_keyframe_row(active, found.loop.current).transform([&](std::size_t row) {
+    return Eigen::Matrix4d(sim3::inverse(found.loop.similarity) * active.kf_pose[row]);
+  });
+}
+
 // NOLINTNEXTLINE(readability-function-cognitive-complexity): Python's _merge, step for step
 Result<Merged> merge(const Map& active, const Map& matched, const Camera& camera,
                      const Merge& found, const std::string& mode, const Options& options) {
@@ -2576,7 +2582,8 @@ Result<Merged> merge(const Map& active, const Map& matched, const Camera& camera
   }
   const bool fixed_scale = mode != "monocular";
   const double scale = fixed_scale ? 1.0 : scale_of(region.similarity);
-  const Eigen::Matrix4d to_matched = sim3::inverse(region.similarity) * active.kf_pose[*placed_row];
+  const Eigen::Matrix4d to_matched =
+      sim3::inverse(region.similarity) * active.kf_pose[*placed_row];  // merge_transform's G
   const std::int64_t keyframe_offset = matched.next_kf_id;
   const std::int64_t point_offset = matched.next_pt_id;
   Map moved = active;

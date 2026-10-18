@@ -298,17 +298,6 @@ Result<MergeCandidates> merge_candidates(const foundations::vocabulary::BowVecto
   return out;
 }
 
-Result<void> check_numbers(std::span<const Indexed> maps, const char* name) {
-  std::set<std::int64_t> numbers;
-  for (const Indexed& map : maps) {
-    if (!numbers.insert(map.number).second) {
-      return fail(ErrorKind::kInvalidInput,
-                  std::string(name) + ": expected each map once, by its number");
-    }
-  }
-  return {};
-}
-
 void rank(std::vector<Ranked>& found) {
   std::ranges::sort(found, [](const Ranked& a, const Ranked& b) {
     return a.score > b.score ||

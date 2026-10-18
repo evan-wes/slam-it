@@ -501,6 +501,16 @@ struct Merged {
   MergeSummary summary;
 };
 
+/// @brief `G`, the similarity carrying a merge's active map into the matched map's world
+///        (`slam_it.edge.loops.merge_transform`): `S^-1 T`, `S` the merge's similarity placing
+///        the current keyframe in the matched map's world, `T` its pose in the active map's; a
+///        point `p` of the active map goes to `G p`.
+/// @param active The active map, holding the merge's current keyframe.
+/// @param found The merge.
+/// @return `G`; `InvalidInput` if the active map does not hold the current keyframe.
+[[nodiscard]] foundations::Result<Eigen::Matrix4d> merge_transform(const Map& active,
+                                                                   const Merge& found);
+
 /// @brief Merge the active map into the one it matched (`slam_it.edge.loops.merge`,
 ///        `MergeLocal` as ORB-SLAM3's paper gives it; the Python module's docstring states the
 ///        steps).

@@ -7,7 +7,9 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <span>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -112,12 +114,34 @@ struct Indexed {
   Database database;
 };
 
+/// @brief A map with its keyframe database and number, held elsewhere: an `Indexed` by
+///        reference, for a search over maps owned apart (the one tracked and the kept ones).
+struct MapRef {
+  /// @brief The map's number.
+  std::int64_t number{0};
+  /// @brief The map.
+  const Map* map{nullptr};
+  /// @brief Its keyframe database, holding every keyframe of the map.
+  const Database* database{nullptr};
+};
+
 /// @brief Check that no two maps share a number.
+/// @tparam Numbered `Indexed` or `MapRef`.
 /// @param maps The maps.
 /// @param name The argument's name, for the message.
 /// @return Nothing, or `InvalidInput` for a number given twice.
-[[nodiscard]] foundations::Result<void> check_numbers(std::span<const Indexed> maps,
-                                                      const char* name);
+template <typename Numbered>
+[[nodiscard]] foundations::Result<void> check_numbers(std::span<const Numbered> maps,
+                                                      const char* name) {
+  std::set<std::int64_t> numbers;
+  for (const Numbered& map : maps) {
+    if (!numbers.insert(map.number).second) {
+      return foundations::fail(foundations::ErrorKind::kInvalidInput,
+                               std::string(name) + ": expected each map once, by its number");
+    }
+  }
+  return {};
+}
 
 /// @brief A candidate of one of several maps.
 struct Ranked {
