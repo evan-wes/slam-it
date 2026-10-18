@@ -13,6 +13,10 @@ the other two languages, reading the same contracts, so the three can never disa
 - Files: the rungs a forbidden contract keeps from Python's file modules (``json``, ``io``,
   ...) include no C++ file header (``<fstream>``, ``<filesystem>``, ``<cstdio>``) and name no
   ``std::fs`` in Rust outside their tests (:func:`check_file_io`).
+- Confined libraries: a library a forbidden contract keeps from all of ``slam_it`` but the
+  modules whose imports it ignores (GTSAM, behind ``foundations.graphs``) has its C++ headers
+  included only by those modules' files and their Rust crates' C++ bridges
+  (:func:`check_confined`).
 - Rust: every crate under ``rust/`` except the ``slam-it-py`` bindings crate -- listed
   workspace members and the implicit ones Cargo adds for path dependencies alike -- is a
   rung crate named ``slam-it-<rung>``. It may only depend on the crates of the rungs it may
@@ -105,6 +109,8 @@ _FILE_MODULES = frozenset({"json", "hashlib", "io", "os", "pathlib", "pickle", "
 files, and :func:`check_file_io` holds their C++ and Rust to the same."""
 _CPP_FILE_HEADERS = frozenset({"cstdio", "filesystem", "fstream", "stdio.h"})
 """The C++ headers that read and write files."""
+_CONFINED_HEADERS = {"gtsam": "gtsam/"}
+"""Libraries a forbidden contract may confine to some modules, by their C++ headers' prefix."""
 _RUST_FILE_IO = re.compile(r"\bstd\s*::\s*(?:fs\b|\{[^}]*\bfs\b)")
 """A Rust path to ``std::fs``, direct or in a ``use std::{...}`` group."""
 
@@ -911,6 +917,92 @@ def check_file_io(root: Path, rungs: frozenset[str]) -> Iterator[Violation]:
                 )
 
 
+def confined_libraries(pyproject: dict[str, Any]) -> dict[str, frozenset[tuple[str, ...]]]:
+    """Return the modules each confined library is kept to, from the forbidden contracts.
+
+    A contract that forbids all of ``slam_it`` a library of :data:`_CONFINED_HEADERS` confines
+    it to the modules whose imports of it the contract ignores
+    (``slam_it.foundations.graphs -> gtsam``).
+
+    Parameters
+    ----------
+    pyproject : dict
+        The parsed ``pyproject.toml``.
+
+    Returns
+    -------
+    dict of str to frozenset of tuple of str
+        Each confined library's modules, as their path below ``slam_it``
+        (``("foundations", "graphs")``).
+    """
+    out: dict[str, frozenset[tuple[str, ...]]] = {}
+    for contract in pyproject["tool"]["importlinter"]["contracts"]:
+        if contract["type"] != "forbidden" or contract["source_modules"] != [_PACKAGE]:
+            continue
+        for library in set(contract["forbidden_modules"]) & set(_CONFINED_HEADERS):
+            ignored = (
+                [part.strip() for part in line.split("->")]
+                for line in contract.get("ignore_imports", [])
+            )
+            out[library] = frozenset(
+                tuple(source.split(".")[1:]) for source, target in ignored if target == library
+            )
+    return out
+
+
+def check_confined(
+    root: Path, confined: dict[str, frozenset[tuple[str, ...]]]
+) -> Iterator[Violation]:
+    """Check that a confined library's C++ headers are included only by its modules' files.
+
+    A module's files are its C++ header and source (``cpp/include/slam_it/<rung>/<module>.hpp``,
+    ``cpp/src/<rung>/<module>.cpp``) and its crate's C++ bridge
+    (``rust/slam-it-<rung>/cxx/<module>_bridge.{hpp,cpp}``); every other C++ file in the
+    repository, tests included, includes none of the library's headers.
+
+    Parameters
+    ----------
+    root : pathlib.Path
+        The repository root.
+    confined : dict of str to frozenset of tuple of str
+        Each confined library's modules, from :func:`confined_libraries`.
+
+    Yields
+    ------
+    Violation
+        Each include of a confined library's header outside its modules' files.
+    """
+    sources = [p for p in sorted((root / "cpp").rglob("*")) if p.suffix in _CPP_SUFFIXES]
+    for cxx in sorted((root / "rust").glob("slam-it-*/cxx")):
+        sources += [p for p in sorted(cxx.rglob("*")) if p.suffix in _CPP_SUFFIXES]
+    for source in sources:
+        relative = source.relative_to(root)
+        text = source.read_text()
+        for match in _ANY_INCLUDE.finditer(text):
+            for library, modules in sorted(confined.items()):
+                if match.group(1) != "<" or not match.group(2).startswith(
+                    _CONFINED_HEADERS[library]
+                ):
+                    continue
+                if _native_module(relative) not in modules:
+                    line = text.count("\n", 0, match.start()) + 1
+                    names = ", ".join(sorted(".".join(m) for m in modules))
+                    yield Violation(f"{relative}:{line}", f"{library} is included only by {names}")
+
+
+def _native_module(relative: Path) -> tuple[str, ...] | None:
+    """Return the module a C++ file or Rust C++ bridge is part of, or None for any other file."""
+    parts = relative.parts
+    if parts[0] == "rust" and len(parts) == 4 and parts[2] == "cxx":
+        rung = parts[1].removeprefix("slam-it-").replace("-", "_")
+        stem = Path(parts[3]).stem
+        return (rung, stem.removesuffix("_bridge")) if stem.endswith("_bridge") else None
+    for module_root in _CPP_MODULE_ROOTS:
+        if relative.is_relative_to(module_root):
+            return _module_path(relative.relative_to(module_root))
+    return None
+
+
 def main(argv: list[str]) -> int:
     """Run every check and report violations.
 
@@ -933,6 +1025,7 @@ def main(argv: list[str]) -> int:
         *check_rust_internal(root, internal_orders(pyproject)),
         *check_rust(root, allowed),
         *check_file_io(root, file_reading_rungs(pyproject)),
+        *check_confined(root, confined_libraries(pyproject)),
     ]
     for violation in violations:
         print(f"{violation.location}: {violation.message}")

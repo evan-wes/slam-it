@@ -499,3 +499,41 @@ def test_a_rung_kept_from_files_reads_none_natively(
     if reported:
         assert found[0].location == f"{path}:1"
         assert "reads no files" in found[0].message
+
+
+def test_gtsam_is_confined_to_rung_0s_graphs() -> None:
+    """The forbidden contract over gtsam leaves it to foundations.graphs alone."""
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
+    assert check_layers.confined_libraries(pyproject) == {"gtsam": {("foundations", "graphs")}}
+
+
+@pytest.mark.parametrize(
+    ("path", "text", "reported"),
+    [
+        ("cpp/src/foundations/graphs.cpp", "#include <gtsam/geometry/Pose3.h>\n", False),
+        ("cpp/include/slam_it/foundations/graphs.hpp", "#include <gtsam/inference/Key.h>\n", False),
+        (
+            "rust/slam-it-foundations/cxx/graphs_bridge.cpp",
+            "#include <gtsam/nonlinear/Values.h>\n",
+            False,
+        ),
+        ("cpp/src/foundations/sim3.cpp", "#include <gtsam/geometry/Similarity3.h>\n", True),
+        ("cpp/src/edge/loops.cpp", "#include <gtsam/geometry/Pose3.h>\n", True),
+        ("cpp/tests/foundations/test_graphs.cpp", "#include <gtsam/geometry/Pose3.h>\n", True),
+        ("rust/slam-it-edge/cxx/loops_bridge.cpp", "#include <gtsam/geometry/Pose3.h>\n", True),
+        ("cpp/src/edge/loops.cpp", '#include "slam_it/foundations/graphs.hpp"\n', False),
+    ],
+)
+def test_only_graphs_includes_gtsam_natively(
+    fake_repo: Path, path: str, text: str, reported: bool
+) -> None:
+    """A GTSAM header outside graphs' C++ files and the Rust crate's graphs bridge is reported."""
+    _write(fake_repo, path, text)
+    if path != "cpp/include/slam_it/foundations/graphs.hpp":
+        _write(fake_repo, "cpp/include/slam_it/foundations/graphs.hpp", "")
+    pyproject = tomllib.loads((fake_repo / "pyproject.toml").read_text())
+    found = list(check_layers.check_confined(fake_repo, check_layers.confined_libraries(pyproject)))
+    assert bool(found) == reported
+    if reported:
+        assert found[0].location == f"{path}:1"
+        assert found[0].message == "gtsam is included only by foundations.graphs"

@@ -275,6 +275,16 @@ source_modules = ["slam_it"]
 forbidden_modules = ["PIL"]
 ignore_imports = ["slam_it.eval.images -> PIL"]
 
+# GTSAM stands behind rung 0's factor graphs alone (the ladder; B3's review panel, A10): no other
+# module imports it, and graphs' own converters to its types are private. check_layers.py holds
+# C++'s includes of <gtsam/...> to graphs.cpp and the Rust crate's bridge the same way.
+[[tool.importlinter.contracts]]
+name = "Only foundations.graphs may import gtsam"
+type = "forbidden"
+source_modules = ["slam_it"]
+forbidden_modules = ["gtsam"]
+ignore_imports = ["slam_it.foundations.graphs -> gtsam"]
+
 # The algorithm rungs take arrays, never files: none imports what reads, finds or hashes one.
 # Eval reads their files for them (a vocabulary's folder in slam_it.eval.vocabularies, the run
 # format in slam_it.eval.runs), as its native libraries do for the C++ and Rust cores, which
