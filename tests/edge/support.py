@@ -71,9 +71,11 @@ def words_for(options: Options) -> vocabulary.Vocabulary | None:
     Returns
     -------
     slam_it.foundations.vocabulary.Vocabulary or None
-        The committed vocabulary with ``relocalization.enabled`` on, None with it off.
+        The committed vocabulary with ``relocalization.enabled`` or ``loops.enabled`` on, None
+        with both off.
     """
-    return vocabularies.default() if options.relocalization.enabled else None
+    needed = options.relocalization.enabled or options.loops.enabled
+    return vocabularies.default() if needed else None
 
 
 def assert_close(

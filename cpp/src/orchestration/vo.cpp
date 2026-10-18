@@ -962,11 +962,14 @@ Result<void> check(const Request& request) {
   if (request.first < 0 || request.count.value_or(0) < 0) {
     return fail(ErrorKind::kInvalidInput, "first, count: must be at least 0");
   }
-  if (request.options.relocalization.enabled && !request.vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "--vocabulary: relocalization.enabled needs one");
+  const bool needed = request.options.relocalization.enabled || request.options.loops.enabled;
+  if (needed && !request.vocabulary) {
+    return fail(ErrorKind::kInvalidInput,
+                "--vocabulary: relocalization.enabled or loops.enabled needs one");
   }
-  if (!request.options.relocalization.enabled && request.vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "--vocabulary: given, but relocalization.enabled is off");
+  if (!needed && request.vocabulary) {
+    return fail(ErrorKind::kInvalidInput,
+                "--vocabulary: given, but relocalization.enabled and loops.enabled are both off");
   }
   return edge::check_options(request.options);
 }

@@ -66,8 +66,8 @@ struct Request {
   edge::Options options;
   /// @brief Whether the run records each frame's keypoints, with their fates.
   bool record_features{false};
-  /// @brief The vocabulary's folder: required with `relocalization.enabled` on, refused with it
-  ///        off.
+  /// @brief The vocabulary's folder: required with `relocalization.enabled` or `loops.enabled`
+  ///        on, refused with both off.
   std::optional<std::string> vocabulary;
 };
 

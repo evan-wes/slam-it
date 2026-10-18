@@ -722,40 +722,50 @@ def test_the_vocabulary_and_a_flag_setting_cross_the_command_line() -> None:
 
 
 @pytest.mark.parametrize(
-    ("relocalize", "vocabulary", "message"),
+    ("relocalize", "close_loops", "vocabulary", "message"),
     [
-        (True, None, "--vocabulary: relocalization.enabled needs one"),
-        (False, Path("words"), "--vocabulary: given, but relocalization.enabled is off"),
+        (True, False, None, "--vocabulary: relocalization.enabled or loops.enabled needs one"),
+        (False, True, None, "--vocabulary: relocalization.enabled or loops.enabled needs one"),
+        (
+            False, False, Path("words"),
+            "--vocabulary: given, but relocalization.enabled and loops.enabled are both off",
+        ),
     ],
-)
+)  # fmt: skip
 def test_check_refuses_a_vocabulary_missing_or_unasked_for(
-    relocalize: bool, vocabulary: Path | None, message: str
+    relocalize: bool, close_loops: bool, vocabulary: Path | None, message: str
 ) -> None:
-    """Relocalising needs a vocabulary; one given with relocalisation off is refused."""
+    """Relocalising or closing loops needs a vocabulary; one given doing neither is refused."""
+    settings = {"relocalization.enabled": relocalize, "loops.enabled": close_loops}
     request = vo.Request(
         "tum", SEQUENCES / "tum_camera", "rgbd", Path("out"),
-        options=Options().with_settings({"relocalization.enabled": relocalize}),
-        vocabulary=vocabulary,
+        options=Options().with_settings(settings), vocabulary=vocabulary,
     )  # fmt: skip
     with pytest.raises(InvalidInputError, match=re.escape(message)):
         vo.check(request)
 
 
-def test_run_relocalises_with_the_committed_vocabulary_unless_told_otherwise(
+def test_run_keeps_a_database_with_the_committed_vocabulary_unless_told_otherwise(
     tmp_path: Path,
 ) -> None:
-    """Unnamed, a relocalising run's vocabulary is the committed one, which it records.
+    """Unnamed, the vocabulary of a run relocalising or closing loops is the committed one.
 
-    Off, none is recorded, and one given is refused before anything runs.
+    The run records it, loop closing alone included (B3's review panel, H7). With both off, none
+    is recorded, and one given is refused before anything runs.
     """
     on = vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "on", count=0)
     assert on.vocabulary == vocabularies.record(vocabularies.DEFAULT)
-    off_options = Options().with_settings({"relocalization.enabled": False})
+    loops_only = vo.run(
+        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "loops", count=0,
+        options=Options().with_settings({"relocalization.enabled": False}),
+    )  # fmt: skip
+    assert loops_only.vocabulary == vocabularies.record(vocabularies.DEFAULT)
+    off_options = Options().with_settings({"relocalization.enabled": False, "loops.enabled": False})
     off = vo.run(
         "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "off", count=0, options=off_options
     )
     assert off.vocabulary is None
-    with pytest.raises(InvalidInputError, match=r"given, but relocalization\.enabled is off"):
+    with pytest.raises(InvalidInputError, match=r"loops\.enabled are both off"):
         vo.run(
             "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "refused", count=0,
             options=off_options, vocabulary=vocabularies.DEFAULT,
@@ -802,20 +812,23 @@ def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
 ) -> None:
     """A vocabulary missing, unasked for or foreign: every program fails the run and writes none.
 
-    Relocalising without a vocabulary, given one with relocalisation off, or given one of another
-    descriptor, every program exits 3 and says why (review panel findings A1 and run 2's H17:
-    before B1's fixes, the native programs read a foreign vocabulary and exited 0).
+    Relocalising without a vocabulary, given one with relocalisation and loop closing off, or
+    given one of another descriptor, every program exits 3 and says why (review panel findings A1
+    and run 2's H17: before B1's fixes, the native programs read a foreign vocabulary and exited
+    0).
     """
     out = tmp_path / "run"
     request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", out, count=0)
-    message = "--vocabulary: relocalization.enabled needs one"
+    message = "--vocabulary: relocalization.enabled or loops.enabled needs one"
     if refused == "unasked":
         request = replace(
             request,
-            options=Options().with_settings({"relocalization.enabled": False}),
+            options=Options().with_settings(
+                {"relocalization.enabled": False, "loops.enabled": False}
+            ),
             vocabulary=vocabularies.DEFAULT,
         )
-        message = "--vocabulary: given, but relocalization.enabled is off"
+        message = "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
     elif refused == "foreign":
         folder = _foreign_vocabulary(tmp_path / "foreign")
         request = replace(request, vocabulary=folder)

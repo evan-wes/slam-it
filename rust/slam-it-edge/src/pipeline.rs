@@ -364,9 +364,9 @@ pub struct Pipeline {
     previous: Vec<[f64; 2]>,
     /// Frames in a row not tracked.
     failures: usize,
-    /// The vocabulary, when relocalising.
+    /// The vocabulary, when relocalising or closing loops.
     vocabulary: Option<Vocabulary>,
-    /// The map's keyframe database, when relocalising and a map exists.
+    /// The map's keyframe database, when relocalising or closing loops and a map exists.
     database: Option<Database>,
     /// The first failed frame's time, while the track is recently lost.
     lost_since: Option<f64>,
@@ -403,7 +403,7 @@ impl Pipeline {
     /// * `camera` - The camera.
     /// * `options` - The settings.
     /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalization.enabled`
-    ///   on, refused with it off.
+    ///   or `loops.enabled` on, refused with both off.
     ///
     /// # Returns
     ///
@@ -412,7 +412,8 @@ impl Pipeline {
     /// # Errors
     ///
     /// `InvalidInput` for an invalid camera or settings, a stereo or RGB-D camera without a
-    /// baseline, or a vocabulary missing while relocalising or given while not.
+    /// baseline, or a vocabulary missing while relocalising or closing loops, or given while
+    /// doing neither.
     pub fn new(
         mode: Mode,
         camera: Camera,
@@ -426,16 +427,17 @@ impl Pipeline {
                 format!("camera.baseline: {} needs a positive baseline", mode.name()),
             );
         }
-        if options.relocalization.enabled && vocabulary.is_none() {
+        let needed = options.relocalization.enabled || options.loops.enabled;
+        if needed && vocabulary.is_none() {
             return fail(
                 ErrorKind::InvalidInput,
-                "vocabulary: relocalization.enabled needs one",
+                "vocabulary: relocalization.enabled or loops.enabled needs one",
             );
         }
-        if !options.relocalization.enabled && vocabulary.is_some() {
+        if !needed && vocabulary.is_some() {
             return fail(
                 ErrorKind::InvalidInput,
-                "vocabulary: given, but relocalization.enabled is off",
+                "vocabulary: given, but relocalization.enabled and loops.enabled are both off",
             );
         }
         Ok(Self {
@@ -1007,7 +1009,7 @@ impl Pipeline {
     /// A quantisation's error.
     fn sync_database(&self, database: &mut Database, m: &Map) -> Result<()> {
         let Some(vocabulary) = &self.vocabulary else {
-            return Ok(()); // not relocalising
+            return Ok(()); // no keyframe database
         };
         let culled: Vec<i64> = database
             .keyframes
@@ -1082,9 +1084,12 @@ impl Pipeline {
             &self.options,
         )?;
         summary.pnp = Some(recovery.summary);
-        let (Some(database), Some(vocabulary), None) =
-            (&self.database, &self.vocabulary, &recovery.tracked)
-        else {
+        let (Some(database), Some(vocabulary), None, true) = (
+            &self.database,
+            &self.vocabulary,
+            &recovery.tracked,
+            self.options.relocalization.enabled,
+        ) else {
             // Placed by the fallback, or not relocalising.
             if recovery.tracked.is_some() {
                 summary.placed_by = Some(Placement::LocalPnp);

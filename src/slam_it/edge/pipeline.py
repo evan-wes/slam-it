@@ -40,8 +40,9 @@
    (:func:`slam_it.edge.loops.correct`), and the last frame, the keyframe's own, moved with its
    keyframe, as ORB-SLAM's tracking places its last frame by its reference keyframe.
 
-**The keyframe database** (:class:`slam_it.edge.database.Database`), kept only when
-relocalising, holds the words of the map being tracked, with the pipeline's vocabulary: a map's
+**The keyframe database** (:class:`slam_it.edge.database.Database`), kept whenever relocalisation
+or loop closing is on (B3's review panel, H7: ORB-SLAM always keeps its ``KeyFrameDatabase``),
+holds the words of the map being tracked, with the pipeline's vocabulary: a map's
 first keyframes enter it when the map starts, a keyframe made by mapping when it is mapped
 (timed as mapping, as ORB-SLAM computes a keyframe's words in its local-mapping thread), and a
 culled keyframe leaves it. A map closed takes its database with it.
@@ -476,7 +477,7 @@ class Pipeline:
         The settings.
     vocabulary : slam_it.foundations.vocabulary.Vocabulary or None
         The vocabulary the keyframe database's words are of: required with
-        ``relocalization.enabled`` on, refused with it off.
+        ``relocalization.enabled`` or ``loops.enabled`` on, refused with both off.
     state : State
         Where the pipeline is: never :attr:`State.LOST`, which a lost frame's result has.
     map : Map or None
@@ -531,16 +532,19 @@ class Pipeline:
         ------
         slam_it.foundations.errors.InvalidInputError
             If the mode is unknown, a stereo or RGB-D camera has no baseline, or a vocabulary
-            is missing while relocalising, or given while not.
+            is missing while relocalising or closing loops, or given while doing neither.
         """
         if self.mode not in MODES:
             raise InvalidInputError(f"mode: expected one of {MODES}, got {self.mode!r}")
         if self.mode != "monocular" and not self.camera.baseline > 0.0:
             raise InvalidInputError(f"camera.baseline: {self.mode} needs a positive baseline")
-        if self.options.relocalization.enabled and self.vocabulary is None:
-            raise InvalidInputError("vocabulary: relocalization.enabled needs one")
-        if not self.options.relocalization.enabled and self.vocabulary is not None:
-            raise InvalidInputError("vocabulary: given, but relocalization.enabled is off")
+        needed = self.options.relocalization.enabled or self.options.loops.enabled
+        if needed and self.vocabulary is None:
+            raise InvalidInputError("vocabulary: relocalization.enabled or loops.enabled needs one")
+        if not needed and self.vocabulary is not None:
+            raise InvalidInputError(
+                "vocabulary: given, but relocalization.enabled and loops.enabled are both off"
+            )
 
     def extraction(self) -> orb.Options:
         """Return the extraction settings the next frame should be built with.
@@ -887,7 +891,7 @@ class Pipeline:
         if recovery.tracked is not None:
             placed_by = Placement.LOCAL_PNP
             return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched
-        if self._database is None:  # not relocalising
+        if self._database is None or not options.relocalization.enabled:
             return None, summary, recovery.matched
         found = relocalization.relocalize(m, self._database, self.camera, frame, options)
         summary = replace(summary, relocalization=found.summary)

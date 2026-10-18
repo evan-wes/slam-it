@@ -40,7 +40,8 @@ edge::Options small_scene() {
   edge::Options out{
       .initialization = {.min_features = 20, .min_features_depth = 20, .min_matches = 20}};
   out.relocalization.enabled =
-      false;  // A2's loss rule; relocalizing() turns it on, with a vocabulary
+      false;                  // A2's loss rule; relocalizing() turns it on, with a vocabulary
+  out.loops.enabled = false;  // the keyframe database's other user; relocalizing() turns it on
   return out;
 }
 
@@ -199,12 +200,13 @@ void check_lost(int& failures) {
 }
 
 /// @brief The settings relocalising, a map above `loss.reset_keyframes` kept: the scene's, with
-///        `relocalization.enabled` on.
+///        `relocalization.enabled` and `loops.enabled` on.
 /// @param reset_keyframes The most keyframes a lost map is reset with.
 /// @return The settings.
 edge::Options relocalizing(std::int64_t reset_keyframes) {
   edge::Options out = small_scene();
   out.relocalization.enabled = true;
+  out.loops.enabled = true;
   out.loss.reset_keyframes = reset_keyframes;
   return out;
 }

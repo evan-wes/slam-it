@@ -10,7 +10,9 @@ mod scene;
 use nalgebra::{Matrix4, Vector3};
 use slam_it_edge::frames::Frame;
 use slam_it_edge::map::Removal;
-use slam_it_edge::options::{InitializationOptions, Mode, Options, RelocalizationOptions};
+use slam_it_edge::options::{
+    InitializationOptions, LoopOptions, Mode, Options, RelocalizationOptions,
+};
 use slam_it_edge::pipeline::{Fate, FrameResult, LostSummary, Pipeline, Placement, State};
 use slam_it_foundations::error::ErrorKind;
 
@@ -39,6 +41,10 @@ fn small_scene() -> Options {
         relocalization: RelocalizationOptions {
             enabled: false, // A2's loss rule; relocalizing() turns it on, with a vocabulary
             ..RelocalizationOptions::default()
+        },
+        loops: LoopOptions {
+            enabled: false, // the keyframe database's other user; relocalizing() turns it on
+            ..LoopOptions::default()
         },
         ..Options::default()
     }
@@ -177,11 +183,12 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-/// The settings relocalising: the scene's, with `relocalization.enabled` on and a lost map of
-/// more than `loss.reset_keyframes` keyframes kept.
+/// The settings relocalising: the scene's, with `relocalization.enabled` and `loops.enabled` on
+/// and a lost map of more than `loss.reset_keyframes` keyframes kept.
 fn relocalizing(reset_keyframes: usize) -> Options {
     let mut out = small_scene();
     out.relocalization.enabled = true;
+    out.loops.enabled = true;
     out.loss.reset_keyframes = reset_keyframes;
     out
 }

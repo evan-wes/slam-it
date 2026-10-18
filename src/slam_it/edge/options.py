@@ -487,7 +487,9 @@ class LoopOptions:
     ----------
     enabled : bool
         Close loops in the map being tracked, each keyframe searched once it is mapped (on, as
-        ORB-SLAM always is). It needs the keyframe database, so ``relocalization.enabled`` too.
+        ORB-SLAM always is). It needs the keyframe database, so a vocabulary, which the pipeline
+        keeps whether ``relocalization.enabled`` is on or off (ORB-SLAM always keeps its
+        ``KeyFrameDatabase``).
     min_keyframes : int
         A map of fewer keyframes is not searched (``KeyFramesInMap() < 12``).
     candidates : int

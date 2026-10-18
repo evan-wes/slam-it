@@ -28,8 +28,9 @@ descriptor (its words would mean nothing to this ORB), and checks the tree. The 
 Python's alone (:func:`read`), the ladder's one exception to its "both languages fail the same
 way": a native program is launched by :func:`slam_it.orchestration.vo.run`, which reads the
 folder first, and one run on its own trusts its arrays, as no SHA-256 is written natively. What
-a relocalising run records of its vocabulary (:func:`record`) is its header and checksums, which
-every language reads, so the three write the same record.
+a run with a keyframe database (relocalising or closing loops) records of its vocabulary
+(:func:`record`) is its header and checksums, which every language reads, so the three write
+the same record.
 """
 
 from __future__ import annotations
@@ -72,10 +73,10 @@ SHAPES: dict[str, tuple[type[np.generic], tuple[int, ...]]] = {
 """Each array's type and shape as read (a -1 any length); the tree's own check does the rest."""
 
 DEFAULT = Path(__file__).parent / "default"
-"""The committed vocabulary, every relocalising run's unless it names another: 5 levels of
-k = 10, trained by ``scripts/train_vocabulary.py`` on the 9,969 of 10,000 frames drawn from 20
-ARKitScenes captures of its training fold that yielded descriptors, none from a visit the test
-set films (``docs/design/2026-10-14-online-slam.md``)."""
+"""The committed vocabulary, every run's that keeps a keyframe database unless it names another:
+5 levels of k = 10, trained by ``scripts/train_vocabulary.py`` on the 9,969 of 10,000 frames
+drawn from 20 ARKitScenes captures of its training fold that yielded descriptors, none from a
+visit the test set films (``docs/design/2026-10-14-online-slam.md``)."""
 
 
 def _npy(array: NDArray[Any]) -> bytes:
@@ -182,7 +183,7 @@ def _read_header(root: Path) -> tuple[dict[str, int], NDArray[np.uint8]]:
 
 
 def record(folder: str | Path) -> dict[str, Any]:
-    """Return what a relocalising run records of its vocabulary: its header and checksums.
+    """Return what a run with a keyframe database records of its vocabulary: header, checksums.
 
     Parameters
     ----------

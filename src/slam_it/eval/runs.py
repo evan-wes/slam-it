@@ -6,11 +6,11 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   "mode", "backend", "settings", "vocabulary", "record_features", "peak_memory", "cpus",
   "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and
   ``rust``; ``settings`` holds the pipeline's options as JSON (the edge pipeline's an object per
-  group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary`` the vocabulary a
-  relocalising run used, as its folder's header and checksums record it
+  group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary`` the vocabulary a run
+  relocalising or closing loops used, as its folder's header and checksums record it
   (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k, levels,
-  words and each array's SHA-256), null for a run that did not relocalise
-  (``relocalization.enabled`` off); ``record_features`` whether the run recorded its features
+  words and each array's SHA-256), null for a run that did neither (``relocalization.enabled``
+  and ``loops.enabled`` off); ``record_features`` whether the run recorded its features
   (below). The last three describe the program that ran it, as it recorded them before writing
   (:mod:`slam_it.eval.budgets`), and are null when the run was not a program's of its own
   (Python's in-process run) or the system does not say: ``peak_memory``, its largest resident
@@ -196,8 +196,8 @@ class Run:
     settings : dict
         The pipeline's options, as JSON values.
     vocabulary : dict or None
-        The vocabulary a relocalising run used, its header and checksums
-        (:func:`slam_it.eval.vocabularies.record`); None if it did not relocalise.
+        The vocabulary a run relocalising or closing loops used, its header and checksums
+        (:func:`slam_it.eval.vocabularies.record`); None if it did neither.
     diagnostics : list of dict
         One JSON object per frame, each with a ``timestamp``, and its ``map`` in a run with maps
         (the module docstring has the keys read across a run's maps).

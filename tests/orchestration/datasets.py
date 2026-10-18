@@ -194,12 +194,16 @@ second stretch cuts a monocular run's map 1, started on frame 28, to 3 tracked f
 it tracked 12 to the room's end with one stretch (finding L10): the room's 40 frames leave no
 later place for it."""
 
-KEPT_OPTIONS = OPTIONS.with_settings({"loss.reset_keyframes": 0, "relocalization.enabled": False})
+KEPT_OPTIONS = OPTIONS.with_settings(
+    {"loss.reset_keyframes": 0, "relocalization.enabled": False, "loops.enabled": False}
+)
 """The room's settings with every lost map kept: the lost room's lost maps, of a few keyframes
 each, are otherwise reset (ORB-SLAM3's reset of a map lost with 10 keyframes or fewer). Without
 relocalisation, so that a kept map is lost after ``loss.lost_frames`` failures, as before
 milestone 2B: relocalising, a map above ``loss.reset_keyframes`` is lost only after
-``loss.relocalize_seconds``, longer than the room."""
+``loss.relocalize_seconds``, longer than the room. Without loop closing too, so that the run
+keeps no keyframe database, as it kept none before B3's review panel (H7) kept one for loop
+closing alone."""
 
 
 FOUND_AT = 31

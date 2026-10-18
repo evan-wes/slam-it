@@ -34,6 +34,7 @@
    "initialization.window": 50.0,
    "initialization.min_matches": 50,
    "relocalization.enabled": false,
+   "loops.enabled": false,
    "loss.reset_keyframes": 0
   },
   "found": [31, 3, 2],

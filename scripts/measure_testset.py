@@ -75,8 +75,11 @@ guessed lens costs.
 
 ``--option KEY=VALUE``, given once a setting, replaces one of the edge pipeline's settings
 (:class:`slam_it.edge.options.Options`, named by its group and field) in every run, its value
-read as JSON: ``--option relocalization.enabled=false`` measures without relocalisation,
-``--option seed=1`` at another RANSAC seed.
+read as JSON: ``--option relocalization.enabled=false`` measures without relocalisation, loop
+closing kept, with its keyframe database (B3's review panel, H7: before, the database went with
+relocalisation, and loop closing with it); adding ``--option loops.enabled=false`` measures
+with neither, as ``relocalization.enabled=false`` alone did before. ``--option seed=1`` measures
+at another RANSAC seed.
 Each result names the settings it replaced, in ``options``.
 
 The results are one JSON line per sequence in ``OUT/results.jsonl``, and a table on stdout::

@@ -80,11 +80,14 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
     return fail(ErrorKind::kInvalidInput,
                 std::string("camera.baseline: ") + name(mode) + " needs a positive baseline");
   }
-  if (options.relocalization.enabled && !vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "vocabulary: relocalization.enabled needs one");
+  const bool needed = options.relocalization.enabled || options.loops.enabled;
+  if (needed && !vocabulary) {
+    return fail(ErrorKind::kInvalidInput,
+                "vocabulary: relocalization.enabled or loops.enabled needs one");
   }
-  if (!options.relocalization.enabled && vocabulary) {
-    return fail(ErrorKind::kInvalidInput, "vocabulary: given, but relocalization.enabled is off");
+  if (!needed && vocabulary) {
+    return fail(ErrorKind::kInvalidInput,
+                "vocabulary: given, but relocalization.enabled and loops.enabled are both off");
   }
   return Pipeline(mode, std::move(camera), options, std::move(vocabulary));
 }
@@ -431,7 +434,7 @@ Result<std::pair<std::optional<LoopSummary>, bool>> Pipeline::close_loops(Map& m
 
 Result<void> Pipeline::sync_database() {
   if (!database_ || !map_ || !vocabulary_) {
-    return {};  // not relocalising
+    return {};  // no keyframe database
   }
   const Map& m = *map_;
   std::vector<std::int64_t> culled;
@@ -496,7 +499,8 @@ Result<Pipeline::Placed> Pipeline::place(const Map& m, const Frame& frame) const
     return std::unexpected(std::move(recovery.error()));
   }
   summary.pnp = recovery->summary;
-  if (recovery->tracked || !database_ || !vocabulary_) {  // placed, or not relocalising
+  if (recovery->tracked || !database_ || !vocabulary_ ||
+      !options_.relocalization.enabled) {  // placed, or not relocalising
     if (recovery->tracked) {
       summary.placed_by = Placement::kLocalPnp;
     }

@@ -276,12 +276,19 @@ def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(
     assert all(r.summary.relocalization is not None for r in failed)
 
 
+@pytest.mark.parametrize("close_loops", [False, True])
 def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
-    rendered: list[room.Frame],
+    rendered: list[room.Frame], close_loops: bool
 ) -> None:
-    """Relocalisation off, A2's rule: lost on the loss.lost_frames-th failure, whatever the time."""
-    options = OPTIONS.with_settings({"relocalization.enabled": False, "loss.reset_keyframes": 0})
-    run = pipeline.Pipeline("rgbd", CAMERA, options)
+    """Relocalisation off, A2's rule: lost on the loss.lost_frames-th failure, whatever the time.
+
+    Nothing relocalises with loop closing on either, though the keyframe database is then kept
+    (B3's review panel, H7).
+    """
+    options = OPTIONS.with_settings(
+        {"relocalization.enabled": False, "loops.enabled": close_loops, "loss.reset_keyframes": 0}
+    )
+    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     first = rendered[0]
     assert run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction())).keyframe
     failed = [run.track(_empty(0.001 * (k + 1))) for k in range(options.loss.lost_frames)]
@@ -289,11 +296,18 @@ def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
     assert all(r.summary.relocalization is None for r in failed)
 
 
-@pytest.mark.parametrize(("relocalize", "message"), [(True, "needs one"), (False, "is off")])
-def test_the_vocabulary_is_needed_exactly_when_relocalizing(relocalize: bool, message: str) -> None:
-    """Relocalising without a vocabulary, or given one while not: InvalidInputError."""
-    options = OPTIONS.with_settings({"relocalization.enabled": relocalize})
-    given = None if relocalize else words_for(OPTIONS)
+@pytest.mark.parametrize(
+    ("relocalize", "close_loops", "message"),
+    [(True, False, "needs one"), (False, True, "needs one"), (False, False, "both off")],
+)
+def test_the_vocabulary_is_needed_exactly_with_a_keyframe_database(
+    relocalize: bool, close_loops: bool, message: str
+) -> None:
+    """Relocalising or closing loops without a vocabulary, or given one doing neither: refused."""
+    options = OPTIONS.with_settings(
+        {"relocalization.enabled": relocalize, "loops.enabled": close_loops}
+    )
+    given = None if relocalize or close_loops else words_for(OPTIONS)
     with pytest.raises(InvalidInputError, match=f"vocabulary: .*{message}"):
         pipeline.Pipeline("rgbd", CAMERA, options, given)
 

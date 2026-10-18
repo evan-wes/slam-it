@@ -215,10 +215,10 @@ class Pipeline {
   /// @param camera The camera.
   /// @param options The settings.
   /// @param vocabulary The vocabulary of the keyframe database's words: required with
-  ///        `relocalization.enabled` on, refused with it off.
+  ///        `relocalization.enabled` or `loops.enabled` on, refused with both off.
   /// @return The pipeline; `InvalidInput` for an invalid camera or settings, a stereo or
-  ///         RGB-D camera without a baseline, or a vocabulary missing while relocalising or given
-  ///         while not.
+  ///         RGB-D camera without a baseline, or a vocabulary missing while relocalising or
+  ///         closing loops, or given while doing neither.
   [[nodiscard]] static foundations::Result<Pipeline> create(
       Mode mode, Camera camera, Options options,
       std::optional<foundations::vocabulary::Vocabulary> vocabulary);
@@ -317,7 +317,7 @@ class Pipeline {
   /// @param mode The sensor mode.
   /// @param camera The camera.
   /// @param options The settings.
-  /// @param vocabulary The keyframe database's vocabulary, when relocalising.
+  /// @param vocabulary The keyframe database's vocabulary, when relocalising or closing loops.
   Pipeline(Mode mode, Camera camera, Options options,
            std::optional<foundations::vocabulary::Vocabulary> vocabulary)
       : mode_(mode),
@@ -462,9 +462,9 @@ class Pipeline {
   std::vector<std::array<double, 2>> previous_;
   /// @brief Frames in a row not tracked.
   std::int64_t failures_{0};
-  /// @brief The vocabulary, when relocalising.
+  /// @brief The vocabulary, when relocalising or closing loops.
   std::optional<foundations::vocabulary::Vocabulary> vocabulary_;
-  /// @brief The map's keyframe database, when relocalising and a map exists.
+  /// @brief The map's keyframe database, when relocalising or closing loops and a map exists.
   std::optional<Database> database_;
   /// @brief The first failed frame's time, while the track is recently lost.
   std::optional<double> lost_since_;

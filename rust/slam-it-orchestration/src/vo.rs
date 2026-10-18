@@ -58,7 +58,8 @@ pub struct Request {
     pub options: Options,
     /// Whether the run records each frame's keypoints, with their fates.
     pub record_features: bool,
-    /// The vocabulary's folder: required with `relocalization.enabled` on, refused with it off.
+    /// The vocabulary's folder: required with `relocalization.enabled` or `loops.enabled` on,
+    /// refused with both off.
     pub vocabulary: Option<PathBuf>,
 }
 
@@ -1175,11 +1176,17 @@ pub fn check(request: &Request) -> Result<()> {
     if request.first < 0 || request.count.unwrap_or(0) < 0 {
         return invalid("first, count: must be at least 0".to_owned());
     }
-    if request.options.relocalization.enabled && request.vocabulary.is_none() {
-        return invalid("--vocabulary: relocalization.enabled needs one".to_owned());
+    let needed = request.options.relocalization.enabled || request.options.loops.enabled;
+    if needed && request.vocabulary.is_none() {
+        return invalid(
+            "--vocabulary: relocalization.enabled or loops.enabled needs one".to_owned(),
+        );
     }
-    if !request.options.relocalization.enabled && request.vocabulary.is_some() {
-        return invalid("--vocabulary: given, but relocalization.enabled is off".to_owned());
+    if !needed && request.vocabulary.is_some() {
+        return invalid(
+            "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
+                .to_owned(),
+        );
     }
     check_options(&request.options)
 }
@@ -1367,6 +1374,7 @@ mod tests {
             Path::new("run"),
         );
         good.options.relocalization.enabled = false; // no vocabulary: these check the request alone
+        good.options.loops.enabled = false;
         check(&good).unwrap();
         let mut bads = vec![
             Request {
@@ -1407,6 +1415,7 @@ mod tests {
         let _guard = Scratch(out.clone());
         let mut request = Request::new("tum", &folder("tum_camera"), Mode::Rgbd, &out);
         request.options.relocalization.enabled = false;
+        request.options.loops.enabled = false;
         request.count = Some(0);
         let empty = run(&request).unwrap();
         assert_eq!(empty.timestamps, Vec::<f64>::new());
@@ -1435,6 +1444,7 @@ mod tests {
         assert_eq!(run(&request).unwrap_err().kind, ErrorKind::InvalidInput);
         let mut stereo = Request::new("euroc", &folder("euroc"), Mode::Stereo, &out);
         stereo.options.relocalization.enabled = false;
+        stereo.options.loops.enabled = false;
         stereo.count = Some(1);
         assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
         stereo.sequence = folder("no_such_sequence");
