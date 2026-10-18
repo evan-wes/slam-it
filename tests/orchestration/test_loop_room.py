@@ -28,10 +28,9 @@ import pytest
 
 from slam_it import backends
 from slam_it.eval import loops, runs
-from tests.edge import room
 from tests.edge.support import OPTIONS
 from tests.orchestration.conftest import RoomRun
-from tests.orchestration.datasets import LOOP_CASES, Room
+from tests.orchestration.datasets import LOOP_CASES, Room, wall_distance
 
 LOOP_ATE = {"rgbd": 0.07, "stereo": 0.055, "monocular": 0.02}
 """The final trajectory's ATE (RMSE, metres) each mode stays under."""
@@ -146,10 +145,7 @@ def test_the_points_lie_on_the_walls(  # noqa: PLR0917 -- the case, the fixtures
 ) -> None:
     """Placed on the truth by the trajectory's alignment, the points lie near the room's walls."""
     run = _run(request, dataset, mode, backend, threaded)
-    (placed,) = runs.evaluate_absolute(run, loop_folders.timestamps, loop_folders.poses).maps
-    alignment = placed.absolute.alignment
-    points = run.final_points() @ alignment[:3, :3].T + alignment[:3, 3]
-    assert float(np.median(room.surface_distance(points))) < SURFACE[mode]
+    assert wall_distance(run, loop_folders) < SURFACE[mode]
 
 
 def test_a_loop_closes_with_relocalisation_off(loop_folders: Room, tmp_path: Path) -> None:

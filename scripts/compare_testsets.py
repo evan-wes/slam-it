@@ -50,6 +50,7 @@ import numpy as np
 
 from slam_it.eval import runs
 from slam_it.foundations.errors import DegenerateError, InvalidInputError
+from slam_it.orchestration import vo
 
 SHARE_MOVED = 0.01
 """A run's share tracked moved when it changed by more than this."""
@@ -104,8 +105,9 @@ def read_batch(folder: Path) -> Batch:
 def summarize(folder: Path, config: Path) -> int:
     """Give each of a measure's results its run's details (the module docstring).
 
-    Reads each result's run, and its sequence's ground truth through `config`; results that
-    have their details, and sequences that failed, are left as they are.
+    Reads each result's run, and its sequence's ground truth through `config` (its sessions' in
+    turn, :func:`measure_testset.truth_of`); results that have their details, and sequences that
+    failed, are left as they are.
 
     Returns
     -------
@@ -126,9 +128,13 @@ def summarize(folder: Path, config: Path) -> int:
             continue
         if row["name"] not in entries:
             raise InvalidInputError(f"{config}: no sequence {row['name']!r}")
-        run = runs.read_run(folder / row["name"] / "run")
         entry = entries[row["name"]]
-        truth = runs.ground_truth(entry.dataset, entry.folder)
+        run = runs.read_run(folder / row["name"] / "run")
+        offsets = [0.0]  # one sequence keeps its own clock: only sessions after it move on
+        if len(entry.folders) > 1:
+            times = [vo.open_source(entry.dataset, f, entry.mode).times for f in entry.folders]
+            offsets = vo.session_offsets(times)
+        truth = measure_testset.truth_of(entry.dataset, entry.folders, offsets)
         scored = None
         if truth is not None:
             with contextlib.suppress(DegenerateError):  # no map aligned: its ATE says so

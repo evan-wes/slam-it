@@ -16,6 +16,7 @@ import pytest
 from slam_it.edge.options import Options
 from slam_it.eval import lenses, runs, tum
 from slam_it.foundations.errors import InvalidInputError
+from slam_it.orchestration import vo
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES
 from tests.eval.synthetic_runs import line_run
@@ -197,18 +198,69 @@ KEYS = 'name = "a"\nfolder = "/a"\nmode = "rgbd"\nreference = "r"\n'
         ("[[sequence]]\n" + KEYS.replace("rgbd", "lidar"), "unknown mode 'lidar'"),
         ("[[sequence]]\n" + KEYS + 'dataset = "kitti"\n', "unknown dataset 'kitti'"),
         ("[[sequence]]\n" + KEYS + "[[sequence]]\n" + KEYS, "share a name"),
+        ("[[sequence]]\n" + KEYS + 'folders = ["/b"]\n', "one of"),
+        ("[[sequence]]\n" + KEYS.replace('folder = "/a"\n', ""), "one of"),
+        ("[[sequence]]\n" + KEYS.replace('folder = "/a"', "folders = []"), "a list of them"),
+        ("[[sequence]]\n" + KEYS.replace('folder = "/a"', 'folders = ["/a", 1]'), "list of them"),
+        ("[[sequence]]\n" + KEYS.replace('folder = "/a"', 'folders = "/a"'), "a list of them"),
     ],
 )
 def test_a_malformed_config_is_refused(text: str, message: str, tmp_path: Path) -> None:
     """Each refusal of a config.
 
     Not TOML, no sequence, a key missing or extra, a number for a path, a mode unknown, two
-    sequences of one name.
+    sequences of one name; a folder and folders both or neither, folders not a list of paths.
     """
     path = tmp_path / "testset.toml"
     path.write_text(text)
     with pytest.raises(InvalidInputError, match=message):
         _script().read_config(path)
+
+
+@pytest.mark.usefixtures("cpp")
+def test_sequences_in_turn_are_measured_as_one_run(sequence: Path, tmp_path: Path) -> None:
+    """The room twice, as two sessions: each its frames and map, scored on the truths in turn.
+
+    Every map kept (``loss.session_keyframes`` 0), each session's frames end in its own map; the
+    second session's truth, moved on with its frames, matches every frame of it.
+    """
+    config = tmp_path / "testset.toml"
+    config.write_text(
+        f'[[sequence]]\nname = "twice"\nfolders = ["{sequence}", "{sequence}"]\n'
+        'mode = "rgbd"\nreference = "the room\'s own poses"\n'
+    )
+    out = tmp_path / "out"
+    assert _script().main([str(config), str(out), "--option", "loss.session_keyframes=0"]) == 0
+    result = json.loads((out / "results.jsonl").read_text())
+    assert (result["frames"], result["tracked"], result["matched"]) == (2 * FRAMES,) * 3
+    assert result["maps"] == [0, 1]
+    first, second = result["sessions"]
+    times = vo.open_source("tum", sequence, "rgbd").times
+    assert second["offset"] == pytest.approx(times[-1] + np.median(np.diff(times)) - times[0])
+    assert (first["offset"], first["closed"]) == (0.0, None)
+    for k, session in enumerate((first, second)):
+        assert (session["sequence"], session["frames"], session["tracked"]) == (
+            "room", FRAMES, FRAMES,
+        )  # fmt: skip
+        assert session["maps"] == [k]
+    assert second["closed"]["reset"] is False
+    assert second["closed"]["keyframes"] > 0
+    assert result["ate"] < ATE_BOUND["rgbd"]
+    assert (result["loops"], result["merges"]) == ([], [])
+
+
+def test_the_truths_in_turn_ascend(sequence: Path) -> None:
+    """Each session's truth is moved on by its offset; times not after those before are dropped."""
+    times, poses = runs.ground_truth("tum", sequence) or pytest.fail("the room has its truth")
+    moved = _script().truth_of("tum", [sequence, sequence], [0.0, 10.0])
+    assert moved is not None
+    np.testing.assert_array_equal(moved[0], np.concatenate([times, times + 10.0]))
+    np.testing.assert_array_equal(moved[1], np.concatenate([poses, poses]))
+    same = _script().truth_of("tum", [sequence, sequence], [0.0, 0.0])
+    assert same is not None
+    np.testing.assert_array_equal(same[0], times)  # the second's times, none after, all dropped
+    untrue = REPO / "tests" / "fixtures" / "eval" / "sequences" / "tum_camera"  # no truth file
+    assert _script().truth_of("tum", [untrue], [0.0]) is None
 
 
 def test_a_euroc_sequence_is_measured_from_its_own_folder(tmp_path: Path) -> None:

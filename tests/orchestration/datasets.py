@@ -13,7 +13,6 @@ records' generator (``tests/fixtures/edge/generate_room_runs.py``) both write th
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -53,44 +52,16 @@ class Room:
     poses: NDArray[np.float64]
 
 
-WRONG_DISTANCE = 3.0
-"""Two keyframes farther apart than this, in metres, by the truth, are at different places."""
+def wall_distance(run: runs.Run, folders: Room) -> float:
+    """Return the median distance of a run's final points to the room's walls and boxes, in metres.
 
-WRONG_ANGLE = math.radians(60.0)
-"""Two keyframes looking further apart than this, by the truth, are at different places."""
-
-
-def wrong_places(folders: Room, times: NDArray[np.float64], pairs: NDArray[np.int64]) -> list[int]:
-    """Return the pairs of keyframes that, by the truth, were at different places.
-
-    Each keyframe's true pose is the rendered frame's nearest its time; two keyframes are at
-    different places when more than :data:`WRONG_DISTANCE` apart or looking more than
-    :data:`WRONG_ANGLE` apart, so they could not have seen the same place.
-
-    Parameters
-    ----------
-    folders : Room
-        The room, with its truth.
-    times : ndarray of float64, shape (K,)
-        Every keyframe's time, by id.
-    pairs : ndarray of int64, shape (E, 2)
-        Pairs of keyframe ids: a run's loops or merges.
-
-    Returns
-    -------
-    list of int
-        The rows of `pairs` whose keyframes were at different places.
+    The run's one map is placed on the truth by its ATE alignment (the loop and merge rooms'
+    bars).
     """
-    rows = np.abs(folders.timestamps[None, :] - np.asarray(times)[:, None]).argmin(axis=1)
-    truth = np.asarray(folders.poses[rows], dtype=np.float64)
-    wrong = []
-    for row, (first, second) in enumerate(np.asarray(pairs).tolist()):
-        a, b = truth[first], truth[second]
-        turn = a[:3, :3].T @ b[:3, :3]
-        angle = math.acos(float(np.clip((np.trace(turn) - 1.0) / 2.0, -1.0, 1.0)))
-        if np.linalg.norm(a[:3, 3] - b[:3, 3]) >= WRONG_DISTANCE or angle >= WRONG_ANGLE:
-            wrong.append(row)
-    return wrong
+    (placed,) = runs.evaluate_absolute(run, folders.timestamps, folders.poses).maps
+    alignment = placed.absolute.alignment
+    points = run.final_points() @ alignment[:3, :3].T + alignment[:3, 3]
+    return float(np.median(room.surface_distance(points)))
 
 
 def png(path: Path, values: NDArray[np.uint8] | NDArray[np.uint16]) -> None:

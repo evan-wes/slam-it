@@ -161,5 +161,5 @@ def test_summarize_reads_each_sequences_truth_as_its_dataset(
     read: list[tuple[str, Path]] = []
     monkeypatch.setattr(script.runs, "ground_truth", lambda *given: read.append(given))
     assert script.summarize(copy, euroc) == 1
-    (folder,) = [e.folder for e in script.measure_testset.read_config(config)]
+    ((folder,),) = [e.folders for e in script.measure_testset.read_config(config)]
     assert read == [("euroc", folder)]

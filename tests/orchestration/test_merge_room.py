@@ -5,10 +5,11 @@ from :data:`~tests.orchestration.datasets.MERGE_AT` for longer than the loss win
 first map is lost and kept, and a new map starts; the camera then comes back over the first
 map's start. At :data:`~tests.orchestration.datasets.MERGE_OPTIONS`, each backend's run must
 (the online-SLAM design's section 14, item 8): end in one map, merged, and at no wrong place
-(:func:`tests.orchestration.datasets.wrong_places`); track the frames it can see; keep its
-final trajectory within :data:`MERGE_ATE` of the truth; and leave its points near the room's
-walls (:data:`SURFACE`). The final trajectory is scored over the one merged map, aligned once,
-so its ATE compares with neither map's ATE as tracked, each aligned on its own. The bounds are
+(judged as the loop room's loops are, by :func:`slam_it.eval.loops.judge_pairs`); track the
+frames it can see; keep its final trajectory within :data:`MERGE_ATE` of the truth; and leave
+its points near the room's walls (:data:`SURFACE`). The final trajectory is scored over the one
+merged map, aligned once, so its ATE compares with neither map's ATE as tracked, each aligned on
+its own. The bounds are
 about half again the first runs' (2026-10-17, the same in every language): final ATE RMSE 5.46
 cm (RGB-D), 5.17 cm (stereo) and 1.85 cm (monocular); the points' median distance to the walls
 6.8, 6.2 and 6.1 cm; every frame the camera can see tracked in RGB-D and stereo, 176 of the 184
@@ -22,7 +23,7 @@ import pytest
 
 from slam_it import backends
 from slam_it.edge.options import Options
-from slam_it.eval import runs
+from slam_it.eval import loops, runs
 from tests.edge import room
 from tests.orchestration.conftest import RoomRun
 from tests.orchestration.datasets import (
@@ -31,7 +32,7 @@ from tests.orchestration.datasets import (
     MERGE_BLANKS,
     Room,
     merge_frames,
-    wrong_places,
+    wall_distance,
 )
 
 MERGE_ATE = {"rgbd": 0.08, "stereo": 0.08, "monocular": 0.028}
@@ -86,9 +87,11 @@ def test_every_backend_merges_the_merge_room(
     assert sorted(set(run.tracked_maps.tolist())) == [0, 1]
     assert run.maps().tolist() == [0]
     assert len(run.keyframe_merges) >= 1
-    assert not wrong_places(merge_folders, run.keyframe_timestamps, run.keyframe_merges)
     assert len(run.timestamps) >= TRACKED * (len(run.diagnostics) - MERGE_BLANKS)
-    final = runs.evaluate_absolute(run, merge_folders.timestamps, merge_folders.poses)
+    truth = (merge_folders.timestamps, merge_folders.poses)
+    final = runs.evaluate_absolute(run, *truth)
+    judged = loops.judge_pairs(run.keyframe_merges, run, truth, final)
+    assert [merge["wrong_place"] for merge in judged] == [False] * len(run.keyframe_merges)
     (merged,) = final.maps
     assert merged.absolute.rmse < MERGE_ATE[mode]
 
@@ -100,7 +103,4 @@ def test_the_merged_map_s_points_lie_on_the_walls(
 ) -> None:
     """Placed on the truth by the trajectory's alignment, its points lie near the room's walls."""
     run = merge_runs(dataset, mode, backend)
-    (placed,) = runs.evaluate_absolute(run, merge_folders.timestamps, merge_folders.poses).maps
-    alignment = placed.absolute.alignment
-    points = run.final_points() @ alignment[:3, :3].T + alignment[:3, 3]
-    assert float(np.median(room.surface_distance(points))) < SURFACE[mode]
+    assert wall_distance(run, merge_folders) < SURFACE[mode]
