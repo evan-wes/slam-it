@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
-## [Unreleased]
+## [0.3.13.0] - 2026-10-17
 
 A dashcam's recordings as SLAM It! datasets (`slam_it.eval.dashcam`, `docs/notes/dashcam.md`),
 built for the Terunsoul D016, and a GPS track to score a run against (`slam_it.eval.gnss`).
@@ -25,14 +25,17 @@ template is `docs/dashcam.template.toml`.
     linear MAP with a baseline prior, the front map's scale from the GPS speed;
   - `import`: one camera's share of a drive as one TUM-format sequence on its overlay clock.
   The D016's formats are a built-in profile (`dashcam.d016`), its data stream's GPS records
-  read for their time, speed and course (`dashcam.stream`).
+  read for their time, speed and course (`dashcam.stream`). Every step skips a damaged
+  segment (`eval.video.DamagedSegmentError`: one that cannot be read through) with a
+  warning and goes on, `overlay` and `import` listing those skipped.
 - **`slam_it.eval.gnss`**: a gated constant-velocity Kalman filter with an RTS smoother over
   GNSS fixes, and a run's maps scored against the track in their plane of motion, in metres.
 - **The `dashcam` extra** (PyAV, pytesseract, pycolmap) and Tesseract in the conda layer;
   import-linter contracts keep pytesseract in `dashcam.overlay` and pycolmap in
   `dashcam.calibrate` (and the BA reference), and the pipelines out of both.
 - **`eval.video` reads recorded segments**: sampled in time, their data packets, and joined
-  into one sequence (`import_segments`), sharing the video import's frame writing.
+  into one sequence (`import_segments`), sharing the video import's frame writing, which can
+  now take back a damaged segment's frames.
 
 ### Tests
 
@@ -40,7 +43,9 @@ template is `docs/dashcam.template.toml`.
   a data stream of records, a burned-in overlay), the drives, the mask, the record decoder,
   the drive import and its timing, the config and the command line; the overlay's reading
   with Tesseract (skipped without it) and the lag from reads; the filter's gating, restart
-  and smoothing and the planar scoring; each calibration stage on a synthetic rig drive.
+  and smoothing and the planar scoring; each calibration stage on a synthetic rig drive; a
+  damaged segment skipped by each step, one failing partway taken back, all damaged refused,
+  and a segment with concealed corrupt frames kept.
 
 ## [0.3.12.0] - 2026-10-17
 
