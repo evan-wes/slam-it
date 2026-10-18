@@ -4,6 +4,7 @@
 ///        solve stops, and bad input.
 #include <Eigen/Dense>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -387,6 +388,13 @@ void test_termination(int& failures) {
                                   graphs::Options{.max_iterations = 50, .relative_tolerance = 0.0});
   expect(at_minimum && at_minimum->summary.termination == graphs::Termination::kDampingLimit,
          "at the minimum with no tolerance, no step lowers the error", failures);
+  const std::atomic<bool> stop{true};
+  const auto stopped = graphs::optimize_pose_graph(
+      start, edges, relatives, fixed, false, graphs::Options{.max_iterations = 50, .stop = &stop});
+  expect(stopped && stopped->summary.iterations == 0 &&
+             stopped->summary.termination == graphs::Termination::kStopped &&
+             !stopped->summary.converged,
+         "a stop set ends the solve before its first iteration", failures);
 }
 
 /// @brief Every input is checked before GTSAM sees it.

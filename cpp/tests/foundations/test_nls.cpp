@@ -1,6 +1,7 @@
 /// @file
 /// @brief Native tests for slam_it::foundations::nls, runnable without Python.
 #include <Eigen/Dense>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -342,6 +343,15 @@ int main() {
   const auto strict = nls::solve(Rosenbrock{}, Eigen::VectorXd(start), one_step);
   expect(!strict.has_value() && strict.error().kind == ErrorKind::kNotConverged,
          "solve: strict mode fails when not converged", failures);
+  // A stop set ends the solve before its next step, the steps taken kept.
+  const std::atomic<bool> stop{true};
+  nls::Options stopping = tight(nls::Method::kLevenbergMarquardt);
+  stopping.stop = &stop;
+  const auto stopped = nls::solve(Rosenbrock{}, Eigen::VectorXd(start), stopping);
+  expect(stopped.has_value() && stopped->summary.iterations == 0 &&
+             stopped->summary.termination == nls::Termination::kStopped &&
+             !stopped->summary.converged,
+         "solve: a stop set ends it before its first step", failures);
   nls::Options bad;
   bad.initial_damping = -1.0;
   const auto rejected = nls::solve(Rosenbrock{}, Eigen::VectorXd(start), bad);

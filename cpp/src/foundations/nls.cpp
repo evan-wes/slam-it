@@ -150,6 +150,8 @@ const char* name(Termination termination) {
       return "no_decrease";
     case Termination::kSingular:
       return "singular";
+    case Termination::kStopped:
+      return "stopped";
     case Termination::kCount:
       break;
   }

@@ -74,7 +74,7 @@ global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
   keyframe. Relocalisation reads the whole map and its database with mapping held off. A frame
   that wants a keyframe asks for one as ORB-SLAM's ``NeedNewKeyFrame`` does: none while mapping
   is stopped or being stopped; taken at once with mapping idle; busy, the local BA is
-  interrupted, and a stereo or RGB-D keyframe is queued while fewer than :data:`MAX_QUEUED`
+  interrupted, and a stereo or RGB-D keyframe is queued while fewer than ``mapping.max_queued``
   wait, a monocular one refused. After a correction, the last frame moves with the keyframe it
   was tracked against.
 - **Local mapping** maps each keyframe in turn, the one writer of the map while it does,
@@ -84,8 +84,9 @@ global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
 - **Loop closing** searches each keyframe with mapping held off; a loop found is corrected with
   mapping stopped (:meth:`MapOwner.stopped`), without global BA, which then solves a copy of the
   map in a thread of its own. A new loop supersedes a global BA still running
-  (:class:`slam_it.edge.threads.Generation`); one that finishes is carried onto the map as it
-  has become (:func:`slam_it.edge.loops.propagate_global_ba`), mapping stopped.
+  (:class:`slam_it.edge.threads.Generation`): it stops at its next iteration, its result
+  dropped; one that finishes is carried onto the map as it has become
+  (:func:`slam_it.edge.loops.propagate_global_ba`), mapping stopped.
 - **A map lost** waits for local mapping and loop closing to finish the keyframes given, and
   supersedes a global BA running, before it closes.
 
@@ -134,10 +135,6 @@ from slam_it.foundations.vocabulary import Vocabulary
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
-
-MAX_QUEUED = 3
-"""With mapping busy, a stereo or RGB-D frame's keyframe is queued only while fewer than this
-many wait (ORB-SLAM's ``KeyframesInQueue() < 3``)."""
 
 
 class State(enum.StrEnum):
@@ -1040,7 +1037,7 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
             keyframe = True
         else:
             mapper.interrupt()
-            keyframe = mode != "monocular" and queue < MAX_QUEUED
+            keyframe = mode != "monocular" and queue < options.mapping.max_queued
             refused = not keyframe
     if keyframe:
         state.since_keyframe = 0
@@ -1315,7 +1312,10 @@ class _Threads:
         """Solve a copy in a global BA's thread, and carry the result onto the map if still due."""
         try:
             start = time.perf_counter()
-            solved, solve = loops.global_bundle_adjust(copy, self.camera, self.options)
+            solved, solve = loops.global_bundle_adjust(
+                copy, self.camera, self.options,
+                stop=lambda: not self.generation.current(generation),
+            )  # fmt: skip
             moved = None
             with self.owner.stopped() as now:
                 if self.generation.current(generation):

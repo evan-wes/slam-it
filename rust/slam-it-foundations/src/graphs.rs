@@ -21,6 +21,7 @@ use nalgebra::{DMatrix, DVector, Matrix3, Matrix4, Vector2, Vector3};
 
 use crate::camera::{self, Model};
 use crate::error::{ErrorKind, Result, fail, fail_setting};
+use crate::nls::Stop;
 use crate::so3;
 
 /// A pose's tangent dimension, `(w, v)`.
@@ -39,23 +40,31 @@ pub enum Termination {
     /// Not converged: no step lowered the error before the damping reached its upper bound
     /// (also how a solve at its minimum ends when both tolerances are 0).
     DampingLimit = 2,
+    /// Not converged: stopped from outside, between iterations (`Options::stop`).
+    Stopped = 3,
 }
 
 impl Termination {
     /// Every termination, in code order.
-    pub const ALL: [Self; 3] = [Self::Function, Self::MaxIterations, Self::DampingLimit];
+    pub const ALL: [Self; 4] = [
+        Self::Function,
+        Self::MaxIterations,
+        Self::DampingLimit,
+        Self::Stopped,
+    ];
 
     /// The termination's name, as the Python side spells it.
     ///
     /// # Returns
     ///
-    /// `"function"`, `"max_iterations"` or `"damping_limit"`.
+    /// `"function"`, `"max_iterations"`, `"damping_limit"` or `"stopped"`.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
             Self::Function => "function",
             Self::MaxIterations => "max_iterations",
             Self::DampingLimit => "damping_limit",
+            Self::Stopped => "stopped",
         }
     }
 
@@ -71,7 +80,7 @@ impl Termination {
 }
 
 /// How a solve runs (`slam_it.foundations.graphs.Options`).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Options {
     /// Iterations at most, at least 1: each linearises once and tries dampings until a step
     /// lowers the error.
@@ -84,6 +93,9 @@ pub struct Options {
     /// An iteration lowering the error by at most this ends the solve as converged;
     /// non-negative.
     pub absolute_tolerance: f64,
+    /// Stops the solve before its next iteration when another thread sets it (a global BA
+    /// superseded, ORB-SLAM's `mbStopGBA`).
+    pub stop: Stop,
 }
 
 impl Default for Options {
@@ -99,6 +111,7 @@ impl Default for Options {
             initial_damping: 1e-5,
             relative_tolerance: 1e-10,
             absolute_tolerance: 0.0,
+            stop: Stop::never(),
         }
     }
 }
@@ -816,6 +829,10 @@ fn solve(
     let mut termination = Termination::MaxIterations;
     let mut iterations = 0;
     while current > 0.0 && iterations < options.max_iterations {
+        if options.stop.is_set() {
+            termination = Termination::Stopped;
+            break;
+        }
         ffi::iterate(optimizer.pin_mut(), evaluator).map_err(|e| gtsam_failed(&e))?;
         iterations += 1;
         let error = ffi::error(&optimizer);
@@ -1920,6 +1937,21 @@ mod tests {
         );
         assert_eq!(tolerant.summary.termination, Termination::Function);
         assert!(tolerant.summary.converged);
+        let stopped = solve_with(
+            &start,
+            Options {
+                max_iterations: 50,
+                stop: Stop::on(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                    true,
+                ))),
+                ..Options::default()
+            },
+        );
+        assert_eq!(
+            (stopped.summary.iterations, stopped.summary.termination),
+            (0, Termination::Stopped)
+        );
+        assert!(!stopped.summary.converged);
         let at_minimum = solve_with(
             &tolerant.poses,
             Options {

@@ -1495,7 +1495,8 @@ Result<std::int64_t> fuse_by_similarity(Map& m, const Camera& camera, std::int64
   return fused;
 }
 
-Result<graphs::Summary> global_bundle_adjust(Map& m, const Camera& camera, const Options& options) {
+Result<graphs::Summary> global_bundle_adjust(Map& m, const Camera& camera, const Options& options,
+                                             const std::atomic<bool>* stop) {
   if (!std::ranges::contains(m.kf_id, std::int64_t{0})) {
     return fail(ErrorKind::kInvalidInput, "m: expected the map's first keyframe (id 0)");
   }
@@ -1541,7 +1542,7 @@ Result<graphs::Summary> global_bundle_adjust(Map& m, const Camera& camera, const
                                           .information = information};
   auto adjusted = graphs::bundle_adjust(
       poses, points, observations, camera.model, camera.intrinsics, focal(camera) * camera.baseline,
-      fixed, {.max_iterations = static_cast<int>(options.loops.global_iterations)});
+      fixed, {.max_iterations = static_cast<int>(options.loops.global_iterations), .stop = stop});
   if (!adjusted) {
     return std::unexpected(std::move(adjusted.error()));
   }

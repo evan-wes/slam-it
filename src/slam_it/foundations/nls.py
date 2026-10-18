@@ -40,7 +40,8 @@ the Cholesky factorisation finds indefinite, multiplies ``μ`` by a growing fact
 **Termination** (Ceres' tests): the gradient's max-norm falls below ``gradient_tolerance``;
 an accepted step decreases the cost by less than ``function_tolerance`` relative to it; the
 step's norm falls below ``step_tolerance`` (absolute, in the tangent space, which has no
-natural scale here); or ``max_iterations`` steps have been tried. **Every step is accepted
+natural scale here); or ``max_iterations`` steps have been tried; or, between steps, a ``stop``
+check says so (g2o's ``setForceStopFlag``, which ORB-SLAM's threads use). **Every step is accepted
 only if it decreases the cost,** so the result is never worse than the start. Reaching the
 iteration cap is not an error: :func:`solve` returns its best estimate with a
 :class:`Summary` (the shared contract is in :mod:`slam_it.foundations.solve`), and
@@ -285,6 +286,8 @@ class Termination(enum.StrEnum):
     """Not converged: a Gauss-Newton step failed to lower the cost."""
     SINGULAR = "singular"
     """Not converged: the undamped Gauss-Newton system is not positive definite."""
+    STOPPED = "stopped"
+    """Not converged: stopped from outside, between steps (:func:`solve`'s ``stop``)."""
 
 
 CONVERGED = frozenset({Termination.GRADIENT, Termination.FUNCTION, Termination.STEP})
@@ -593,7 +596,11 @@ def _try_step(
 
 
 def solve(
-    problem: Problem[StateT], initial: StateT, options: Options | None = None
+    problem: Problem[StateT],
+    initial: StateT,
+    options: Options | None = None,
+    *,
+    stop: Callable[[], bool] | None = None,
 ) -> Solution[StateT, Summary]:
     """Minimise ``½ Σ ρ(|r_i|²)`` from ``initial`` by Levenberg-Marquardt or Gauss-Newton.
 
@@ -605,6 +612,8 @@ def solve(
         The starting state.
     options : Options, optional
         Method, loss, tolerances and limits (default: ``Options()``).
+    stop : callable, optional
+        Asked before each step whether to stop (:attr:`Termination.STOPPED`); default: never.
 
     Returns
     -------
@@ -628,6 +637,9 @@ def solve(
     trace: list[Iteration] = []
     termination = Termination.MAX_ITERATIONS
     while len(trace) < opts.max_iterations:
+        if stop is not None and stop():
+            termination = Termination.STOPPED
+            break
         trial = _try_step(problem, point, damping.mu, len(trace) + 1, opts)
         if isinstance(trial, Termination):
             termination = trial

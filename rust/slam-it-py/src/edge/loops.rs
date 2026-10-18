@@ -19,6 +19,7 @@ use slam_it_edge::loops::{
     Outcome, Pending, Search,
 };
 use slam_it_foundations::graphs::{self, Termination};
+use slam_it_foundations::nls::Stop;
 
 use super::edge_crossing::{
     camera_in, count_or_none, database_in, indices, indices_array, map_dict, map_in, mode_in,
@@ -576,13 +577,15 @@ fn global_bundle_adjust<'py>(
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut adjusted = map_in(py, m)?;
+    let (camera, options) = (camera_in(camera)?, options_in(options)?);
+    let never = Stop::never(); // a compiled core's stop is its own threads'
     let summary = unwrap(
         py,
-        core::global_bundle_adjust(&mut adjusted, &camera_in(camera)?, &options_in(options)?),
+        core::global_bundle_adjust(&mut adjusted, &camera, &options, &never),
     )?;
     let out = PyDict::new(py);
-    out.set_item("map", map_dict(py, &adjusted)?)?;
     out.set_item("summary", solve_dict(py, &summary)?)?;
+    out.set_item("map", map_dict(py, &adjusted)?)?;
     Ok(out)
 }
 

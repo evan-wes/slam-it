@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, check_range, fail};
 use slam_it_foundations::matching::FeatureGrid;
+use slam_it_foundations::nls::Stop;
 use slam_it_foundations::orb::{self, Keypoint};
 use slam_it_foundations::triangulation;
 
@@ -1259,7 +1260,14 @@ pub fn process(
     let mut adjustment = Adjustment::default();
     if m.keyframes() >= options.adjustment.min_keyframes {
         let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
-        adjustment = bundle_adjust(m, camera, &local_rows(m, options), &fixed, options)?;
+        adjustment = bundle_adjust(
+            m,
+            camera,
+            &local_rows(m, options),
+            &fixed,
+            options,
+            &Stop::never(),
+        )?;
     }
     let keyframes = m.keyframes();
     cull_keyframes(m, camera, mode, options, held)?;

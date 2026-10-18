@@ -96,7 +96,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<IntSetting, 65> counts{{
+  const std::array<IntSetting, 66> counts{{
       {"features.n_features", options.features.n_features},
       {"features.levels", options.features.levels},
       {"features.fast_threshold", options.features.fast_threshold},
@@ -117,6 +117,7 @@ foundations::Result<void> check_options(const Options& options) {
       {"mapping.min_point_observations", options.mapping.min_point_observations},
       {"mapping.min_point_observations_depth", options.mapping.min_point_observations_depth},
       {"mapping.redundant_observers", options.mapping.redundant_observers},
+      {"mapping.max_queued", options.mapping.max_queued},
       {"tracking.pnp_min_inliers", options.tracking.pnp_min_inliers},
       {"loss.lost_frames", options.loss.lost_frames},
       {"tracking.min_motion_inliers", options.tracking.min_motion_inliers},
@@ -203,7 +204,7 @@ foundations::Result<void> check_options(const Options& options) {
       return foundations::fail_setting(setting, "must be finite and positive", value);
     }
   }
-  const std::array<RealSetting, 21> fractions{{
+  const std::array<RealSetting, 22> fractions{{
       {"initialization.ratio", options.initialization.ratio},
       {"initialization.parallax_cos", options.initialization.parallax_cos},
       {"keyframes.ref_ratio", options.keyframes.ref_ratio},
@@ -216,6 +217,7 @@ foundations::Result<void> check_options(const Options& options) {
       {"tracking.local_map_ratio", options.tracking.local_map_ratio},
       {"tracking.min_distance_margin", options.tracking.min_distance_margin},
       {"keyframes.first_ref_ratio", options.keyframes.first_ref_ratio},
+      {"keyframes.busy_ref_ratio", options.keyframes.busy_ref_ratio},
       {"mapping.min_baseline_depth", options.mapping.min_baseline_depth},
       {"relocalization.ratio", options.relocalization.ratio},
       {"relocalization.common_words", options.relocalization.common_words},

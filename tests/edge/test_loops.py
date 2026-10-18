@@ -21,7 +21,7 @@ from slam_it.edge.database import Database
 from slam_it.edge.loops import Outcome, Pending
 from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options
-from slam_it.foundations import matching, se3, so3
+from slam_it.foundations import graphs, matching, se3, so3
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Loop
@@ -423,6 +423,25 @@ def test_global_ba_finds_an_exact_map_from_a_nudged_one(loop_rigid: Loop) -> Non
     assert summary.final_error < 1e-6 * summary.initial_error
     np.testing.assert_allclose(adjusted.kf_pose, exact.kf_pose, atol=1e-6)
     np.testing.assert_allclose(adjusted.pt_xyz, exact.pt_xyz, atol=1e-5)
+
+
+def test_a_global_ba_stops_between_iterations(loop_rigid: Loop) -> None:
+    """A global BA superseded stops before its next iteration, as ORB-SLAM's mbStopGBA stops it."""
+    exact = loop_rigid.truth
+    poses = exact.kf_pose.copy()
+    poses[1:] = se3.exp(np.array([0.004, -0.003, 0.002, 0.001, 0.002, -0.001])) @ poses[1:]
+    asked: list[bool] = []
+
+    def stop() -> bool:
+        asked.append(True)
+        return len(asked) > 1  # one iteration, then stop
+
+    nudged = replace(exact, kf_pose=poses)
+    _, summary = loops.global_bundle_adjust(nudged, CAMERA, OPTIONS, stop=stop)
+    assert (summary.iterations, summary.termination) == (1, graphs.Termination.STOPPED)
+    assert summary.final_error < summary.initial_error
+    with pytest.raises(InvalidInputError, match="stop"):
+        loops.global_bundle_adjust(nudged, CAMERA, OPTIONS, stop=stop, backend="cpp")
 
 
 def test_the_essential_graph_keeps_a_consistent_map(loop_rigid: Loop) -> None:

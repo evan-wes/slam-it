@@ -13,8 +13,9 @@ use std::collections::BTreeSet;
 use nalgebra::{Matrix4, Vector2, Vector3};
 use slam_it_foundations::ba::{self, Intrinsics};
 use slam_it_foundations::error::{ErrorKind, Result, fail};
+use slam_it_foundations::nls::{self, Stop};
+use slam_it_foundations::se3;
 use slam_it_foundations::solve::Summary as _;
-use slam_it_foundations::{nls, se3};
 
 use crate::frames::{Camera, check_setup};
 use crate::map::{self, Map};
@@ -68,6 +69,9 @@ pub struct Adjustment {
     pub free: usize,
     /// The keyframes held fixed: those given that were, and every other observing their points.
     pub fixed: usize,
+    /// Whether an abort stopped it early: before its first solve, between iterations, or before
+    /// the refining solve (`slam_it.edge.adjust`'s "Stopped early").
+    pub aborted: bool,
 }
 
 /// The BA problem built from the map, and where its rows came from.
@@ -194,7 +198,7 @@ const fn to_i64(index: usize) -> i64 {
 ///
 /// The settings.
 #[allow(clippy::cast_possible_wrap, reason = "settings are at most 2^30")]
-fn solver_options(options: &Options, iterations: usize) -> ba::Options {
+fn solver_options(options: &Options, iterations: usize, abort: &Stop) -> ba::Options {
     ba::Options {
         solver: nls::Options {
             loss: nls::Loss {
@@ -202,6 +206,7 @@ fn solver_options(options: &Options, iterations: usize) -> ba::Options {
                 scale: options.adjustment.chi2_mono.sqrt(),
             },
             max_iterations: iterations as i64,
+            stop: abort.clone(),
             ..nls::Options::default()
         },
         ..ba::Options::default()
@@ -273,11 +278,14 @@ fn outliers(
 ///   points is held fixed.
 /// * `fixed` - One flag per keyframe: true to hold it fixed even among `keyframes`.
 /// * `options` - The iterations and thresholds.
+/// * `abort` - Set by local mapping's thread to stop it early: checked before its first solve,
+///   between its iterations and before its refining solve (ORB-SLAM's `pbStopFlag`).
 ///
 /// # Returns
 ///
 /// The two solves (none, the map as it was, if no point was observed or no keyframe was held
-/// fixed, as ORB-SLAM3 skips it) and the outliers dropped.
+/// fixed, as ORB-SLAM3 skips it, or if aborted before the first; one if aborted before the
+/// second) and the outliers dropped.
 ///
 /// # Errors
 ///
@@ -289,6 +297,7 @@ pub fn bundle_adjust(
     keyframes: &[usize],
     fixed: &[bool],
     options: &Options,
+    abort: &Stop,
 ) -> Result<Adjustment> {
     check_setup(camera, options)?;
     if keyframes.iter().any(|&k| k >= m.keyframes()) {
@@ -318,14 +327,40 @@ pub fn bundle_adjust(
     if held == 0 {
         return Ok(Adjustment::default()); // no gauge: ORB-SLAM3 skips it
     }
+    if abort.is_set() {
+        // Stopped before it started: ORB-SLAM3 returns.
+        return Ok(Adjustment {
+            aborted: true,
+            ..Adjustment::default()
+        });
+    }
     let first = ba::solve::solve(
         &problem,
-        &solver_options(options, options.adjustment.iterations),
+        &solver_options(options, options.adjustment.iterations, abort),
     )?;
     let first_summary = first.summary.solve;
     let start = std::mem::replace(&mut problem.points, first.points);
     problem.poses = first.poses;
     let outlier = outliers(m, camera, &problem, &rows, options)?;
+    let written = Written {
+        observing: &observing,
+        points: &points,
+        rows: &rows,
+        free: posed - held,
+        fixed: held,
+    };
+    if abort.is_set() {
+        // ORB-SLAM2's bDoMore: the first solve kept, its outliers dropped.
+        let kept = (problem.poses.clone(), problem.points.clone());
+        return written.back(
+            m,
+            &problem.fixed_poses,
+            &kept.0,
+            &kept.1,
+            &outlier,
+            vec![Solve::of(&first_summary)],
+        );
+    }
     let mut refined = problem.clone();
     let mut inlier_views = vec![0_usize; points.len()];
     for (i, &out) in outlier.iter().enumerate() {
@@ -345,32 +380,92 @@ pub fn bundle_adjust(
     }
     let second = ba::solve::solve(
         &refined,
-        &solver_options(options, options.adjustment.refine_iterations),
+        &solver_options(options, options.adjustment.refine_iterations, abort),
     )?;
     problem.poses.clone_from(&second.poses);
     problem.points.clone_from(&second.points);
     let still = outliers(m, camera, &problem, &rows, options)?;
-    for (c, &k) in observing.iter().enumerate() {
-        if !problem.fixed_poses[c] {
-            m.kf_pose[k] = se3::inverse(&second.poses[c])?;
+    written.back(
+        m,
+        &problem.fixed_poses,
+        &second.poses,
+        &second.points,
+        &still,
+        vec![Solve::of(&first_summary), Solve::of(&second.summary.solve)],
+    )
+}
+
+/// What a solve writes back to the map: its keyframes, points and observations' rows.
+struct Written<'a> {
+    /// The problem's cameras' keyframe rows.
+    observing: &'a [usize],
+    /// Its points' rows.
+    points: &'a [usize],
+    /// Each observation's keypoint row.
+    rows: &'a [usize],
+    /// The keyframes adjusted.
+    free: usize,
+    /// The keyframes held fixed.
+    fixed: usize,
+}
+
+impl Written<'_> {
+    /// Writes a solve back: the free keyframes' poses and the points, the failing observations
+    /// forgotten, the points refreshed.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map.
+    /// * `held` - Each camera's flag: fixed.
+    /// * `poses` - The solve's camera poses, as the problem holds them.
+    /// * `xyz` - The solve's points.
+    /// * `failing` - Each observation's flag: dropped as an outlier.
+    /// * `solves` - The solves run.
+    ///
+    /// # Returns
+    ///
+    /// The adjustment's record; aborted if it is not both solves, or one was stopped.
+    ///
+    /// # Errors
+    ///
+    /// A pose that cannot be inverted, or the map's error.
+    fn back(
+        &self,
+        m: &mut Map,
+        held: &[bool],
+        poses: &[Matrix4<f64>],
+        xyz: &[Vector3<f64>],
+        failing: &[bool],
+        solves: Vec<Solve>,
+    ) -> Result<Adjustment> {
+        for (c, &k) in self.observing.iter().enumerate() {
+            if !held[c] {
+                m.kf_pose[k] = se3::inverse(&poses[c])?;
+            }
         }
+        let ids: Vec<i64> = self.points.iter().map(|&p| m.pt_id[p]).collect();
+        for (i, &p) in self.points.iter().enumerate() {
+            m.pt_xyz[p] = xyz[i];
+        }
+        let dropped: Vec<usize> = self
+            .rows
+            .iter()
+            .zip(failing)
+            .filter_map(|(&r, &out)| out.then_some(r))
+            .collect();
+        map::forget_observations(m, &dropped)?;
+        let kept: Vec<usize> = ids.iter().filter_map(|&id| m.point_row(id)).collect();
+        map::refresh_points(m, &kept)?;
+        let aborted = solves.len() < 2
+            || solves
+                .iter()
+                .any(|s| s.termination == nls::Termination::Stopped);
+        Ok(Adjustment {
+            solves,
+            outliers: dropped.len(),
+            free: self.free,
+            fixed: self.fixed,
+            aborted,
+        })
     }
-    let ids: Vec<i64> = points.iter().map(|&p| m.pt_id[p]).collect();
-    for (i, &p) in points.iter().enumerate() {
-        m.pt_xyz[p] = second.points[i];
-    }
-    let dropped: Vec<usize> = rows
-        .iter()
-        .zip(&still)
-        .filter_map(|(&r, &out)| out.then_some(r))
-        .collect();
-    map::forget_observations(m, &dropped)?;
-    let kept: Vec<usize> = ids.iter().filter_map(|&id| m.point_row(id)).collect();
-    map::refresh_points(m, &kept)?;
-    Ok(Adjustment {
-        solves: vec![Solve::of(&first_summary), Solve::of(&second.summary.solve)],
-        outliers: dropped.len(),
-        free: posed - held,
-        fixed: held,
-    })
 }

@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import enum
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -1333,7 +1334,9 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
     return [sim3.inverse(pose) for pose in solved.poses], len(graph.edges), solved.summary
 
 
-def _global_bundle_adjust(m: Map, camera: Camera, options: Options) -> tuple[Map, graphs.Summary]:
+def _global_bundle_adjust(
+    m: Map, camera: Camera, options: Options, stop: Callable[[], bool] | None = None
+) -> tuple[Map, graphs.Summary]:
     """Bundle-adjust every keyframe and point (reference)."""
     rows = np.flatnonzero(m.kp_point >= 0)
     adjusted = graphs.bundle_adjust(
@@ -1349,6 +1352,7 @@ def _global_bundle_adjust(m: Map, camera: Camera, options: Options) -> tuple[Map
         bf=camera.focal * camera.baseline,
         fixed=np.flatnonzero(m.kf_id == 0),
         options=graphs.Options(max_iterations=options.loops.global_iterations),
+        stop=stop,
     )
     poses = np.array([sim3.inverse(pose) for pose in adjusted.poses]).reshape(-1, 4, 4)
     out = replace(m, kf_pose=poses, pt_xyz=adjusted.points)
@@ -2188,7 +2192,12 @@ def fuse_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, t
 
 
 def global_bundle_adjust(
-    m: Map, camera: Camera, options: Options, *, backend: str = "python"
+    m: Map,
+    camera: Camera,
+    options: Options,
+    *,
+    stop: Callable[[], bool] | None = None,
+    backend: str = "python",
 ) -> tuple[Map, graphs.Summary]:
     """Bundle-adjust every keyframe and point (``GlobalBundleAdjustemnt``, as loop closing runs it).
 
@@ -2204,6 +2213,9 @@ def global_bundle_adjust(
         The camera.
     options : slam_it.edge.options.Options
         ``loops.global_iterations``.
+    stop : callable, optional
+        Asked before each iteration whether to stop (a global BA in a thread of its own,
+        superseded: ORB-SLAM's ``mbStopGBA``); the Python reference's alone.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -2221,6 +2233,8 @@ def global_bundle_adjust(
     """
     if not np.any(m.kf_id == 0):
         raise InvalidInputError("m: expected the map's first keyframe (id 0)")
+    if stop is not None and backend != "python":
+        raise InvalidInputError("stop: a compiled backend's core takes its own stop flag")
 
     def decode(raw: Crossing, codes: backends.Codes) -> tuple[Map, graphs.Summary]:
         return maps.decode(raw["map"], codes), graphs.summary_from_backend(raw["summary"], codes)
@@ -2229,7 +2243,7 @@ def global_bundle_adjust(
         backend,
         __name__,
         "global_bundle_adjust",
-        reference=lambda: _global_bundle_adjust(m, camera, options),
+        reference=lambda: _global_bundle_adjust(m, camera, options, stop),
         arguments={"m": m.as_dict(), "camera": camera.as_dict(), "options": options.as_dict()},
         decode=decode,
     )

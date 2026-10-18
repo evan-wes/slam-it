@@ -8,6 +8,7 @@ use nalgebra::{Matrix4, Vector3};
 use slam_it_edge::adjust::bundle_adjust;
 use slam_it_edge::options::Options;
 use slam_it_foundations::error::ErrorKind;
+use slam_it_foundations::nls::Stop;
 
 use scene::{KEYFRAMES, POINTS, camera, points, pose, scene_map};
 
@@ -32,6 +33,7 @@ fn recovers_the_scene_and_forgets_a_moved_observation() {
         &[0, 1, 2],
         &[true, false, false],
         &Options::default(),
+        &Stop::never(),
     )
     .unwrap();
     assert_eq!((adjustment.solves.len(), adjustment.outliers), (2, 1));
@@ -65,6 +67,7 @@ fn no_keyframe_held_fixed_solves_nothing() {
         &[0, 1, 2],
         &[false, false, false],
         &Options::default(),
+        &Stop::never(),
     )
     .unwrap();
     assert_eq!(adjustment.solves.len(), 0);
@@ -79,8 +82,17 @@ fn no_keyframe_held_fixed_solves_nothing() {
 fn rejects_bad_rows_and_flags() {
     let mut m = scene_map();
     let options = Options::default();
-    let err = bundle_adjust(&mut m, &camera(), &[3], &[true, false, false], &options).unwrap_err();
+    let err = bundle_adjust(
+        &mut m,
+        &camera(),
+        &[3],
+        &[true, false, false],
+        &options,
+        &Stop::never(),
+    )
+    .unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
-    let err = bundle_adjust(&mut m, &camera(), &[0], &[true], &options).unwrap_err();
+    let err =
+        bundle_adjust(&mut m, &camera(), &[0], &[true], &options, &Stop::never()).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }

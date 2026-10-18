@@ -432,7 +432,7 @@ def test_mapping_busy_asks_for_a_keyframe_less_often(mapped: Mapped) -> None:
     assert ask(mode="monocular")  # idle: wanted
     assert not ask(mode="monocular", idle=False, since_keyframe=0)
     assert ask(mode="monocular", idle=False, since_keyframe=OPTIONS.tracking.max_frames)
-    poor = mapping.BUSY_REF_RATIO * reference_points > 60
+    poor = OPTIONS.keyframes.busy_ref_ratio * reference_points > 60
     assert ask(mode="rgbd", idle=False, since_keyframe=0) == poor
     with pytest.raises(InvalidInputError, match="idle"):
         ask(mode="rgbd", idle=False, backend="cpp")

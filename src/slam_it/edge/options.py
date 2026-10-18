@@ -290,6 +290,10 @@ class KeyframeOptions:
     close_tracked, close_untracked : int
         Stereo and RGB-D also need one when fewer than ``keyframes.close_tracked`` close points are
         tracked and more than ``keyframes.close_untracked`` could be created (100, 70).
+    busy_ref_ratio : float
+        With local mapping busy, in threads of their own, a stereo or RGB-D frame tracking fewer
+        than this fraction of its reference keyframe's points still asks for one
+        (``NeedNewKeyFrame``'s ``c1c``: 0.25).
     """
 
     ref_ratio: float = 0.75
@@ -300,6 +304,7 @@ class KeyframeOptions:
     min_inliers: int = 15
     close_tracked: int = 100
     close_untracked: int = 70
+    busy_ref_ratio: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -361,6 +366,9 @@ class MappingOptions:
         ``mapping.redundant_observers`` other keyframes at the same or a finer scale (0.9, 3).
     redundant_observers : int
         See ``mapping.redundant_fraction``.
+    max_queued : int
+        With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is queued
+        only while fewer than this many wait (``NeedNewKeyFrame``'s ``KeyframesInQueue() < 3``).
     """
 
     min_new_points: int = 100
@@ -382,6 +390,7 @@ class MappingOptions:
     min_point_observations_depth: int = 3
     redundant_fraction: float = 0.9
     redundant_observers: int = 3
+    max_queued: int = 3
 
 
 @dataclass(frozen=True)
@@ -881,6 +890,7 @@ _FRACTIONS = frozenset(
         "relocalization.ratio",
         "mapping.min_baseline_depth",
         "keyframes.first_ref_ratio",
+        "keyframes.busy_ref_ratio",
         "tracking.min_distance_margin",
         "tracking.local_map_ratio",
         "tracking.aligned_view_cos",

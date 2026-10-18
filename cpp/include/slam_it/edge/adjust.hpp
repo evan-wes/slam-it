@@ -10,6 +10,7 @@
 /// refreshed. The result records how each solve went, which a run records per keyframe.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -48,6 +49,9 @@ struct Adjustment {
   /// @brief The keyframes held fixed: those given that were, and every other observing their
   ///        points.
   std::int64_t fixed{0};
+  /// @brief Whether an abort stopped it early: before its first solve, between iterations, or
+  ///        before the refining solve (`slam_it.edge.adjust`'s "Stopped early").
+  bool aborted{false};
 };
 
 /// @brief A solve's record, from its summary (`slam_it.edge.adjust.Solve.of`).
@@ -64,13 +68,17 @@ struct Adjustment {
 ///        points is held fixed.
 /// @param fixed One flag per keyframe: nonzero to hold it fixed even among `keyframes`.
 /// @param options The iterations and thresholds.
+/// @param abort A flag local mapping's thread sets to stop it early: checked before its first
+///        solve, between its iterations and before its refining solve (ORB-SLAM's
+///        `pbStopFlag`); not owned, null for never.
 /// @return The two solves (none, the map as it was, if no point was observed or no keyframe
-///         was held fixed, as ORB-SLAM3 skips it) and the outliers dropped;
-///         `InvalidInput` for a keyframe row out of range, flags that are not one per
-///         keyframe, or an invalid camera or settings.
-[[nodiscard]] foundations::Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
-                                                            std::span<const std::int64_t> keyframes,
-                                                            std::span<const std::uint8_t> fixed,
-                                                            const Options& options);
+///         was held fixed, as ORB-SLAM3 skips it, or if aborted before the first; one if
+///         aborted before the second) and the outliers dropped; `InvalidInput` for a keyframe
+///         row out of range, flags that are not one per keyframe, or an invalid camera or
+///         settings.
+[[nodiscard]] foundations::Result<Adjustment> bundle_adjust(
+    Map& m, const Camera& camera, std::span<const std::int64_t> keyframes,
+    std::span<const std::uint8_t> fixed, const Options& options,
+    const std::atomic<bool>* abort = nullptr);
 
 }  // namespace slam_it::edge

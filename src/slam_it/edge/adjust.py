@@ -28,11 +28,11 @@ observations were dropped, which a run records per keyframe.
 
 **Stopped early** (milestone 2B's B3b, local mapping in a thread of its own): given an ``abort``
 check, the adjustment asks it before its first solve, and returns the map untouched if it says
-stop, as ORB-SLAM3's ``LocalBundleAdjustment`` returns when its ``pbStopFlag`` is set; and again
-after the first solve, where a stop skips the refining solve, the outliers of the first dropped
-and its result kept, as ORB-SLAM2's ``bDoMore``. ORB-SLAM's g2o also stops between the
-iterations of a solve; rung 0's solver runs each solve whole (only the Python reference takes the
-check, until B3b's compiled ports).
+stop, as ORB-SLAM3's ``LocalBundleAdjustment`` returns when its ``pbStopFlag`` is set; between
+the iterations of each solve, as g2o's ``setForceStopFlag`` stops ORB-SLAM's
+(:attr:`slam_it.foundations.nls.Termination.STOPPED`); and after the first solve, where a stop
+skips the refining solve, the outliers of the first dropped and its result kept, as ORB-SLAM2's
+``bDoMore``.
 """
 
 from __future__ import annotations
@@ -208,6 +208,7 @@ def _decode_adjustment(raw: dict[str, Any], codes: backends.Codes) -> Adjustment
         outliers=int(raw["outliers"]),
         free=int(raw["free"]),
         fixed=int(raw["fixed"]),
+        aborted=bool(raw["aborted"]),
     )
 
 
@@ -268,7 +269,7 @@ def _bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the
     if abort is not None and abort():  # stopped before it started: ORB-SLAM3 returns
         return Adjustment(map=m, solves=(), outliers=0, aborted=True)
     loss = nls.Loss("huber", math.sqrt(options.adjustment.chi2_mono))
-    first = ba.solve(problem, _options(loss, options.adjustment.iterations))
+    first = ba.solve(problem, _options(loss, options.adjustment.iterations), stop=abort)
     solved = replace(problem, poses=first.poses, points=first.points)
     outlier = _outliers(m, camera, solved, rows, options)
     if abort is not None and abort():  # ORB-SLAM2's bDoMore: the first solve kept
@@ -287,12 +288,15 @@ def _bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the
             depth_prior_weights=np.where(outlier, 0.0, problem.depth_prior_weights),
         ),
         _options(loss, options.adjustment.refine_iterations),
+        stop=abort,
     )
     final = replace(problem, poses=second.poses, points=second.points)
     dropped = rows[_outliers(m, camera, final, rows, options)]
+    solves = (Solve.of(first.summary.solve), Solve.of(second.summary.solve))
+    stopped = any(solve.termination is nls.Termination.STOPPED for solve in solves)
     return _written_back(
         m, problem, points=points, observing=observing, result=second, dropped=dropped,
-        solves=(Solve.of(first.summary.solve), Solve.of(second.summary.solve)), aborted=False,
+        solves=solves, aborted=stopped,
     )  # fmt: skip
 
 
@@ -362,8 +366,8 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
     options : Options
         The iterations and thresholds.
     abort : callable, optional
-        Asked before each solve whether to stop (the module docstring's "Stopped early");
-        default: never.
+        Asked before each solve and between its iterations whether to stop (the module
+        docstring's "Stopped early"); default: never.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 

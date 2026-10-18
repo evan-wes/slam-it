@@ -13,6 +13,7 @@ use pyo3::types::PyDict;
 use serde::Deserialize;
 use slam_it_foundations::camera::Model;
 use slam_it_foundations::graphs::{self as core, Lens, Matches, Observations, Termination};
+use slam_it_foundations::nls::Stop;
 
 use crate::common::{
     ArrayIn, add_functions, contiguous, decode, encode, enum_names, item_array, items_array,
@@ -54,6 +55,7 @@ fn read_options(options: &Bound<'_, PyDict>) -> PyResult<core::Options> {
         initial_damping: raw.initial_damping,
         relative_tolerance: raw.relative_tolerance,
         absolute_tolerance: raw.absolute_tolerance,
+        stop: Stop::never(), // a compiled core's stop is its own threads'
     })
 }
 

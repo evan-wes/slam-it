@@ -63,10 +63,6 @@ Mask = NDArray[np.bool_]
 Crossing = dict[str, Any]
 """A map, camera, tracked frame or the settings, as it crosses the bindings."""
 
-BUSY_REF_RATIO = 0.25
-"""With mapping busy, a stereo or RGB-D frame tracking fewer than this share of its reference
-keyframe's points still asks for a keyframe (ORB-SLAM's ``NeedNewKeyFrame``, its ``c1c``)."""
-
 
 class Interrupts(Protocol):
     """What local mapping's own thread is asked between its steps (the module docstring)."""
@@ -430,7 +426,7 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
         return wanted
     late = since_keyframe is not None and since_keyframe >= options.tracking.max_frames  # c1a
     poor = mode != "monocular" and (  # c1c
-        tracked.inliers < tracked_reference * BUSY_REF_RATIO or need_close
+        tracked.inliers < tracked_reference * options.keyframes.busy_ref_ratio or need_close
     )
     return wanted and (late or poor)
 
@@ -458,7 +454,7 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     ``keyframes.close_untracked`` close ones go untracked; and it tracks more than
     ``keyframes.min_inliers``. With mapping busy, those hold and also: ``tracking.max_frames``
     frames have passed since the last keyframe, or, with depth, the frame tracks fewer than
-    :data:`BUSY_REF_RATIO` of the reference's points, or the close points ask for one. Whether
+    ``keyframes.busy_ref_ratio`` of the reference's points, or the close points ask for one. Whether
     mapping then takes the keyframe is the pipeline's (:mod:`slam_it.edge.pipeline`).
 
     Parameters

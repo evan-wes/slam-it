@@ -38,7 +38,8 @@ cameras until nothing was left to cost, and the map collapsed (the loop room, 20
 - An error is GTSAM's: ``½ Σ ρ(|r|²_Σ)``, a robust loss on the whitened norm.
 
 **Solves.** Levenberg-Marquardt, GTSAM's, driven here one ``iterate()`` at a time so that
-every language stops by the same rule (:class:`Termination`). Each ``iterate()`` linearises,
+every language stops by the same rule (:class:`Termination`), and a ``stop`` check between
+iterations can end it, as g2o's ``setForceStopFlag`` ends ORB-SLAM's. Each ``iterate()`` linearises,
 then raises its damping ``λ`` until a step lowers the error, or gives up at GTSAM's upper
 bound (``1e5``); a step that lowers the error divides ``λ`` by 10 (GTSAM's defaults). An
 error GTSAM raises while solving is :class:`~slam_it.foundations.errors.NotConvergedError`,
@@ -93,6 +94,8 @@ class Termination(enum.StrEnum):
     DAMPING_LIMIT = "damping_limit"
     """Not converged: no step lowered the error before the damping reached its upper bound
     (also how a solve at its minimum ends when both tolerances are 0)."""
+    STOPPED = "stopped"
+    """Not converged: stopped from outside, between iterations (a ``stop`` check)."""
 
 
 CONVERGED = frozenset({Termination.FUNCTION})
@@ -484,9 +487,15 @@ def similarity_residuals(  # noqa: PLR0913, PLR0917 -- the match, its camera, th
 
 
 def _solve(
-    graph: gtsam.NonlinearFactorGraph, values: gtsam.Values, options: Options
+    graph: gtsam.NonlinearFactorGraph,
+    values: gtsam.Values,
+    options: Options,
+    stop: Callable[[], bool] | None = None,
 ) -> tuple[gtsam.Values, Summary]:
-    """Run Levenberg-Marquardt by :class:`Termination`'s rule; return the values and summary."""
+    """Run Levenberg-Marquardt by :class:`Termination`'s rule; return the values and summary.
+
+    `stop`, if given, is asked before each iteration whether to end the solve there.
+    """
     params = gtsam.LevenbergMarquardtParams()
     params.setlambdaInitial(options.initial_damping)
     params.setRelativeErrorTol(options.relative_tolerance)
@@ -502,6 +511,9 @@ def _solve(
     termination = Termination.MAX_ITERATIONS
     iterations = 0
     while current > 0.0 and iterations < options.max_iterations:
+        if stop is not None and stop():
+            termination = Termination.STOPPED
+            break
         try:
             optimizer.iterate()
         except Exception as failure:
@@ -974,6 +986,7 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
     bf: float,
     fixed: IntArray,
     options: Options,
+    stop: Callable[[], bool] | None = None,
 ) -> Adjustment:
     """Adjust a bundle (reference)."""
     graph = gtsam.NonlinearFactorGraph()
@@ -1009,7 +1022,7 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
             return projected.residual, [projected.d_pose, projected.d_point]
 
         graph.add(_custom(noise, [c, first_point + p], evaluate))
-    solved, summary = _solve(graph, values, options)
+    solved, summary = _solve(graph, values, options, stop)
     return Adjustment(
         poses=np.stack(
             [np.asarray(solved.atPose3(c).matrix(), dtype=np.float64) for c in range(len(poses))]
@@ -1038,6 +1051,7 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     bf: float,
     fixed: ArrayLike,
     options: Options | None = None,
+    stop: Callable[[], bool] | None = None,
     backend: str = "python",
 ) -> Adjustment:
     """Adjust every pose and point against every observation, with no robust loss.
@@ -1072,6 +1086,9 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
         The cameras held fixed.
     options : Options, optional
         How the solve runs (default: :class:`Options`'s).
+    stop : callable, optional
+        Asked before each iteration whether to stop (:attr:`Termination.STOPPED`); the Python
+        reference's alone (a compiled core takes its stop flag in its own call).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -1084,11 +1101,13 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     ------
     slam_it.foundations.errors.InvalidInputError
         If a pose is not rigid, the shapes disagree, an index is out of range, a point is not
-        observed, an information is not positive, a right column is given with ``bf <= 0``, or
-        the camera is invalid.
+        observed, an information is not positive, a right column is given with ``bf <= 0``, the
+        camera is invalid, or a ``stop`` is given to a compiled backend.
     slam_it.foundations.errors.NotConvergedError
         If GTSAM fails while solving.
     """
+    if stop is not None and backend != "python":
+        raise InvalidInputError("stop: a compiled backend's core takes its own stop flag")
     chosen = options or Options()
     checked = _poses(poses, False, "poses")
     world, lead = as_batch(points, (3,), "points")
@@ -1122,7 +1141,19 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
         __name__,
         "bundle_adjust",
         reference=lambda: _bundle(
-            checked, world, which, whose, seen, columns, weights, model, params, bf, held, chosen
+            checked,
+            world,
+            which,
+            whose,
+            seen,
+            columns,
+            weights,
+            model,
+            params,
+            bf,
+            held,
+            chosen,
+            stop,
         ),
         arguments={
             "poses": checked,

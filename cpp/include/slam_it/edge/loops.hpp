@@ -11,6 +11,7 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -288,10 +289,12 @@ struct Detection {
 /// @param m The map, changed in place.
 /// @param camera The camera.
 /// @param options `loops.global_iterations`.
+/// @param stop A flag that stops it before its next iteration (a global BA in a thread of its
+///        own, superseded: ORB-SLAM's `mbStopGBA`); not owned, null for never.
 /// @return The solve's summary; `InvalidInput` for a map without its first keyframe;
 ///         `NotConverged` for GTSAM's failure.
 [[nodiscard]] foundations::Result<foundations::graphs::Summary> global_bundle_adjust(
-    Map& m, const Camera& camera, const Options& options);
+    Map& m, const Camera& camera, const Options& options, const std::atomic<bool>* stop = nullptr);
 
 /// @brief How a loop's correction went (`slam_it.edge.loops.CorrectionSummary`).
 struct CorrectionSummary {

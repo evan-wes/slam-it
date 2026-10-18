@@ -178,6 +178,10 @@ struct KeyframeOptions {
   std::int64_t close_tracked{100};
   /// @brief Untracked close points above which they do.
   std::int64_t close_untracked{70};
+  /// @brief With local mapping busy, in threads of their own, a stereo or RGB-D frame tracking
+  ///        fewer than this fraction of its reference keyframe's points still asks for a keyframe
+  ///        (`NeedNewKeyFrame`'s `c1c`).
+  double busy_ref_ratio{0.25};
 };
 
 /// @brief Local mapping: points from depth, triangulation, fusion and culling (`Options.mapping`).
@@ -220,6 +224,9 @@ struct MappingOptions {
   double redundant_fraction{0.9};
   /// @brief By at least this many other keyframes.
   std::int64_t redundant_observers{3};
+  /// @brief With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is
+  ///        queued only while fewer than this many wait (`KeyframesInQueue() < 3`).
+  std::int64_t max_queued{3};
 };
 
 /// @brief The covisibility graph (`Options.covisibility`).
@@ -464,6 +471,7 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("keyframes.min_inliers", options.keyframes.min_inliers);
   visit("keyframes.close_tracked", options.keyframes.close_tracked);
   visit("keyframes.close_untracked", options.keyframes.close_untracked);
+  visit("keyframes.busy_ref_ratio", options.keyframes.busy_ref_ratio);
   visit("mapping.min_new_points", options.mapping.min_new_points);
   visit("mapping.triangulation_neighbours", options.mapping.triangulation_neighbours);
   visit("mapping.mono_triangulation_neighbours", options.mapping.mono_triangulation_neighbours);
@@ -483,6 +491,7 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("mapping.min_point_observations_depth", options.mapping.min_point_observations_depth);
   visit("mapping.redundant_fraction", options.mapping.redundant_fraction);
   visit("mapping.redundant_observers", options.mapping.redundant_observers);
+  visit("mapping.max_queued", options.mapping.max_queued);
   visit("covisibility.min_points", options.covisibility.min_points);
   visit("covisibility.local_keyframes", options.covisibility.local_keyframes);
   visit("covisibility.local_neighbours", options.covisibility.local_neighbours);

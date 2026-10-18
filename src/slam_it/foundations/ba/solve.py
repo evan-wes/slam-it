@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from typing import Any, Protocol
 
@@ -23,6 +24,7 @@ from slam_it.foundations.ba.problem import (
     Mask,
 )
 from slam_it.foundations.ba.schur import DenseCholesky
+from slam_it.foundations.errors import InvalidInputError
 
 MODULE = "slam_it.foundations.ba"
 """The module a compiled backend's implementation mirrors (``_cpp.foundations.ba``)."""
@@ -157,7 +159,9 @@ def _centred(problem: BAProblem, origin: Array) -> BAProblem:
     return replace(problem, poses=poses, points=problem.points - origin, pose_prior=prior)
 
 
-def _solve_reference(original: BAProblem, options: BAOptions) -> BAResult:
+def _solve_reference(
+    original: BAProblem, options: BAOptions, stop: Callable[[], bool] | None = None
+) -> BAResult:
     """Run bundle adjustment with the Python reference, in a world centred on the cameras."""
     origin = centring_origin(original)
     problem = _centred(original, origin)
@@ -167,7 +171,7 @@ def _solve_reference(original: BAProblem, options: BAOptions) -> BAResult:
         (options.solver.loss, options.depth_loss, nls.Loss()), bundle.loss_index
     )
     start = bundle.start()
-    solution = nls.solve(bundle, start, replace(options.solver, block_loss=block_loss))
+    solution = nls.solve(bundle, start, replace(options.solver, block_loss=block_loss), stop=stop)
     final = solution.state
     poses = se3.inverse(final.poses)
     poses[:, :3, 3] += origin
@@ -260,7 +264,11 @@ def backend_arguments(problem: BAProblem, options: BAOptions) -> dict[str, Any]:
 
 
 def solve(
-    problem: BAProblem, options: BAOptions | None = None, *, backend: str = "python"
+    problem: BAProblem,
+    options: BAOptions | None = None,
+    *,
+    stop: Callable[[], bool] | None = None,
+    backend: str = "python",
 ) -> BAResult:
     """Refine a bundle-adjustment problem's poses, intrinsics, points and depth affines.
 
@@ -270,6 +278,9 @@ def solve(
         The problem (see :meth:`BAProblem.create`).
     options : BAOptions, optional
         Solver settings, losses, gauge and thresholds (default: ``BAOptions()``).
+    stop : callable, optional
+        Asked before each step whether to stop (:func:`slam_it.foundations.nls.solve`); the
+        Python reference's alone (a compiled core takes its stop flag in its own call).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation solves it (default: the Python reference).
 
@@ -286,17 +297,20 @@ def solve(
         If ``backend`` names a compiled backend that is not built here.
     slam_it.foundations.errors.InvalidInputError
         If the problem and options do not fit together: a ``"scale"`` gauge with nothing to
-        measure scale from. The compiled backend also re-checks the problem itself, which
-        :class:`BAProblem` already did on construction.
+        measure scale from; or a ``stop`` given to a compiled backend. The compiled backend
+        also re-checks the problem itself, which :class:`BAProblem` already did on
+        construction.
     slam_it.foundations.errors.NotConvergedError
         If ``options.solver.strict`` and the solve stopped without converging.
     """
     opts = options if options is not None else BAOptions()
+    if stop is not None and backend != "python":
+        raise InvalidInputError("stop: a compiled backend's core takes its own stop flag")
     return backends.call(
         backend,
         MODULE,
         "solve",
-        reference=lambda: _solve_reference(problem, opts),
+        reference=lambda: _solve_reference(problem, opts, stop),
         arguments=backend_arguments(problem, opts),
         decode=_result_from_backend,
     )

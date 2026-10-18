@@ -22,6 +22,7 @@ def test_the_defaults_are_orb_slams() -> None:
     ) == (1000, 8, 1.2)
     assert (options.adjustment.chi2_mono, options.adjustment.chi2_stereo) == (5.991, 7.815)
     assert (options.covisibility.local_neighbours, options.stereo.close_depth) == (10, 40.0)
+    assert (options.keyframes.busy_ref_ratio, options.mapping.max_queued) == (0.25, 3)
 
 
 def test_extraction_doubles_the_features_while_initializing() -> None:
@@ -57,6 +58,8 @@ def test_the_settings_cross_as_groups_of_scalars() -> None:
         ({"seed": -1}, "seed: must be from 0"),
         ({"adjustment.chi2_mono": 0.0}, "adjustment.chi2_mono: must be finite and positive"),
         ({"keyframes.ref_ratio": 1.5}, r"keyframes.ref_ratio: must be in \(0, 1\]"),
+        ({"keyframes.busy_ref_ratio": 0.0}, r"keyframes.busy_ref_ratio: must be in \(0, 1\]"),
+        ({"mapping.max_queued": 0}, "mapping.max_queued: must be from 1"),
         ({"tracking.view_cos_limit": 0.0}, r"tracking.view_cos_limit: must be in \(0, 1\]"),
         ({"features.levels": 0}, "features.levels: must be from 1"),
         (
@@ -111,7 +114,7 @@ def test_an_unknown_setting_or_group_is_refused() -> None:
 def test_the_settings_are_named_by_group_and_field() -> None:
     """settings() lists all 132, each ``group.field`` but ``seed``, and with_settings reads them."""
     settings = Options().settings()
-    assert len(settings) == 132
+    assert len(settings) == 134
     assert [name for name in settings if "." not in name] == ["seed"]
     changed = Options().with_settings({"relocalization.min_inliers": 12, "seed": 3})
     assert (changed.relocalization.min_inliers, changed.seed) == (12, 3)

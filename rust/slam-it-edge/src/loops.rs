@@ -13,6 +13,7 @@ use slam_it_foundations::camera::MIN_DEPTH;
 use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::graphs;
 use slam_it_foundations::matching;
+use slam_it_foundations::nls::Stop;
 use slam_it_foundations::orb;
 use slam_it_foundations::ransac;
 use slam_it_foundations::sim3;
@@ -2080,6 +2081,8 @@ pub fn essential_graph(
 /// * `m` - The map, changed in place, with its first keyframe.
 /// * `camera` - The camera.
 /// * `options` - `loops.global_iterations`.
+/// * `stop` - Stops it before its next iteration (a global BA in a thread of its own,
+///   superseded: ORB-SLAM's `mbStopGBA`).
 ///
 /// # Returns
 ///
@@ -2092,6 +2095,7 @@ pub fn global_bundle_adjust(
     m: &mut Map,
     camera: &Camera,
     options: &Options,
+    stop: &Stop,
 ) -> Result<graphs::Summary> {
     if m.keyframe_row(0).is_none() {
         return fail(
@@ -2140,6 +2144,7 @@ pub fn global_bundle_adjust(
         &fixed,
         &graphs::Options {
             max_iterations: options.loops.global_iterations,
+            stop: stop.clone(),
             ..graphs::Options::default()
         },
     )?;
@@ -2265,7 +2270,7 @@ pub fn correct(
     move_by_graph(m, &start, &essential.poses, &moved_by)?;
     map::add_loop_edge(m, closed.matched, closed.current)?;
     let global_ba = if options.loops.global_ba {
-        Some(global_bundle_adjust(m, camera, options)?)
+        Some(global_bundle_adjust(m, camera, options, &Stop::never())?)
     } else {
         None
     };

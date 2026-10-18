@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use slam_it_edge::adjust as core;
 
-use slam_it_foundations::nls;
+use slam_it_foundations::nls::{self, Stop};
 
 use super::edge_crossing::{camera_in, indices, map_dict, map_in, options_in, solves_list, vector};
 use crate::common::{add_functions, enum_codes, to_i64, unwrap};
@@ -47,6 +47,7 @@ fn bundle_adjust<'py>(
             &indices(&keyframes)?,
             &vector::<bool>(&fixed)?,
             &options_in(options)?,
+            &Stop::never(),
         ),
     )?;
     let out = PyDict::new(py);
@@ -55,6 +56,7 @@ fn bundle_adjust<'py>(
     out.set_item("outliers", to_i64(adjustment.outliers))?;
     out.set_item("free", to_i64(adjustment.free))?;
     out.set_item("fixed", to_i64(adjustment.fixed))?;
+    out.set_item("aborted", adjustment.aborted)?;
     Ok(out)
 }
 
