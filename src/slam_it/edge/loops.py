@@ -57,8 +57,8 @@ scale, so their similarities are rigid (``mbFixScale``).
 - a later keyframe's last search goes through the refined similarity; ORB-SLAM's goes through
   the unrefined one, its scale set to 1;
 - the search of a matched keyframe's points widens to its links' links only past the new
-  keyframe's links, at most ``loops.neighbours`` of each, as ORB-SLAM's code means to; ORB-SLAM
-  adds them all;
+  keyframe's links, at most ``loops.neighbours`` of each, as ORB-SLAM's design intends; its
+  source adds them all;
 - a group is the candidate and its best links, in their order; ORB-SLAM moves the first link
   to the end;
 - a point carried behind a keyframe is never matched or fused; the moved keyframes' points
