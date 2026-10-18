@@ -20,8 +20,8 @@ pub const FORMAT: &str = "slam-it-run";
 /// keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
 /// `vocabulary` a relocalising run used; 6 the settings grouped, each keyframe's parent and the
 /// strong links; 7 the final trajectory, the poses as tracked beside it, the loops closed, and
-/// loop closing's time).
-pub const VERSION: i64 = 7;
+/// loop closing's time; 8 `threaded` and `locks`, and the threads' handshakes on each frame).
+pub const VERSION: i64 = 8;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 pub const REMOVALS: i64 = 4;
@@ -131,6 +131,10 @@ pub struct Run {
     pub keyframe_loops: Vec<[i64; 2]>,
     /// Whether the run recorded its features (`FeatureWriter` streams them).
     pub record_features: bool,
+    /// Whether its steps ran in threads of their own.
+    pub threaded: bool,
+    /// Whether those threads shared the map by ORB-SLAM's locks (C++'s baseline).
+    pub locks: bool,
     /// The map each tracked frame's pose is in, never descending.
     pub pose_maps: Vec<i64>,
     /// The map each keyframe is in, by id, never descending.
@@ -579,6 +583,12 @@ fn check(run: &Run) -> Result<()> {
             format!("backend: unknown '{}'", run.backend),
         );
     }
+    if run.locks && !run.threaded {
+        return fail(
+            ErrorKind::InvalidInput,
+            "locks: only a threaded run shares the map by locks",
+        );
+    }
     check_stamped(&run.timestamps, &run.poses, "trajectory")?;
     check_stamped(&run.timestamps, &run.tracked_poses, "tracked trajectory")?;
     check_stamped(&run.keyframe_timestamps, &run.keyframe_poses, "keyframes")?;
@@ -906,8 +916,13 @@ fn info_text(run: &Run) -> String {
             .as_ref()
             .map_or_else(|| "null".to_owned(), vocabulary_text),
     );
-    info_text.push_str(", \"record_features\": ");
-    info_text.push_str(if run.record_features { "true" } else { "false" });
+    for (key, value) in [
+        ("record_features", run.record_features),
+        ("threaded", run.threaded),
+        ("locks", run.locks),
+    ] {
+        let _ = write!(info_text, ", \"{key}\": {value}");
+    }
     let integer_or_null =
         |value: Option<u64>| value.map_or_else(|| "null".to_owned(), |v| v.to_string());
     info_text.push_str(", \"peak_memory\": ");
@@ -1230,6 +1245,8 @@ mod tests {
                 .map(|edge| [edge[0].as_i64().unwrap(), edge[1].as_i64().unwrap()])
                 .collect(),
             record_features: values["record_features"].as_bool().unwrap(),
+            threaded: values["threaded"].as_bool().unwrap(),
+            locks: values["locks"].as_bool().unwrap(),
             pose_maps: integers(&values["pose_maps"]),
             keyframe_maps: integers(&values["keyframe_maps"]),
             point_maps: integers(&values["point_maps"]),

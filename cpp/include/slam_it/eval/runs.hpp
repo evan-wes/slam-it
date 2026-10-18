@@ -27,8 +27,10 @@ inline constexpr const char* kFormat = "slam-it-run";
 /// @brief `run.json`'s `version` (2 added `peak_memory`, `cpus` and `memory_cap`; 3 every point
 ///        and keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
 ///        `vocabulary` a relocalising run used; 6 the settings grouped, each keyframe's parent and
-///        the strong links).
-inline constexpr std::int64_t kVersion = 7;
+///        the strong links; 7 the final trajectory, the poses as tracked beside it, the loops
+///        closed, and loop closing's time; 8 `threaded` and `locks`, and the threads' handshakes
+///        on each frame).
+inline constexpr std::int64_t kVersion = 8;
 
 /// @brief The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 inline constexpr std::int64_t kRemovals = 4;
@@ -121,6 +123,10 @@ struct Run {
   std::vector<std::array<std::int64_t, 2>> keyframe_loops;
   /// @brief Whether the run recorded its features (`FeatureWriter` streams them).
   bool record_features{false};
+  /// @brief Whether its steps ran in threads of their own.
+  bool threaded{false};
+  /// @brief Whether those threads shared the map by ORB-SLAM's locks, the design's baseline.
+  bool locks{false};
   /// @brief The map each tracked frame's pose is in, never descending.
   std::vector<std::int64_t> pose_maps;
   /// @brief The map each keyframe is in, by id, never descending.

@@ -10,8 +10,8 @@ use nalgebra::{Matrix4, Vector2};
 use slam_it_edge::adjust::Solve;
 use slam_it_edge::atlas::{Lifetimes, Trajectory};
 use slam_it_edge::frames::{self, Camera, DepthMap, Frame};
-use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummary};
-use slam_it_edge::mapping::MappingSummary;
+use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummary, GlobalSummary};
+use slam_it_edge::mapping::{MappingSummary, Schedule};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
 use slam_it_edge::pipeline::{
     Completion, Fate, Fates, FrameResult, FrameSummary, LoopSummary, Pipeline,
@@ -874,7 +874,67 @@ fn record(out: &mut Run, result: &FrameResult, read_seconds: f64, build_seconds:
         ),
     ];
     diagnostic.extend(summary_json(&result.summary));
+    diagnostic.extend(
+        [
+            ("wait_seconds", JsonValue::Number(result.wait_seconds)),
+            ("asked", JsonValue::Bool(result.asked)),
+            ("refused", JsonValue::Bool(result.refused)),
+            ("queue", count(result.queue)),
+            (
+                "schedule",
+                result.schedule.map_or(JsonValue::Null, schedule_json),
+            ),
+            ("global_ba", JsonValue::Array(Vec::new())),
+            ("global_ba_seconds", JsonValue::Number(0.0)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value)),
+    );
     out.diagnostics.push(diagnostic);
+}
+
+/// How local mapping scheduled a keyframe's steps, as JSON
+/// (`slam_it.edge.mapping.Schedule.as_dict`).
+///
+/// # Arguments
+///
+/// * `schedule` - The schedule.
+///
+/// # Returns
+///
+/// Its fields by name.
+fn schedule_json(schedule: Schedule) -> JsonValue {
+    object([
+        ("fusion", name_json(schedule.fusion.name())),
+        ("adjustment", name_json(schedule.adjustment.name())),
+        ("culling", name_json(schedule.culling.name())),
+    ])
+}
+
+/// How a global BA in a thread of its own went, as JSON
+/// (`slam_it.edge.loops.GlobalSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, the keyframes and points carried 0 when not applied.
+fn global_json(s: &GlobalSummary) -> JsonValue {
+    let moved = s.propagation.unwrap_or_default();
+    object([
+        (
+            "generation",
+            JsonValue::Integer(i64::try_from(s.generation).unwrap_or(i64::MAX)),
+        ),
+        ("applied", JsonValue::Bool(s.applied)),
+        ("solve", graph_solve_json(&s.solve)),
+        ("adjusted", count(moved.adjusted)),
+        ("propagated", count(moved.propagated)),
+        ("points", count(moved.points)),
+        ("carried", count(moved.carried)),
+    ])
 }
 
 /// Records the run's trajectory: each tracked frame's final pose and its pose as tracked, as
@@ -1112,8 +1172,26 @@ fn set_key(line: &mut JsonObject, key: &str, value: JsonValue) {
     }
 }
 
-/// Adds what the threads finished to the frames' diagnostics (a keyframe's mapping and loop
-/// closing on its frame), and gives the keypoints mapping made a point of the fate
+/// Adds a global BA to a frame's diagnostics: listed, its time summed.
+///
+/// # Arguments
+///
+/// * `line` - The frame's diagnostics.
+/// * `global` - The global BA's record.
+/// * `seconds` - Its time.
+fn add_global(line: &mut JsonObject, global: &JsonValue, seconds: f64) {
+    for (name, value) in line.iter_mut() {
+        match (name.as_str(), value) {
+            ("global_ba", JsonValue::Array(listed)) => listed.push(global.clone()),
+            ("global_ba_seconds", JsonValue::Number(total)) => *total += seconds,
+            _ => {}
+        }
+    }
+}
+
+/// Adds what the threads finished to the frames' diagnostics (a keyframe's mapping, its
+/// schedule and loop closing on its frame, a global BA on the frame it ended on, listed, its
+/// time summed), and gives the keypoints mapping made a point of the fate
 /// [`Fate::Made`] (`slam_it.orchestration.vo._merge`).
 ///
 /// # Arguments
@@ -1137,8 +1215,14 @@ fn merge(out: &mut Run, held: &mut [Keypoints], done: &[Completion]) {
         if let Some(seconds) = completion.loop_seconds {
             set_key(line, "loop_seconds", JsonValue::Number(seconds));
         }
+        if let Some(schedule) = completion.schedule {
+            set_key(line, "schedule", schedule_json(schedule));
+        }
         if let Some(looped) = &completion.loop_closing {
             set_key(line, "loop", loop_json(looped));
+        }
+        if let Some(global) = &completion.global_ba {
+            add_global(line, &global_json(global), completion.global_ba_seconds);
         }
         if let Some(keypoints) = held.get_mut(frame) {
             keypoints.made(&completion.made);
@@ -1403,6 +1487,7 @@ pub fn run(request: &Request) -> Result<Run> {
         settings: settings(&request.options),
         vocabulary: record,
         record_features: request.record_features,
+        threaded: request.threaded,
         ..Run::default()
     };
     let mut features = if request.record_features {

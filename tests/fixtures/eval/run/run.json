@@ -1,6 +1,6 @@
 {
  "format": "slam-it-run",
- "version": 7,
+ "version": 8,
  "dataset": "tum",
  "sequence": "rgbd_dataset_freiburg1_fixture",
  "mode": "rgbd",
@@ -32,6 +32,8 @@
   }
  },
  "record_features": true,
+ "threaded": true,
+ "locks": true,
  "peak_memory": 48381952,
  "cpus": [
   4,

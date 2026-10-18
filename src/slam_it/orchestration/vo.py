@@ -20,7 +20,8 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
 - **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``map``, ``tracked``,
   ``keyframe``, the time each step took, in seconds: the run format's
   :data:`slam_it.eval.runs.STEPS`; then how its stages went:
-  :meth:`slam_it.edge.pipeline.FrameSummary.as_dict`'s keys) and, if tracked, its
+  :meth:`slam_it.edge.pipeline.FrameSummary.as_dict`'s keys; then how the threads' handshakes
+  went, :data:`slam_it.eval.runs.HANDSHAKES`) and, if tracked, its
   ``T_world_cam`` and its map; with ``record_features``, its keypoints' pixels, levels and
   fates, streamed to the run's folder as it goes (:class:`slam_it.eval.runs.FeatureWriter`).
   A lost track closes its map and the run goes on, the next frame starting a new one
@@ -38,11 +39,12 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
     (``Tracking::CreateNewKeyFrame``) before it hands the keyframe to local mapping.
 - **Threaded** (``threaded``), the steps run in threads of their own
   (:class:`slam_it.edge.pipeline.Pipeline`): a frame's line is what tracking made of it, its
-  keyframe's mapping and loop closing added when they end
-  (:class:`slam_it.edge.pipeline.Completion`); the run ends with the threads' work
-  done (:meth:`slam_it.edge.pipeline.Pipeline.finish`), and its features are written then, a
-  keyframe's points made among their fates. Python is fed its frames as fast as it tracks them;
-  the native programs feed theirs at their recorded rate.
+  keyframe's mapping (with its ``schedule``) and loop closing added when they end, and a global
+  BA's on the frame it ended on (:class:`slam_it.edge.pipeline.Completion`); the run ends with
+  the threads' work done (:meth:`slam_it.edge.pipeline.Pipeline.finish`), and its features are
+  written then, a keyframe's points made among their fates. Python is fed its frames as fast as
+  it tracks them; the native programs feed theirs at their recorded rate. C++'s program also
+  shares the map by ORB-SLAM's locks, the design's baseline (``locks``, its ``--locks``).
 - **At the end,** every keyframe and point the run made (their times, last ``T_world_cam`` and
   positions), their lives and their maps (:meth:`slam_it.edge.pipeline.Pipeline.lifetimes`).
   The run's ``sequence`` is its folder's name (the path resolved), its ``settings`` the
@@ -101,7 +103,7 @@ MODULE = "slam_it.orchestration.vo"
 USAGE = (
     f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH --mode "
     "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--vocabulary FOLDER] "
-    "[--record-features] [--threaded] [--option KEY=VALUE ...]"
+    "[--record-features] [--threaded [--locks]] [--option KEY=VALUE ...]"
 )
 """Python's program's command line: the native programs' (their ``kUsage``/``USAGE``)."""
 
@@ -125,6 +127,9 @@ _RECORD_FEATURES = "--record-features"
 
 _THREADED = "--threaded"
 """A flag without a value: run the steps in threads of their own."""
+
+_LOCKS = "--locks"
+"""A flag without a value: with :data:`_THREADED`, share the map by ORB-SLAM's locks (C++)."""
 
 
 class UsageError(InvalidInputError):
@@ -158,6 +163,8 @@ class Request:
         on, refused with both off.
     threaded : bool
         Whether the steps run in threads of their own.
+    locks : bool
+        Whether those threads share the map by ORB-SLAM's locks, C++'s baseline.
     """
 
     dataset: str
@@ -170,6 +177,7 @@ class Request:
     record_features: bool = False
     vocabulary: Path | None = None
     threaded: bool = False
+    locks: bool = False
 
     def arguments(self) -> list[str]:
         """Return the native program's command line for the request.
@@ -178,7 +186,8 @@ class Request:
         -------
         list of str
             The arguments after the program's name: every flag (``--vocabulary`` if given,
-            ``--record-features`` and ``--threaded`` if asked), and ``--option KEY=VALUE`` for
+            ``--record-features``, ``--threaded`` and ``--locks`` if asked), and
+            ``--option KEY=VALUE`` for
             each setting that differs from its default (flags as ``true`` or ``false``, integers
             as integers, reals round-tripping).
         """
@@ -202,6 +211,8 @@ class Request:
             out.append(_RECORD_FEATURES)
         if self.threaded:
             out.append(_THREADED)
+        if self.locks:
+            out.append(_LOCKS)
         defaults = Options().settings()
         for name, value in self.options.settings().items():
             default = defaults[name]
@@ -228,9 +239,10 @@ def check(request: Request) -> None:
     ------
     slam_it.foundations.errors.InvalidInputError
         For an unknown dataset or mode, a mode the dataset does not record (TUM has no stereo
-        pairs, EuRoC no depth maps), a negative `first` or `count`, or a vocabulary missing
-        while relocalising or closing loops, or given while doing neither. (The options checked
-        themselves when they were made; the vocabulary's folder is checked when it is read.)
+        pairs, EuRoC no depth maps), a negative `first` or `count`, a vocabulary missing
+        while relocalising or closing loops, or given while doing neither, or ``locks`` without
+        ``threaded``. (The options checked themselves when they were made; the vocabulary's
+        folder is checked when it is read.)
     """
     if request.dataset not in runs.DATASETS:
         wanted = " or ".join(runs.DATASETS)
@@ -250,6 +262,8 @@ def check(request: Request) -> None:
         raise InvalidInputError(
             "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
         )
+    if request.locks and not request.threaded:
+        raise InvalidInputError("--locks: needs --threaded")
 
 
 def _integer(flag: str, text: str) -> int:
@@ -306,7 +320,8 @@ def parse_setting(text: str) -> tuple[str, bool | int | float]:
 def parse(arguments: Sequence[str]) -> Request:
     """Read a program's command line (:data:`USAGE`), as the native programs read theirs.
 
-    Flags come in any order, each with its value but ``--record-features`` and ``--threaded``;
+    Flags come in any order, each with its value but ``--record-features``, ``--threaded`` and
+    ``--locks``;
     ``--option KEY=VALUE`` is repeatable and names a setting of
     :class:`~slam_it.edge.options.Options` by its group and field.
 
@@ -334,7 +349,7 @@ def parse(arguments: Sequence[str]) -> Request:
     i = 0
     while i < len(arguments):
         flag = arguments[i]
-        if flag in (_RECORD_FEATURES, _THREADED):
+        if flag in (_RECORD_FEATURES, _THREADED, _LOCKS):
             if flag in values:
                 raise UsageError(f"{flag}: given twice")
             values[flag] = ""
@@ -371,6 +386,7 @@ def parse(arguments: Sequence[str]) -> Request:
         record_features=_RECORD_FEATURES in values,
         vocabulary=Path(values["--vocabulary"]) if "--vocabulary" in values else None,
         threaded=_THREADED in values,
+        locks=_LOCKS in values,
     )
 
 
@@ -440,6 +456,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     record_features: bool = False,
     vocabulary: str | Path | None = None,
     threaded: bool = False,
+    locks: bool = False,
 ) -> runs.Run:
     """Run a sequence through the edge pipeline and write its run folder.
 
@@ -475,6 +492,9 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         checked before any program runs (:func:`slam_it.eval.vocabularies.read`).
     threaded : bool, optional
         Whether the steps run in threads of their own (default: inline, as the records run).
+    locks : bool, optional
+        Whether those threads share the map by ORB-SLAM's locks, the design's baseline: C++'s
+        program alone (default: our design).
 
     Returns
     -------
@@ -509,11 +529,14 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         record_features=record_features,
         vocabulary=None if vocabulary is None else Path(vocabulary),
         threaded=threaded,
+        locks=locks,
     )
     if request.vocabulary is None and request.options.keeps_keyframe_database():
         request = replace(request, vocabulary=vocabularies.DEFAULT)
     backends.check_name(backend)
     check(request)
+    if request.locks and backend != "cpp":
+        raise InvalidInputError("--locks: ORB-SLAM's locking is C++'s baseline alone")
     words = _read_vocabulary(request)  # its versions and checksums, before any program runs
     if backend == "python" and budget is None:
         runs.write_run(request.out, _run_here(request, words))
@@ -747,6 +770,13 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
                     "map_seconds": result.map_seconds,
                     "loop_seconds": result.loop_seconds,
                     **result.summary.as_dict(),
+                    "wait_seconds": result.wait_seconds,
+                    "asked": result.asked,
+                    "refused": result.refused,
+                    "queue": result.queue,
+                    "schedule": None if result.schedule is None else result.schedule.as_dict(),
+                    "global_ba": [],
+                    "global_ba_seconds": 0.0,
                 }
             )
             if features is not None:
@@ -788,6 +818,7 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
         keyframe_links=lives.keyframe_links,
         keyframe_loops=lives.keyframe_loops,
         record_features=request.record_features,
+        threaded=request.threaded,
         pose_maps=trajectory.maps,
         keyframe_maps=lives.keyframe_maps,
         point_maps=lives.point_maps,
@@ -814,14 +845,21 @@ class _Keypoints:
         features.write(self.xy, self.level, self.fates.fate, self.fates.point)
 
 
-_MERGED = ("map_seconds", "mapping", "loop_seconds", "loop")
-"""The completions' keys a run records so far: a keyframe's mapping and loop closing."""
-
-
 def _merge(line: dict[str, object], entries: dict[str, Any]) -> None:
-    """Add a completion's entries to a frame's diagnostics, those a run records."""
+    """Add a completion's entries to a frame's diagnostics.
+
+    The global BAs are listed and their time summed; the rest set.
+    """
     for key, value in entries.items():
-        if key in _MERGED:
+        if key == "global_ba":
+            listed = line[key]
+            assert isinstance(listed, list)
+            listed.append(value)
+        elif key == "global_ba_seconds":
+            total = line[key]
+            assert isinstance(total, float)
+            line[key] = total + value
+        else:
             line[key] = value
 
 

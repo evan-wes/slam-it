@@ -369,6 +369,8 @@
  ],
  "memory_cap": 8589934592,
  "record_features": true,
+ "threaded": true,
+ "locks": true,
  "features": [
   {
    "xy": [
@@ -548,7 +550,14 @@
    "local_map": null,
    "mapping": null,
    "loop": null,
-   "lost": null
+   "lost": null,
+   "wait_seconds": 0.0,
+   "asked": false,
+   "refused": false,
+   "queue": 0,
+   "schedule": null,
+   "global_ba": [],
+   "global_ba_seconds": 0.0
   },
   {
    "timestamp": 1305031102.2086039,
@@ -576,7 +585,14 @@
    },
    "mapping": null,
    "loop": null,
-   "lost": null
+   "lost": null,
+   "wait_seconds": 0.001953125,
+   "asked": true,
+   "refused": true,
+   "queue": 3,
+   "schedule": null,
+   "global_ba": [],
+   "global_ba_seconds": 0.0
   },
   {
    "timestamp": 1305031102.241904,
@@ -611,7 +627,14 @@
     "keyframes": 1,
     "points": 2,
     "reset": false
-   }
+   },
+   "wait_seconds": 0.0,
+   "asked": false,
+   "refused": false,
+   "queue": 0,
+   "schedule": null,
+   "global_ba": [],
+   "global_ba_seconds": 0.0
   },
   {
    "timestamp": 1305031102.275204,
@@ -635,7 +658,14 @@
    "local_map": null,
    "mapping": null,
    "loop": null,
-   "lost": null
+   "lost": null,
+   "wait_seconds": 0.0,
+   "asked": true,
+   "refused": false,
+   "queue": 0,
+   "schedule": null,
+   "global_ba": [],
+   "global_ba_seconds": 0.0
   },
   {
    "timestamp": 1305031102.3085039,
@@ -755,7 +785,33 @@
      }
     }
    },
-   "lost": null
+   "lost": null,
+   "wait_seconds": 0.0,
+   "asked": true,
+   "refused": false,
+   "queue": 0,
+   "schedule": {
+    "fusion": "ran",
+    "adjustment": "aborted",
+    "culling": "skipped"
+   },
+   "global_ba": [
+    {
+     "generation": 1,
+     "applied": true,
+     "solve": {
+      "initial_error": 3.5,
+      "final_error": 0.25,
+      "iterations": 7,
+      "termination": "converged"
+     },
+     "adjusted": 2,
+     "propagated": 1,
+     "points": 4,
+     "carried": 1
+    }
+   ],
+   "global_ba_seconds": 0.40625
   },
   {
    "timestamp": 1305031102.341804,
@@ -783,7 +839,14 @@
    },
    "mapping": null,
    "loop": null,
-   "lost": null
+   "lost": null,
+   "wait_seconds": 0.0,
+   "asked": false,
+   "refused": false,
+   "queue": 0,
+   "schedule": null,
+   "global_ba": [],
+   "global_ba_seconds": 0.0
   }
  ],
  "tracked_poses": [

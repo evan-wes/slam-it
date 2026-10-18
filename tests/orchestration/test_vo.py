@@ -99,6 +99,30 @@ def test_every_frame_times_its_steps(
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
+def test_every_frame_records_its_handshakes_inline(
+    dataset: str, mode: str, backend: str, room_runs: RoomRun
+) -> None:
+    """In order nothing waits or is refused, and global BA runs in its loop's correction.
+
+    Each line holds the run format's handshakes; a keyframe mapped says how its steps were
+    scheduled, every one run, and only those do; a frame asked for a keyframe exactly when it
+    made one.
+    """
+    run = room_runs(dataset, mode, backend)
+    assert (run.threaded, run.locks) == (False, False)
+    start = next(i for i, d in enumerate(run.diagnostics) if d["keyframe"])
+    ran = {"fusion": "ran", "adjustment": "ran", "culling": "ran"}
+    for i, d in enumerate(run.diagnostics):
+        assert set(runs.HANDSHAKES) <= d.keys()
+        assert (d["wait_seconds"], d["refused"], d["queue"]) == (0.0, False, 0)
+        assert (d["global_ba"], d["global_ba_seconds"]) == ([], 0.0)
+        mapped = d["keyframe"] and i > start
+        assert d["schedule"] == (ran if mapped else None)
+        assert d["asked"] == mapped
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), CASES)
 def test_every_keypoints_fate_agrees_with_its_frame(
     dataset: str, mode: str, backend: str, room_runs: RoomRun
 ) -> None:
@@ -401,6 +425,9 @@ def test_a_request_crosses_as_a_command_line() -> None:
         ),
     ]
     assert "--record-features" not in replace(request, record_features=False).arguments()
+    threaded = replace(request, threaded=True, locks=True).arguments()
+    assert threaded[threaded.index("--record-features") + 1 :][:2] == ["--threaded", "--locks"]
+    assert vo.parse(threaded) == replace(request, threaded=True, locks=True)
 
 
 def test_parse_reads_a_command_line() -> None:
@@ -441,6 +468,7 @@ def test_parse_reads_a_command_line() -> None:
         (["--dataset", "euroc"], "--dataset: given twice"),
         (["--verbose", "1"], "unknown argument '--verbose'"),
         (["--record-features", "--record-features"], "--record-features: given twice"),
+        (["--threaded", "--threaded"], "--threaded: given twice"),
         (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
         (
             ["--option", "relocalization.enabled=maybe"],
@@ -537,6 +565,24 @@ def test_every_program_records_its_process(backend: str, tmp_path: Path) -> None
     assert run.peak_memory is not None
     assert run.peak_memory > 2**20
     assert run.cpus == sorted(os.sched_getaffinity(0))
+
+
+@pytest.mark.parametrize("locks", [False, True])
+def test_the_cpp_program_runs_threaded_and_says_how(
+    locks: bool,
+    room_folders: Room,
+    tmp_path: Path,
+) -> None:
+    """Threaded by our design or ORB-SLAM's locks, the room's frames tracked; the run says so.
+
+    Fed at the room's rate, a keyframe mapped says how its steps were scheduled.
+    """
+    require_program("cpp")
+    run = vo.run("tum", room_folders.tum, "rgbd", tmp_path, backend="cpp", options=OPTIONS,
+                 count=30, threaded=True, locks=locks)  # fmt: skip
+    assert (run.threaded, run.locks) == (True, locks)
+    assert len(run.timestamps) == len(run.diagnostics) == 30
+    assert any(d["schedule"] is not None for d in run.diagnostics)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -763,6 +809,20 @@ def test_a_program_refuses_a_bad_command_line(backend: str) -> None:
         assert done.returncode == vo.EXIT_USAGE
         assert done.stderr.startswith("slam_it_vo: ")
         assert "\nusage: " in done.stderr
+
+
+def test_locks_need_threads_and_the_cpp_program(tmp_path: Path) -> None:
+    """ORB-SLAM's locking is C++'s threaded baseline: refused unthreaded, and by the others."""
+    request = vo.Request(
+        "tum", tmp_path, "rgbd", tmp_path / "out", locks=True, vocabulary=vocabularies.DEFAULT
+    )
+    with pytest.raises(InvalidInputError, match="--locks: needs --threaded"):
+        vo.check(request)
+    vo.check(replace(request, threaded=True))
+    for backend in ("python", "rust"):
+        with pytest.raises(InvalidInputError, match="C\\+\\+'s baseline alone"):
+            vo.run("tum", tmp_path, "rgbd", tmp_path / "out", backend=backend, threaded=True,
+                   locks=True)  # fmt: skip
 
 
 def test_the_vocabulary_and_a_flag_setting_cross_the_command_line() -> None:

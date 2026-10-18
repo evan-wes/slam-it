@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -640,6 +641,35 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
   return out;
 }
 
+/// @brief How local mapping scheduled a keyframe's steps, as JSON
+///        (`slam_it.edge.mapping.Schedule.as_dict`).
+/// @param schedule The schedule.
+/// @return Its object.
+Result<eval::runs::JsonValue> schedule_json(const edge::Schedule& schedule) {
+  return nested({{"fusion", name_json(edge::name(schedule.fusion))},
+                 {"adjustment", name_json(edge::name(schedule.adjustment))},
+                 {"culling", name_json(edge::name(schedule.culling))}});
+}
+
+/// @brief How a global BA in a thread of its own went, as JSON
+///        (`slam_it.edge.loops.GlobalSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object; `InvalidInput` for an error that is not finite.
+Result<eval::runs::JsonValue> global_json(const edge::loops::GlobalSummary& s) {
+  auto solve = graph_solve_json(s.solve);
+  if (!solve) {
+    return std::unexpected(std::move(solve.error()));
+  }
+  const edge::loops::Propagated moved = s.propagation.value_or(edge::loops::Propagated{});
+  return nested({{"generation", s.generation},
+                 {"applied", s.applied},
+                 {"solve", *std::move(solve)},
+                 {"adjusted", moved.adjusted},
+                 {"propagated", moved.propagated},
+                 {"points", moved.points},
+                 {"carried", moved.carried}});
+}
+
 /// @brief Record a frame's result: its diagnostics (the trajectory is the pipeline's, at the
 ///        end: `record_trajectory`).
 /// @param out The run.
@@ -666,6 +696,20 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
   for (auto& item : *summary) {
     out.diagnostics.back().push_back(std::move(item));
   }
+  auto schedule =
+      result.schedule ? schedule_json(*result.schedule) : Result<eval::runs::JsonValue>(nullptr);
+  auto none = eval::runs::json_array({});
+  if (!schedule || !none) {
+    return std::unexpected(!schedule ? schedule.error() : none.error());
+  }
+  eval::runs::JsonObject& line = out.diagnostics.back();
+  line.emplace_back("wait_seconds", result.wait_seconds);
+  line.emplace_back("asked", result.asked);
+  line.emplace_back("refused", result.refused);
+  line.emplace_back("queue", result.queue);
+  line.emplace_back("schedule", *std::move(schedule));
+  line.emplace_back("global_ba", *std::move(none));
+  line.emplace_back("global_ba_seconds", 0.0);
   return {};
 }
 
@@ -779,44 +823,95 @@ void mark_made(edge::Fates& fates, const std::vector<std::int64_t>& made) {
   }
 }
 
+/// @brief A frame's global BAs, as the completions bring them.
+struct Globals {
+  /// @brief Each one's record.
+  std::vector<eval::runs::JsonValue> listed;
+  /// @brief Their time, in seconds.
+  double seconds{0.0};
+};
+
+/// @brief Add one completion to its frame's diagnostics: a keyframe's mapping, its schedule and
+///        loop closing set, a global BA kept for the frame's list.
+/// @param line The frame's diagnostics.
+/// @param completion The completion.
+/// @param globals The frame's global BAs so far.
+/// @return Nothing; a summary's error.
+Result<void> merge_one(eval::runs::JsonObject& line, const edge::Completion& completion,
+                       Globals& globals) {
+  if (completion.map_seconds) {
+    set_key(line, "map_seconds", *completion.map_seconds);
+  }
+  if (completion.loop_seconds) {
+    set_key(line, "loop_seconds", *completion.loop_seconds);
+  }
+  const auto value = [&](std::string_view key, Result<eval::runs::JsonValue> json) -> Result<void> {
+    if (!json) {
+      return std::unexpected(std::move(json.error()));
+    }
+    set_key(line, key, *std::move(json));
+    return {};
+  };
+  if (completion.mapping) {
+    if (auto ok = value("mapping", mapping_json(*completion.mapping)); !ok) {
+      return ok;
+    }
+  }
+  if (completion.schedule) {
+    if (auto ok = value("schedule", schedule_json(*completion.schedule)); !ok) {
+      return ok;
+    }
+  }
+  if (completion.loop) {
+    if (auto ok = value("loop", loop_json(*completion.loop)); !ok) {
+      return ok;
+    }
+  }
+  if (completion.global_ba) {
+    auto global = global_json(*completion.global_ba);
+    if (!global) {
+      return std::unexpected(std::move(global.error()));
+    }
+    globals.listed.push_back(*std::move(global));
+    globals.seconds += completion.global_ba_seconds;
+  }
+  return {};
+}
+
 /// @brief Add what the threads finished to the frames' diagnostics (a keyframe's mapping and
-///        loop closing on its frame), and give the keypoints mapping made a point of the fate
-///        `Fate::kMade` (`slam_it.orchestration.vo._merge`).
+///        loop closing on its frame, a global BA on the frame it ended on, listed, its time
+///        summed), and give the keypoints mapping made a point of the fate `Fate::kMade`
+///        (`slam_it.orchestration.vo._merge`).
 /// @param out The run, each frame recorded.
 /// @param held Each frame's keypoints, when the run records them; else empty.
 /// @param done The completions.
 /// @return Nothing; a summary's error.
 Result<void> merge(eval::runs::Run& out, std::vector<Keypoints>& held,
                    const std::vector<edge::Completion>& done) {
+  if (out.diagnostics.empty()) {
+    return {};
+  }
+  std::map<std::size_t, Globals> globals;
   for (const edge::Completion& completion : done) {
-    if (out.diagnostics.empty()) {
-      break;
-    }
     const auto frame = static_cast<std::size_t>(completion.frame);
-    eval::runs::JsonObject& line = out.diagnostics[std::min(frame, out.diagnostics.size() - 1)];
-    if (completion.map_seconds) {
-      set_key(line, "map_seconds", *completion.map_seconds);
-    }
-    if (completion.mapping) {
-      auto mapping = mapping_json(*completion.mapping);
-      if (!mapping) {
-        return std::unexpected(std::move(mapping.error()));
-      }
-      set_key(line, "mapping", *std::move(mapping));
-    }
-    if (completion.loop_seconds) {
-      set_key(line, "loop_seconds", *completion.loop_seconds);
-    }
-    if (completion.loop) {
-      auto loop = loop_json(*completion.loop);
-      if (!loop) {
-        return std::unexpected(std::move(loop.error()));
-      }
-      set_key(line, "loop", *std::move(loop));
+    const std::size_t at = std::min(frame, out.diagnostics.size() - 1);
+    if (auto ok = merge_one(out.diagnostics[at], completion, globals[at]); !ok) {
+      return ok;
     }
     if (frame < held.size()) {
       mark_made(held[frame].fates, completion.made);
     }
+  }
+  for (auto& [at, global] : globals) {
+    if (global.listed.empty()) {
+      continue;
+    }
+    auto listed = eval::runs::json_array(global.listed);
+    if (!listed) {
+      return std::unexpected(std::move(listed.error()));
+    }
+    set_key(out.diagnostics[at], "global_ba", *std::move(listed));
+    set_key(out.diagnostics[at], "global_ba_seconds", global.seconds);
   }
   return {};
 }
@@ -1192,6 +1287,8 @@ Result<eval::runs::Run> run(const Request& request) {
   out.settings = *std::move(recorded);
   out.vocabulary = record;
   out.record_features = request.record_features;
+  out.threaded = request.threaded;
+  out.locks = request.locks;
   std::optional<eval::runs::FeatureWriter> features;
   if (request.record_features) {
     auto opened = eval::runs::FeatureWriter::open(request.out);

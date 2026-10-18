@@ -313,12 +313,29 @@ Result<void> check_frame_maps(const Run& run) {
   return {};
 }
 
-Result<void> check(const Run& run) {
+namespace {
+
+/// @brief Check what a run says ran: its mode, its backend, and how its steps ran.
+/// @param run The run.
+/// @return Nothing; `InvalidInput` for an unknown mode or backend, or locks without threads.
+Result<void> check_what_ran(const Run& run) {
   if (std::ranges::find(kModes, run.mode) == kModes.end()) {
     return fail(ErrorKind::kInvalidInput, "mode: unknown '" + run.mode + "'");
   }
   if (std::ranges::find(kBackends, run.backend) == kBackends.end()) {
     return fail(ErrorKind::kInvalidInput, "backend: unknown '" + run.backend + "'");
+  }
+  if (run.locks && !run.threaded) {
+    return fail(ErrorKind::kInvalidInput, "locks: only a threaded run shares the map by locks");
+  }
+  return {};
+}
+
+}  // namespace
+
+Result<void> check(const Run& run) {
+  if (auto ok = check_what_ran(run); !ok) {
+    return ok;
   }
   if (auto ok = check_stamped(run.timestamps, run.poses, "trajectory"); !ok) {
     return ok;
@@ -616,6 +633,8 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   info_text += ", \"settings\": " + object_text(run.settings);
   info_text += ", \"vocabulary\": " + (run.vocabulary ? vocabulary_text(*run.vocabulary) : "null");
   info_text += std::string(", \"record_features\": ") + (run.record_features ? "true" : "false");
+  info_text += std::string(", \"threaded\": ") + (run.threaded ? "true" : "false");
+  info_text += std::string(", \"locks\": ") + (run.locks ? "true" : "false");
   const auto integer_or_null = [](const std::optional<std::int64_t>& value) {
     return value ? std::to_string(*value) : std::string("null");
   };

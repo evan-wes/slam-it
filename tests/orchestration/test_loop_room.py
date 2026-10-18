@@ -73,9 +73,14 @@ def test_every_backend_closes_the_loop_room(  # noqa: PLR0917 -- the case, the f
     """Nearly every frame tracked in one map, a loop closed, the final trajectory near the truth.
 
     The final trajectory is closer to the truth than the poses as tracked: the loop corrected
-    the drift.
+    the drift. The run says whether it was threaded, and every keyframe mapped how its steps
+    were scheduled.
     """
     run = _run(request, dataset, mode, backend, threaded)
+    assert run.threaded is threaded
+    start = next(i for i, d in enumerate(run.diagnostics) if d["keyframe"])
+    for i, d in enumerate(run.diagnostics):  # each keyframe mapped says how
+        assert (d["schedule"] is not None) == (d["keyframe"] and i > start)
     assert len(run.timestamps) >= TRACKED * len(run.diagnostics)
     assert len(run.maps()) == 1
     assert len(run.keyframe_loops) >= 1

@@ -39,6 +39,30 @@ def _poses(rng: np.random.Generator, count: int) -> np.ndarray:
     return out
 
 
+def _handshakes(k: int) -> dict[str, Any]:
+    """Return frame ``k``'s handshakes, as a threaded run writes them.
+
+    Frame 1 waits for the map and is refused a keyframe, three queued; frame 4's keyframe is
+    mapped, its local BA aborted, and the global BA its loop started ends on it.
+    """
+    solve = {"initial_error": 3.5, "final_error": 0.25, "iterations": 7, "termination": "converged"}
+    global_ba = {
+        "generation": 1, "applied": True, "solve": solve, "adjusted": 2, "propagated": 1,
+        "points": 4, "carried": 1,
+    }  # fmt: skip
+    return {
+        "wait_seconds": 0.001953125 if k == 1 else 0.0,
+        "asked": k in (1, 3, 4),
+        "refused": k == 1,
+        "queue": 3 if k == 1 else 0,
+        "schedule": {"fusion": "ran", "adjustment": "aborted", "culling": "skipped"}
+        if k == 4
+        else None,
+        "global_ba": [global_ba] if k == 4 else [],
+        "global_ba_seconds": 0.40625 if k == 4 else 0.0,
+    }
+
+
 def _summary(k: int) -> dict[str, Any]:
     """Return frame ``k``'s stage summaries, nested as the edge pipeline writes them.
 
@@ -194,6 +218,8 @@ def values() -> dict[str, Any]:
         "cpus": [4, 5, 6, 7],
         "memory_cap": 8_589_934_592,
         "record_features": True,
+        "threaded": True,
+        "locks": True,
         "features": _features(rng),
         "diagnostics": [
             {
@@ -208,6 +234,7 @@ def values() -> dict[str, Any]:
                 "map_seconds": 0.0625 if k == 4 else 0.0,
                 "loop_seconds": 0.1328125 if k == 4 else 0.0,
                 **_summary(k),
+                **_handshakes(k),
             }
             for k, t in enumerate(times)
         ],
@@ -247,6 +274,8 @@ def main() -> None:
             keyframe_links=np.array(run["keyframe_links"], dtype=np.int64),
             keyframe_loops=np.array(run["keyframe_loops"], dtype=np.int64),
             record_features=run["record_features"],
+            threaded=run["threaded"],
+            locks=run["locks"],
             pose_maps=np.array(run["pose_maps"], dtype=np.int64),
             keyframe_maps=np.array(run["keyframe_maps"], dtype=np.int64),
             point_maps=np.array(run["point_maps"], dtype=np.int64),
