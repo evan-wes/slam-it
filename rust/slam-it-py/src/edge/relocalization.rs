@@ -10,6 +10,7 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use slam_it_edge::database::MapRef;
 use slam_it_edge::relocalization::{self as core, CandidateSummary, Relocalized};
 use slam_it_foundations::ransac;
 
@@ -161,7 +162,10 @@ fn relocalize_across<'py>(
     let found = unwrap(
         py,
         core::relocalize_across(
-            &indexed_in(py, searched)?,
+            &indexed_in(py, searched)?
+                .iter()
+                .map(MapRef::from)
+                .collect::<Vec<_>>(),
             &vocabulary_in(py, vocabulary)?,
             &camera_in(camera)?,
             &frame_in(frame)?,

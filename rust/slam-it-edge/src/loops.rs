@@ -2222,7 +2222,7 @@ pub fn detect_merge(
     options: &Options,
 ) -> Result<MergeDetection> {
     let k = keyframe_row(m, keyframe)?;
-    database::check_numbers(others, "others")?;
+    database::check_numbers(others.iter().map(|other| other.number), "others")?;
     let holding_at = pending.map(|p| place_of(others, p.map));
     if let (Some(p), Some(at)) = (pending, holding_at)
         && at == others.len()

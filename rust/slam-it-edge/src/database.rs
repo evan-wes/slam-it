@@ -446,19 +446,41 @@ pub struct Ranked {
     pub keyframe: i64,
 }
 
+/// A map with its keyframe database and number, held elsewhere: an [`Indexed`] by reference,
+/// for a search over maps owned apart (the one tracked and the kept ones).
+#[derive(Clone, Copy, Debug)]
+pub struct MapRef<'a> {
+    /// The map's number.
+    pub number: i64,
+    /// The map.
+    pub map: &'a Map,
+    /// Its keyframe database, holding every keyframe of the map.
+    pub database: &'a Database,
+}
+
+impl<'a> From<&'a Indexed> for MapRef<'a> {
+    fn from(indexed: &'a Indexed) -> Self {
+        Self {
+            number: indexed.number,
+            map: &indexed.map,
+            database: &indexed.database,
+        }
+    }
+}
+
 /// Checks that no two maps share a number.
 ///
 /// # Arguments
 ///
-/// * `maps` - The maps.
+/// * `numbers` - The maps' numbers.
 /// * `name` - The argument's name, for the message.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for a number given twice.
-pub fn check_numbers(maps: &[Indexed], name: &str) -> Result<()> {
-    let mut numbers = BTreeSet::new();
-    if maps.iter().all(|map| numbers.insert(map.number)) {
+pub fn check_numbers(numbers: impl IntoIterator<Item = i64>, name: &str) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    if numbers.into_iter().all(|number| seen.insert(number)) {
         Ok(())
     } else {
         fail(
@@ -507,7 +529,7 @@ pub fn merge_candidates(
     options: &Options,
 ) -> Result<MergeCandidates> {
     vocabulary::check_vector(vector)?;
-    check_numbers(others, "others")?;
+    check_numbers(others.iter().map(|other| other.number), "others")?;
     let settings = &options.loops;
     let mut found = Vec::new();
     let mut out = MergeCandidates::default();

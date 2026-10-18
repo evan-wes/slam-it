@@ -12,9 +12,7 @@ use slam_it_foundations::p3p;
 use slam_it_foundations::ransac;
 use slam_it_foundations::vocabulary::{BowVector, Vocabulary};
 
-use crate::database::{
-    Database, Indexed, Ranked, Words, candidates, check_numbers, rank, words_of,
-};
+use crate::database::{Database, MapRef, Ranked, Words, candidates, check_numbers, rank, words_of};
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
 use crate::map::{Map, camera_centre, in_distance_range, keyframe_row, predict_level, to_camera};
 use crate::options::Options;
@@ -646,7 +644,7 @@ pub struct Across {
 /// `InvalidInput` for no map, two with one number, a candidate whose features are not its
 /// database's, or an invalid camera or settings.
 pub fn relocalize_across(
-    searched: &[Indexed],
+    searched: &[MapRef<'_>],
     vocabulary: &Vocabulary,
     camera: &Camera,
     frame: &Frame,
@@ -658,7 +656,7 @@ pub fn relocalize_across(
             "searched: expected at least one map",
         );
     }
-    check_numbers(searched, "searched")?;
+    check_numbers(searched.iter().map(|map| map.number), "searched")?;
     check_setup(camera, options)?;
     let Words {
         vector,
@@ -673,7 +671,7 @@ pub fn relocalize_across(
     let mut place = BTreeMap::new();
     for (at, indexed) in searched.iter().enumerate() {
         place.insert(indexed.number, at);
-        let each = candidates(&indexed.database, &indexed.map, &vector, options)?;
+        let each = candidates(indexed.database, indexed.map, &vector, options)?;
         out.relocalized.summary.sharing += each.sharing;
         out.relocalized.summary.scored += each.scored;
         found.extend(
@@ -691,8 +689,8 @@ pub fn relocalize_across(
     for candidate in found {
         let indexed = &searched[place[&candidate.map]];
         let attempt = try_candidate(
-            &indexed.map,
-            &indexed.database,
+            indexed.map,
+            indexed.database,
             camera,
             frame,
             &frame_nodes,

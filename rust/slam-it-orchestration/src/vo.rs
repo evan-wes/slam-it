@@ -14,7 +14,8 @@ use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummar
 use slam_it_edge::mapping::{MappingSummary, Schedule};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
 use slam_it_edge::pipeline::{
-    Completion, Fate, Fates, FrameResult, FrameSummary, LoopSummary, Pipeline, Threading, ViewSize,
+    Completion, Fate, Fates, FrameResult, FrameSummary, LoopSummary, LostSummary, Pipeline,
+    Threading, ViewSize,
 };
 use slam_it_edge::relocalization::RelocalizationSummary;
 use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
@@ -715,18 +716,56 @@ fn loop_json(s: &LoopSummary) -> JsonValue {
             ("links", count(c.links)),
             ("edges", count(c.edges)),
             ("essential", graph_solve_json(&c.essential)),
-            (
-                "global_ba",
-                c.global_ba
-                    .as_ref()
-                    .map_or(JsonValue::Null, graph_solve_json),
-            ),
+            ("global_ba", solve_or_null(c.global_ba.as_ref())),
+        ])
+    });
+    let merge = s.merge.as_ref().map_or(JsonValue::Null, |m| {
+        let weld = object([
+            ("keyframes", count(m.weld.keyframes)),
+            ("held", count(m.weld.held)),
+            ("points", count(m.weld.points)),
+            ("observations", count(m.weld.observations)),
+            ("outliers", count(m.weld.outliers)),
+            ("forgotten", count(m.weld.forgotten)),
+            ("first", graph_solve_json(&m.weld.first)),
+            ("second", solve_or_null(m.weld.second.as_ref())),
+        ]);
+        object([
+            ("map", JsonValue::Integer(m.map)),
+            ("current", JsonValue::Integer(m.current)),
+            ("matched", JsonValue::Integer(m.matched)),
+            ("similarity", matrix_json(&m.similarity)),
+            ("window", count(m.window)),
+            ("matched_window", count(m.matched_window)),
+            ("fused", count(m.fused)),
+            ("weld", weld),
+            ("edges", count(m.edges)),
+            ("essential", graph_solve_json(&m.essential)),
+            ("global_ba", solve_or_null(m.global_ba.as_ref())),
         ])
     });
     object([
         ("detection", detection_json(&s.detection)),
         ("correction", correction),
+        (
+            "merging",
+            s.merging.as_ref().map_or(JsonValue::Null, detection_json),
+        ),
+        ("merge", merge),
     ])
+}
+
+/// A graph solve's summary as JSON, or null if it did not run.
+///
+/// # Arguments
+///
+/// * `summary` - The summary, if the solve ran.
+///
+/// # Returns
+///
+/// Its object, or null.
+fn solve_or_null(summary: Option<&graphs::Summary>) -> JsonValue {
+    summary.map_or(JsonValue::Null, graph_solve_json)
 }
 
 /// Relocalisation's summary as JSON (`slam_it.edge.relocalization.RelocalizationSummary`).
@@ -824,13 +863,15 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
         .loop_closing
         .as_ref()
         .map_or(JsonValue::Null, loop_json);
-    let lost = summary.lost.map_or(JsonValue::Null, |s| {
+    let closed = |s: LostSummary| {
         object([
             ("keyframes", count(s.keyframes)),
             ("points", count(s.points)),
             ("reset", JsonValue::Bool(s.reset)),
         ])
-    });
+    };
+    let lost = summary.lost.map_or(JsonValue::Null, closed);
+    let left = summary.left.map_or(JsonValue::Null, closed);
     [
         ("placed_by", placed_by),
         ("init", init),
@@ -841,6 +882,7 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
         ("mapping", mapping),
         ("loop", loop_closing),
         ("lost", lost),
+        ("left", left),
     ]
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value))
@@ -969,6 +1011,7 @@ fn record_trajectory(out: &mut Run, trajectory: Trajectory) -> Result<()> {
         .map(se3::inverse)
         .collect::<Result<_>>()?;
     out.pose_maps = trajectory.maps;
+    out.tracked_maps = trajectory.tracked_maps;
     Ok(())
 }
 
@@ -995,6 +1038,7 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
     out.keyframe_parents = lives.keyframe_parents;
     out.keyframe_links = lives.keyframe_links;
     out.keyframe_loops = lives.keyframe_loops;
+    out.keyframe_merges = lives.keyframe_merges;
     out.point_maps = lives.point_maps;
     out.keyframe_maps = lives.keyframe_maps;
     Ok(())
