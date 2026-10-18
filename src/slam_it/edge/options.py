@@ -487,9 +487,8 @@ class LoopOptions:
     ----------
     enabled : bool
         Close loops in the map being tracked, each keyframe searched once it is mapped (on, as
-        ORB-SLAM always is). It needs the keyframe database, so a vocabulary, which the pipeline
-        keeps whether ``relocalization.enabled`` is on or off (ORB-SLAM always keeps its
-        ``KeyFrameDatabase``).
+        ORB-SLAM always is). It needs the keyframe database, and so a vocabulary: on, it keeps
+        the database whether relocalisation is on or off (:meth:`Options.keeps_keyframe_database`).
     min_keyframes : int
         A map of fewer keyframes is not searched (``KeyFramesInMap() < 12``).
     candidates : int
@@ -727,6 +726,20 @@ class Options:
             self.stereo_matching()
         except InvalidInputError as error:
             raise InvalidInputError(f"stereo.{error}") from error
+
+    def keeps_keyframe_database(self) -> bool:
+        """Return whether a pipeline with these settings keeps the keyframe database.
+
+        It does when relocalising or closing loops, either alone, as ORB-SLAM always keeps its
+        ``KeyFrameDatabase``: a vocabulary is then required, and refused otherwise (B3's review
+        panel, H7; the one statement of the rule, run 2, H23).
+
+        Returns
+        -------
+        bool
+            ``relocalization.enabled`` or ``loops.enabled``.
+        """
+        return self.relocalization.enabled or self.loops.enabled
 
     def settings(self) -> dict[str, bool | int | float]:
         """Return every setting by its name, in the groups' order.

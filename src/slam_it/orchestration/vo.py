@@ -228,17 +228,13 @@ def check(request: Request) -> None:
         raise InvalidInputError("mode: a euroc sequence has no depth maps")
     if request.first < 0 or (request.count is not None and request.count < 0):
         raise InvalidInputError("first, count: must be at least 0")
-    if _needs_vocabulary(request.options) and request.vocabulary is None:
+    needed = request.options.keeps_keyframe_database()
+    if needed and request.vocabulary is None:
         raise InvalidInputError("--vocabulary: relocalization.enabled or loops.enabled needs one")
-    if not _needs_vocabulary(request.options) and request.vocabulary is not None:
+    if not needed and request.vocabulary is not None:
         raise InvalidInputError(
             "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
         )
-
-
-def _needs_vocabulary(options: Options) -> bool:
-    """Return whether a run keeps a keyframe database: relocalising or closing loops."""
-    return options.relocalization.enabled or options.loops.enabled
 
 
 def _integer(flag: str, text: str) -> int:
@@ -494,7 +490,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         record_features=record_features,
         vocabulary=None if vocabulary is None else Path(vocabulary),
     )
-    if request.vocabulary is None and _needs_vocabulary(request.options):
+    if request.vocabulary is None and request.options.keeps_keyframe_database():
         request = replace(request, vocabulary=vocabularies.DEFAULT)
     backends.check_name(backend)
     check(request)

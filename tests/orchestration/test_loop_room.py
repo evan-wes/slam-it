@@ -17,12 +17,15 @@ otherwise.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from slam_it import backends
 from slam_it.eval import loops, runs
 from tests.edge import room
+from tests.edge.support import OPTIONS
 from tests.orchestration.conftest import RoomRun
 from tests.orchestration.datasets import LOOP_CASES, Room
 
@@ -84,3 +87,15 @@ def test_the_points_lie_on_the_walls(
     alignment = placed.absolute.alignment
     points = run.final_points() @ alignment[:3, :3].T + alignment[:3, 3]
     assert float(np.median(room.surface_distance(points))) < SURFACE[mode]
+
+
+def test_a_loop_closes_with_relocalisation_off(loop_folders: Room, tmp_path: Path) -> None:
+    """Loop closing alone keeps the keyframe database, and closes the room's loop.
+
+    Before B3's review panel (H7) the database went with relocalisation, and loop closing
+    without it closed nothing (run 2, H23). Python, monocular: the quickest case to run.
+    """
+    options = OPTIONS.with_settings({"relocalization.enabled": False})
+    run = RoomRun(loop_folders, options, tmp_path)("tum", "monocular", "python")
+    assert run.vocabulary is not None
+    assert len(run.keyframe_loops) >= 1

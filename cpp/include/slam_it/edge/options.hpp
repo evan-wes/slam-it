@@ -386,6 +386,16 @@ struct Options {
   std::int64_t seed{0};
 };
 
+/// @brief Whether a pipeline with these settings keeps the keyframe database
+///        (`Options.keeps_keyframe_database`): when relocalising or closing loops, either alone,
+///        as ORB-SLAM always keeps its `KeyFrameDatabase`. A vocabulary is then required, and
+///        refused otherwise; the one statement of the rule.
+/// @param options The settings.
+/// @return `relocalization.enabled` or `loops.enabled`.
+[[nodiscard]] constexpr bool keeps_keyframe_database(const Options& options) {
+  return options.relocalization.enabled || options.loops.enabled;
+}
+
 /// @brief Calls `visit(name, value)` for every setting, in `Options.settings()`' order: `name`
 ///        the setting's, `group.field` (or `seed`), and `value` a reference to its field, `const`
 ///        when `options` is. The one list of the settings: the bindings, a run's record, the

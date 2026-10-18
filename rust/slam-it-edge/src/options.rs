@@ -615,6 +615,19 @@ pub struct Options {
 }
 
 impl Options {
+    /// Whether a pipeline with these settings keeps the keyframe database
+    /// (`Options.keeps_keyframe_database`): when relocalising or closing loops, either alone, as
+    /// ORB-SLAM always keeps its `KeyFrameDatabase`. A vocabulary is then required, and refused
+    /// otherwise; the one statement of the rule.
+    ///
+    /// # Returns
+    ///
+    /// `relocalization.enabled` or `loops.enabled`.
+    #[must_use]
+    pub fn keeps_keyframe_database(&self) -> bool {
+        self.relocalization.enabled || self.loops.enabled
+    }
+
     /// The ORB extraction settings.
     ///
     /// # Arguments

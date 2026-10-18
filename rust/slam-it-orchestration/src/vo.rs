@@ -1176,7 +1176,7 @@ pub fn check(request: &Request) -> Result<()> {
     if request.first < 0 || request.count.unwrap_or(0) < 0 {
         return invalid("first, count: must be at least 0".to_owned());
     }
-    let needed = request.options.relocalization.enabled || request.options.loops.enabled;
+    let needed = request.options.keeps_keyframe_database();
     if needed && request.vocabulary.is_none() {
         return invalid(
             "--vocabulary: relocalization.enabled or loops.enabled needs one".to_owned(),

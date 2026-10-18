@@ -427,7 +427,7 @@ impl Pipeline {
                 format!("camera.baseline: {} needs a positive baseline", mode.name()),
             );
         }
-        let needed = options.relocalization.enabled || options.loops.enabled;
+        let needed = options.keeps_keyframe_database();
         if needed && vocabulary.is_none() {
             return fail(
                 ErrorKind::InvalidInput,
@@ -1084,12 +1084,14 @@ impl Pipeline {
             &self.options,
         )?;
         summary.pnp = Some(recovery.summary);
-        let (Some(database), Some(vocabulary), None, true) = (
-            &self.database,
-            &self.vocabulary,
-            &recovery.tracked,
-            self.options.relocalization.enabled,
-        ) else {
+        // The database relocalises only with relocalization.enabled: loop closing alone keeps it.
+        let relocalizing = self
+            .database
+            .as_ref()
+            .filter(|_| self.options.relocalization.enabled);
+        let (Some(database), Some(vocabulary), None) =
+            (relocalizing, &self.vocabulary, &recovery.tracked)
+        else {
             // Placed by the fallback, or not relocalising.
             if recovery.tracked.is_some() {
                 summary.placed_by = Some(Placement::LocalPnp);

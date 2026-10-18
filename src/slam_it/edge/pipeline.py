@@ -538,7 +538,7 @@ class Pipeline:
             raise InvalidInputError(f"mode: expected one of {MODES}, got {self.mode!r}")
         if self.mode != "monocular" and not self.camera.baseline > 0.0:
             raise InvalidInputError(f"camera.baseline: {self.mode} needs a positive baseline")
-        needed = self.options.relocalization.enabled or self.options.loops.enabled
+        needed = self.options.keeps_keyframe_database()
         if needed and self.vocabulary is None:
             raise InvalidInputError("vocabulary: relocalization.enabled or loops.enabled needs one")
         if not needed and self.vocabulary is not None:

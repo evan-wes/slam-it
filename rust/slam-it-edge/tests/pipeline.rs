@@ -224,6 +224,37 @@ fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {
     }
 }
 
+/// Loop closing alone (Python's
+/// `test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes`, its loop-closing
+/// case): the keyframe database is kept, but no failed frame tries relocalisation, and a kept map
+/// is lost on the `loss.lost_frames`-th failure (B3's review panel, run 2, A20).
+#[test]
+#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
+fn closing_loops_alone_relocalizes_nothing() {
+    let mut options = relocalizing(0);
+    options.relocalization.enabled = false;
+    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, Some(one_word())).unwrap();
+    assert!(
+        pipeline
+            .track(&frame_at(&along(0), true, 0))
+            .unwrap()
+            .keyframe
+    );
+    let lost_on = options.loss.lost_frames;
+    let failed: Vec<FrameResult> = (0..lost_on)
+        .map(|k| {
+            pipeline
+                .track(&empty_frame(0.001 * (k + 1) as f64))
+                .unwrap()
+        })
+        .collect();
+    let states: Vec<State> = failed.iter().map(|r| r.state).collect();
+    let mut expected = vec![State::Tracking; lost_on - 1];
+    expected.push(State::Lost);
+    assert_eq!(states, expected);
+    assert!(failed.iter().all(|r| r.summary.relocalization.is_none()));
+}
+
 /// A frame the local fallback cannot reach is placed by relocalisation in the same map, at its
 /// pose: after the path, 30 cm to the right, and an empty frame, the camera is back where the
 /// map began, 25 px away, past the motion model's narrowed window.

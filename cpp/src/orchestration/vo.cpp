@@ -962,7 +962,7 @@ Result<void> check(const Request& request) {
   if (request.first < 0 || request.count.value_or(0) < 0) {
     return fail(ErrorKind::kInvalidInput, "first, count: must be at least 0");
   }
-  const bool needed = request.options.relocalization.enabled || request.options.loops.enabled;
+  const bool needed = edge::keeps_keyframe_database(request.options);
   if (needed && !request.vocabulary) {
     return fail(ErrorKind::kInvalidInput,
                 "--vocabulary: relocalization.enabled or loops.enabled needs one");
