@@ -488,6 +488,14 @@ def _stray_loop(m: Map, **changes: object) -> loops.Loop:
     return loops.Loop(**fields)  # type: ignore[arg-type]
 
 
+def _without_first(m: Map) -> Map:
+    """Return the map with its first keyframe (id 0) erased, the second its children's parent."""
+    second = int(m.kf_id[1])
+    parents = np.where(m.kf_parent == 0, second, m.kf_parent)
+    parents[1] = -1
+    return maps.erase_keyframe(replace(m, kf_parent=parents), 0)
+
+
 BAD_CALLS: dict[str, tuple[str, Callable[[Map, Database], object]]] = {
     "a similarity that is not one": (
         "similarity",
@@ -559,6 +567,31 @@ BAD_CALLS: dict[str, tuple[str, Callable[[Map, Database], object]]] = {
         lambda m, db: loops.correct(
             m, CAMERA, _stray_loop(m, points=np.array([-2])), mode="rgbd", options=OPTIONS
         ),
+    ),
+    "a graph's start short of the keyframes": (
+        "start",
+        lambda m, db: loops.essential_graph(
+            m, [np.eye(4)] * (m.keyframes - 1), [np.eye(4)] * m.keyframes, {}, (0, 1),
+            fixed_scale=True, options=OPTIONS,
+        ),
+    ),
+    "a graph's link not a keyframe's row": (
+        "loop_links",
+        lambda m, db: loops.essential_graph(
+            m, [np.eye(4)] * m.keyframes, [np.eye(4)] * m.keyframes, {0: {m.keyframes}}, (0, 1),
+            fixed_scale=True, options=OPTIONS,
+        ),
+    ),
+    "a graph whose two ends are one keyframe": (
+        "ends",
+        lambda m, db: loops.essential_graph(
+            m, [np.eye(4)] * m.keyframes, [np.eye(4)] * m.keyframes, {}, (1, 1),
+            fixed_scale=True, options=OPTIONS,
+        ),
+    ),
+    "a global BA's map without its first keyframe": (
+        "m: expected the map's first keyframe",
+        lambda m, db: loops.global_bundle_adjust(_without_first(m), CAMERA, OPTIONS),
     ),
 }  # fmt: skip
 """Each public function given one bad argument, and the name its refusal must give."""
