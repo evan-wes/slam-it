@@ -113,7 +113,7 @@ struct Refined {
 /// @param options The `loops` refinement's settings.
 /// @return The similarity and its inliers, or none when too few matches survive the first
 ///         round or none can be used; `InvalidInput` for rows out of range or matches not one
-///         per keypoint; GTSAM's failure.
+///         per keypoint; `NotConverged` for GTSAM's failure.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (k1, k2), as Python's
 [[nodiscard]] foundations::Result<std::optional<Refined>> refine(
     const Map& m, const Camera& camera, std::int64_t k1, std::int64_t k2,
@@ -260,7 +260,7 @@ struct Detection {
 /// @param options The settings.
 /// @return The loop being confirmed after the keyframe, the loop closed on it, how it went;
 ///         `InvalidInput` for a keyframe the map or the database does not hold, an unknown mode
-///         or invalid settings; GTSAM's failure.
+///         or invalid settings; `NotConverged` for GTSAM's failure.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the stage's state, as Python's
 [[nodiscard]] foundations::Result<Detection> detect(const Map& m, const Database& db,
                                                     const Camera& camera, std::int64_t keyframe,
@@ -288,8 +288,8 @@ struct Detection {
 /// @param m The map, changed in place.
 /// @param camera The camera.
 /// @param options `loops.global_iterations`.
-/// @return The solve's summary; `InvalidInput` for a map without its first keyframe; GTSAM's
-///         failure.
+/// @return The solve's summary; `InvalidInput` for a map without its first keyframe;
+///         `NotConverged` for GTSAM's failure.
 [[nodiscard]] foundations::Result<foundations::graphs::Summary> global_bundle_adjust(
     Map& m, const Camera& camera, const Options& options);
 
@@ -327,7 +327,7 @@ struct CorrectionSummary {
 /// @param options The settings.
 /// @return How it went; `InvalidInput` for a keyframe the map does not hold, matched points not
 ///         one per keypoint of the current keyframe, an unknown mode or invalid settings;
-///         GTSAM's failure.
+///         `NotConverged` for GTSAM's failure.
 [[nodiscard]] foundations::Result<CorrectionSummary> correct(Map& m, const Camera& camera,
                                                              const Loop& loop,
                                                              const std::string& mode,

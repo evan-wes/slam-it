@@ -1930,6 +1930,8 @@ def refine(  # noqa: PLR0913 -- the map, the two keyframes, the start, the match
     slam_it.foundations.errors.InvalidInputError
         If a row is not a keyframe's, the similarity is not one, or the matches are not one per
         keypoint of `k1`.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while refining (:func:`slam_it.foundations.graphs.refine_similarity`).
     """
     first, second = maps.as_keyframe_row(m, k1, "k1"), maps.as_keyframe_row(m, k2, "k2")
     start = _similarity(similarity)
@@ -2071,6 +2073,8 @@ def global_bundle_adjust(
     ------
     slam_it.foundations.errors.InvalidInputError
         If the map does not hold its first keyframe.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while solving (:func:`slam_it.foundations.graphs.bundle_adjust`).
     """
     if not np.any(m.kf_id == 0):
         raise InvalidInputError("m: expected the map's first keyframe (id 0)")
@@ -2133,6 +2137,9 @@ def detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, 
     slam_it.foundations.errors.InvalidInputError
         If the keyframe is not in the map, the mode is unknown, or the loop being confirmed
         holds a similarity that is not one.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while refining a candidate's similarity
+        (:func:`slam_it.foundations.graphs.refine_similarity`).
     """
     check_mode(mode)
     maps.keyframe_row(m, keyframe)
@@ -2186,6 +2193,8 @@ def correct(  # noqa: PLR0913 -- the map, its camera, the loop, the settings, th
     slam_it.foundations.errors.InvalidInputError
         If either keyframe is not in the map, the mode is unknown, the similarity is not one, or
         the matched points are not one per keypoint of the current keyframe.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while optimising the essential graph or in the global BA.
     """
     check_mode(mode)
     current = maps.keyframe_row(m, loop.current)
