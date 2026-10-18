@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from slam_it import backends
 from slam_it.foundations import camera, graphs, se3
 from slam_it.foundations.errors import InvalidInputError, NotConvergedError
-from tests.conftest import require_function
+from tests.conftest import load_fixture, require_function
 
 Array = NDArray[np.float64]
 
@@ -478,3 +478,44 @@ def test_a_failure_inside_gtsam_is_not_converged() -> None:
     values.insert(0, gtsam.Pose3())
     with pytest.raises(NotConvergedError, match="GTSAM failed"):
         graphs._solve(graph, values, graphs.Options())
+
+
+GRAPHS = load_fixture("foundations/graphs.json")
+"""Rung 0's graphs fixture: the Python reference's results on noisy data (generate_graphs.py)."""
+
+INDEX_INPUTS = frozenset({"edges", "fixed", "cameras", "point_ids"})
+"""The fixture's inputs that are indices, read as int64."""
+
+
+def _inputs(raw: dict[str, object]) -> dict[str, object]:
+    """Return a fixture case's inputs as the functions take them: lists as arrays, null as NaN."""
+    out: dict[str, object] = {}
+    for key, value in raw.items():
+        if isinstance(value, list):
+            array = np.array(value, dtype=np.float64)
+            out[key] = array.astype(np.int64) if key in INDEX_INPUTS else array
+        else:
+            out[key] = value
+    return out
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("function", ["optimize_pose_graph", "refine_similarity", "bundle_adjust"])
+def test_matches_fixture(backend: str, function: str) -> None:
+    """Every backend reproduces the fixture: its values, errors, iterations and termination (A2)."""
+    chosen = require_function(backend, graphs.__name__, function)
+    tolerance = GRAPHS["tolerance"]
+    for case in GRAPHS["functions"][function]["cases"]:
+        got = getattr(graphs, function)(**_inputs(case["input"]), backend=chosen)
+        for field, expected in case["expected"].items():
+            np.testing.assert_allclose(
+                getattr(got, field), np.array(expected, dtype=np.float64), rtol=0,
+                atol=tolerance["value_atol"], equal_nan=True, err_msg=f"{case['name']}: {field}",
+            )  # fmt: skip
+        summary = case["summary"]
+        assert got.summary.iterations == summary["iterations"], case["name"]
+        assert str(got.summary.termination) == summary["termination"], case["name"]
+        for key in ("initial_error", "final_error"):
+            assert np.isclose(
+                getattr(got.summary, key), summary[key], rtol=tolerance["error_rtol"], atol=1e-12
+            ), f"{case['name']}: {key}"
