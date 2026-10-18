@@ -51,7 +51,7 @@ keyframe.
 for the place a keyframe revisits in the other maps, by detection's stages, each search taking
 the map searched as well as the keyframe's own (a loop's are one); :func:`merge` brings the
 active map into the one it matched, welds them, and spreads the weld (ORB-SLAM3's ``MergeLocal``,
-its correction as its paper gives it). Python's reference alone until the C++ and Rust ports.
+its correction as its paper gives it).
 
 **Similarities** are ORB-SLAM's ``S_cw``: ``[[s R, t], [0, 1]]`` carrying a world point into a
 keyframe's camera, scaled; a keyframe's own pose ``T_cam_world`` is one with ``s = 1``. A search
@@ -430,6 +430,8 @@ class Outcome(enum.StrEnum):
     """A loop closed on this keyframe."""
     DROPPED = "dropped"
     """The loop being confirmed went unconfirmed ``loops.misses`` keyframes in a row."""
+    MERGED = "merged"
+    """A loop closed on the keyframe was dropped for a merge found on it (:func:`merge_first`)."""
 
 
 @dataclass(frozen=True)
@@ -1251,28 +1253,11 @@ def _detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the key
     return _settle_merge(number, started, began, maps=tried, options=options)
 
 
-def merge_first(loop: Detection, merging: MergeDetection) -> Detection:
-    """Give a merge found on a keyframe priority over a loop closed on it (ORB-SLAM3's ``Run``).
-
-    Where both were found on one keyframe, the merge is made and the loop forgotten, as
-    ORB-SLAM3 resets its loop's state after a merge; a loop still being confirmed is kept.
-    The loop's summary still says what detection found.
-
-    Parameters
-    ----------
-    loop : Detection
-        Loop detection's result on the keyframe.
-    merging : MergeDetection
-        Merge detection's on the same keyframe.
-
-    Returns
-    -------
-    Detection
-        `loop`, its closed loop and its state dropped if a merge was found too.
-    """
+def _merge_first(loop: Detection, merging: MergeDetection) -> Detection:
+    """Give a merge priority over a loop closed on its keyframe (reference)."""
     if merging.merge is None or loop.loop is None:
         return loop
-    return replace(loop, loop=None, pending=None)
+    return Detection(None, None, replace(loop.summary, outcome=Outcome.MERGED))
 
 
 # --- correction ---------------------------------------------------------------------------
@@ -1876,19 +1861,6 @@ def _move_by_graph(
 
 # --- merging ------------------------------------------------------------------------------
 
-WELD_NEIGHBOURS = 25
-"""A welding window is a keyframe and its best this many links, widened to this many when it
-holds fewer (ORB-SLAM3's ``numTemporalKFs``, used for visual maps too). *A placeholder until
-milestone 2B's B4 ports merging to C++ and Rust:* a setting then (``loops.weld_neighbours``),
-since the bindings take exactly Python's settings and a new one would fail them first."""
-
-WELD_WIDEN = 12
-"""A window short of :data:`WELD_NEIGHBOURS` takes in each member's best this many links
-(``numTemporalKFs / 2``); a placeholder as :data:`WELD_NEIGHBOURS` is."""
-
-WELD_ROUNDS = 5
-"""...at most this many times (``nMaxTries``); a placeholder as :data:`WELD_NEIGHBOURS` is."""
-
 
 @dataclass(frozen=True)
 class WeldSummary:
@@ -2104,6 +2076,7 @@ def _absorb(into: Map, other: Map, keyframe_offset: int, point_offset: int) -> M
         gone_kf_id=np.concatenate([into.gone_kf_id, other.gone_kf_id + kf]),
         gone_kf_parent=np.concatenate([into.gone_kf_parent, _offset(other.gone_kf_parent, kf)]),
         loop_edges=np.concatenate([into.loop_edges, other.loop_edges + kf]),
+        merge_edges=np.concatenate([into.merge_edges, other.merge_edges + kf]),
     )
 
 
@@ -2130,17 +2103,18 @@ def _rehang(m: Map, current: int, matched: int) -> Map:
 def _weld_window(m: Map, k: int, options: Options) -> list[int]:
     """Return a welding window's keyframe rows (ORB-SLAM3's ``MergeLocal``, visual).
 
-    The keyframe and its best :data:`WELD_NEIGHBOURS` links; while it holds fewer than that,
-    each member's best :data:`WELD_WIDEN` links not yet in it, at most :data:`WELD_ROUNDS`
+    The keyframe and its best ``loops.weld_neighbours`` links; while it holds fewer than that,
+    each member's best ``loops.weld_widen`` links not yet in it, at most ``loops.weld_rounds``
     times. In the order taken in.
     """
-    window = [k, *covisibility.links(m, k, options)[0][:WELD_NEIGHBOURS].tolist()]
-    for _ in range(WELD_ROUNDS):
-        if len(window) >= WELD_NEIGHBOURS:
+    settings = options.loops
+    window = [k, *covisibility.links(m, k, options)[0][: settings.weld_neighbours].tolist()]
+    for _ in range(settings.weld_rounds):
+        if len(window) >= settings.weld_neighbours:
             break
         inside, added = set(window), []
         for r in window:
-            for other in covisibility.links(m, r, options)[0][:WELD_WIDEN].tolist():
+            for other in covisibility.links(m, r, options)[0][: settings.weld_widen].tolist():
                 if other not in inside:
                     inside.add(other)
                     added.append(other)
@@ -2323,6 +2297,7 @@ def _merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the setting
         m, start, prior, {}, (k, km), fixed=welded, fixed_scale=fixed_scale, options=options
     )
     m = _move_by_graph(m, start, optimised, {})
+    m = maps.add_merge_edge(m, region.matched, current)
     ba: graphs.Summary | None = None
     if options.loops.global_ba:
         m, ba = _global_bundle_adjust(m, camera, options)
@@ -2356,7 +2331,12 @@ class Implementation(Protocol):
     (``_pending_as_dict``, ``_loop_as_dict``); the mode by name. Results cross back as dicts:
     a detection's ``pending`` and ``loop`` (each a dict or None) and ``summary``, its outcome a
     code in ``codes()["loop_outcome"]``; a correction's ``map`` and ``summary``, each solve's
-    termination a code in ``codes()["graphs_termination"]``.
+    termination a code in ``codes()["graphs_termination"]``. Merging's: the other maps as a
+    list of :meth:`slam_it.edge.database.Indexed.as_dict`; a :class:`Merging` and a
+    :class:`Merge` as ``map`` with ``pending`` or ``loop``; a detection given to
+    :func:`merge_first` with its summary's :meth:`DetectionSummary.as_dict`, its outcome by name;
+    a merge detection back as a detection is, with ``maps``; a merge back as ``map``,
+    ``keyframe_offset``, ``point_offset`` and ``summary``.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -2444,6 +2424,38 @@ class Implementation(Protocol):
         self, *, m: Crossing, camera: Crossing, loop: Crossing, mode: str, options: Crossing
     ) -> Crossing:
         """Correct a loop closed at a keyframe."""
+        ...
+
+    def detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
+        self,
+        *,
+        m: Crossing,
+        database: Crossing,
+        camera: Crossing,
+        keyframe: int,
+        others: list[Crossing],
+        pending: Crossing | None,
+        mode: str,
+        options: Crossing,
+    ) -> Crossing:
+        """Look for another map at a newly mapped keyframe."""
+        ...
+
+    def merge_first(self, *, loop: Crossing, merging: Crossing) -> Crossing:
+        """Give a merge found on a keyframe priority over a loop closed on it."""
+        ...
+
+    def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
+        self,
+        *,
+        active: Crossing,
+        matched: Crossing,
+        camera: Crossing,
+        found: Crossing,
+        mode: str,
+        options: Crossing,
+    ) -> Crossing:
+        """Merge the active map into the one it matched."""
         ...
 
 
@@ -2561,7 +2573,30 @@ def _optional(raw: Any) -> int | None:  # noqa: ANN401 -- a compiled backend's v
 
 def _decode_detection(raw: Crossing, codes: backends.Codes) -> Detection:
     """Rebuild :class:`Detection` from a compiled backend's dict."""
-    summary = raw["summary"]
+    return Detection(
+        pending=_decode_pending(raw["pending"]),
+        loop=_decode_loop(raw["loop"]),
+        summary=_decode_summary(raw["summary"], codes),
+    )
+
+
+def _decode_merge_detection(raw: Crossing, codes: backends.Codes) -> MergeDetection:
+    """Rebuild :class:`MergeDetection` from a compiled backend's dict."""
+    pending, found = raw["pending"], raw["merge"]
+    carried = _decode_pending(None if pending is None else pending["pending"])
+    region = _decode_loop(None if found is None else found["loop"])
+    return MergeDetection(
+        pending=None
+        if pending is None or carried is None
+        else Merging(int(pending["map"]), carried),
+        merge=None if found is None or region is None else Merge(int(found["map"]), region),
+        summary=_decode_summary(raw["summary"], codes),
+        maps=tuple(_checked_ids(raw["maps"], "merge detection maps").tolist()),
+    )
+
+
+def _decode_summary(summary: Crossing, codes: backends.Codes) -> DetectionSummary:
+    """Rebuild :class:`DetectionSummary` from a compiled backend's dict."""
     carried = summary["confirmation"]
     confirmation = (
         None
@@ -2590,18 +2625,78 @@ def _decode_detection(raw: Crossing, codes: backends.Codes) -> Detection:
         for c in summary["candidates"]
     )
     outcome = Outcome(backends.decode_name(codes, "loop_outcome", summary["outcome"]))
-    return Detection(
-        pending=_decode_pending(raw["pending"]),
-        loop=_decode_loop(raw["loop"]),
-        summary=DetectionSummary(
-            outcome=outcome,
-            confirmation=confirmation,
-            sharing=int(summary["sharing"]),
-            scored=int(summary["scored"]),
-            candidates=candidates,
-            confirmations=int(summary["confirmations"]),
+    return DetectionSummary(
+        outcome=outcome,
+        confirmation=confirmation,
+        sharing=int(summary["sharing"]),
+        scored=int(summary["scored"]),
+        candidates=candidates,
+        confirmations=int(summary["confirmations"]),
+    )
+
+
+def _decode_merged(raw: Crossing, codes: backends.Codes) -> Merged:
+    """Rebuild :class:`Merged` from a compiled backend's dict."""
+    s, weld = raw["summary"], raw["summary"]["weld"]
+    second, ba = weld["second"], s["global_ba"]
+    return Merged(
+        map=maps.decode(raw["map"], codes),
+        keyframe_offset=int(raw["keyframe_offset"]),
+        point_offset=int(raw["point_offset"]),
+        summary=MergeSummary(
+            map=int(s["map"]),
+            current=int(s["current"]),
+            matched=int(s["matched"]),
+            similarity=_checked_similarity(s["similarity"], "merge similarity"),
+            window=int(s["window"]),
+            matched_window=int(s["matched_window"]),
+            fused=int(s["fused"]),
+            weld=WeldSummary(
+                keyframes=int(weld["keyframes"]),
+                held=int(weld["held"]),
+                points=int(weld["points"]),
+                observations=int(weld["observations"]),
+                outliers=int(weld["outliers"]),
+                forgotten=int(weld["forgotten"]),
+                first=graphs.summary_from_backend(weld["first"], codes),
+                second=None if second is None else graphs.summary_from_backend(second, codes),
+            ),
+            edges=int(s["edges"]),
+            essential=graphs.summary_from_backend(s["essential"], codes),
+            global_ba=None if ba is None else graphs.summary_from_backend(ba, codes),
         ),
     )
+
+
+def _detection_as_dict(detection: Detection) -> Crossing:
+    """Return a loop detection's result as it crosses the bindings, its outcome by name."""
+    return {
+        "pending": None if detection.pending is None else _pending_as_dict(detection.pending),
+        "loop": None if detection.loop is None else _loop_as_dict(detection.loop),
+        "summary": detection.summary.as_dict(),
+    }
+
+
+def _merging_as_dict(merging: Merging | None) -> Crossing | None:
+    """Return a merge being confirmed as it crosses the bindings."""
+    if merging is None:
+        return None
+    return {"map": merging.map, "pending": _pending_as_dict(merging.pending)}
+
+
+def _merge_detection_as_dict(found: MergeDetection) -> Crossing:
+    """Return merge detection's result as it crosses the bindings, its outcome by name."""
+    return {
+        "pending": _merging_as_dict(found.pending),
+        "merge": None if found.merge is None else _merge_as_dict(found.merge),
+        "summary": found.summary.as_dict(),
+        "maps": np.array(found.maps, dtype=np.int64),
+    }
+
+
+def _merge_as_dict(found: Merge) -> Crossing:
+    """Return a merge found as it crosses the bindings."""
+    return {"map": found.map, "loop": _loop_as_dict(found.loop)}
 
 
 def _decode_corrected(raw: Crossing, codes: backends.Codes) -> Corrected:
@@ -3174,6 +3269,7 @@ def detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyf
     pending: Merging | None,
     mode: str,
     options: Options,
+    backend: str = "python",
 ) -> MergeDetection:
     """Look for another map at a newly mapped keyframe (ORB-SLAM3's merge detection).
 
@@ -3186,8 +3282,6 @@ def detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyf
     so two misses in a row drop it. A monocular merge's similarity carries the two maps' scale
     ratio, unbounded (ORB-SLAM3 bounds it for inertial maps alone). :func:`merge_first` gives
     a merge priority over a loop found on the same keyframe.
-
-    *Python's reference alone* until milestone 2B's B4 ports it to C++ and Rust.
 
     Parameters
     ----------
@@ -3207,6 +3301,8 @@ def detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyf
         The pipeline's mode: the similarity is rigid but in monocular.
     options : slam_it.edge.options.Options
         The ``loops`` settings, and those the searches read.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
@@ -3229,13 +3325,71 @@ def detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyf
         if pending.map not in by_number:
             raise InvalidInputError(f"pending.map: map {pending.map} is not among the others")
         _similarity(pending.pending.similarity, "pending.similarity")
-    return _detect_merge(
-        m, db, camera, keyframe, others=by_number, pending=pending, mode=mode, options=options
+    return backends.call(
+        backend,
+        __name__,
+        "detect_merge",
+        reference=lambda: _detect_merge(
+            m, db, camera, keyframe, others=by_number, pending=pending, mode=mode, options=options
+        ),
+        arguments={
+            "m": m.as_dict(),
+            "database": db.as_dict(),
+            "camera": camera.as_dict(),
+            "keyframe": int(keyframe),
+            "others": [other.as_dict() for other in others],
+            "pending": _merging_as_dict(pending),
+            "mode": mode,
+            "options": options.as_dict(),
+        },
+        decode=_decode_merge_detection,
+    )
+
+
+def merge_first(loop: Detection, merging: MergeDetection, *, backend: str = "python") -> Detection:
+    """Give a merge found on a keyframe priority over a loop closed on it (ORB-SLAM3's ``Run``).
+
+    Where both were found on one keyframe, the merge is made and the loop forgotten, as
+    ORB-SLAM3 resets its loop's state after a merge, its outcome :attr:`Outcome.MERGED`; a loop
+    still being confirmed is kept.
+
+    Parameters
+    ----------
+    loop : Detection
+        Loop detection's result on the keyframe.
+    merging : MergeDetection
+        Merge detection's on the same keyframe.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Detection
+        `loop`, its closed loop and its state dropped, its outcome ``merged``, if a merge was
+        found too.
+    """
+    return backends.call(
+        backend,
+        __name__,
+        "merge_first",
+        reference=lambda: _merge_first(loop, merging),
+        arguments={
+            "loop": _detection_as_dict(loop),
+            "merging": _merge_detection_as_dict(merging),
+        },
+        decode=_decode_detection,
     )
 
 
 def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
-    active: Map, matched: Map, camera: Camera, found: Merge, *, mode: str, options: Options
+    active: Map,
+    matched: Map,
+    camera: Camera,
+    found: Merge,
+    *,
+    mode: str,
+    options: Options,
+    backend: str = "python",
 ) -> Merged:
     """Merge the active map into the one it matched (ORB-SLAM3's ``MergeLocal``, as its paper).
 
@@ -3248,7 +3402,8 @@ def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
     - the active side's spanning tree is re-rooted at the current keyframe and hung under the
       matched one, so the merged map's root is the matched map's;
     - the welding windows: each of the two keyframes and its best links
-      (:data:`WELD_NEIGHBOURS`, widened by :data:`WELD_WIDEN` up to :data:`WELD_ROUNDS` times);
+      (``loops.weld_neighbours``, widened by ``loops.weld_widen`` up to ``loops.weld_rounds``
+      times);
     - the matched window's points fused into the active window's keyframes (``SearchAndFuse``:
       ``loops.fuse_window``, ``matching.th_low``), each replacing the point a keypoint had;
     - the welding BA (the paper's: both windows optimised, the matched map's keyframes outside
@@ -3259,8 +3414,6 @@ def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
       units, so its edges hold;
     - global BA after (``loops.global_ba``), as after a loop; ORB-SLAM3's source runs it only
       where one was interrupted.
-
-    *Python's reference alone* until milestone 2B's B4 ports it to C++ and Rust.
 
     Parameters
     ----------
@@ -3276,6 +3429,8 @@ def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
         The pipeline's mode: the similarity's scale is used but in stereo and RGB-D.
     options : slam_it.edge.options.Options
         The ``loops`` and ``adjustment`` settings, and those the fusion reads.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
@@ -3295,4 +3450,18 @@ def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
     _similarity(region.similarity, "found.loop.similarity")
     if (active.levels, active.scale_factor) != (matched.levels, matched.scale_factor):
         raise InvalidInputError("merge: the two maps' pyramids differ")
-    return _merge(active, matched, camera, found, mode=mode, options=options)
+    return backends.call(
+        backend,
+        __name__,
+        "merge",
+        reference=lambda: _merge(active, matched, camera, found, mode=mode, options=options),
+        arguments={
+            "active": active.as_dict(),
+            "matched": matched.as_dict(),
+            "camera": camera.as_dict(),
+            "found": _merge_as_dict(found),
+            "mode": mode,
+            "options": options.as_dict(),
+        },
+        decode=_decode_merged,
+    )

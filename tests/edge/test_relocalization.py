@@ -356,3 +356,30 @@ def test_relocalisation_in_every_map_refuses_what_it_cannot_search(two_rigid: Tw
     )
     with pytest.raises(InvalidInputError, match="one vocabulary"):
         relocalization.relocalize_across([*both, alien], CAMERA, frame, OPTIONS)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize("index", [6 * LOOP_EVERY + 5, 20 * LOOP_EVERY + 5, 65])
+def test_every_backend_relocalizes_in_every_map_as_python_does(
+    backend: str, index: int, two_rigid: TwoMaps
+) -> None:
+    """The same map, candidates and decisions; the pose to the solves' convergence."""
+    chosen = require_function(backend, relocalization.__name__, "relocalize_across")
+    frame, _ = _frame(index)
+    expected, got = (
+        relocalization.relocalize_across(_both(two_rigid), CAMERA, frame, OPTIONS, backend=which)
+        for which in ("python", chosen)
+    )
+    assert (got.map, got.maps) == (expected.map, expected.maps)
+    assert_records_match(
+        got.relocalized.summary.as_dict(), expected.relocalized.summary.as_dict(), SOLVER_TOLERANCE
+    )
+    np.testing.assert_array_equal(got.relocalized.matched, expected.relocalized.matched)
+    assert (got.relocalized.tracked is None) == (expected.relocalized.tracked is None)
+    if got.relocalized.tracked is not None and expected.relocalized.tracked is not None:
+        assert_close(
+            got.relocalized.tracked.pose, expected.relocalized.tracked.pose, SOLVER_TOLERANCE
+        )
+        np.testing.assert_array_equal(
+            got.relocalized.tracked.points, expected.relocalized.tracked.points
+        )

@@ -335,7 +335,8 @@ void test_bundle_adjust(int& failures) {
                                                                  .point_ids = ids,
                                                                  .pixels = pixels,
                                                                  .right = right,
-                                                                 .information = information},
+                                                                 .information = information,
+                                                                 .huber = {}},
                                             camera::Model::kRadTan, radtan(), kBf, fixed,
                                             graphs::Options{.max_iterations = 20});
   expect(result.has_value(), "the bundle solves", failures);
@@ -436,7 +437,8 @@ void test_bad_input(int& failures) {
                                                                   .point_ids = one_point,
                                                                   .pixels = pixel,
                                                                   .right = mono,
-                                                                  .information = info},
+                                                                  .information = info,
+                                                                  .huber = {}},
                                              camera::Model::kPinhole, pinhole(), kBf, fixed, {})),
       "an unobserved point is refused", failures);
   const std::array<double, 1> stereo = {3.0};
@@ -446,7 +448,8 @@ void test_bad_input(int& failures) {
                                                                   .point_ids = one_point,
                                                                   .pixels = pixel,
                                                                   .right = stereo,
-                                                                  .information = info},
+                                                                  .information = info,
+                                                                  .huber = {}},
                                              camera::Model::kPinhole, pinhole(), 0.0, fixed, {})),
       "a right column without bf is refused", failures);
   // A row of pixels2 is finite, or wholly NaN (unseen): anything else is refused (H1, L1).

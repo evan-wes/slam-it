@@ -169,8 +169,9 @@ class Implementation(Protocol):
     """The functions a compiled backend's ``edge.database`` submodule provides.
 
     A database crosses as :meth:`Database.as_dict`'s dict, from which the backend builds its
-    own index; a frame's word vector as ``ids`` and ``values``; :class:`Candidates` as a dict
-    of its fields.
+    own index; a frame's word vector as ``ids`` and ``values``; the other maps as a list of
+    :meth:`Indexed.as_dict`; :class:`Candidates` and :class:`MergeCandidates` as dicts of their
+    fields.
     """
 
     def candidates(
@@ -188,6 +189,16 @@ class Implementation(Protocol):
         self, database: dict[str, Any], m: dict[str, Any], keyframe: int, options: dict[str, Any]
     ) -> dict[str, Any]:
         """Find the keyframes a keyframe may close a loop with."""
+        ...
+
+    def merge_candidates(
+        self,
+        ids: NDArray[np.int64],
+        values: NDArray[np.float64],
+        others: list[dict[str, Any]],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Find the keyframes of other maps a keyframe may merge its map with."""
         ...
 
 
@@ -469,6 +480,17 @@ class Indexed:
     map: Map
     database: Database
 
+    def as_dict(self) -> dict[str, Any]:
+        """Return the map, its database and number as they cross the bindings.
+
+        Returns
+        -------
+        dict
+            ``number``, ``m`` (:meth:`slam_it.edge.map.Map.as_dict`) and ``database``
+            (:meth:`Database.as_dict`).
+        """
+        return {"number": self.number, "m": self.map.as_dict(), "database": self.database.as_dict()}
+
 
 @dataclass(frozen=True)
 class MergeCandidates:
@@ -497,7 +519,11 @@ class MergeCandidates:
 
 
 def merge_candidates(
-    vector: tuple[ArrayLike, ArrayLike], others: Sequence[Indexed], options: Options
+    vector: tuple[ArrayLike, ArrayLike],
+    others: Sequence[Indexed],
+    options: Options,
+    *,
+    backend: str = "python",
 ) -> MergeCandidates:
     """Find the keyframes of other maps a keyframe may merge its map with.
 
@@ -506,8 +532,6 @@ def merge_candidates(
     (``loops.common_words``, ``loops.neighbours``), nothing left out, its best
     ``loops.candidates`` groups; then the best ``loops.candidates`` of every map's, by
     accumulated score (comparable across maps, all scored under one vocabulary).
-
-    *Python's reference alone* until milestone 2B's B4 ports it to C++ and Rust.
 
     Parameters
     ----------
@@ -518,6 +542,8 @@ def merge_candidates(
     options : slam_it.edge.options.Options
         ``loops.candidates``, ``loops.common_words``, ``loops.neighbours`` and
         ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
@@ -533,6 +559,25 @@ def merge_candidates(
     numbers = [other.number for other in others]
     if len(set(numbers)) != len(numbers):
         raise InvalidInputError("others: expected each map once, by its number")
+    return backends.call(
+        backend,
+        __name__,
+        "merge_candidates",
+        reference=lambda: _merge_candidates(query, others, options),
+        arguments={
+            "ids": query[0],
+            "values": query[1],
+            "others": [other.as_dict() for other in others],
+            "options": options.as_dict(),
+        },
+        decode=_decode_merge_candidates,
+    )
+
+
+def _merge_candidates(
+    query: tuple[IntArray, Array], others: Sequence[Indexed], options: Options
+) -> MergeCandidates:
+    """Find a merge's candidates (reference)."""
     settings = options.loops
     found: list[tuple[float, int, int]] = []
     sharing = scored = 0
@@ -554,4 +599,18 @@ def merge_candidates(
         scores=np.array([c[0] for c in best], dtype=np.float64),
         sharing=sharing,
         scored=scored,
+    )
+
+
+def _decode_merge_candidates(raw: dict[str, Any], codes: backends.Codes) -> MergeCandidates:
+    """Rebuild :class:`MergeCandidates` from a compiled backend's dict, its arrays checked."""
+    del codes  # the candidates cross no codes
+    return MergeCandidates(
+        maps=backends.checked_array(raw["maps"], np.int64, 1, "merge candidates maps"),
+        keyframes=backends.checked_array(
+            raw["keyframes"], np.int64, 1, "merge candidates keyframes"
+        ),
+        scores=backends.checked_array(raw["scores"], np.float64, 1, "merge candidates scores"),
+        sharing=int(raw["sharing"]),
+        scored=int(raw["scored"]),
     )

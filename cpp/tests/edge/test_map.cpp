@@ -249,6 +249,22 @@ void check_loops(int& failures) {
   backwards.loop_edges = {{1, 0}};
   expect(is_invalid_input(edge::check_map(backwards)), "check_map rejects a newer-first edge",
          failures);
+  edge::Map merged = m;
+  expect(edge::add_merge_edge(merged, 1, 0).has_value() &&
+             merged.merge_edges == std::vector<std::array<std::int64_t, 2>>{{0, 1}} &&
+             merged.loop_edges.empty() && edge::has_merge(merged, 0) &&
+             edge::has_merge(merged, 1) && !edge::has_merge(merged, 2) &&
+             !edge::has_loop(merged, 1) && edge::check_map(merged).has_value(),
+         "a merge edge joins two keyframes, the older first, apart from the loop edges", failures);
+  expect(is_invalid_input(edge::add_merge_edge(merged, 1, 1)) &&
+             is_invalid_input(edge::add_merge_edge(merged, 1, 9)),
+         "a merge edge to itself or a stranger is refused", failures);
+  expect(is_invalid_input(edge::erase_keyframe(merged, 1)),
+         "a keyframe with a merge edge is not erased", failures);
+  backwards = m;
+  backwards.merge_edges = {{1, 0}};
+  expect(is_invalid_input(edge::check_map(backwards)), "check_map rejects a newer-first merge edge",
+         failures);
   const Eigen::Matrix4d expected = m.kf_pose[2] * m.kf_pose[0].inverse();
   expect(edge::erase_keyframe(m, 2).has_value() && m.gone_kf_relative.size() == 1 &&
              (m.gone_kf_relative[0] - expected).cwiseAbs().maxCoeff() < 1e-12,

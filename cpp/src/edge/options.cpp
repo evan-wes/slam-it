@@ -86,17 +86,18 @@ foundations::Result<void> check_options(const Options& options) {
     }
   }
   // Settings that may be 0, then those that must be at least 1.
-  const std::array<IntSetting, 4> may_be_zero{
+  const std::array<IntSetting, 5> may_be_zero{
       {{"seed", options.seed},
        {"initialization.min_features", options.initialization.min_features},
        {"initialization.min_features_depth", options.initialization.min_features_depth},
-       {"loss.reset_keyframes", options.loss.reset_keyframes}}};
+       {"loss.reset_keyframes", options.loss.reset_keyframes},
+       {"loops.weld_rounds", options.loops.weld_rounds}}};
   for (const auto& [setting, value] : may_be_zero) {
     if (auto ok = foundations::check_range(setting, value, 0, kMaxSetting); !ok) {
       return ok;
     }
   }
-  const std::array<IntSetting, 66> counts{{
+  const std::array<IntSetting, 68> counts{{
       {"features.n_features", options.features.n_features},
       {"features.levels", options.features.levels},
       {"features.fast_threshold", options.features.fast_threshold},
@@ -163,6 +164,8 @@ foundations::Result<void> check_options(const Options& options) {
       {"loops.essential_points", options.loops.essential_points},
       {"loops.essential_iterations", options.loops.essential_iterations},
       {"loops.global_iterations", options.loops.global_iterations},
+      {"loops.weld_neighbours", options.loops.weld_neighbours},
+      {"loops.weld_widen", options.loops.weld_widen},
   }};
   for (const auto& [setting, value] : counts) {
     if (auto ok = foundations::check_range(setting, value, 1, kMaxSetting); !ok) {

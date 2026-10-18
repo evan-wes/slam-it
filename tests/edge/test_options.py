@@ -112,9 +112,9 @@ def test_an_unknown_setting_or_group_is_refused() -> None:
 
 
 def test_the_settings_are_named_by_group_and_field() -> None:
-    """settings() lists all 134, each ``group.field`` but ``seed``, and with_settings reads them."""
+    """settings() lists all 137, each ``group.field`` but ``seed``, and with_settings reads them."""
     settings = Options().settings()
-    assert len(settings) == 134
+    assert len(settings) == 137
     assert [name for name in settings if "." not in name] == ["seed"]
     changed = Options().with_settings({"relocalization.min_inliers": 12, "seed": 3})
     assert (changed.relocalization.min_inliers, changed.seed) == (12, 3)

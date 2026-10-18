@@ -579,6 +579,14 @@ class LoopOptions:
         off measures what it adds).
     global_iterations : int
         Its iterations (``GlobalBundleAdjustemnt``'s 10).
+    weld_neighbours : int
+        A merge's welding window is a keyframe and its best this many links, widened to this
+        many when it holds fewer (ORB-SLAM3's ``numTemporalKFs``, 25, which ``MergeLocal`` uses
+        for visual maps too)...
+    weld_widen : int
+        ...each member's best this many links taken in (``numTemporalKFs / 2``, 12)...
+    weld_rounds : int
+        ...at most this many times (``nMaxTries``, 5); 0 widens none.
     """
 
     enabled: bool = True
@@ -616,6 +624,9 @@ class LoopOptions:
     essential_damping: float = 1e-16
     global_ba: bool = True
     global_iterations: int = 10
+    weld_neighbours: int = 25
+    weld_widen: int = 12
+    weld_rounds: int = 5
 
 
 @dataclass(frozen=True)
@@ -880,6 +891,7 @@ _MAY_BE_ZERO = frozenset(
         "initialization.min_features",
         "initialization.min_features_depth",
         "loss.reset_keyframes",
+        "loops.weld_rounds",
     }
 )
 """The integer settings that may be 0."""

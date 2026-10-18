@@ -6,6 +6,7 @@
 #include <cmath>
 #include <numeric>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -300,12 +301,44 @@ Result<void> check_links(const Map& m) {
                   "map.kf_parent: a parent must be -1 or another of its keyframes");
     }
   }
-  for (const auto& [older, newer] : m.loop_edges) {
-    if (older >= newer || row_of(m.kf_id, older) < 0 || row_of(m.kf_id, newer) < 0) {
-      return fail(ErrorKind::kInvalidInput,
-                  "map.loop_edges: each joins two of its keyframes, the older (lower id) first");
+  for (const auto& [name, edges] :
+       {std::pair{"loop_edges", &m.loop_edges}, std::pair{"merge_edges", &m.merge_edges}}) {
+    for (const auto& [older, newer] : *edges) {
+      if (older >= newer || row_of(m.kf_id, older) < 0 || row_of(m.kf_id, newer) < 0) {
+        return fail(ErrorKind::kInvalidInput,
+                    std::string("map.") + name +
+                        ": each joins two of its keyframes, the older (lower id) first");
+      }
     }
   }
+  return {};
+}
+
+/// @brief Whether an edge list joins a keyframe.
+/// @param edges The edges.
+/// @param id The keyframe's id.
+/// @return Whether one of them has it at either end.
+bool joins(std::span<const std::array<std::int64_t, 2>> edges, std::int64_t id) {
+  return std::ranges::any_of(edges, [id](const std::array<std::int64_t, 2>& edge) {
+    return edge[0] == id || edge[1] == id;
+  });
+}
+
+/// @brief Add an edge joining two of the map's keyframes, the older first.
+/// @param m The map.
+/// @param edges The map's edge list it joins.
+/// @param ends The two keyframes' ids, in either order.
+/// @param what The edge's kind, for the message.
+/// @return Nothing, or `InvalidInput` if either is not the map's, or they are the same.
+Result<void> add_edge(const Map& m, std::vector<std::array<std::int64_t, 2>>& edges,
+                      std::array<std::int64_t, 2> ends, const char* what) {
+  const auto [first, second] = ends;
+  if (first == second || row_of(m.kf_id, first) < 0 || row_of(m.kf_id, second) < 0) {
+    return fail(ErrorKind::kInvalidInput, std::string(what) + " edge " + std::to_string(first) +
+                                              "-" + std::to_string(second) +
+                                              ": expected two of the map's keyframes");
+  }
+  edges.push_back({std::min(first, second), std::max(first, second)});
   return {};
 }
 
@@ -732,6 +765,10 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
     return fail(ErrorKind::kInvalidInput,
                 "k: keyframe " + std::to_string(m.kf_id[row]) + " has a loop edge, and is kept");
   }
+  if (has_merge(m, row)) {
+    return fail(ErrorKind::kInvalidInput,
+                "k: keyframe " + std::to_string(m.kf_id[row]) + " has a merge edge, and is kept");
+  }
   const Eigen::Matrix4d relative = relative_to_parent(m, row);
   const std::int64_t start = m.kf_start[row];
   const std::int64_t stop = m.kf_start[row + 1];
@@ -776,21 +813,18 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
   return {};
 }
 
-bool has_loop(const Map& m, std::size_t k) {
-  return std::ranges::any_of(m.loop_edges, [&](const std::array<std::int64_t, 2>& edge) {
-    return edge[0] == m.kf_id[k] || edge[1] == m.kf_id[k];
-  });
-}
+bool has_loop(const Map& m, std::size_t k) { return joins(m.loop_edges, m.kf_id[k]); }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the edge's two ends, in either order
 Result<void> add_loop_edge(Map& m, std::int64_t first, std::int64_t second) {
-  if (first == second || row_of(m.kf_id, first) < 0 || row_of(m.kf_id, second) < 0) {
-    return fail(ErrorKind::kInvalidInput, "loop edge " + std::to_string(first) + "-" +
-                                              std::to_string(second) +
-                                              ": expected two of the map's keyframes");
-  }
-  m.loop_edges.push_back({std::min(first, second), std::max(first, second)});
-  return {};
+  return add_edge(m, m.loop_edges, {first, second}, "loop");
+}
+
+bool has_merge(const Map& m, std::size_t k) { return joins(m.merge_edges, m.kf_id[k]); }
+
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the edge's two ends, in either order
+Result<void> add_merge_edge(Map& m, std::int64_t first, std::int64_t second) {
+  return add_edge(m, m.merge_edges, {first, second}, "merge");
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (lose, keep), named as Python's

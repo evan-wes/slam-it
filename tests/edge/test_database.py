@@ -301,3 +301,23 @@ def test_each_map_s_words_are_counted_within_it(two_rigid: TwoMaps) -> None:
     np.testing.assert_array_equal(twice.keyframes[:2], [once.keyframes[0]] * 2)
     with pytest.raises(InvalidInputError, match="each map once"):
         database.merge_candidates(vector, _matched_map(two_rigid) * 2, OPTIONS)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_finds_a_merge_s_candidates_as_python_does(
+    backend: str, two_rigid: TwoMaps
+) -> None:
+    """Each active keyframe's candidates in the matched map and its copy: exactly Python's."""
+    chosen = require_function(backend, database.__name__, "merge_candidates")
+    copy = Indexed(3, two_rigid.matched, two_rigid.matched_database)
+    others = [*_matched_map(two_rigid), copy]
+    for keyframe in two_rigid.active.kf_id.tolist():
+        vector = two_rigid.active_database.vector(keyframe)
+        expected, got = (
+            database.merge_candidates(vector, others, OPTIONS, backend=which)
+            for which in ("python", chosen)
+        )
+        np.testing.assert_array_equal(got.maps, expected.maps)
+        np.testing.assert_array_equal(got.keyframes, expected.keyframes)
+        np.testing.assert_array_equal(got.scores, expected.scores)
+        assert (got.sharing, got.scored) == (expected.sharing, expected.scored)

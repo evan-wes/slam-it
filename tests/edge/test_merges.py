@@ -2,26 +2,37 @@
 
 The two maps (:class:`tests.edge.conftest.TwoMaps`) hold the loop room's keyframes, the first
 half the older, matched map in the truth's world, the rest the active map in a world of its own
-(scaled too, in monocular), whose last keyframes come back over where the first map began. All
-of it is Python's reference alone until milestone 2B's B4 ports merging to C++ and Rust.
+(scaled too, in monocular), whose last keyframes come back over where the first map began.
+Each stage's C++ and Rust match Python's reference, the GTSAM stages to GTSAM's convergence.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import replace
+from typing import Any
 
 import numpy as np
 import pytest
 
-from slam_it.edge import loops
+from slam_it import backends
+from slam_it.edge import covisibility, loops
 from slam_it.edge import map as maps
 from slam_it.edge.database import Indexed
 from slam_it.edge.loops import Merge, MergeDetection, Merging, Outcome, Pending
 from slam_it.edge.map import Map
+from slam_it.edge.options import Options
 from slam_it.foundations.errors import InvalidInputError
+from tests.conftest import require_function
 from tests.edge.conftest import MERGE_SCALE, SPLIT, TwoMaps
-from tests.edge.support import CAMERA, OPTIONS
+from tests.edge.support import (
+    CAMERA,
+    GRAPH_TOLERANCE,
+    OPTIONS,
+    assert_close,
+    assert_maps_match,
+    assert_records_match,
+)
 
 FOUND_AT = -2
 """The active map's keyframe where the merge is found at once: the second last, matched near the
@@ -30,10 +41,11 @@ first map's start (its links confirm it)."""
 NOWHERE = 4
 """An active keyframe that sees nothing the first map saw."""
 
-NARROW = (3, 2, 0)
-"""Welding windows narrower than the maps (:data:`slam_it.edge.loops.WELD_NEIGHBOURS`,
-``WELD_WIDEN``, ``WELD_ROUNDS``), so the matched map has keyframes outside its window to hold
-and the essential graph has keyframes to move."""
+NARROW = OPTIONS.with_settings(
+    {"loops.weld_neighbours": 3, "loops.weld_widen": 2, "loops.weld_rounds": 0}
+)
+"""Welding windows narrower than the maps, so the matched map has keyframes outside its window
+to hold and the essential graph has keyframes to move."""
 
 
 @pytest.fixture(scope="module", params=["rigid", "scaled"])
@@ -191,6 +203,14 @@ def test_a_merge_unconfirmed_twice_in_a_row_is_dropped(two: TwoMaps) -> None:
     assert (dropped.pending, dropped.merge) == (None, None)
 
 
+def _being_confirmed(region: loops.Loop) -> Pending:
+    """Return a loop's region as a loop being confirmed, once, on its current keyframe."""
+    return Pending(
+        matched=0, last=region.current, similarity=region.similarity, confirmations=1, misses=0,
+        points=region.points, matched_points=region.matched_points,
+    )  # fmt: skip
+
+
 def _carried_from(pending: Pending, m: Map, row: int) -> Pending:
     """Return a merge being confirmed as if its last keyframe were another."""
     return Pending(
@@ -224,20 +244,18 @@ def test_merge_detection_refuses_what_it_cannot_search(two: TwoMaps) -> None:
 def test_a_merge_takes_priority_over_a_loop_on_its_keyframe(two: TwoMaps) -> None:
     """A loop closed on the keyframe a merge was found on is forgotten; one being confirmed is not.
 
-    The loop's summary still says what loop detection found.
+    The forgotten loop's outcome says why: ``merged``.
     """
     merged = _detect(two, FOUND_AT)
     nothing = _detect(two, NOWHERE)
     region = _found(two).loop
-    state = Pending(
-        matched=0, last=region.current, similarity=region.similarity, confirmations=1, misses=0,
-        points=region.points, matched_points=region.matched_points,
-    )  # fmt: skip
+    state = _being_confirmed(region)
     closed = loops.Detection(None, region, loops.DetectionSummary(Outcome.CLOSED))
     carried = loops.Detection(state, None, loops.DetectionSummary(Outcome.STARTED))
     first = loops.merge_first(closed, merged)
     assert (first.loop, first.pending) == (None, None)
-    assert first.summary.outcome is Outcome.CLOSED
+    assert first.summary.outcome is Outcome.MERGED
+    assert first.summary.candidates == closed.summary.candidates
     assert loops.merge_first(closed, nothing) is closed
     assert loops.merge_first(carried, merged) is carried
 
@@ -251,7 +269,8 @@ def test_the_merge_puts_the_active_map_where_it_belongs(two: TwoMaps) -> None:
     Here each welding window holds all of its map, so the matched map has no keyframe outside
     to hold, and its window is held: the matched map stays where it was. The active map's
     keyframes and points follow the matched map's, every id moved on by the matched map's next;
-    its tree hangs under the matched keyframe, the matched map's root the merged map's.
+    its tree hangs under the matched keyframe, the matched map's root the merged map's; the
+    merge edge joins the two keyframes, and culling spares them.
     """
     found = _found(two)
     merged = loops.merge(
@@ -275,6 +294,10 @@ def test_the_merge_puts_the_active_map_where_it_belongs(two: TwoMaps) -> None:
     assert m.kf_parent[maps.keyframe_row(m, current)] == found.loop.matched
     ids = two.active.pt_id + merged.point_offset
     assert np.all(np.isin(ids, m.pt_id) | np.isin(ids, m.gone_pt_id))
+    np.testing.assert_array_equal(m.merge_edges, [[found.loop.matched, current]])
+    assert maps.has_merge(m, maps.keyframe_row(m, current))
+    k = maps.keyframe_row(m, current)
+    assert covisibility.cull(m, k, OPTIONS) == m
     s = merged.summary
     assert (s.map, s.current, s.matched) == (0, current, found.loop.matched)
     assert s.fused > 0
@@ -284,19 +307,15 @@ def test_the_merge_puts_the_active_map_where_it_belongs(two: TwoMaps) -> None:
     json.dumps(s.as_dict(), allow_nan=False)
 
 
-def test_the_paper_s_weld_holds_the_matched_map_outside_its_window(
-    two: TwoMaps, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_the_paper_s_weld_holds_the_matched_map_outside_its_window(two: TwoMaps) -> None:
     """With narrow windows, the matched map's keyframes outside its window hold the weld.
 
     Both windows' keyframes are optimised; the essential graph carries the weld to the rest of
     both maps; every keyframe ends within 3 cm of its place.
     """
-    for name, value in zip(("WELD_NEIGHBOURS", "WELD_WIDEN", "WELD_ROUNDS"), NARROW, strict=True):
-        monkeypatch.setattr(loops, name, value)
     merged = loops.merge(
         two.active, two.matched, CAMERA, _found(two), mode=_mode(two),
-        options=OPTIONS.with_settings({"loops.global_ba": False}),
+        options=NARROW.with_settings({"loops.global_ba": False}),
     )  # fmt: skip
     s = merged.summary
     assert s.weld.keyframes == s.window + s.matched_window
@@ -339,3 +358,143 @@ def test_the_merge_refuses_what_it_cannot_join(two_rigid: TwoMaps) -> None:
     other = replace(two_rigid.matched, scale_factor=two_rigid.matched.scale_factor * 1.1)
     with pytest.raises(InvalidInputError, match="pyramids differ"):
         loops.merge(two_rigid.active, other, CAMERA, found, mode="rgbd", options=OPTIONS)
+
+
+# --- each backend as Python ---------------------------------------------------------------
+
+
+def _assert_same_merge_detection(got: MergeDetection, expected: MergeDetection) -> None:
+    """Check two merge detections: the decisions exactly, the similarities to GTSAM's."""
+    assert_records_match(got.summary.as_dict(), expected.summary.as_dict(), GRAPH_TOLERANCE)
+    assert got.maps == expected.maps
+    assert (got.pending is None, got.merge is None) == (
+        expected.pending is None, expected.merge is None,
+    )  # fmt: skip
+    pairs: list[tuple[int, int, Pending | loops.Loop, Pending | loops.Loop]] = []
+    if got.pending is not None and expected.pending is not None:
+        pairs.append((got.pending.map, expected.pending.map, got.pending.pending,
+                      expected.pending.pending))  # fmt: skip
+    if got.merge is not None and expected.merge is not None:
+        pairs.append((got.merge.map, expected.merge.map, got.merge.loop, expected.merge.loop))
+    for number, theirs_number, mine, theirs in pairs:
+        assert number == theirs_number
+        assert_close(mine.similarity, theirs.similarity, GRAPH_TOLERANCE)
+        np.testing.assert_array_equal(mine.points, theirs.points)
+        np.testing.assert_array_equal(mine.matched_points, theirs.matched_points)
+        same = replace(
+            mine, similarity=theirs.similarity, points=theirs.points,
+            matched_points=theirs.matched_points,
+        )  # fmt: skip
+        assert same == theirs
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_detects_merges_as_python_does(backend: str, two: TwoMaps) -> None:
+    """Nowhere, found at once, started and then carried, skipped: as Python decides."""
+    require_function(backend, loops.__name__, "detect_merge")
+    needed = OPTIONS.with_settings({"loops.confirmations": OPTIONS.loops.confirmations + 1})
+    started = _detect(two, FOUND_AT, confirmations=OPTIONS.loops.confirmations + 1).pending
+    assert started is not None
+    small = OPTIONS.with_settings({"loops.min_keyframes": two.active.keyframes + 1})
+    cases: list[tuple[int, Merging | None, Options]] = [
+        (NOWHERE, None, OPTIONS),
+        (FOUND_AT, None, OPTIONS),
+        (FOUND_AT, None, needed),
+        (-1, started, needed),
+        (-1, started, small),
+    ]
+    for row, pending, options in cases:
+        expected, got = (
+            loops.detect_merge(
+                two.active, two.active_database, CAMERA, int(two.active.kf_id[row]),
+                others=_others(two), pending=pending, mode=_mode(two), options=options,
+                backend=chosen,
+            )
+            for chosen in ("python", backend)
+        )  # fmt: skip
+        _assert_same_merge_detection(got, expected)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_gives_a_merge_priority_as_python_does(
+    backend: str, two_rigid: TwoMaps
+) -> None:
+    """A loop closed with a merge found, with none, and one being confirmed: Python's results."""
+    require_function(backend, loops.__name__, "merge_first")
+    merged, nothing = _detect(two_rigid, FOUND_AT), _detect(two_rigid, NOWHERE)
+    region = _found(two_rigid).loop
+    state = _being_confirmed(region)
+    closed = loops.Detection(None, region, merged.summary)
+    carried = loops.Detection(state, None, nothing.summary)
+    for loop, merging in ((closed, merged), (closed, nothing), (carried, merged)):
+        expected, got = (
+            loops.merge_first(loop, merging, backend=chosen) for chosen in ("python", backend)
+        )
+        assert got.summary.as_dict() == expected.summary.as_dict()
+        for mine, theirs in ((got.pending, expected.pending), (got.loop, expected.loop)):
+            assert (mine is None) == (theirs is None)
+            if mine is not None and theirs is not None:
+                assert json.dumps(_fields(mine)) == json.dumps(_fields(theirs))
+
+
+def _fields(region: Pending | loops.Loop) -> dict[str, Any]:
+    """Return a loop's or a pending loop's fields as JSON values, exactly."""
+    return {
+        name: value.tolist() if isinstance(value, np.ndarray) else value
+        for name, value in vars(region).items()
+    }
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+@pytest.mark.parametrize(
+    ("narrow", "global_ba"), [(False, False), (True, False), (False, True)],
+    ids=["held window", "the paper's weld", "global BA"],
+)  # fmt: skip
+def test_every_backend_merges_as_python_does(
+    backend: str, narrow: bool, global_ba: bool, two: TwoMaps
+) -> None:
+    """The same merged map, to GTSAM's convergence; the same offsets and counts exactly."""
+    require_function(backend, loops.__name__, "merge")
+    options = (NARROW if narrow else OPTIONS).with_settings({"loops.global_ba": global_ba})
+    found = _found(two)
+    expected, got = (
+        loops.merge(
+            two.active, two.matched, CAMERA, found, mode=_mode(two), options=options,
+            backend=chosen,
+        )
+        for chosen in ("python", backend)
+    )  # fmt: skip
+    assert (got.keyframe_offset, got.point_offset) == (
+        expected.keyframe_offset, expected.point_offset,
+    )  # fmt: skip
+    assert_maps_match(got.map, expected.map, GRAPH_TOLERANCE)
+    assert_records_match(got.summary.as_dict(), expected.summary.as_dict(), GRAPH_TOLERANCE)
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_core_refuses_a_merge_it_cannot_make(backend: str, two_rigid: TwoMaps) -> None:
+    """Python refuses a keyframe outside its map, or an unknown mode, first; each core does too."""
+    require_function(backend, loops.__name__, "merge")
+    compiled = backends.implementation(backend, loops.__name__)
+    found = _found(two_rigid)
+    loop = found.loop
+
+    def crossing(current: int) -> dict[str, Any]:
+        return {
+            "map": 0,
+            "loop": {
+                "current": current, "matched": loop.matched, "similarity": loop.similarity,
+                "points": loop.points, "matched_points": loop.matched_points,
+            },
+        }  # fmt: skip
+
+    arguments = {
+        "active": two_rigid.active.as_dict(),
+        "matched": two_rigid.matched.as_dict(),
+        "camera": CAMERA.as_dict(),
+        "options": OPTIONS.as_dict(),
+    }
+    with pytest.raises(ValueError, match="not in the map"):
+        compiled.merge(**arguments, found=crossing(two_rigid.active.next_kf_id), mode="rgbd")
+    with pytest.raises(ValueError, match="mode"):
+        compiled.merge(**arguments, found=crossing(loop.current), mode="lidar")

@@ -274,6 +274,25 @@ def _scene(seed: int) -> tuple[Array, Array]:
     return poses, points
 
 
+def _observed(
+    name: str, intrinsics: Array, poses: Array, points: Array, *, stereo: bool
+) -> tuple[list[int], list[int], Array, Array]:
+    """Return every camera's view of every point: cameras, points, pixels and right columns.
+
+    With `stereo`, every second point has its right column; NaN otherwise.
+    """
+    cameras, ids, pixels, right = [], [], [], []
+    for c, pose in enumerate(poses):
+        local = (points - pose[:3, 3]) @ pose[:3, :3]
+        seen = camera.project(name, intrinsics, local)
+        for p in range(points.shape[0]):
+            cameras.append(c)
+            ids.append(p)
+            pixels.append(seen[p])
+            right.append(seen[p, 0] - BF / local[p, 2] if stereo and p % 2 else np.nan)
+    return cameras, ids, np.array(pixels), np.array(right)
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("lens", [RADTAN, PINHOLE], ids=["radtan", "pinhole"])
 def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str, Array]) -> None:
@@ -284,15 +303,7 @@ def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     name, intrinsics = lens
     poses, points = _scene(5)
-    cameras, ids, pixels, right = [], [], [], []
-    for c, pose in enumerate(poses):
-        local = (points - pose[:3, 3]) @ pose[:3, :3]
-        seen = camera.project(name, intrinsics, local)
-        for p in range(points.shape[0]):
-            cameras.append(c)
-            ids.append(p)
-            pixels.append(seen[p])
-            right.append(seen[p, 0] - BF / local[p, 2] if p % 2 else np.nan)
+    cameras, ids, pixels, right = _observed(name, intrinsics, poses, points, stereo=True)
     rng = np.random.default_rng(6)
     start_poses = np.stack(
         [poses[0]] + [pose @ se3.exp(rng.normal(scale=0.02, size=6)) for pose in poses[1:]]
@@ -334,41 +345,32 @@ def test_bundle_adjustment_charges_a_point_behind_its_camera(
     np.testing.assert_array_equal(result.points, [[0.1, 0.2, -1.0]])
 
 
-def test_a_huber_loss_holds_bundle_adjustment_against_an_outlier() -> None:
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_huber_loss_holds_bundle_adjustment_against_an_outlier(backend: str) -> None:
     """One observation 40 px off: with Huber's loss the cameras move a tenth as far.
 
-    The Python reference alone takes a robust loss until milestone 2B's B4 ports it; a compiled
-    backend refuses one.
+    Each compiled backend's solve matches Python's to the solves' convergence.
     """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     name, intrinsics = PINHOLE
     poses, points = _scene(7)
-    cameras, ids, pixels = [], [], []
-    for c, pose in enumerate(poses):
-        local = (points - pose[:3, 3]) @ pose[:3, :3]
-        seen = camera.project(name, intrinsics, local)
-        for p in range(points.shape[0]):
-            cameras.append(c)
-            ids.append(p)
-            pixels.append(seen[p] + (40.0 if (c, p) == (2, 0) else 0.0))
-    right = np.full(len(cameras), np.nan)
+    cameras, ids, pixels, right = _observed(name, intrinsics, poses, points, stereo=False)
+    pixels[2 * points.shape[0]] += 40.0  # camera 2's view of point 0
 
-    def moved(huber: Array | None) -> float:
-        result = graphs.bundle_adjust(
+    def solve(huber: Array | None, which: str) -> graphs.Adjustment:
+        return graphs.bundle_adjust(
             poses, points, cameras, ids, pixels, right, np.ones(len(cameras)), model=name,
             intrinsics=intrinsics, bf=BF, fixed=[0, 1], huber=huber,
-            options=graphs.Options(max_iterations=20),
+            options=graphs.Options(max_iterations=20), backend=which,
         )  # fmt: skip
-        return float(np.abs(result.poses - poses).max())
 
-    plain, robust = moved(None), moved(np.full(len(cameras), np.sqrt(5.991)))
-    assert robust < plain / 10
-    for compiled in backends.COMPILED_BACKENDS:
-        with pytest.raises(InvalidInputError, match="huber"):
-            graphs.bundle_adjust(
-                poses, points, cameras, ids, pixels, right, np.ones(len(cameras)), model=name,
-                intrinsics=intrinsics, bf=BF, fixed=[0, 1], huber=np.ones(len(cameras)),
-                backend=compiled,
-            )  # fmt: skip
+    robust = np.full(len(cameras), np.sqrt(5.991))
+    plain, held = solve(None, chosen), solve(robust, chosen)
+    assert np.abs(held.poses - poses).max() < np.abs(plain.poses - poses).max() / 10
+    reference = solve(robust, "python")
+    np.testing.assert_allclose(held.poses, reference.poses, rtol=0, atol=1e-7)
+    np.testing.assert_allclose(held.points, reference.points, rtol=0, atol=1e-7)
+    assert held.summary.iterations == reference.summary.iterations
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

@@ -107,7 +107,8 @@ struct LocalMap {
 ///        `SetBadFlag`; `slam_it.edge.covisibility.cull`). The one way a keyframe leaves the
 ///        graph, as `erase_keyframe` refuses a keyframe that is still a parent. The map's first
 ///        keyframe (id 0), its tree's root, is refused, as `SetBadFlag` leaves it. A keyframe
-///        with a loop edge, or one of `held`, is spared, the map left as it was (`SetNotErase`).
+///        with a loop or merge edge, or one of `held`, is spared, the map left as it was
+///        (`SetNotErase`).
 /// @param m The map, changed in place.
 /// @param k The keyframe's row.
 /// @param options The settings: `covisibility.min_points`.

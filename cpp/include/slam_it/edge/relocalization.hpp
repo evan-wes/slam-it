@@ -119,4 +119,31 @@ struct SearchWindow {
     const Map& m, const Database& db, const foundations::vocabulary::Vocabulary& vocabulary,
     const Camera& camera, const Frame& frame, const Options& options);
 
+/// @brief Relocalisation in every map (`slam_it.edge.relocalization.Across`).
+struct Across {
+  /// @brief The number of the map whose candidate placed the frame, if one did.
+  std::optional<std::int64_t> map;
+  /// @brief The frame placed, in that map's world, and the search over every map's candidates.
+  Relocalized relocalized;
+  /// @brief Each candidate tried's map number, in the summary's order.
+  std::vector<std::int64_t> maps;
+};
+
+/// @brief Place a frame in whichever map looks like it
+///        (`slam_it.edge.relocalization.relocalize_across`): each map's candidates, its words
+///        counted within it, all of them together by score, descending (ties: the lower map
+///        number, then the lower id), each tried as one map's are, the first to place the frame
+///        ending the search.
+/// @param searched The maps, each with its database and number.
+/// @param vocabulary The vocabulary every database's words are of.
+/// @param camera The camera.
+/// @param frame The frame.
+/// @param options The settings.
+/// @return The map that placed the frame, if one did, and how the search went; `InvalidInput`
+///         for no map, two with one number, a candidate whose features are not its database's,
+///         or an invalid camera or settings.
+[[nodiscard]] foundations::Result<Across> relocalize_across(
+    std::span<const Indexed> searched, const foundations::vocabulary::Vocabulary& vocabulary,
+    const Camera& camera, const Frame& frame, const Options& options);
+
 }  // namespace slam_it::edge

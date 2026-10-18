@@ -152,6 +152,7 @@ nb::dict refine_similarity(const Matrix4In& similarity, const BatchIn<3>& points
 /// @param intrinsics Its intrinsics.
 /// @param bf The baseline times the focal length.
 /// @param fixed The cameras held fixed.
+/// @param huber Each observation's Huber threshold, or None for no robust loss.
 /// @param options `graphs.Options.as_dict()`.
 /// @return `{"poses", "points", "initial_error", "final_error", "iterations", "termination"}`.
 /// @throws CoreError for an invalid bundle or a failed solve; std::invalid_argument for an
@@ -162,15 +163,18 @@ nb::dict bundle_adjust(const BatchIn<4, 4>& poses, const BatchIn<3>& points,
                        const VectorIn<std::int64_t>& point_ids, const BatchIn<2>& pixels,
                        const VectorIn<double>& right, const VectorIn<double>& information,
                        int model, const VectorIn<double>& intrinsics, double bf,
-                       const VectorIn<std::int64_t>& fixed, const nb::dict& options) {
+                       const VectorIn<std::int64_t>& fixed,
+                       const std::optional<VectorIn<double>>& huber, const nb::dict& options) {
   const std::vector<Eigen::Matrix4d> starts = copy_poses(poses);
   const Eigen::VectorXd params = copy_vector<Eigen::VectorXd>(intrinsics);
   const auto seen = rows2(pixels);
-  const graphs::Observations observations{.cameras = span_of(cameras),
-                                          .point_ids = span_of(point_ids),
-                                          .pixels = seen,
-                                          .right = span_of(right),
-                                          .information = span_of(information)};
+  const graphs::Observations observations{
+      .cameras = span_of(cameras),
+      .point_ids = span_of(point_ids),
+      .pixels = seen,
+      .right = span_of(right),
+      .information = span_of(information),
+      .huber = huber ? span_of(*huber) : std::span<const double>{}};
   const graphs::Adjustment result = unwrap(graphs::bundle_adjust(
       starts, rows3(points), observations, enum_code<camera::Model>(model, "model"), params, bf,
       span_of(fixed), read_options(options)));
@@ -200,7 +204,8 @@ void bind_graphs(nb::module_& m) {
         nb::arg("point_ids").noconvert(), nb::arg("pixels").noconvert(),
         nb::arg("right").noconvert(), nb::arg("information").noconvert(), nb::arg("model"),
         nb::arg("intrinsics").noconvert(), nb::arg("bf"), nb::arg("fixed").noconvert(),
-        nb::arg("options"), "Adjust a bundle; return its poses, points and the summary's fields.");
+        nb::arg("huber").noconvert().none(), nb::arg("options"),
+        "Adjust a bundle; return its poses, points and the summary's fields.");
 }
 
 }  // namespace slam_it::bindings

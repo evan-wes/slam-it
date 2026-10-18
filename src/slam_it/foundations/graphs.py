@@ -284,6 +284,7 @@ class Implementation(Protocol):
         intrinsics: Array,
         bf: float,
         fixed: IntArray,
+        huber: Array | None,
         options: dict[str, Any],
     ) -> dict[str, Any]:
         """Adjust a bundle; return ``poses``, ``points`` and the summary's fields."""
@@ -1071,9 +1072,6 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     ``mEstimator::Huber``), as ORB-SLAM's local and welding BAs weigh theirs
     (``RobustKernelHuber``).
 
-    *A placeholder for milestone 2B's B4, until its C++ and Rust ports:* only the Python
-    reference takes `huber` yet, so a compiled backend refuses it.
-
     Parameters
     ----------
     poses : array_like, shape (C, 4, 4)
@@ -1117,8 +1115,7 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     slam_it.foundations.errors.InvalidInputError
         If a pose is not rigid, the shapes disagree, an index is out of range, a point is not
         observed, an information or a Huber threshold is not positive, a right column is given
-        with ``bf <= 0``, the camera is invalid, or a compiled backend is given `huber` or a
-        ``stop``.
+        with ``bf <= 0``, the camera is invalid, or a ``stop`` is given to a compiled backend.
     slam_it.foundations.errors.NotConvergedError
         If GTSAM fails while solving.
     """
@@ -1145,8 +1142,6 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     held = np.unique(_indices(fixed, checked.shape[0], "fixed"))
     code, params = camera.as_model(model, intrinsics)
     robust = None if huber is None else _information(huber, which.shape[0], "huber")
-    if robust is not None and backend != "python":
-        raise InvalidInputError("huber: the compiled backends take no robust loss yet")
 
     def decode(raw: dict[str, Any], codes: dict[str, list[str]]) -> Adjustment:
         return Adjustment(
@@ -1187,6 +1182,7 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
             "intrinsics": params,
             "bf": bf,
             "fixed": held,
+            "huber": robust,
             "options": chosen.as_dict(),
         },
         decode=decode,

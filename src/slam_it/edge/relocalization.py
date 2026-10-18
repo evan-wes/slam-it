@@ -70,6 +70,10 @@ IntArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
 
 
+Crossing = dict[str, Any]
+"""A value as it crosses the bindings: a dict of arrays, numbers, and dicts of them."""
+
+
 @dataclass(frozen=True)
 class CandidateSummary:
     """How far one candidate got, as a run records it; each count None where it stopped first.
@@ -207,7 +211,9 @@ class Implementation(Protocol):
     (:func:`slam_it.foundations.vocabulary.fields`), the camera, the frame and the settings
     cross as dicts; :class:`Relocalized` as a dict of ``tracked`` (or None), ``matched`` and
     ``summary``, its candidates a list of dicts, RANSAC's termination as its code in
-    ``codes()`` (or None) beside ``degenerate``.
+    ``codes()`` (or None) beside ``degenerate``. In every map: the maps as a list of
+    :meth:`slam_it.edge.database.Indexed.as_dict`, their one vocabulary apart; :class:`Across` as
+    ``map`` (or None), ``relocalized`` and ``maps``.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -224,6 +230,13 @@ class Implementation(Protocol):
         options: dict[str, Any],
     ) -> dict[str, Any]:
         """Place a frame in the map through the keyframes that look like it."""
+        ...
+
+    def relocalize_across(
+        self, searched: list[Crossing], vocabulary: Crossing, camera: Crossing, frame: Crossing,
+        options: Crossing,
+    ) -> Crossing:  # fmt: skip
+        """Place a frame in whichever map looks like it."""
         ...
 
 
@@ -617,7 +630,12 @@ class Across:
 
 
 def relocalize_across(
-    searched: Sequence[database.Indexed], camera: Camera, frame: Frame, options: Options
+    searched: Sequence[database.Indexed],
+    camera: Camera,
+    frame: Frame,
+    options: Options,
+    *,
+    backend: str = "python",
 ) -> Across:
     """Place a frame in whichever map looks like it (the module docstring's "In every map").
 
@@ -625,8 +643,6 @@ def relocalize_across(
     it), all of them together by their group's score, descending (ties: the lower map number,
     then the lower id), each tried as one map's are, the first to place the frame ending the
     search.
-
-    *Python's reference alone* until milestone 2B's B4 ports it to C++ and Rust.
 
     Parameters
     ----------
@@ -638,6 +654,8 @@ def relocalize_across(
         The frame.
     options : slam_it.edge.options.Options
         :func:`relocalize`'s settings.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
@@ -657,6 +675,36 @@ def relocalize_across(
     words = searched[0].database.vocabulary
     if any(m.database.vocabulary is not words for m in searched):
         raise InvalidInputError("searched: expected one vocabulary for every map's database")
+
+    def decode(raw: dict[str, Any], codes: backends.Codes) -> Across:
+        number = raw["map"]
+        return Across(
+            map=None if number is None else int(number),
+            relocalized=_decode_relocalized(raw["relocalized"], codes),
+            maps=tuple(backends.checked_array(raw["maps"], np.int64, 1, "across maps").tolist()),
+        )
+
+    return backends.call(
+        backend,
+        __name__,
+        "relocalize_across",
+        reference=lambda: _relocalize_across(searched, camera, frame, options),
+        arguments={
+            "searched": [m.as_dict() for m in searched],
+            "vocabulary": vocabulary.fields(words),
+            "camera": camera.as_dict(),
+            "frame": frame.as_dict(),
+            "options": options.as_dict(),
+        },
+        decode=decode,
+    )
+
+
+def _relocalize_across(
+    searched: Sequence[database.Indexed], camera: Camera, frame: Frame, options: Options
+) -> Across:
+    """Relocalise a frame in every map (reference)."""
+    words = searched[0].database.vocabulary
     quantized, nodes = vocabulary.quantize(words, frame.features.descriptors)
     vector = vocabulary.bow(words, quantized)
     by_number = {m.number: m for m in searched}

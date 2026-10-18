@@ -348,6 +348,13 @@ struct LoopOptions {
   bool global_ba{true};
   /// @brief Its iterations.
   std::int64_t global_iterations{10};
+  /// @brief A merge's welding window: a keyframe and its best this many links, widened to this
+  ///        many when it holds fewer (`numTemporalKFs`)...
+  std::int64_t weld_neighbours{25};
+  /// @brief ...each member's best this many links taken in (`numTemporalKFs / 2`)...
+  std::int64_t weld_widen{12};
+  /// @brief ...at most this many times (`nMaxTries`); 0 widens none.
+  std::int64_t weld_rounds{5};
 };
 
 /// @brief When a lost track's map is closed (`Options.loss`).
@@ -545,6 +552,9 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("loops.essential_damping", options.loops.essential_damping);
   visit("loops.global_ba", options.loops.global_ba);
   visit("loops.global_iterations", options.loops.global_iterations);
+  visit("loops.weld_neighbours", options.loops.weld_neighbours);
+  visit("loops.weld_widen", options.loops.weld_widen);
+  visit("loops.weld_rounds", options.loops.weld_rounds);
   visit("loss.relocalize_seconds", options.loss.relocalize_seconds);
   visit("loss.lost_frames", options.loss.lost_frames);
   visit("loss.reset_keyframes", options.loss.reset_keyframes);

@@ -317,7 +317,8 @@ Result<void> cull(Map& m, std::int64_t k, const Options& options,
     return fail(ErrorKind::kInvalidInput,
                 "k: keyframe 0 is the map's first, its tree's root, and is not culled");
   }
-  if (has_loop(m, row) || std::ranges::find(held, m.kf_id[row]) != held.end()) {
+  if (has_loop(m, row) || has_merge(m, row) ||
+      std::ranges::find(held, m.kf_id[row]) != held.end()) {
     return {};  // spared, as ORB-SLAM's SetNotErase spares it
   }
   if (auto ok = reparent(m, k, options); !ok) {

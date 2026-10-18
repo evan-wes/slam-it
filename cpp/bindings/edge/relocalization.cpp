@@ -3,9 +3,10 @@
 ///
 /// The map, its database (`edge_crossing::database_in`), the vocabulary
 /// (`vocabulary_crossing::vocabulary_in`), the camera, the frame and the settings cross as
-/// dicts. The result is a dict of `tracked` (or None), `matched` and `summary`: `words`,
-/// `sharing`, `scored`, `placed` and `candidates`, a list of dicts of each candidate's
-/// summary, RANSAC's termination as its code in `codes()` (or None).
+/// dicts; in every map, the maps as a list of `Indexed.as_dict()`'s dicts. The result is a dict
+/// of `tracked` (or None), `matched` and `summary`: `words`, `sharing`, `scored`, `placed` and
+/// `candidates`, a list of dicts of each candidate's summary, RANSAC's termination as its code
+/// in `codes()` (or None); in every map, that dict as `relocalized`, with `map` and `maps`.
 #include "slam_it/edge/relocalization.hpp"
 
 #include <nanobind/nanobind.h>
@@ -41,21 +42,10 @@ nb::dict candidate_dict(const edge::CandidateSummary& candidate) {
   return out;
 }
 
-/// @brief Place a frame in the map through the keyframes that look like it.
-/// @param m The map, as a dict.
-/// @param database Its database, as a dict.
-/// @param vocabulary The vocabulary, as a dict of its fields.
-/// @param camera The camera, as a dict.
-/// @param frame The frame, as a dict.
-/// @param options The settings, as a dict.
+/// @brief A relocalisation's result as it crosses.
+/// @param found The result.
 /// @return `tracked`, `matched` and `summary`.
-/// @throws CoreError for invalid input.
-nb::dict relocalize(const nb::dict& m, const nb::dict& database, const nb::dict& vocabulary,
-                    const nb::dict& camera, const nb::dict& frame, const nb::dict& options) {
-  const edge::Relocalized found = unwrap(edge::relocalize(
-      edge_crossing::map_in(m), edge_crossing::database_in(database),
-      vocabulary_crossing::vocabulary_in(vocabulary), edge_crossing::camera_in(camera),
-      edge_crossing::frame_in(frame), edge_crossing::options_in(options)));
+nb::dict relocalized_dict(const edge::Relocalized& found) {
   nb::list tried;
   for (const edge::CandidateSummary& candidate : found.summary.candidates) {
     tried.append(candidate_dict(candidate));
@@ -73,6 +63,44 @@ nb::dict relocalize(const nb::dict& m, const nb::dict& database, const nb::dict&
   return out;
 }
 
+/// @brief Place a frame in the map through the keyframes that look like it.
+/// @param m The map, as a dict.
+/// @param database Its database, as a dict.
+/// @param vocabulary The vocabulary, as a dict of its fields.
+/// @param camera The camera, as a dict.
+/// @param frame The frame, as a dict.
+/// @param options The settings, as a dict.
+/// @return `tracked`, `matched` and `summary`.
+/// @throws CoreError for invalid input.
+nb::dict relocalize(const nb::dict& m, const nb::dict& database, const nb::dict& vocabulary,
+                    const nb::dict& camera, const nb::dict& frame, const nb::dict& options) {
+  return relocalized_dict(unwrap(edge::relocalize(
+      edge_crossing::map_in(m), edge_crossing::database_in(database),
+      vocabulary_crossing::vocabulary_in(vocabulary), edge_crossing::camera_in(camera),
+      edge_crossing::frame_in(frame), edge_crossing::options_in(options))));
+}
+
+/// @brief Place a frame in whichever map looks like it.
+/// @param searched The maps, each a dict of `number`, `m` and `database`.
+/// @param vocabulary The vocabulary, as a dict of its fields.
+/// @param camera The camera, as a dict.
+/// @param frame The frame, as a dict.
+/// @param options The settings, as a dict.
+/// @return `map` (or None), `relocalized` (as `relocalize` returns it) and `maps`.
+/// @throws CoreError for invalid input.
+nb::dict relocalize_across(const nb::list& searched, const nb::dict& vocabulary,
+                           const nb::dict& camera, const nb::dict& frame, const nb::dict& options) {
+  const edge::Across found = unwrap(edge::relocalize_across(
+      edge_crossing::indexed_in(searched), vocabulary_crossing::vocabulary_in(vocabulary),
+      edge_crossing::camera_in(camera), edge_crossing::frame_in(frame),
+      edge_crossing::options_in(options)));
+  nb::dict out;
+  out["map"] = found.map ? nb::object(nb::int_(*found.map)) : nb::none();
+  out["relocalized"] = relocalized_dict(found.relocalized);
+  out["maps"] = edge_crossing::vector_array(found.maps);
+  return out;
+}
+
 }  // namespace
 
 void bind_relocalization(nb::module_& m) {
@@ -80,6 +108,9 @@ void bind_relocalization(nb::module_& m) {
   m.def("relocalize", &relocalize, nb::arg("m"), nb::arg("database"), nb::arg("vocabulary"),
         nb::arg("camera"), nb::arg("frame"), nb::arg("options"),
         "Place a frame in the map through the keyframes that look like it.");
+  m.def("relocalize_across", &relocalize_across, nb::arg("searched"), nb::arg("vocabulary"),
+        nb::arg("camera"), nb::arg("frame"), nb::arg("options"),
+        "Place a frame in whichever map looks like it.");
 }
 
 }  // namespace slam_it::bindings

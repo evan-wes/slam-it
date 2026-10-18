@@ -8,6 +8,8 @@
 #include <limits>
 #include <map>
 #include <ranges>
+#include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -258,6 +260,60 @@ Result<Candidates> loop_candidates(const Database& db, const Map& m, std::int64_
   }
   return chosen(*found, -std::numeric_limits<double>::infinity(),
                 static_cast<std::size_t>(settings.candidates));
+}
+
+Result<MergeCandidates> merge_candidates(const foundations::vocabulary::BowVector& vector,
+                                         std::span<const Indexed> others, const Options& options) {
+  if (auto ok = vocabulary::check_vector(vector); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (auto ok = check_numbers(others, "others"); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  const LoopOptions& settings = options.loops;
+  std::vector<Ranked> found;
+  MergeCandidates out;
+  for (const Indexed& other : others) {
+    auto scored = scoring(other.database, other.map, vector, {},
+                          {settings.common_words, settings.neighbours}, options);
+    if (!scored) {
+      return std::unexpected(std::move(scored.error()));
+    }
+    out.sharing += scored->sharing;
+    out.scored += scored->scored;
+    const Candidates best = chosen(*scored, -std::numeric_limits<double>::infinity(),
+                                   static_cast<std::size_t>(settings.candidates));
+    for (std::size_t i = 0; i < best.keyframes.size(); ++i) {
+      found.push_back(
+          {.score = best.scores[i], .map = other.number, .keyframe = best.keyframes[i]});
+    }
+  }
+  rank(found);
+  found.resize(std::min(found.size(), static_cast<std::size_t>(settings.candidates)));
+  for (const Ranked& candidate : found) {
+    out.maps.push_back(candidate.map);
+    out.keyframes.push_back(candidate.keyframe);
+    out.scores.push_back(candidate.score);
+  }
+  return out;
+}
+
+Result<void> check_numbers(std::span<const Indexed> maps, const char* name) {
+  std::set<std::int64_t> numbers;
+  for (const Indexed& map : maps) {
+    if (!numbers.insert(map.number).second) {
+      return fail(ErrorKind::kInvalidInput,
+                  std::string(name) + ": expected each map once, by its number");
+    }
+  }
+  return {};
+}
+
+void rank(std::vector<Ranked>& found) {
+  std::ranges::sort(found, [](const Ranked& a, const Ranked& b) {
+    return a.score > b.score ||
+           (a.score == b.score && std::pair{a.map, a.keyframe} < std::pair{b.map, b.keyframe});
+  });
 }
 
 }  // namespace slam_it::edge
