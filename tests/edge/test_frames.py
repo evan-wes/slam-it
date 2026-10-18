@@ -33,6 +33,74 @@ def test_depth_at_matches_the_reference(backend: str) -> None:
     assert frames.depth_at([[0.5, 0.5]], depth)[0] == depth[1, 1]  # half up
 
 
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_unmasked_matches_the_reference(backend: str) -> None:
+    """Every backend keeps the same keypoints: the nearest pixel, half up and clamped, not 0."""
+    chosen = require_function(backend, frames.__name__, "unmasked")
+    rng = np.random.default_rng(5)
+    mask = np.where(rng.random((30, 40)) < 0.3, 0, 255).astype(np.uint8)
+    mask[0, 0], mask[1, 1] = 0, 7  # any value but 0 keeps
+    xy = np.vstack([rng.uniform(-3.0, 43.0, (200, 2)), [[0.5, 0.5], [0.49, 0.49], [39.5, 29.5]]])
+    got = frames.unmasked(xy, mask, backend=chosen)
+    np.testing.assert_array_equal(got, frames.unmasked(xy, mask))
+    assert got.dtype == np.int64
+    assert np.all(np.diff(got) > 0)
+    assert list(frames.unmasked([[0.49, 0.49], [0.5, 0.5]], mask)) == [1]  # (0, 0) dropped
+    assert frames.unmasked(np.zeros((0, 2)), mask).shape == (0,)
+
+
+@pytest.mark.parametrize(
+    ("xy", "mask", "message"),
+    [
+        ([[0.0, np.nan]], np.ones((2, 2), np.uint8), "xy: expected finite"),
+        ([[0.0, 0.0]], np.ones((2, 2)), "mask: expected a non-empty \\(H, W\\) uint8 array"),
+        ([[0.0, 0.0]], np.ones(4, np.uint8), "mask"),
+    ],
+)
+def test_unmasked_rejects_invalid_input(xy: ArrayLike, mask: ArrayLike, message: str) -> None:
+    """Pixels must be finite; the mask a 2D uint8 image."""
+    with pytest.raises(InvalidInputError, match=message):
+        frames.unmasked(xy, mask)
+
+
+def _right_half(shape: tuple[int, ...]) -> np.ndarray:
+    """Return a mask keeping an image's right half."""
+    mask = np.zeros(shape, np.uint8)
+    mask[:, shape[1] // 2 :] = 255
+    return mask
+
+
+def test_a_mask_drops_the_features_on_its_zeros(
+    rendered: list[room.Frame], rendered_stereo: list[room.Frame]
+) -> None:
+    """Every mode keeps the features off a mask's zeros, each as extracted, keypoint and all."""
+    f, pair = rendered[0], rendered_stereo[0]
+    assert pair.right is not None
+    mask = _right_half(f.gray.shape)
+    kept_from = f.gray.shape[1] // 2 - 0.5  # the first column the mask keeps, half up
+    all_ = frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, OPTIONS.extraction())
+    kept = frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, OPTIONS.extraction(), mask=mask)
+    rows = frames.unmasked(all_.features.keypoints.xy, mask)
+    assert 0 < len(rows) < all_.size
+    assert kept.size == len(rows)
+    for name in ("xy", "level", "level_xy", "response", "angle"):
+        np.testing.assert_array_equal(
+            getattr(kept.features.keypoints, name), getattr(all_.features.keypoints, name)[rows]
+        )
+    np.testing.assert_array_equal(kept.features.descriptors, all_.features.descriptors[rows])
+    np.testing.assert_array_equal(kept.depth, all_.depth[rows])
+    camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240)
+    mono = frames.monocular(f.gray, f.timestamp, camera, OPTIONS.extraction(), mask=mask)
+    assert mono.size == len(rows)
+    stereo = frames.stereo_pair(
+        pair.gray, pair.right, pair.timestamp, CAMERA, OPTIONS.extraction(), mask=mask
+    )
+    assert stereo.size > 0
+    assert np.all(stereo.features.keypoints.xy[:, 0] >= kept_from)
+    with pytest.raises(InvalidInputError, match="mask: expected the image's shape"):
+        frames.monocular(f.gray, f.timestamp, camera, OPTIONS.extraction(), mask=mask[1:])
+
+
 @pytest.mark.parametrize(
     ("xy", "depth", "message"),
     [

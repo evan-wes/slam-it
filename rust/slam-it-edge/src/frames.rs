@@ -280,6 +280,77 @@ pub fn depth_at(xy: &[[f64; 2]], depth_map: &DepthMap) -> Result<Vec<f64>> {
         .collect()
 }
 
+/// Returns the keypoints a mask keeps: those whose nearest pixel, half up and clamped to the
+/// mask as [`depth_at`] reads it, is not 0 (`slam_it.edge.frames.unmasked`).
+///
+/// # Arguments
+///
+/// * `xy` - The keypoints' pixels.
+/// * `mask` - The mask: 0 where features are dropped.
+///
+/// # Returns
+///
+/// The kept keypoints' indices, ascending.
+///
+/// # Errors
+///
+/// `InvalidInput` for a mask whose pixels do not fill its shape, or a pixel that is not finite.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "the pixel is clamped to the mask before the cast"
+)]
+pub fn unmasked(xy: &[[f64; 2]], mask: &Image) -> Result<Vec<usize>> {
+    if mask.rows == 0 || mask.cols == 0 || mask.pixels.len() != mask.rows * mask.cols {
+        return fail(ErrorKind::InvalidInput, "mask: expected rows x cols pixels");
+    }
+    let nearest = |t: f64, size: usize| (t + 0.5).floor().clamp(0.0, (size - 1) as f64) as usize;
+    let mut kept = Vec::new();
+    for (i, &[x, y]) in xy.iter().enumerate() {
+        if !(x.is_finite() && y.is_finite()) {
+            return fail(ErrorKind::InvalidInput, "xy: expected finite values");
+        }
+        if mask.pixels[nearest(y, mask.rows) * mask.cols + nearest(x, mask.cols)] != 0 {
+            kept.push(i);
+        }
+    }
+    Ok(kept)
+}
+
+/// Drops the features a mask covers ([`unmasked`]), keeping each feature's keypoint and
+/// descriptor together; every feature without a mask.
+///
+/// # Arguments
+///
+/// * `features` - The features, extracted from an image of `shape` (rows, columns).
+/// * `mask` - The mask, or none.
+/// * `shape` - The image's rows and columns.
+///
+/// # Returns
+///
+/// The kept features.
+///
+/// # Errors
+///
+/// `InvalidInput` for a mask of another shape than the image's.
+fn masked(features: Features, mask: Option<&Image>, shape: (usize, usize)) -> Result<Features> {
+    let Some(mask) = mask else {
+        return Ok(features);
+    };
+    if (mask.rows, mask.cols) != shape {
+        return fail(ErrorKind::InvalidInput, "mask: expected the image's shape");
+    }
+    let xy: Vec<[f64; 2]> = features.keypoints.iter().map(|k| k.xy).collect();
+    let kept = unmasked(&xy, mask)?;
+    Ok(Features {
+        keypoints: kept.iter().map(|&i| features.keypoints[i]).collect(),
+        descriptors: kept.iter().map(|&i| features.descriptors[i]).collect(),
+        scale_factor: features.scale_factor,
+        levels: features.levels,
+    })
+}
+
 /// Assembles a frame from its features: their bearings and grid, and the depths and columns.
 ///
 /// # Arguments
@@ -320,6 +391,8 @@ fn assemble(
 /// * `timestamp` - Its time.
 /// * `camera` - The camera.
 /// * `options` - The extraction settings.
+/// * `mask` - The features to drop after extraction, those on a 0 ([`unmasked`]); none keeps
+///   them all.
 ///
 /// # Returns
 ///
@@ -327,14 +400,19 @@ fn assemble(
 ///
 /// # Errors
 ///
-/// The extraction's.
+/// The extraction's; `InvalidInput` for a mask of another shape.
 pub fn monocular(
     image: &Image,
     timestamp: f64,
     camera: &Camera,
     options: &orb::Options,
+    mask: Option<&Image>,
 ) -> Result<Frame> {
-    let features = orb::extract(image, options)?;
+    let features = masked(
+        orb::extract(image, options)?,
+        mask,
+        (image.rows, image.cols),
+    )?;
     let n = features.keypoints.len();
     assemble(
         timestamp,
@@ -354,6 +432,8 @@ pub fn monocular(
 /// * `timestamp` - Its time.
 /// * `camera` - The camera, with its virtual baseline.
 /// * `options` - The extraction settings.
+/// * `mask` - The features to drop after extraction, those on a 0 ([`unmasked`]); none keeps
+///   them all.
 ///
 /// # Returns
 ///
@@ -361,13 +441,14 @@ pub fn monocular(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a depth map of another shape, or no baseline; the extraction's.
+/// `InvalidInput` for a depth map or a mask of another shape, or no baseline; the extraction's.
 pub fn rgbd(
     image: &Image,
     depth_map: &DepthMap,
     timestamp: f64,
     camera: &Camera,
     options: &orb::Options,
+    mask: Option<&Image>,
 ) -> Result<Frame> {
     if (depth_map.rows, depth_map.cols) != (image.rows, image.cols) {
         return fail(
@@ -381,7 +462,11 @@ pub fn rgbd(
             "camera.baseline: an RGB-D camera needs a virtual baseline",
         );
     }
-    let features = orb::extract(image, options)?;
+    let features = masked(
+        orb::extract(image, options)?,
+        mask,
+        (image.rows, image.cols),
+    )?;
     let xy: Vec<[f64; 2]> = features.keypoints.iter().map(|k| k.xy).collect();
     let depth = depth_at(&xy, depth_map)?;
     let bf = camera.focal() * camera.baseline;
@@ -398,6 +483,8 @@ pub fn rgbd(
 /// * `camera` - The rectified left camera (pinhole) and the pair's baseline.
 /// * `options` - The extraction settings.
 /// * `stereo_options` - The row matching's settings.
+/// * `mask` - The left image's features to drop, those on a 0 ([`unmasked`]), before the row
+///   matching; the right image's are matched unmasked. None keeps them all.
 ///
 /// # Returns
 ///
@@ -405,14 +492,15 @@ pub fn rgbd(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a camera that is not pinhole or has no baseline; the extraction's and
-/// the matching's.
+/// `InvalidInput` for a camera that is not pinhole or has no baseline, or a mask of another
+/// shape than the left image's; the extraction's and the matching's.
 pub fn stereo_pair(
     images: (&Image, &Image),
     timestamp: f64,
     camera: &Camera,
     options: &orb::Options,
     stereo_options: &MatchOptions,
+    mask: Option<&Image>,
 ) -> Result<Frame> {
     if camera.model != Model::Pinhole || camera.baseline <= 0.0 {
         return fail(
@@ -423,7 +511,11 @@ pub fn stereo_pair(
     // Each image's pyramid, built once: extraction and the row matching both read it.
     let left_levels = image::pyramid(images.0, options.levels, options.scale_factor)?;
     let right_levels = image::pyramid(images.1, options.levels, options.scale_factor)?;
-    let features = orb::extract_levels(&left_levels, options)?;
+    let features = masked(
+        orb::extract_levels(&left_levels, options)?,
+        mask,
+        (images.0.rows, images.0.cols),
+    )?;
     let other = orb::extract_levels(&right_levels, options)?;
     let found = stereo::match_rows(
         (&left_levels, &right_levels),

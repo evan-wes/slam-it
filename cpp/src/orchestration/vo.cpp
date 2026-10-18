@@ -96,6 +96,9 @@ struct Source {
   std::size_t frames{0};
   /// @brief Reads one.
   Reader read;
+  /// @brief The features every frame drops, those on a 0 (a TUM-format folder's `mask.png`);
+  ///        none keeps them all.
+  std::optional<Image> mask;
 };
 
 /// @brief Build a frame from its images, for the mode they were delivered for.
@@ -103,20 +106,22 @@ struct Source {
 /// @param camera The camera.
 /// @param extraction The extraction settings the pipeline asks for.
 /// @param matching The stereo matcher's settings.
+/// @param mask The features to drop, those on a 0; null keeps them all.
 /// @return The frame; the frame builder's error.
 Result<edge::Frame> build(const Delivered& delivered, const edge::Camera& camera,
                           const foundations::orb::Options& extraction,
-                          const foundations::stereo::MatchOptions& matching) {
+                          const foundations::stereo::MatchOptions& matching, const Image* mask) {
   return std::visit(
       [&](const auto& images) -> Result<edge::Frame> {
         using Images = std::decay_t<decltype(images)>;
         if constexpr (std::is_same_v<Images, StereoImages>) {
           return edge::stereo_pair(images.left, images.right, delivered.timestamp, camera,
-                                   extraction, matching);
+                                   extraction, matching, mask);
         } else if constexpr (std::is_same_v<Images, RgbdImages>) {
-          return edge::rgbd(images.image, images.depth, delivered.timestamp, camera, extraction);
+          return edge::rgbd(images.image, images.depth, delivered.timestamp, camera, extraction,
+                            mask);
         } else {
-          return edge::monocular(images, delivered.timestamp, camera, extraction);
+          return edge::monocular(images, delivered.timestamp, camera, extraction, mask);
         }
       },
       delivered.images);
@@ -147,6 +152,7 @@ Result<Source> tum_source(const std::string& root, edge::Mode mode) {
                             .height = sensor.height,
                             .baseline = baseline};
   const std::size_t count = read->images.size();
+  std::optional<Image> mask = std::move(read->mask);
   Reader deliver = [frames = std::move(*read), mode](std::size_t i) -> Read {
     auto image = eval::png::read_gray(frames.images.at(i));
     if (!image) {
@@ -170,7 +176,8 @@ Result<Source> tum_source(const std::string& root, edge::Mode mode) {
         .timestamp = timestamp,
         .images = RgbdImages{.image = std::move(*image), .depth = std::move(depth_map)}};
   };
-  return Source{.camera = camera, .frames = count, .read = std::move(deliver)};
+  return Source{
+      .camera = camera, .frames = count, .read = std::move(deliver), .mask = std::move(mask)};
 }
 
 /// @brief Read an image and rectify it.
@@ -234,7 +241,8 @@ Result<Source> stereo_source(eval::euroc::Frames frames) {
         .timestamp = frames.timestamps.at(i),
         .images = StereoImages{.left = std::move(*image_left), .right = std::move(*image_right)}};
   };
-  return Source{.camera = camera, .frames = count, .read = std::move(deliver)};
+  return Source{
+      .camera = camera, .frames = count, .read = std::move(deliver), .mask = std::nullopt};
 }
 
 /// @brief Open a EuRoC sequence: its left camera for monocular, the pairs rectified for
@@ -264,7 +272,8 @@ Result<Source> euroc_source(const std::string& root, edge::Mode mode) {
     }
     return Delivered{.timestamp = frames.timestamps.at(i), .images = std::move(*image)};
   };
-  return Source{.camera = camera, .frames = count, .read = std::move(deliver)};
+  return Source{
+      .camera = camera, .frames = count, .read = std::move(deliver), .mask = std::nullopt};
 }
 
 /// @brief The settings as a run records them (`Options.as_dict`): each group an object of its
@@ -612,7 +621,8 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
     if (!delivered->has_value()) {
       continue;
     }
-    const auto frame = build(**delivered, source.camera, pipeline.extraction(), matching);
+    const auto frame = build(**delivered, source.camera, pipeline.extraction(), matching,
+                             source.mask ? &*source.mask : nullptr);
     const auto built = Clock::now();
     if (!frame) {
       return std::unexpected(frame.error());

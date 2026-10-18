@@ -158,6 +158,27 @@ def test_frames_need_no_ground_truth(tmp_path: Path) -> None:
     )
 
 
+def test_a_folders_mask_is_read_or_refused(tmp_path: Path) -> None:
+    """mask.png is read at the camera's size; another size, or an unreadable file, is refused."""
+    folder = tmp_path / "my_recording"
+    folder.mkdir()
+    (folder / "rgb.txt").write_text("1.0 rgb/1.png\n")
+    _camera_file(folder, CAMERA_TXT)
+    assert tum.read_frames(folder).mask is None
+    mask = np.zeros((480, 640), np.uint8)
+    mask[:, 320:] = 255
+    images.write_png(folder / tum.MASK_FILE, mask)
+    read = tum.read_frames(folder).mask
+    assert read is not None
+    np.testing.assert_array_equal(read, mask)
+    images.write_png(folder / tum.MASK_FILE, mask[1:])
+    with pytest.raises(InvalidInputError, match="expected the camera's size 640x480, got 640x479"):
+        tum.read_frames(folder)
+    (folder / tum.MASK_FILE).write_bytes(b"not a png")
+    with pytest.raises(InvalidInputError):
+        tum.read_frames(folder)
+
+
 def test_the_camera_file_may_give_bf(tmp_path: Path) -> None:
     """``bf`` is read when camera.txt gives it, and optional: monocular runs need none."""
     folder = tmp_path / "my_recording"

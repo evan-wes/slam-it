@@ -4,6 +4,30 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.11.1] - 2026-10-17
+
+A feature mask: a run can leave out the parts of its frames that never move with the scene,
+such as a dashcam's burned-in overlay and the car's own body, in the three languages alike.
+Without a mask, every run is as before.
+
+### Added
+
+- **A feature mask** (Python, C++, Rust): a TUM-format folder's optional `mask.png`, 0 where
+  no feature is to be tracked. A run drops each feature whose keypoint's nearest pixel is 0,
+  after extraction (`edge.frames.unmasked`; the frame builders' `mask`; a stereo pair's left
+  image only), so ORB extraction and its parity are unchanged. The readers refuse a mask that
+  is not the camera's size or not a readable 8-bit PNG.
+- **The video import takes a mask** (`import_video(mask=...)`, `--mask PNG`) at the video's
+  stored size, and writes it carried through the frames' scaling, fisheye undistortion and
+  rotation; `source.json` records it.
+
+### Tests
+
+- Masked features dropped, held to Python's reference in C++ and Rust; the readers'
+  refusals; the import's mask through a fisheye lens and a rotation landing where the frames'
+  pixels do; a short run with a mask in each language; golden-record cases with no mask
+  reproducing exactly in all three.
+
 ## [0.3.11.0] - 2026-10-16
 
 Milestone 2B's second part, B2: the covisibility graph (`docs/design/2026-10-14-online-slam.md`,

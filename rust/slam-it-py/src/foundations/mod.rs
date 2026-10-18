@@ -18,7 +18,7 @@ mod epipolar;
 mod fivepoint;
 mod homography;
 mod image;
-mod image_crossing;
+pub(crate) mod image_crossing;
 mod matching;
 mod nls_crossing;
 mod orb;

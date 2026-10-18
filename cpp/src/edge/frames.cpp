@@ -34,6 +34,65 @@ foundations::Result<Frame> assemble(double timestamp, foundations::orb::Features
                     std::move(right));
 }
 
+/// @brief The features' keypoints' pixels, in order.
+/// @param features The features.
+/// @return Each keypoint's `xy`.
+std::vector<std::array<double, 2>> pixels_of(const foundations::orb::Features& features) {
+  std::vector<std::array<double, 2>> xy;
+  xy.reserve(features.keypoints.size());
+  for (const foundations::orb::Keypoint& k : features.keypoints) {
+    xy.push_back(k.xy);
+  }
+  return xy;
+}
+
+/// @brief Drop the features a mask covers (`unmasked`), keeping each feature's keypoint and
+///        descriptor together; every feature without a mask.
+/// @param features The features, extracted from an image of `rows` by `cols`.
+/// @param mask The mask, or null for none.
+/// @param rows The image's rows.
+/// @param cols The image's columns.
+/// @return The kept features; `InvalidInput` for a mask of another shape than the image's.
+foundations::Result<foundations::orb::Features> masked(foundations::orb::Features features,
+                                                       const foundations::image::Image* mask,
+                                                       std::int64_t rows, std::int64_t cols) {
+  if (mask == nullptr) {
+    return features;
+  }
+  if (mask->rows != rows || mask->cols != cols) {
+    return foundations::fail(foundations::ErrorKind::kInvalidInput,
+                             "mask: expected the image's shape");
+  }
+  const auto kept = unmasked(pixels_of(features), *mask);
+  if (!kept) {
+    return std::unexpected(kept.error());
+  }
+  foundations::orb::Features out{.keypoints = {},
+                                 .descriptors = {},
+                                 .scale_factor = features.scale_factor,
+                                 .levels = features.levels};
+  out.keypoints.reserve(kept->size());
+  out.descriptors.reserve(kept->size());
+  for (const std::int64_t i : *kept) {
+    out.keypoints.push_back(features.keypoints[static_cast<std::size_t>(i)]);
+    out.descriptors.push_back(features.descriptors[static_cast<std::size_t>(i)]);
+  }
+  return out;
+}
+
+/// @brief Extract an image's features, then drop those a mask covers (`masked`).
+/// @param image The image.
+/// @param options The extraction settings.
+/// @param mask The mask, or null for none.
+/// @return The features; the extraction's error, or `InvalidInput` for a mask of another shape.
+foundations::Result<foundations::orb::Features> extract_masked(
+    const foundations::image::Image& image, const foundations::orb::Options& options,
+    const foundations::image::Image* mask) {
+  return foundations::orb::extract(image, options).and_then([&](foundations::orb::Features f) {
+    return masked(std::move(f), mask, image.rows, image.cols);
+  });
+}
+
 }  // namespace
 
 foundations::Result<Frame> make_frame(double timestamp, foundations::orb::Features features,
@@ -123,10 +182,34 @@ foundations::Result<std::vector<double>> depth_at(std::span<const std::array<dou
   return out;
 }
 
+foundations::Result<std::vector<std::int64_t>> unmasked(std::span<const std::array<double, 2>> xy,
+                                                        const foundations::image::Image& mask) {
+  if (mask.rows < 1 || mask.cols < 1 ||
+      std::cmp_not_equal(mask.pixels.size(), mask.rows * mask.cols)) {
+    return foundations::fail(foundations::ErrorKind::kInvalidInput,
+                             "mask: expected rows x cols pixels");
+  }
+  std::vector<std::int64_t> out;
+  for (std::size_t i = 0; i < xy.size(); ++i) {
+    const auto [x, y] = xy[i];
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+      return foundations::fail(foundations::ErrorKind::kInvalidInput, "xy: expected finite values");
+    }
+    const auto col =
+        std::clamp(static_cast<std::int64_t>(std::floor(x + 0.5)), std::int64_t{0}, mask.cols - 1);
+    const auto row =
+        std::clamp(static_cast<std::int64_t>(std::floor(y + 0.5)), std::int64_t{0}, mask.rows - 1);
+    if (foundations::image::pixel(mask, row, col) != 0) {
+      out.push_back(static_cast<std::int64_t>(i));
+    }
+  }
+  return out;
+}
+
 foundations::Result<Frame> monocular(const foundations::image::Image& image, double timestamp,
-                                     const Camera& camera,
-                                     const foundations::orb::Options& options) {
-  auto features = foundations::orb::extract(image, options);
+                                     const Camera& camera, const foundations::orb::Options& options,
+                                     const foundations::image::Image* mask) {
+  auto features = extract_masked(image, options, mask);
   if (!features) {
     return std::unexpected(std::move(features.error()));
   }
@@ -137,7 +220,8 @@ foundations::Result<Frame> monocular(const foundations::image::Image& image, dou
 
 foundations::Result<Frame> rgbd(const foundations::image::Image& image, const DepthMap& depth_map,
                                 double timestamp, const Camera& camera,
-                                const foundations::orb::Options& options) {
+                                const foundations::orb::Options& options,
+                                const foundations::image::Image* mask) {
   if (depth_map.rows != image.rows || depth_map.cols != image.cols) {
     return foundations::fail(foundations::ErrorKind::kInvalidInput,
                              "depth_map: expected the image's shape");
@@ -146,15 +230,11 @@ foundations::Result<Frame> rgbd(const foundations::image::Image& image, const De
     return foundations::fail(foundations::ErrorKind::kInvalidInput,
                              "camera.baseline: an RGB-D camera needs a virtual baseline");
   }
-  auto features = foundations::orb::extract(image, options);
+  auto features = extract_masked(image, options, mask);
   if (!features) {
     return std::unexpected(std::move(features.error()));
   }
-  std::vector<std::array<double, 2>> xy;
-  xy.reserve(features->keypoints.size());
-  for (const foundations::orb::Keypoint& k : features->keypoints) {
-    xy.push_back(k.xy);
-  }
+  const std::vector<std::array<double, 2>> xy = pixels_of(*features);
   auto depth = depth_at(xy, depth_map);
   if (!depth) {
     return std::unexpected(std::move(depth.error()));
@@ -171,7 +251,8 @@ foundations::Result<Frame> stereo_pair(const foundations::image::Image& left,
                                        const foundations::image::Image& right, double timestamp,
                                        const Camera& camera,
                                        const foundations::orb::Options& options,
-                                       const foundations::stereo::MatchOptions& stereo_options) {
+                                       const foundations::stereo::MatchOptions& stereo_options,
+                                       const foundations::image::Image* mask) {
   if (camera.model != foundations::camera::Model::kPinhole || camera.baseline <= 0.0) {
     return foundations::fail(foundations::ErrorKind::kInvalidInput,
                              "camera: a stereo pair needs a rectified pinhole camera and baseline");
@@ -183,7 +264,10 @@ foundations::Result<Frame> stereo_pair(const foundations::image::Image& left,
   if (!left_levels || !right_levels) {
     return std::unexpected(left_levels ? right_levels.error() : left_levels.error());
   }
-  auto features = foundations::orb::extract_levels(*left_levels, options);
+  auto features = foundations::orb::extract_levels(*left_levels, options)
+                      .and_then([&](foundations::orb::Features f) {
+                        return masked(std::move(f), mask, left.rows, left.cols);
+                      });
   if (!features) {
     return std::unexpected(std::move(features.error()));
   }

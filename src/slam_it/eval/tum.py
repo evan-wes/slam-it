@@ -41,13 +41,18 @@ ORB-SLAM's ``Camera.bf``), ``#`` comments allowed::
     depth_scale 1000
     bf 40
 
+**A mask** (``mask.png``, optional): an 8-bit gray image the frames' size, 0 where no feature
+is to be tracked (a camera's burned-in overlay, the car's own body), anything else where they
+are kept. A run drops the features on a 0 (:func:`slam_it.edge.frames.unmasked`); the video
+import writes one carried through the frames' geometry (:func:`slam_it.eval.video.import_video`).
+
 **Writing one** (a recording imported, the tests' room): :func:`write_list` writes ``rgb.txt``
 or ``depth.txt``, and :func:`write_camera` a ``camera.txt``, beside the readers that read them.
 Every import writes through :func:`staged`, so a folder appears whole or not at all, and
 records what made it in ``source.json`` (:func:`write_source`).
 
 **Frames and ground truth.** :func:`read_frames` reads what a run consumes: every colour
-frame, each with its nearest depth map, and the camera; it never reads the ground truth, so
+frame, each with its nearest depth map, the camera and the mask; it never reads the ground truth, so
 a folder without one runs the same, and the native readers mirror it. :func:`read_sequence`
 reads what an evaluation scores: the frames that have a ground-truth pose.
 """
@@ -91,6 +96,9 @@ SIZE = (640, 480)
 
 CAMERA_FILE = "camera.txt"
 """The file a TUM-format folder describes its own camera in."""
+
+MASK_FILE = "mask.png"
+"""The file a TUM-format folder's mask is in, if it has one (the module docstring)."""
 
 CAMERA_KEYS = ("model", "intrinsics", "size", "depth_scale")
 """``camera.txt``'s keys, each on one line."""
@@ -147,6 +155,8 @@ class Frames:
         none (every frame, for a folder without ``depth.txt``).
     camera : Camera
         The camera.
+    mask : ndarray of uint8, shape (height, width), or None
+        The folder's mask (:data:`MASK_FILE`): 0 where features are dropped; None without one.
     """
 
     root: Path
@@ -154,6 +164,7 @@ class Frames:
     images: list[Path]
     depths: list[Path | None]
     camera: Camera
+    mask: NDArray[np.uint8] | None = None
 
 
 @dataclass(frozen=True)
@@ -483,15 +494,17 @@ def read_frames(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Fra
     Returns
     -------
     Frames
-        Every row of ``rgb.txt``, each with its nearest depth map, and the camera.
+        Every row of ``rgb.txt``, each with its nearest depth map, the camera, and the mask if
+        the folder has one.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If `max_difference` is negative, a file is malformed (named with its line), or the
-        camera cannot be read (:func:`read_camera`).
+        If `max_difference` is negative, a file is malformed (named with its line), the camera
+        cannot be read (:func:`read_camera`), or the mask is not a readable 8-bit PNG of the
+        camera's size.
     FileNotFoundError
-        If ``rgb.txt`` is missing (``depth.txt`` is optional).
+        If ``rgb.txt`` is missing (``depth.txt`` and the mask are optional).
     """
     if not (np.isfinite(max_difference) and max_difference >= 0.0):
         raise InvalidInputError(f"max_difference: must be non-negative, got {max_difference}")
@@ -499,7 +512,41 @@ def read_frames(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Fra
     camera = read_camera(folder)
     stamps, names = _stamped(folder / "rgb.txt")
     depths = _depth_files(folder, stamps, max_difference)
-    return Frames(folder, stamps, [folder / n for n in names], depths, camera)
+    return Frames(
+        folder, stamps, [folder / n for n in names], depths, camera, read_mask(folder, camera)
+    )
+
+
+def read_mask(root: str | Path, camera: Camera) -> NDArray[np.uint8] | None:
+    """Read a TUM-format folder's mask (:data:`MASK_FILE`), if it has one.
+
+    Parameters
+    ----------
+    root : str or pathlib.Path
+        The folder.
+    camera : Camera
+        Its camera, whose size the mask must have.
+
+    Returns
+    -------
+    ndarray of uint8, shape (camera.height, camera.width), or None
+        The mask, 0 where features are dropped; None if the folder has none.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the mask is not a readable 8-bit PNG, or not the camera's size.
+    """
+    path = Path(root) / MASK_FILE
+    if not path.exists():
+        return None
+    mask = images.read_gray(path)
+    if mask.shape != (camera.height, camera.width):
+        raise InvalidInputError(
+            f"{path}: expected the camera's size {camera.width}x{camera.height}, got "
+            f"{mask.shape[1]}x{mask.shape[0]}"
+        )
+    return mask
 
 
 def read_sequence(root: str | Path, max_difference: float = MAX_DIFFERENCE) -> Sequence:

@@ -13,6 +13,7 @@
 
 #include "slam_it/foundations/camera.hpp"
 #include "slam_it/foundations/error.hpp"
+#include "slam_it/foundations/image.hpp"
 
 /// @brief The TUM RGB-D benchmark's folders, and others in its layout.
 namespace slam_it::eval::tum {
@@ -31,6 +32,10 @@ inline constexpr std::int64_t kHeight = 480;
 
 /// @brief The file a TUM-format folder describes its own camera in.
 inline constexpr const char* kCameraFile = "camera.txt";
+
+/// @brief The file a TUM-format folder's mask is in, if it has one (`slam_it.eval.tum.MASK_FILE`):
+///        an 8-bit gray PNG the frames' size, 0 where features are dropped.
+inline constexpr const char* kMaskFile = "mask.png";
 
 /// @brief Every freiburg sensor's virtual stereo baseline times focal length, in pixel-metres
 ///        (`slam_it.eval.tum.SENSOR_BF`: ORB-SLAM2's TUM RGB-D settings' `Camera.bf`).
@@ -65,6 +70,8 @@ struct Frames {
   std::vector<std::optional<std::string>> depths;
   /// @brief The camera.
   Camera camera;
+  /// @brief The folder's mask (`kMaskFile`), 0 where features are dropped; none without one.
+  std::optional<foundations::image::Image> mask;
 };
 
 /// @brief A folder's depth map in metres (`slam_it.eval.tum.read_depth`).
@@ -89,7 +96,8 @@ struct Depth {
 /// @param root The folder.
 /// @param max_difference The largest frame-to-depth-map time difference, in seconds.
 /// @return The frames; `InvalidInput` for a missing `rgb.txt`, a malformed file (named with
-///         its line), a negative `max_difference`, or an unreadable camera.
+///         its line), a negative `max_difference`, an unreadable camera, or a mask that is not
+///         a readable 8-bit PNG of the camera's size.
 [[nodiscard]] foundations::Result<Frames> read_frames(const std::string& root,
                                                       double max_difference = kMaxDifference);
 
