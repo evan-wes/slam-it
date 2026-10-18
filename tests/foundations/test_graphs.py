@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import gtsam
 import numpy as np
@@ -12,7 +13,7 @@ from numpy.typing import NDArray
 from slam_it import backends
 from slam_it.foundations import camera, graphs, se3
 from slam_it.foundations.errors import InvalidInputError, NotConvergedError
-from tests.conftest import load_fixture, require_function
+from tests.conftest import assert_matches_fixture, load_fixture, parity_params, require_function
 
 Array = NDArray[np.float64]
 
@@ -503,22 +504,21 @@ def _inputs(raw: dict[str, object]) -> dict[str, object]:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-@pytest.mark.parametrize("function", ["optimize_pose_graph", "refine_similarity", "bundle_adjust"])
-def test_matches_fixture(backend: str, function: str) -> None:
-    """Every backend reproduces the fixture: its values, errors, iterations and termination (A2)."""
+@pytest.mark.parametrize(("function", "case"), parity_params(GRAPHS))
+def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> None:
+    """Every backend reproduces the fixture: its values, errors, iterations and termination (A2).
+
+    Each field under its policy (``generate_graphs.TOLERANCES``; B3's review panel, run 2, H22).
+    A null (NaN) chi-square, a match image 2 does not observe, compares equal to NaN.
+    """
     chosen = require_function(backend, graphs.__name__, function)
-    tolerance = GRAPHS["tolerance"]
-    for case in GRAPHS["functions"][function]["cases"]:
-        got = getattr(graphs, function)(**_inputs(case["input"]), backend=chosen)
-        for field, expected in case["expected"].items():
-            np.testing.assert_allclose(
-                getattr(got, field), np.array(expected, dtype=np.float64), rtol=0,
-                atol=tolerance["value_atol"], equal_nan=True, err_msg=f"{case['name']}: {field}",
-            )  # fmt: skip
-        summary = case["summary"]
-        assert got.summary.iterations == summary["iterations"], case["name"]
-        assert str(got.summary.termination) == summary["termination"], case["name"]
-        for key in ("initial_error", "final_error"):
-            assert np.isclose(
-                getattr(got.summary, key), summary[key], rtol=tolerance["error_rtol"], atol=1e-12
-            ), f"{case['name']}: {key}"
+    got = getattr(graphs, function)(**_inputs(case["input"]), backend=chosen)
+    expected, tolerance = case["expected"], GRAPHS["tolerance"]
+    for field in expected.keys() - {"errors", "codes"}:
+        values = np.array(expected[field], dtype=np.float64)
+        assert_matches_fixture(getattr(got, field), values, tolerance[field])
+    summary = got.summary
+    errors = [summary.initial_error, summary.final_error]
+    assert_matches_fixture(errors, expected["errors"], tolerance["errors"])
+    codes = {"iterations": summary.iterations, "termination": str(summary.termination)}
+    assert_matches_fixture(codes, expected["codes"], tolerance["codes"])

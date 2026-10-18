@@ -9,8 +9,9 @@ Unlike the closed-form fixtures, this one imports slam_it: a nonlinear least-squ
 noisy data has no independent closed form, so the expected values are the Python reference's
 results (:mod:`slam_it.foundations.graphs`), against which the stage comparisons already hold
 the compiled backends. What this fixture adds is rung 0's own check of every backend against
-them, the solves' summaries included (B3's review panel, A2): each case's iterations and
-termination exactly, its errors and values within :data:`TOLERANCE`. The cases:
+them, the solves' summaries included (B3's review panel, A2), under :data:`TOLERANCES`: each
+field's policy, applied by ``tests.conftest.assert_matches_fixture`` (run 2, H22 = A19). The
+cases:
 
 - ``optimize_pose_graph``: a ring of 8 poses with noisy relatives, in SE(3) and in Sim(3);
 - ``refine_similarity``: ORB-SLAM's two rounds, monocular (scaled) and stereo (rigid): a first
@@ -37,9 +38,38 @@ from tests.fixtures.foundations import _layout
 
 HERE = Path(__file__).parent
 
-TOLERANCE = {"value_atol": 1e-8, "error_rtol": 1e-6}
-"""The policy: values (poses, points, a similarity, the chi-squares) within ``value_atol`` of
-the reference's, each error within ``error_rtol`` of it, iterations and termination exact."""
+_STEPS = "GTSAM's C++ factors, Python's custom factors and Rust's bridge differ in the last bits"
+
+TOLERANCES = {
+    "poses": {
+        "comparison": "close", "rtol": 0.0, "atol": 1e-8,
+        "reason": f"rotation entries and metres, O(1); {_STEPS}",
+    },
+    "points": {
+        "comparison": "close", "rtol": 0.0, "atol": 1e-8,
+        "reason": f"metres, every coordinate within 12 m; {_STEPS}",
+    },
+    "similarity": {
+        "comparison": "close", "rtol": 0.0, "atol": 1e-8,
+        "reason": f"a scaled rotation's entries and a translation in metres, O(1); {_STEPS}",
+    },
+    "chi2": {
+        "comparison": "close", "rtol": 1e-8, "atol": 1e-8,
+        "reason": (
+            "squared whitened pixels, 1e-3 to 6e3 (the outliers'): 1e-8 absolute for the "
+            "inliers, 1e-8 relative for the outliers"
+        ),
+    },
+    "errors": {
+        "comparison": "close", "rtol": 1e-6, "atol": 1e-12,
+        "reason": "GTSAM's initial and final errors, 1e-4 to 2e4: summed over every factor",
+    },
+    "codes": {
+        "comparison": "exact", "rtol": 0.0, "atol": 0.0,
+        "reason": "iterations and termination: the backends' solves step alike",
+    },
+}  # fmt: skip
+"""Each field's policy (``tests.conftest.assert_matches_fixture``)."""
 
 PINHOLE = [520.0, 515.0, 320.0, 240.0]
 """A pinhole camera's intrinsics."""
@@ -65,11 +95,10 @@ def _json(value: Any) -> Any:  # noqa: ANN401 -- any JSON-able value
 
 
 def _summary(summary: graphs.Summary) -> dict[str, Any]:
+    """Return a solve's summary as the fixture holds it: its errors and its codes."""
     return {
-        "initial_error": summary.initial_error,
-        "final_error": summary.final_error,
-        "iterations": summary.iterations,
-        "termination": str(summary.termination),
+        "errors": [summary.initial_error, summary.final_error],
+        "codes": {"iterations": summary.iterations, "termination": str(summary.termination)},
     }
 
 
@@ -101,12 +130,11 @@ def _ring(similarity: bool, seed: int) -> dict[str, Any]:
     return {
         "name": f"ring, {'Sim(3)' if similarity else 'SE(3)'}",
         "input": _json(inputs),
-        "expected": {"poses": _json(solved.poses)},
-        "summary": _summary(solved.summary),
+        "expected": {"poses": _json(solved.poses), **_summary(solved.summary)},
     }
 
 
-def _matches(fixed_scale: bool, seed: int) -> tuple[dict[str, Any], np.ndarray]:
+def _matches(fixed_scale: bool, seed: int) -> dict[str, Any]:
     """Return noisy matches through a similarity, a few outliers, a third unseen in image 2."""
     rng = np.random.default_rng(seed)
     count = 40
@@ -131,12 +159,12 @@ def _matches(fixed_scale: bool, seed: int) -> tuple[dict[str, Any], np.ndarray]:
         "pixels2": pixels2, "information": np.ones((count, 2)), "model": "pinhole",
         "intrinsics": np.array(PINHOLE), "fixed_scale": fixed_scale, "huber": math.sqrt(10.0),
     }  # fmt: skip
-    return inputs, np.arange(count)
+    return inputs
 
 
 def _refinements(fixed_scale: bool, seed: int) -> list[dict[str, Any]]:
     """Return ORB-SLAM's two rounds: Huber, then the matches past 10 dropped and no loss."""
-    first, _ = _matches(fixed_scale, seed)
+    first = _matches(fixed_scale, seed)
     one = graphs.refine_similarity(**first)
     keep = ~np.any(one.chi2 > 10.0, axis=1)
     second = {**first, "similarity": one.similarity, "huber": None}
@@ -148,14 +176,20 @@ def _refinements(fixed_scale: bool, seed: int) -> list[dict[str, Any]]:
         {
             "name": f"{kind}, round 1 (Huber)",
             "input": _json(first),
-            "expected": {"similarity": _json(one.similarity), "chi2": _json(one.chi2)},
-            "summary": _summary(one.summary),
+            "expected": {
+                "similarity": _json(one.similarity),
+                "chi2": _json(one.chi2),
+                **_summary(one.summary),
+            },
         },
         {
             "name": f"{kind}, round 2 (no robust loss, {int(keep.sum())} matches kept)",
             "input": _json(second),
-            "expected": {"similarity": _json(two.similarity), "chi2": _json(two.chi2)},
-            "summary": _summary(two.summary),
+            "expected": {
+                "similarity": _json(two.similarity),
+                "chi2": _json(two.chi2),
+                **_summary(two.summary),
+            },
         },
     ]
 
@@ -195,8 +229,11 @@ def _bundle(stereo: bool, seed: int) -> dict[str, Any]:
     return {
         "name": f"{'stereo, pinhole' if stereo else 'monocular, radtan'}",
         "input": _json(inputs),
-        "expected": {"poses": _json(solved.poses), "points": _json(solved.points)},
-        "summary": _summary(solved.summary),
+        "expected": {
+            "poses": _json(solved.poses),
+            "points": _json(solved.points),
+            **_summary(solved.summary),
+        },
     }
 
 
@@ -204,11 +241,11 @@ def main() -> None:
     """Write ``graphs.json`` beside this file."""
     doc = {
         "description": (
-            "Rung 0's factor graphs on GTSAM, the Python reference's results on noisy data: "
-            "values within value_atol, errors within error_rtol, iterations and termination "
-            "exact (generate_graphs.py)."
+            "Rung 0's factor graphs on GTSAM, the Python reference's results on noisy data "
+            "(generate_graphs.py)."
         ),
-        "tolerance": TOLERANCE,
+        "oracle": "the Python reference; see the generator's docstring",
+        "tolerance": TOLERANCES,
         "functions": {
             "optimize_pose_graph": {"cases": [_ring(False, 1), _ring(True, 2)]},
             "refine_similarity": {"cases": _refinements(False, 3) + _refinements(True, 4)},

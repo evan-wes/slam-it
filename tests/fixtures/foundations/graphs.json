@@ -1,8 +1,43 @@
 {
- "description": "Rung 0's factor graphs on GTSAM, the Python reference's results on noisy data: values within value_atol, errors within error_rtol, iterations and termination exact (generate_graphs.py).",
+ "description": "Rung 0's factor graphs on GTSAM, the Python reference's results on noisy data (generate_graphs.py).",
+ "oracle": "the Python reference; see the generator's docstring",
  "tolerance": {
-  "value_atol": 1e-08,
-  "error_rtol": 1e-06
+  "poses": {
+   "comparison": "close",
+   "rtol": 0.0,
+   "atol": 1e-08,
+   "reason": "rotation entries and metres, O(1); GTSAM's C++ factors, Python's custom factors and Rust's bridge differ in the last bits"
+  },
+  "points": {
+   "comparison": "close",
+   "rtol": 0.0,
+   "atol": 1e-08,
+   "reason": "metres, every coordinate within 12 m; GTSAM's C++ factors, Python's custom factors and Rust's bridge differ in the last bits"
+  },
+  "similarity": {
+   "comparison": "close",
+   "rtol": 0.0,
+   "atol": 1e-08,
+   "reason": "a scaled rotation's entries and a translation in metres, O(1); GTSAM's C++ factors, Python's custom factors and Rust's bridge differ in the last bits"
+  },
+  "chi2": {
+   "comparison": "close",
+   "rtol": 1e-08,
+   "atol": 1e-08,
+   "reason": "squared whitened pixels, 1e-3 to 6e3 (the outliers'): 1e-8 absolute for the inliers, 1e-8 relative for the outliers"
+  },
+  "errors": {
+   "comparison": "close",
+   "rtol": 1e-06,
+   "atol": 1e-12,
+   "reason": "GTSAM's initial and final errors, 1e-4 to 2e4: summed over every factor"
+  },
+  "codes": {
+   "comparison": "exact",
+   "rtol": 0.0,
+   "atol": 0.0,
+   "reason": "iterations and termination: the backends' solves step alike"
+  }
  },
  "functions": {
   "optimize_pose_graph": {
@@ -180,13 +215,12 @@
         [0.0019434283738911417, 0.0033377864707720365, 0.999992541105998, 0.6946847240897491],
         [0.0, 0.0, 0.0, 1.0]
        ]
-      ]
-     },
-     "summary": {
-      "initial_error": 0.09003606990523136,
-      "final_error": 0.0001311497995296597,
-      "iterations": 4,
-      "termination": "function"
+      ],
+      "errors": [0.09003606990523136, 0.0001311497995296597],
+      "codes": {
+       "iterations": 4,
+       "termination": "function"
+      }
      }
     },
     {
@@ -362,13 +396,12 @@
         [-0.004758145543227544, -0.008961740571154517, 1.1371672300729925, 0.7242495451822178],
         [0.0, 0.0, 0.0, 1.0]
        ]
-      ]
-     },
-     "summary": {
-      "initial_error": 0.13578966940216972,
-      "final_error": 0.00027931778761007374,
-      "iterations": 5,
-      "termination": "function"
+      ],
+      "errors": [0.13578966940216972, 0.00027931778761007374],
+      "codes": {
+       "iterations": 5,
+       "termination": "function"
+      }
      }
     }
    ]
@@ -647,13 +680,12 @@
        [0.8936633549131014, 0.6758094127824185],
        [1.596782039735984, 1.2489553808369036],
        [0.9176797935539082, null]
-      ]
-     },
-     "summary": {
-      "initial_error": 1969.726579957346,
-      "final_error": 828.0493840233629,
-      "iterations": 5,
-      "termination": "function"
+      ],
+      "errors": [1969.726579957346, 828.0493840233629],
+      "codes": {
+       "iterations": 5,
+       "termination": "function"
+      }
      }
     },
     {
@@ -904,13 +936,12 @@
        [1.0720431477552774, 0.40362608016330886],
        [0.6582201244482622, 0.8873038287031259],
        [0.4601262747447757, null]
-      ]
-     },
-     "summary": {
-      "initial_error": 27.051520246744634,
-      "final_error": 24.470827456432463,
-      "iterations": 4,
-      "termination": "function"
+      ],
+      "errors": [27.051520246744634, 24.470827456432463],
+      "codes": {
+       "iterations": 4,
+       "termination": "function"
+      }
      }
     },
     {
@@ -1185,13 +1216,12 @@
        [0.605342419717284, 1.1869298776174524],
        [0.015039531361095414, 0.031044893943563304],
        [0.696480545534128, null]
-      ]
-     },
-     "summary": {
-      "initial_error": 1973.1551979795586,
-      "final_error": 804.7773440327821,
-      "iterations": 4,
-      "termination": "function"
+      ],
+      "errors": [1973.1551979795586, 804.7773440327821],
+      "codes": {
+       "iterations": 4,
+       "termination": "function"
+      }
      }
     },
     {
@@ -1442,13 +1472,12 @@
        [0.6778550024336535, 1.5592782278251054],
        [0.0336962279967631, 0.012823077132390044],
        [0.6505165366617457, null]
-      ]
-     },
-     "summary": {
-      "initial_error": 32.568374321554586,
-      "final_error": 30.559714623623886,
-      "iterations": 3,
-      "termination": "function"
+      ],
+      "errors": [32.568374321554586, 30.559714623623886],
+      "codes": {
+       "iterations": 3,
+       "termination": "function"
+      }
      }
     }
    ]
@@ -1869,13 +1898,12 @@
        [1.5484836812465175, 1.7305682469620007, 7.948055133848308],
        [3.059585772352899, 0.8358339212043826, 7.781719185473243],
        [2.390685152388033, -1.5131250272022643, 9.245661276288606]
-      ]
-     },
-     "summary": {
-      "initial_error": 14268.141354694417,
-      "final_error": 499.88600848352655,
-      "iterations": 7,
-      "termination": "function"
+      ],
+      "errors": [14268.141354694417, 499.88600848352655],
+      "codes": {
+       "iterations": 7,
+       "termination": "function"
+      }
      }
     },
     {
@@ -2292,13 +2320,12 @@
        [0.4969375130369927, 0.0806131483266623, 7.894453635675319],
        [-0.1059361942538317, 0.21635338794675146, 6.182816275585137],
        [0.24634233778355083, 0.8345701308545572, 7.385137446638629]
-      ]
-     },
-     "summary": {
-      "initial_error": 14006.803292428003,
-      "final_error": 81.62589060601199,
-      "iterations": 5,
-      "termination": "function"
+      ],
+      "errors": [14006.803292428003, 81.62589060601199],
+      "codes": {
+       "iterations": 5,
+       "termination": "function"
+      }
      }
     }
    ]
