@@ -2232,8 +2232,9 @@ pub fn correct(
     }
     let moved_by = move_keyframes(m, &moved_rows, &corrected)?;
     let replaced = replace_matched(m, closed.current, &closed.matched_points)?;
-    // Moving, replacing and fusing change points, never keyframes: every keyframe keeps its row
-    // from here to the graph, so the rows found above still name them.
+    // Moving, replacing and fusing change points and the moved keyframes' poses, but never add,
+    // remove or reorder a keyframe: every keyframe keeps its row from here to the graph, so the
+    // rows found above still name them.
     let mut fused = 0;
     for &r in &moved_rows {
         fused += fuse_by_similarity(m, camera, r, &corrected[&r], &closed.points, options)?;

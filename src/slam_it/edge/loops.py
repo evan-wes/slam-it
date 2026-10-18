@@ -1362,8 +1362,9 @@ def _correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options)
     previous = {r: _linked(m, r, options) for r in moved_rows}
     m, moved_by, moved = _move_keyframes(m, moved_rows, corrected)
     m, replaced = _replace_matched(m, k, loop.matched_points)
-    # Moving, replacing and fusing change points, never keyframes: every keyframe keeps its row
-    # from here to the graph, so the rows found above still name them.
+    # Moving, replacing and fusing change points and the moved keyframes' poses, but never add,
+    # remove or reorder a keyframe: every keyframe keeps its row from here to the graph, so the
+    # rows found above still name them.
     fused = 0
     for r in moved_rows:
         m, count = _fuse_by_similarity(m, camera, r, corrected[r], loop.points, options=options)

@@ -1586,10 +1586,6 @@ Result<CorrectionSummary> correct(Map& m, const Camera& camera, const Loop& loop
   for (const Link& link : *linked) {
     moved_rows.push_back(link.row);
   }
-  Ids moved_ids;
-  for (const std::int64_t r : moved_rows) {
-    moved_ids.push_back(m.kf_id[static_cast<std::size_t>(r)]);
-  }
   const std::vector<Eigen::Matrix4d> before = m.kf_pose;
   std::map<std::size_t, Eigen::Matrix4d> corrected{{k, loop.similarity}};
   const Eigen::Matrix4d to_world = sim3::inverse(m.kf_pose[k]);
@@ -1613,22 +1609,19 @@ Result<CorrectionSummary> correct(Map& m, const Camera& camera, const Loop& loop
   if (!replaced) {
     return std::unexpected(std::move(replaced.error()));
   }
+  // Moving, replacing and fusing change points and the moved keyframes' poses, but never add,
+  // remove or reorder a keyframe: every keyframe keeps its row from here to the graph, so the
+  // rows found above still name them.
   std::int64_t fused = 0;
-  for (std::size_t i = 0; i < moved_ids.size(); ++i) {
-    auto r = checked_keyframe_row(m, moved_ids[i]);
-    if (!r) {
-      return std::unexpected(std::move(r.error()));
-    }
-    auto count = fuse_by_similarity(m, camera, static_cast<std::int64_t>(*r),
-                                    corrected.at(static_cast<std::size_t>(moved_rows[i])),
+  for (const std::int64_t r : moved_rows) {
+    auto count = fuse_by_similarity(m, camera, r, corrected.at(static_cast<std::size_t>(r)),
                                     loop.points, options);
     if (!count) {
       return std::unexpected(std::move(count.error()));
     }
     fused += *count;
   }
-  // The keyframes are the same rows before and after: nothing here adds or removes one.
-  const std::set<std::int64_t> moved_now(moved_rows.begin(), moved_rows.end());
+  const std::set<std::int64_t> moving(moved_rows.begin(), moved_rows.end());
   std::map<std::size_t, std::set<std::int64_t>> loop_links;
   std::int64_t new_links = 0;
   for (const std::int64_t row : moved_rows) {
@@ -1639,7 +1632,7 @@ Result<CorrectionSummary> correct(Map& m, const Camera& camera, const Loop& loop
     }
     std::set<std::int64_t> fresh;
     for (const std::int64_t n : *now) {
-      if (!previous[r].contains(n) && !moved_now.contains(n)) {
+      if (!previous[r].contains(n) && !moving.contains(n)) {
         fresh.insert(n);
       }
     }
