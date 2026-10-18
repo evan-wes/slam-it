@@ -63,7 +63,12 @@ scale, so their similarities are rigid (``mbFixScale``).
   to the end;
 - a point carried behind a keyframe is never matched or fused; the moved keyframes' points
   are moved with the first of them that sees them, the new keyframe first, then its links,
-  most shared first, where ORB-SLAM's order is its keyframes' addresses in memory.
+  most shared first, where ORB-SLAM's order is its keyframes' addresses in memory;
+- the loop's points are fused into a keyframe one at a time, each replacing the point its
+  keypoint holds then: two of the loop's points that both land on one keypoint are merged.
+  ORB-SLAM's ``SearchAndFuse`` defers its replacements (``vpReplacePoint``), so there the
+  second finds the keypoint's first point already replaced and merges nothing (rare; B3's
+  review panel, L5).
 """
 
 from __future__ import annotations
@@ -85,6 +90,7 @@ from slam_it.edge.map import Map
 from slam_it.edge.options import Options, check_mode
 from slam_it.foundations import camera as cameras
 from slam_it.foundations import graphs, matching, ransac, sim3
+from slam_it.foundations.arrays import as_count
 from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
 Array = NDArray[np.float64]
@@ -1143,10 +1149,10 @@ def _move_keyframes(
     moved_by: dict[int, int] = {}
     for r in moved:
         carry = sim3.inverse(corrected[r]) @ m.kf_pose[r]
-        for point_id in m.kp_point[m.keypoint_rows(r)].tolist():
+        ids = m.kp_point[m.keypoint_rows(r)]
+        for point_id, p in zip(ids.tolist(), m.point_rows(ids).tolist(), strict=True):
             if point_id < 0 or point_id in moved_by:
                 continue
-            p = int(m.point_rows(np.array([point_id], dtype=np.int64))[0])
             xyz[p] = carry[:3, :3] @ m.pt_xyz[p] + carry[:3, 3]
             moved_by[point_id] = r
     for r in moved:
@@ -1287,7 +1293,24 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
     -------
     tuple
         Each keyframe's optimised ``S_iw``, the edges, and the solve's summary.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `start` or `before` is not one 4x4 matrix per keyframe, an end or a link is not a
+        keyframe row, or the two ends are one keyframe.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while solving.
     """
+    count = m.keyframes
+    for name, poses in (("start", start), ("before", before)):
+        if len(poses) != count or any(np.shape(pose) != (4, 4) for pose in poses):
+            raise InvalidInputError(f"{name}: expected one 4x4 matrix per keyframe ({count})")
+    rows = [*ends, *loop_links, *(n for linked in loop_links.values() for n in linked)]
+    if any(not 0 <= int(r) < count for r in rows):
+        raise InvalidInputError(f"ends, loop_links: expected keyframe rows in [0, {count})")
+    if ends[0] == ends[1]:
+        raise InvalidInputError("ends: the current and the matched keyframes must differ")
     graph = _essential_edges(m, start, before, loop_links, ends, options=options)
     solved = graphs.optimize_pose_graph(
         np.array([sim3.inverse(s) for s in start]),
@@ -1331,7 +1354,6 @@ def _correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options)
     fixed_scale = mode != "monocular"
     links = [int(r) for r in covisibility.links(m, k, options)[0]]
     moved_rows = [k, *links]
-    moved_ids = [int(m.kf_id[r]) for r in moved_rows]
     before = list(m.kf_pose.copy())
     corrected = {k: loop.similarity}
     to_world = sim3.inverse(m.kf_pose[k])
@@ -1340,27 +1362,20 @@ def _correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options)
     previous = {r: _linked(m, r, options) for r in moved_rows}
     m, moved_by, moved = _move_keyframes(m, moved_rows, corrected)
     m, replaced = _replace_matched(m, k, loop.matched_points)
+    # Moving, replacing and fusing change points, never keyframes: every keyframe keeps its row
+    # from here to the graph, so the rows found above still name them.
     fused = 0
-    for keyframe in moved_ids:
-        r = maps.keyframe_row(m, keyframe)
-        m, count = _fuse_by_similarity(
-            m, camera, r, corrected[moved_rows[moved_ids.index(keyframe)]], loop.points,
-            options=options,
-        )  # fmt: skip
+    for r in moved_rows:
+        m, count = _fuse_by_similarity(m, camera, r, corrected[r], loop.points, options=options)
         fused += count
-    moved_now = [maps.keyframe_row(m, keyframe) for keyframe in moved_ids]
-    loop_links = {
-        r: _linked(m, r, options) - previous[old] - set(moved_now)
-        for r, old in zip(moved_now, moved_rows, strict=True)
-    }
+    moving = set(moved_rows)
+    loop_links = {r: _linked(m, r, options) - previous[r] - moving for r in moved_rows}
     start = list(m.kf_pose.copy())
-    for r, old in zip(moved_now, moved_rows, strict=True):
-        start[r] = corrected[old]
-    # The keyframes are the same rows before and after: nothing here adds or removes one.
+    for r in moved_rows:
+        start[r] = corrected[r]
     optimised, edges, essential = essential_graph(
-        m, start, before, loop_links, (maps.keyframe_row(m, loop.current), matched),
-        fixed_scale=fixed_scale, options=options,
-    )  # fmt: skip
+        m, start, before, loop_links, (k, matched), fixed_scale=fixed_scale, options=options
+    )
     m = _move_by_graph(m, start, optimised, moved_by)
     m = maps.add_loop_edge(m, loop.matched, loop.current)
     ba: graphs.Summary | None = None
@@ -1391,10 +1406,11 @@ def _move_by_graph(
     keyframe (ORB-SLAM's ``mnCorrectedReference``, else ``GetReferenceKeyFrame``).
     """
     xyz = m.pt_xyz.copy()
+    references = m.keyframe_rows(m.pt_reference_kf)
     for p, point_id in enumerate(m.pt_id.tolist()):
         r = moved_by.get(point_id)
         if r is None:
-            r = int(m.keyframe_rows(m.pt_reference_kf[p : p + 1])[0])
+            r = int(references[p])
             if r < 0:
                 continue
         carry = sim3.inverse(optimised[r]) @ start[r]
@@ -1414,10 +1430,10 @@ class Implementation(Protocol):
     """The functions a compiled backend's ``edge.loops`` submodule provides.
 
     The map, its database, the camera and the settings cross as dicts (their ``as_dict``); a
-    similarity as its 4x4 matrix; a :class:`Pending` and a :class:`Loop` as their
-    :meth:`~Pending.as_dict`; the mode by name. Results cross back as dicts: a detection's
-    ``pending`` and ``loop`` (each a dict or None) and ``summary``, its outcome a code in
-    ``codes()["loop_outcome"]``; a correction's ``map`` and ``summary``, each solve's
+    similarity as its 4x4 matrix; a :class:`Pending` and a :class:`Loop` as dicts
+    (``_pending_as_dict``, ``_loop_as_dict``); the mode by name. Results cross back as dicts:
+    a detection's ``pending`` and ``loop`` (each a dict or None) and ``summary``, its outcome a
+    code in ``codes()["loop_outcome"]``; a correction's ``map`` and ``summary``, each solve's
     termination a code in ``codes()["graphs_termination"]``.
     """
 
@@ -1535,11 +1551,11 @@ def _similarity(similarity: ArrayLike, name: str = "similarity") -> Array:
 
 
 def _ids(values: ArrayLike, name: str) -> IntArray:
-    """Check a vector of ids: integers, at least -1."""
-    out = covisibility.as_points(values)
-    if np.any(out < -1):
-        raise InvalidInputError(f"{name}: expected ids of at least -1")
-    return out
+    """Check a vector of ids: integers, at least -1, refused under the argument's own name."""
+    try:
+        return covisibility.as_points(values)
+    except InvalidInputError:
+        raise InvalidInputError(f"{name}: expected a vector of ids of at least -1") from None
 
 
 def _keypoint_ids(m: Map, k: int, values: ArrayLike, name: str) -> IntArray:
@@ -1734,11 +1750,16 @@ def search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe,
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If `k` is not a keyframe row, the similarity is not one, or a point row is out of range.
+        If `k` is not a keyframe row, the similarity is not one, a point row is out of range,
+        `window` is not finite and positive, or `distance` is outside ``[0,
+        slam_it.foundations.matching.MAX_DISTANCE]``.
     """
     row = maps.as_keyframe_row(m, k)
     chosen = _similarity(similarity)
     rows = maps.as_point_rows(m, points, "points")
+    if not (math.isfinite(window) and window > 0.0):
+        raise InvalidInputError(f"window: expected finite and > 0, got {window}")
+    distance = as_count(distance, "distance", 0, matching.MAX_DISTANCE)
     return backends.call(
         backend,
         __name__,

@@ -2219,7 +2219,6 @@ pub fn correct(
     let linked_rows = links(m, k, options)?;
     let mut moved_rows = vec![k];
     moved_rows.extend(&linked_rows);
-    let moved_ids: Vec<i64> = moved_rows.iter().map(|&r| m.kf_id[r]).collect();
     let before = m.kf_pose.clone();
     let mut corrected = BTreeMap::new();
     corrected.insert(k, closed.similarity);
@@ -2233,37 +2232,32 @@ pub fn correct(
     }
     let moved_by = move_keyframes(m, &moved_rows, &corrected)?;
     let replaced = replace_matched(m, closed.current, &closed.matched_points)?;
+    // Moving, replacing and fusing change points, never keyframes: every keyframe keeps its row
+    // from here to the graph, so the rows found above still name them.
     let mut fused = 0;
-    for (&keyframe, &old) in moved_ids.iter().zip(&moved_rows) {
-        let r = keyframe_row(m, keyframe)?;
-        fused += fuse_by_similarity(m, camera, r, &corrected[&old], &closed.points, options)?;
+    for &r in &moved_rows {
+        fused += fuse_by_similarity(m, camera, r, &corrected[&r], &closed.points, options)?;
     }
-    let mut moved_now = Vec::with_capacity(moved_ids.len());
-    for &keyframe in &moved_ids {
-        moved_now.push(keyframe_row(m, keyframe)?);
-    }
-    let now: BTreeSet<usize> = moved_now.iter().copied().collect();
+    let moving: BTreeSet<usize> = moved_rows.iter().copied().collect();
     let mut loop_links = BTreeMap::new();
-    for (&r, old) in moved_now.iter().zip(&moved_rows) {
+    for &r in &moved_rows {
         let new: BTreeSet<usize> = linked(m, r, options)?
-            .difference(&previous[old])
+            .difference(&previous[&r])
             .copied()
-            .filter(|n| !now.contains(n))
+            .filter(|n| !moving.contains(n))
             .collect();
         loop_links.insert(r, new);
     }
     let mut start = m.kf_pose.clone();
-    for (&r, old) in moved_now.iter().zip(&moved_rows) {
-        start[r] = corrected[old];
+    for &r in &moved_rows {
+        start[r] = corrected[&r];
     }
-    // The keyframes are the same rows before and after: nothing here adds or removes one.
-    let current = keyframe_row(m, closed.current)?;
     let essential = essential_graph(
         m,
         &start,
         &before,
         &loop_links,
-        (current, matched),
+        (k, matched),
         fixed_scale,
         options,
     )?;

@@ -474,6 +474,105 @@ def test_correction_refuses_a_keyframe_outside_the_map(loop_rigid: Loop) -> None
         loops.correct(m, CAMERA, stray, mode="rgbd", options=OPTIONS)
 
 
+def _stray_loop(m: Map, **changes: object) -> loops.Loop:
+    """Return a well-formed loop from the second keyframe to the first, one field changed."""
+    current = 1
+    keypoints = int(m.kf_start[current + 1] - m.kf_start[current])
+    fields: dict[str, object] = {
+        "current": int(m.kf_id[current]), "matched": int(m.kf_id[0]), "similarity": np.eye(4),
+        "points": np.zeros(0, dtype=np.int64),
+        "matched_points": np.full(keypoints, -1, dtype=np.int64),
+    }  # fmt: skip
+    fields.update(changes)
+    return loops.Loop(**fields)  # type: ignore[arg-type]
+
+
+BAD_CALLS = {
+    "a similarity that is not one": (
+        "similarity",
+        lambda m, db: loops.search_by_similarity(
+            m, CAMERA, 0, -np.eye(4), [], window=5.0, distance=50, options=OPTIONS
+        ),
+    ),
+    "a window not finite": (
+        "window",
+        lambda m, db: loops.search_by_similarity(
+            m, CAMERA, 0, np.eye(4), [], window=float("nan"), distance=50, options=OPTIONS
+        ),
+    ),
+    "a window not positive": (
+        "window",
+        lambda m, db: loops.search_by_similarity(
+            m, CAMERA, 0, np.eye(4), [], window=-8.0, distance=50, options=OPTIONS
+        ),
+    ),
+    "a negative distance": (
+        "distance",
+        lambda m, db: loops.search_by_similarity(
+            m, CAMERA, 0, np.eye(4), [], window=5.0, distance=-5, options=OPTIONS
+        ),
+    ),
+    "a distance past a descriptor's bits": (
+        "distance",
+        lambda m, db: loops.search_by_similarity(
+            m, CAMERA, 0, np.eye(4), [], window=5.0, distance=10**9, options=OPTIONS
+        ),
+    ),
+    "a linked row not a keyframe's": (
+        "linked",
+        lambda m, db: loops.group_points(m, 0, [m.keyframes], OPTIONS),
+    ),
+    "a negative point id to fuse": (
+        "point_ids",
+        lambda m, db: loops.fuse_by_similarity(m, CAMERA, 0, np.eye(4), [-1], options=OPTIONS),
+    ),
+    "an unknown mode to detect in": (
+        "mode",
+        lambda m, db: loops.detect(m, db, CAMERA, int(m.kf_id[-1]), None, mode="lidar",
+                                   options=OPTIONS),
+    ),
+    "a pending loop's similarity that is not one": (
+        "pending.similarity",
+        lambda m, db: loops.detect(
+            m, db, CAMERA, int(m.kf_id[-1]),
+            Pending(matched=0, last=1, similarity=np.zeros((4, 4)), points=np.zeros(0, np.int64),
+                    matched_points=np.zeros(0, np.int64), confirmations=1, misses=0),
+            mode="rgbd", options=OPTIONS,
+        ),
+    ),
+    "a loop's similarity that is not one": (
+        "loop.similarity",
+        lambda m, db: loops.correct(
+            m, CAMERA, _stray_loop(m, similarity=-np.eye(4)), mode="rgbd", options=OPTIONS
+        ),
+    ),
+    "matched points not one per keypoint": (
+        "loop.matched_points",
+        lambda m, db: loops.correct(
+            m, CAMERA, _stray_loop(m, matched_points=np.zeros(1, np.int64)), mode="rgbd",
+            options=OPTIONS,
+        ),
+    ),
+    "a loop point id below -1": (
+        "loop.points",
+        lambda m, db: loops.correct(
+            m, CAMERA, _stray_loop(m, points=np.array([-2])), mode="rgbd", options=OPTIONS
+        ),
+    ),
+}  # fmt: skip
+"""Each public function given one bad argument, and the name its refusal must give."""
+
+
+@pytest.mark.parametrize("case", sorted(BAD_CALLS))
+def test_bad_arguments_are_refused_by_name(
+    case: str, loop_rigid: Loop, loop_database: Database
+) -> None:
+    """Each bad argument is refused with InvalidInputError, naming it (B3's review panel, H4)."""
+    named, call = BAD_CALLS[case]
+    with pytest.raises(InvalidInputError, match=named):
+        call(loop_rigid.map, loop_database)
+
+
 # --- every backend ------------------------------------------------------------------------
 
 
