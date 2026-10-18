@@ -1,22 +1,21 @@
 //! The edge pipeline, initialising, tracking each frame, mapping on keyframes and closing
 //! loops: the Rust core's mirror of `slam_it.edge.pipeline`, whose docstring states the
-//! per-frame loop and the final trajectory. It runs in the native program, not across the
-//! binding.
+//! per-frame loop, the steps' own state and the map's owner. It runs in the native program,
+//! not across the binding.
 
-use std::collections::BTreeMap;
 use std::time::Instant;
 
-use nalgebra::{Matrix4, Vector3};
+use nalgebra::Matrix4;
 use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::vocabulary::Vocabulary;
 use slam_it_foundations::{orb, se3};
 
-use crate::covisibility;
+use crate::atlas::{Atlas, Lifetimes, Trajectory};
 use crate::database::Database;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
 use crate::loops::{self, CorrectionSummary, DetectionSummary, Pending};
-use crate::map::{self, Map, Removal};
+use crate::map::{self, Map};
 use crate::mapping::{self, MappingSummary};
 use crate::options::{Mode, Options};
 use crate::relocalization::{self, RelocalizationSummary};
@@ -225,8 +224,6 @@ struct Step {
     lost: bool,
     /// The time loop closing took, in seconds, if it ran.
     loop_seconds: f64,
-    /// Whether a loop was corrected on it.
-    corrected: bool,
 }
 
 /// A keyframe mapped, as `Pipeline::map_keyframe` gives it.
@@ -242,7 +239,7 @@ struct KeyframeMapped {
     corrected: bool,
 }
 
-/// A frame placed, as `Pipeline::place` gives it.
+/// A frame placed, as `place` gives it.
 struct Placed {
     /// The placed frame, if any.
     tracked: Option<Tracked>,
@@ -252,94 +249,662 @@ struct Placed {
     matched: Vec<i64>,
 }
 
-/// An id as an index (a map's ids are given from 0: `check_map` holds them non-negative).
+/// Tracking's result on a frame, as `track_step` gives it (`slam_it.edge.pipeline._Tracking`).
+#[derive(Debug, Default)]
+struct Tracking {
+    /// The tracked frame, if it kept enough inliers.
+    tracked: Option<Tracked>,
+    /// How its stages went.
+    summary: FrameSummary,
+    /// The last stage's match for each keypoint before refinement.
+    matched: Vec<i64>,
+    /// The frame's reference keyframe's row, when tracked.
+    reference: Option<usize>,
+    /// Whether it asks for a keyframe.
+    keyframe: bool,
+    /// Whether the frame lost the track.
+    lost: bool,
+}
+
+/// Tracking's own state from frame to frame (`slam_it.edge.pipeline.TrackingState`,
+/// ORB-SLAM's `Tracking`'s). A map closed takes it with it.
+#[derive(Debug, Clone, Default)]
+pub struct TrackingState {
+    /// The last tracked frame.
+    pub last_frame: Option<Frame>,
+    /// Its pose and matches.
+    pub last_tracked: Option<Tracked>,
+    /// The last motion `T_last_previous`, if the last two frames were tracked.
+    pub velocity: Option<Matrix4<f64>>,
+    /// The monocular initialisation's reference frame.
+    pub reference: Option<Frame>,
+    /// Where each of the reference's keypoints was last matched.
+    pub previous: Vec<[f64; 2]>,
+    /// Frames in a row not tracked.
+    pub failures: usize,
+    /// Frames since the last recovery, if any.
+    pub since_recovery: Option<usize>,
+    /// The first failed frame's time, while the track is recently lost.
+    pub lost_since: Option<f64>,
+}
+
+impl TrackingState {
+    /// Makes a tracked frame the last one; the velocity only spans consecutive frames.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame.
+    /// * `tracked` - Its pose and matches.
+    ///
+    /// # Errors
+    ///
+    /// An error if the last pose cannot be inverted.
+    pub fn accept(&mut self, frame: &Frame, tracked: &Tracked) -> Result<()> {
+        self.velocity = match &self.last_tracked {
+            Some(last) if self.failures == 0 => Some(tracked.pose * se3::inverse(&last.pose)?),
+            _ => None,
+        };
+        self.last_frame = Some(frame.clone());
+        self.last_tracked = Some(tracked.clone());
+        self.failures = 0;
+        self.lost_since = None;
+        Ok(())
+    }
+
+    /// Counts a frame that was not tracked, which ends the velocity
+    /// (`slam_it.edge.pipeline.TrackingState.fail`).
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame.
+    /// * `keyframes` - The map's keyframes.
+    /// * `options` - The settings.
+    ///
+    /// # Returns
+    ///
+    /// Whether it loses the track: past `loss.relocalize_seconds` since the first failure, or
+    /// for a small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in a
+    /// row.
+    pub fn record_failure(&mut self, frame: &Frame, keyframes: usize, options: &Options) -> bool {
+        self.failures += 1;
+        self.velocity = None;
+        let since = *self.lost_since.get_or_insert(frame.timestamp);
+        if !options.relocalization.enabled || keyframes <= options.loss.reset_keyframes {
+            return self.failures >= options.loss.lost_frames;
+        }
+        frame.timestamp - since > options.loss.relocalize_seconds
+    }
+
+    /// Makes a frame the monocular reference, each keypoint searched from its own position.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame.
+    pub fn set_reference(&mut self, frame: &Frame) {
+        self.previous = frame.features.keypoints.iter().map(|k| k.xy).collect();
+        self.reference = Some(frame.clone());
+    }
+
+    /// Moves the last frame tracked to its keyframe's pose, after a correction moved it.
+    ///
+    /// # Arguments
+    ///
+    /// * `pose` - Its new `T_cam_world`.
+    pub const fn move_last(&mut self, pose: &Matrix4<f64>) {
+        if let Some(last) = &mut self.last_tracked {
+            last.pose = *pose;
+        }
+    }
+}
+
+/// Loop closing's own state from keyframe to keyframe (`slam_it.edge.pipeline.LoopState`,
+/// ORB-SLAM3's `LoopClosing`'s). A map closed takes it with it.
+#[derive(Debug, Clone, Default)]
+pub struct LoopState {
+    /// The loop being confirmed in the map, if any.
+    pub pending: Option<Pending>,
+}
+
+impl LoopState {
+    /// The keyframes the loop being confirmed holds, which mapping's culling spares.
+    ///
+    /// # Returns
+    ///
+    /// Their ids in the map; none when no loop is being confirmed.
+    #[must_use]
+    pub fn held(&self) -> Vec<i64> {
+        self.pending.as_ref().map(Pending::held).unwrap_or_default()
+    }
+}
+
+/// The map being tracked and its keyframe database (`slam_it.edge.pipeline.MapOwner`): every
+/// change to them goes through here. The steps change the map in place, so the owner runs each
+/// step that changes it on its map, then keeps the database in step. In one thread it holds the
+/// map between the steps; it is the one place milestone 2B's B3b gives the map one writer at a
+/// time and tracking a published view of it (the online-SLAM design, section 12).
+#[derive(Debug, Clone)]
+pub struct MapOwner {
+    /// The vocabulary, when relocalising or closing loops.
+    vocabulary: Option<Vocabulary>,
+    /// The map, once initialised.
+    map: Option<Map>,
+    /// The map's keyframe database, when relocalising or closing loops and a map exists.
+    database: Option<Database>,
+}
+
+impl MapOwner {
+    /// An owner with no map yet.
+    ///
+    /// # Arguments
+    ///
+    /// * `vocabulary` - The database's vocabulary; `None` when neither relocalising nor closing
+    ///   loops, and there is no database.
+    ///
+    /// # Returns
+    ///
+    /// The owner.
+    #[must_use]
+    pub const fn new(vocabulary: Option<Vocabulary>) -> Self {
+        Self {
+            vocabulary,
+            map: None,
+            database: None,
+        }
+    }
+
+    /// The map being tracked: none until one starts, and from a lost one to the next.
+    ///
+    /// # Returns
+    ///
+    /// The map, if any.
+    #[must_use]
+    pub const fn map(&self) -> Option<&Map> {
+        self.map.as_ref()
+    }
+
+    /// Its keyframe database: none when neither relocalising nor closing loops, or with no map.
+    ///
+    /// # Returns
+    ///
+    /// The database, if any.
+    #[must_use]
+    pub const fn database(&self) -> Option<&Database> {
+        self.database.as_ref()
+    }
+
+    /// The database's vocabulary, when relocalising or closing loops.
+    ///
+    /// # Returns
+    ///
+    /// The vocabulary, if any.
+    #[must_use]
+    pub const fn vocabulary(&self) -> Option<&Vocabulary> {
+        self.vocabulary.as_ref()
+    }
+
+    /// Takes a map just started, and starts its database with its keyframes.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The new map.
+    ///
+    /// # Errors
+    ///
+    /// A quantisation's error.
+    pub fn start(&mut self, m: Map) -> Result<()> {
+        self.map = Some(m);
+        if self.vocabulary.is_some() {
+            self.database = Some(Database::default());
+            return self.sync_database();
+        }
+        Ok(())
+    }
+
+    /// Counts a frame tracked against the local map: the points seen, and found, in it.
+    ///
+    /// # Arguments
+    ///
+    /// * `visible` - The points the frame's view held, by the map's ids.
+    /// * `found` - The points it tracked.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` with no map, or for an id the map does not hold.
+    pub fn count(&mut self, visible: &[i64], found: &[i64]) -> Result<()> {
+        let Some(m) = &mut self.map else {
+            return fail(ErrorKind::InvalidInput, "count: no map");
+        };
+        map::count(m, visible, &vec![1; visible.len()], &vec![0; visible.len()])?;
+        map::count(m, found, &vec![0; found.len()], &vec![1; found.len()])
+    }
+
+    /// Runs a mapping step on the map, then brings the database to its keyframes.
+    ///
+    /// # Arguments
+    ///
+    /// * `step` - The step, given the map to change in place.
+    ///
+    /// # Returns
+    ///
+    /// The step's result.
+    ///
+    /// # Errors
+    ///
+    /// The step's, the database's, or `InvalidInput` with no map.
+    pub fn apply_mapping<T>(&mut self, step: impl FnOnce(&mut Map) -> Result<T>) -> Result<T> {
+        let Some(m) = &mut self.map else {
+            return fail(ErrorKind::InvalidInput, "mapping: no map");
+        };
+        let out = step(m)?;
+        self.sync_database()?;
+        Ok(out)
+    }
+
+    /// Runs a loop's correction on the map, held through the handshake ([`MapOwner::stopped`]),
+    /// then brings the database to its keyframes.
+    ///
+    /// # Arguments
+    ///
+    /// * `step` - The correction, given the map to change in place.
+    ///
+    /// # Returns
+    ///
+    /// The correction's result.
+    ///
+    /// # Errors
+    ///
+    /// The correction's, the database's, or `InvalidInput` with no map.
+    pub fn apply_correction<T>(&mut self, step: impl FnOnce(&mut Map) -> Result<T>) -> Result<T> {
+        let out = self.stopped(step)?;
+        self.sync_database()?;
+        Ok(out)
+    }
+
+    /// The handshake: runs a change on the map held, mapping stopped and global BA aborted, then
+    /// both released, as ORB-SLAM's loop closing does (`RequestStop`, `mbStopGBA`, `Release`).
+    /// In one thread nothing runs beside the change, so there is nothing to stop or abort: this
+    /// is the one place milestone 2B's B3b's threads do it, and its merge (B4) enters it too.
+    ///
+    /// # Arguments
+    ///
+    /// * `step` - The change, given the map to change in place.
+    ///
+    /// # Returns
+    ///
+    /// The change's result.
+    ///
+    /// # Errors
+    ///
+    /// The change's, or `InvalidInput` with no map.
+    pub fn stopped<T>(&mut self, step: impl FnOnce(&mut Map) -> Result<T>) -> Result<T> {
+        let Some(m) = &mut self.map else {
+            return fail(ErrorKind::InvalidInput, "stopped: no map");
+        };
+        step(m)
+    }
+
+    /// Empties the map's archive of removals, once the atlas has dated them.
+    pub fn clear_gone(&mut self) {
+        if let Some(m) = &mut self.map {
+            map::clear_gone(m);
+        }
+    }
+
+    /// Gives up the map, lost: the database goes with it.
+    ///
+    /// # Returns
+    ///
+    /// The map, if there was one.
+    pub fn close(&mut self) -> Option<Map> {
+        self.database = None;
+        self.map.take()
+    }
+
+    /// Brings the keyframe database to the map's keyframes: adds the new, erases the culled.
+    ///
+    /// # Errors
+    ///
+    /// A quantisation's error.
+    fn sync_database(&mut self) -> Result<()> {
+        let (Some(vocabulary), Some(m), Some(database)) =
+            (&self.vocabulary, &self.map, &mut self.database)
+        else {
+            return Ok(()); // no keyframe database
+        };
+        let culled: Vec<i64> = database
+            .keyframes
+            .keys()
+            .copied()
+            .filter(|&id| m.keyframe_row(id).is_none())
+            .collect();
+        for id in culled {
+            database.erase(id)?;
+        }
+        for (k, &id) in m.kf_id.iter().enumerate() {
+            if !database.keyframes.contains_key(&id) {
+                let rows = m.kf_start[k]..m.kf_start[k + 1];
+                database.add(vocabulary, id, &m.kp_descriptor[rows])?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Pairs a monocular frame with the reference, or makes it the reference.
 ///
 /// # Arguments
 ///
-/// * `id` - The id.
+/// * `state` - Tracking's state: its reference and where its keypoints were last matched.
+/// * `camera` - The camera.
+/// * `frame` - The frame.
+/// * `options` - The settings.
 ///
 /// # Returns
 ///
-/// The index.
-fn to_index(id: i64) -> usize {
-    usize::try_from(id).expect("map ids are non-negative")
+/// The started map, if any, and how the attempt went.
+///
+/// # Errors
+///
+/// A stage's error.
+fn initialize_monocular(
+    state: &mut TrackingState,
+    camera: &Camera,
+    frame: &Frame,
+    options: &Options,
+) -> Result<Initialization> {
+    if frame.size() <= options.initialization.min_features {
+        state.reference = None; // too few features: ORB-SLAM drops its initializer
+        return Ok(Initialization::failed(
+            Outcome::TooFewFeatures,
+            None,
+            Vec::new(),
+        ));
+    }
+    let Some(reference) = &state.reference else {
+        state.set_reference(frame);
+        return Ok(Initialization::failed(
+            Outcome::ReferenceSet,
+            None,
+            Vec::new(),
+        ));
+    };
+    let matched =
+        initialization::match_for_initialization(reference, frame, &state.previous, options)?;
+    if matched.len() < options.initialization.min_matches {
+        let replaced = Some(matched.len());
+        state.set_reference(frame); // the views no longer overlap enough: start again
+        return Ok(Initialization::failed(
+            Outcome::ReferenceReplaced,
+            replaced,
+            Vec::new(),
+        ));
+    }
+    // The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
+    for m in &matched {
+        state.previous[m.first] = frame.features.keypoints[m.second].xy;
+    }
+    let pairs: Vec<[usize; 2]> = matched.iter().map(|m| [m.first, m.second]).collect();
+    // `None` keeps the reference: a later frame may have the parallax.
+    initialization::initialize_monocular(camera, reference, frame, &pairs, options)
 }
 
-/// A count as the run's next id.
+/// Tracks the last frame, or recovers by PnP, or relocalises.
 ///
 /// # Arguments
 ///
-/// * `count` - The points or keyframes made so far.
+/// * `state` - Tracking's state.
+/// * `owner` - The map's owner, for its database.
+/// * `m` - The map.
+/// * `camera` - The camera.
+/// * `frame` - The frame.
+/// * `mode` - The sensor mode.
+/// * `options` - The settings.
 ///
 /// # Returns
 ///
-/// The id.
-fn to_id(count: usize) -> i64 {
-    i64::try_from(count).expect("a run's ids fit in i64")
+/// The placed frame, if any, how it was placed, and the last stage's matches.
+///
+/// # Errors
+///
+/// A stage's error.
+fn place(
+    state: &TrackingState,
+    owner: &MapOwner,
+    m: &Map,
+    camera: &Camera,
+    frame: &Frame,
+    mode: Mode,
+    options: &Options,
+) -> Result<Placed> {
+    let (Some(last_frame), Some(last_tracked)) = (&state.last_frame, &state.last_tracked) else {
+        return fail(
+            ErrorKind::InvalidInput,
+            "track: no last frame to track from",
+        );
+    };
+    // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM tracks
+    // its reference keyframe by bag of words here; the lite pipeline's words only relocalise.
+    let predicted = tracking::predict(&last_tracked.pose, state.velocity.as_ref());
+    let motion = tracking::track_last_frame(
+        m,
+        camera,
+        frame,
+        last_frame,
+        last_tracked,
+        &predicted,
+        mode,
+        options,
+    )?;
+    let mut summary = FrameSummary {
+        motion: Some(motion.summary),
+        ..FrameSummary::default()
+    };
+    if motion.tracked.is_some() {
+        summary.placed_by = Some(Placement::Motion);
+        return Ok(Placed {
+            tracked: motion.tracked,
+            summary,
+            matched: motion.matched,
+        });
+    }
+    let recovery = tracking::relocalize_locally(m, camera, frame, &last_tracked.points, options)?;
+    summary.pnp = Some(recovery.summary);
+    // The database relocalises only with relocalization.enabled: loop closing alone keeps it.
+    let relocalizing = owner.database().filter(|_| options.relocalization.enabled);
+    let (Some(database), Some(vocabulary), None) =
+        (relocalizing, owner.vocabulary(), &recovery.tracked)
+    else {
+        // Placed by the fallback, or not relocalising.
+        if recovery.tracked.is_some() {
+            summary.placed_by = Some(Placement::LocalPnp);
+        }
+        return Ok(Placed {
+            tracked: recovery.tracked,
+            summary,
+            matched: recovery.matched,
+        });
+    };
+    let found = relocalization::relocalize(m, database, vocabulary, camera, frame, options)?;
+    if found.tracked.is_some() {
+        summary.placed_by = Some(Placement::Relocalization);
+    }
+    summary.relocalization = Some(found.summary);
+    Ok(Placed {
+        tracked: found.tracked,
+        summary,
+        matched: found.matched,
+    })
 }
 
-/// A life: the frame that made a point or keyframe, the frame that removed it or -1, and why
-/// (a [`Removal::code`]) or -1.
-pub type Life = [i64; 3];
-
-/// Every point and keyframe a run made, by the run's id (continuing across maps), where each
-/// last was, its life and its map (`slam_it.edge.pipeline.Lifetimes`).
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Lifetimes {
-    /// Every point, its last position in the world frame.
-    pub points: Vec<Vector3<f64>>,
-    /// Their lives.
-    pub point_lives: Vec<Life>,
-    /// Every keyframe's time, ascending.
-    pub keyframe_times: Vec<f64>,
-    /// Its last `T_cam_world`.
-    pub keyframe_poses: Vec<Matrix4<f64>>,
-    /// Their lives.
-    pub keyframe_lives: Vec<Life>,
-    /// Each one's last parent in its map's spanning tree, by the run's id, or -1.
-    pub keyframe_parents: Vec<i64>,
-    /// Each map's strong links when it closed, and the current map's now, by the run's ids,
-    /// ascending.
-    pub keyframe_links: Vec<[i64; 3]>,
-    /// Each map's loop edges, the older keyframe first, by the run's ids, in the order closed.
-    pub keyframe_loops: Vec<[i64; 2]>,
-    /// The map each point was made in.
-    pub point_maps: Vec<i64>,
-    /// The map each keyframe was made in.
-    pub keyframe_maps: Vec<i64>,
+/// Tracking's step (`slam_it.edge.pipeline._track_frame`): places a frame against the map,
+/// tracks the local map, counts its points through the owner, and asks for a keyframe; a frame
+/// not tracked is counted as a failure.
+///
+/// # Arguments
+///
+/// * `state` - Tracking's state.
+/// * `owner` - The map's owner, given the frame's counts.
+/// * `camera` - The camera.
+/// * `frame` - The frame.
+/// * `mode` - The sensor mode.
+/// * `options` - The settings.
+/// * `keyframe_base` - The run's id of the map's keyframe 0, for the summary.
+///
+/// # Returns
+///
+/// How tracking went.
+///
+/// # Errors
+///
+/// A stage's error, or `InvalidInput` with no map.
+fn track_step(
+    state: &mut TrackingState,
+    owner: &mut MapOwner,
+    camera: &Camera,
+    frame: &Frame,
+    mode: Mode,
+    options: &Options,
+    keyframe_base: i64,
+) -> Result<Tracking> {
+    let Some(m) = owner.map() else {
+        return fail(ErrorKind::InvalidInput, "track: no map to track against");
+    };
+    let Placed {
+        tracked: placed,
+        mut summary,
+        matched,
+    } = place(state, owner, m, camera, frame, mode, options)?;
+    if matches!(
+        summary.placed_by,
+        Some(Placement::LocalPnp | Placement::Relocalization)
+    ) {
+        state.since_recovery = Some(0);
+    } else if let Some(since) = &mut state.since_recovery {
+        *since += 1;
+    }
+    let recent = state
+        .since_recovery
+        .is_some_and(|s| s < options.tracking.max_frames);
+    let wide = state
+        .since_recovery
+        .is_some_and(|s| s < options.tracking.recovery_window_frames);
+    let Some(placed) = placed else {
+        let lost = state.record_failure(frame, m.keyframes(), options);
+        return Ok(Tracking {
+            summary,
+            matched,
+            lost,
+            ..Tracking::default()
+        });
+    };
+    let local = tracking::track_local_map(m, camera, frame, &placed, mode, options, wide)?;
+    summary.local_map = Some(local.summary(keyframe_base));
+    owner.count(&local.visible, &local.found)?;
+    let Some(m) = owner.map() else {
+        return fail(ErrorKind::InvalidInput, "track: no map to track against");
+    };
+    let needed = if recent {
+        options.tracking.recovery_tracked
+    } else {
+        options.tracking.min_tracked
+    };
+    if local.tracked.inliers() < needed {
+        let lost = state.record_failure(frame, m.keyframes(), options);
+        return Ok(Tracking {
+            summary,
+            matched: local.matched,
+            lost,
+            ..Tracking::default()
+        });
+    }
+    let held = recent && m.keyframes() > options.tracking.max_frames;
+    // Placed with inliers, the frame was matched to points: its reference keyframe exists.
+    let Some(reference) = local.reference else {
+        return fail(
+            ErrorKind::InvalidInput,
+            "reference: a tracked frame matched no point of the map",
+        );
+    };
+    let keyframe = !held
+        && mapping::need_keyframe(
+            m,
+            camera,
+            &frame.depth,
+            &local.tracked,
+            reference,
+            mode,
+            options,
+        )?;
+    Ok(Tracking {
+        tracked: Some(local.tracked),
+        summary,
+        matched: local.matched,
+        reference: Some(reference),
+        keyframe,
+        lost: false,
+    })
 }
 
-/// The run's trajectory: each tracked frame's final pose, and its pose as tracked
-/// (`slam_it.edge.pipeline.Trajectory`). A reset map's frames are left out.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Trajectory {
-    /// Each tracked frame's time, in the order tracked.
-    pub timestamps: Vec<f64>,
-    /// Its final `T_cam_world`: its pose relative to its reference keyframe, carried by the
-    /// keyframe's last pose.
-    pub poses: Vec<Matrix4<f64>>,
-    /// Its `T_cam_world` as tracked.
-    pub tracked: Vec<Matrix4<f64>>,
-    /// The map it was tracked in.
-    pub maps: Vec<i64>,
+/// Loop closing's step (`slam_it.edge.pipeline._close_loops`): searches the newest keyframe
+/// for a loop, and corrects one that closes, through the owner.
+///
+/// # Arguments
+///
+/// * `state` - Loop closing's state.
+/// * `owner` - The map's owner.
+/// * `camera` - The camera.
+/// * `mode` - The sensor mode.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// How it went (`None` when loop closing is off, there is no database, or the keyframe is the
+/// map's first), and whether a loop was corrected.
+///
+/// # Errors
+///
+/// Detection's, the correction's or the database's.
+fn close_loops(
+    state: &mut LoopState,
+    owner: &mut MapOwner,
+    camera: &Camera,
+    mode: Mode,
+    options: &Options,
+) -> Result<(Option<LoopSummary>, bool)> {
+    let (Some(m), Some(database)) = (owner.map(), owner.database()) else {
+        return Ok((None, false));
+    };
+    let keyframe = m.kf_id[m.keyframes() - 1];
+    if !options.loops.enabled || keyframe == 0 {
+        return Ok((None, false));
+    }
+    let found = loops::detect(
+        m,
+        database,
+        camera,
+        keyframe,
+        state.pending.as_ref(),
+        mode,
+        options,
+    )?;
+    state.pending = found.pending;
+    let mut correction = None;
+    if let Some(closed) = &found.closed {
+        correction =
+            Some(owner.apply_correction(|m| loops::correct(m, camera, closed, mode, options))?);
+    }
+    let corrected = correction.is_some();
+    Ok((
+        Some(LoopSummary {
+            detection: found.summary,
+            correction,
+        }),
+        corrected,
+    ))
 }
 
-/// A tracked frame's place, for the final trajectory (`slam_it.edge.pipeline._Placement`).
-#[derive(Debug, Clone, PartialEq)]
-struct FramePlace {
-    /// The frame's time.
-    timestamp: f64,
-    /// The map it was tracked in.
-    map: i64,
-    /// The run's id of its reference keyframe.
-    reference: i64,
-    /// Its pose relative to it, `T_cam_ref`.
-    relative: Matrix4<f64>,
-    /// Its `T_cam_world` as tracked.
-    tracked: Matrix4<f64>,
-}
-
-/// The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`).
+/// The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`): tracking, local
+/// mapping and loop closing as steps over state of their own, called in turn.
 #[derive(Debug, Clone)]
 pub struct Pipeline {
     /// The sensor mode.
@@ -350,48 +915,14 @@ pub struct Pipeline {
     options: Options,
     /// Where the pipeline is.
     state: State,
-    /// The map, once initialised.
-    map: Option<Map>,
-    /// The last tracked frame.
-    last_frame: Option<Frame>,
-    /// Its pose and matches.
-    last_tracked: Option<Tracked>,
-    /// The last motion `T_last_previous`, if the last two frames were tracked.
-    velocity: Option<Matrix4<f64>>,
-    /// The monocular initialisation's reference frame.
-    reference: Option<Frame>,
-    /// Where each of the reference's keypoints was last matched.
-    previous: Vec<[f64; 2]>,
-    /// Frames in a row not tracked.
-    failures: usize,
-    /// The vocabulary, when relocalising or closing loops.
-    vocabulary: Option<Vocabulary>,
-    /// The map's keyframe database, when relocalising or closing loops and a map exists.
-    database: Option<Database>,
-    /// The first failed frame's time, while the track is recently lost.
-    lost_since: Option<f64>,
-    /// Frames since the last recovery, if any.
-    since_recovery: Option<usize>,
-    /// Frames given so far.
-    frames: i64,
-    /// The current map's id, if there is one.
-    map_id: Option<i64>,
-    /// The maps started so far: the next one's id.
-    maps: i64,
-    /// The run's id of the current map's keyframe 0.
-    kf_base: i64,
-    /// The run's id of the current map's point 0.
-    pt_base: i64,
-    /// Every point and keyframe made so far, by the run's id: those no longer in the current
-    /// map (removed, or in a closed map) where they last were; the others' entries are
-    /// placeholders, filled from the map by [`Pipeline::lifetimes`].
-    lives: Lifetimes,
-    /// The loop being confirmed in the current map, if any.
-    pending: Option<Pending>,
-    /// Each tracked frame's place, for the final trajectory ([`Pipeline::trajectory`]).
-    placements: Vec<FramePlace>,
-    /// Each culled keyframe's parent and pose relative to it, by the run's ids.
-    culled: BTreeMap<i64, (i64, Matrix4<f64>)>,
+    /// Tracking's own state.
+    tracking: TrackingState,
+    /// Loop closing's own state.
+    closing: LoopState,
+    /// The map being tracked and its database.
+    owner: MapOwner,
+    /// The run's records.
+    atlas: Atlas,
 }
 
 impl Pipeline {
@@ -445,26 +976,10 @@ impl Pipeline {
             camera,
             options,
             state: State::NotInitialized,
-            map: None,
-            last_frame: None,
-            last_tracked: None,
-            velocity: None,
-            reference: None,
-            previous: Vec::new(),
-            failures: 0,
-            vocabulary,
-            database: None,
-            lost_since: None,
-            since_recovery: None,
-            frames: 0,
-            map_id: None,
-            maps: 0,
-            kf_base: 0,
-            pt_base: 0,
-            lives: Lifetimes::default(),
-            pending: None,
-            placements: Vec::new(),
-            culled: BTreeMap::new(),
+            tracking: TrackingState::default(),
+            closing: LoopState::default(),
+            owner: MapOwner::new(vocabulary),
+            atlas: Atlas::new(options),
         })
     }
 
@@ -497,7 +1012,7 @@ impl Pipeline {
     /// The map, if any.
     #[must_use]
     pub const fn map(&self) -> Option<&Map> {
-        self.map.as_ref()
+        self.owner.map()
     }
 
     /// Tracks one frame (and maps, if it becomes a keyframe).
@@ -521,21 +1036,23 @@ impl Pipeline {
         } else {
             self.initialize(frame)?
         };
-        self.date();
+        self.atlas.date(self.owner.map());
+        self.owner.clear_gone();
         let state = if step.lost { State::Lost } else { self.state };
-        let map_id = self.map_id;
+        let map_id = self.atlas.map_id();
+        let base = self.atlas.point_base();
         let mut fates = Fates {
             fate: vec![Fate::Unmatched; frame.size()],
             point: vec![-1; frame.size()],
         };
-        fates.mark(Fate::Rejected, &step.matched, self.pt_base);
+        fates.mark(Fate::Rejected, &step.matched, base);
         if let Some(t) = &step.tracked {
-            fates.mark(Fate::Tracked, &t.points, self.pt_base);
+            fates.mark(Fate::Tracked, &t.points, base);
         }
-        fates.mark(Fate::Made, &step.made, self.pt_base);
+        fates.mark(Fate::Made, &step.made, base);
         let mut summary = step.summary;
         if step.lost
-            && let Some(lost) = self.map.take()
+            && let Some(lost) = self.owner.close()
         {
             summary.lost = Some(self.close(&lost));
         }
@@ -556,8 +1073,8 @@ impl Pipeline {
         })
     }
 
-    /// Every point and keyframe the run has made, with their lives
-    /// (`slam_it.edge.pipeline.Pipeline.lifetimes`).
+    /// Every point and keyframe the run has made, with their lives ([`Atlas::lifetimes`], with
+    /// the current map).
     ///
     /// # Returns
     ///
@@ -565,177 +1082,36 @@ impl Pipeline {
     /// the others where they last were.
     #[must_use]
     pub fn lifetimes(&self) -> Lifetimes {
-        let mut out = self.lives.clone();
-        if let Some(m) = &self.map {
-            for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
-                out.points[to_index(self.pt_base + id)] = *xyz;
-            }
-            for (k, &id) in m.kf_id.iter().enumerate() {
-                let row = to_index(self.kf_base + id);
-                out.keyframe_times[row] = m.kf_time[k];
-                out.keyframe_poses[row] = m.kf_pose[k];
-                out.keyframe_parents[row] = self.run_id(m.kf_parent[k]);
-            }
-            out.keyframe_links.extend(self.run_links(m));
-            out.keyframe_loops.extend(self.run_loops(m));
-        }
-        out
+        self.atlas.lifetimes(self.owner.map())
     }
 
-    /// The run's trajectory so far: each tracked frame's final pose, and as tracked
-    /// (`slam_it.edge.pipeline.Pipeline.trajectory`).
+    /// The run's trajectory so far ([`Atlas::trajectory`], with the current map).
     ///
     /// # Returns
     ///
-    /// The frames tracked, but a reset map's, each placed by its reference keyframe's last
-    /// pose, through the keyframe's culled ancestors where it was culled.
+    /// The frames tracked, but a reset map's.
     #[must_use]
     pub fn trajectory(&self) -> Trajectory {
-        let last = self.lifetimes().keyframe_poses;
-        let mut out = Trajectory::default();
-        for placed in &self.placements {
-            let (mut pose, mut keyframe) = (placed.relative, placed.reference);
-            while let Some(&(parent, relative)) = self.culled.get(&keyframe) {
-                pose *= relative;
-                keyframe = parent;
-            }
-            let anchor = usize::try_from(keyframe).ok().and_then(|k| last.get(k));
-            out.timestamps.push(placed.timestamp);
-            out.poses
-                .push(anchor.map_or(placed.tracked, |anchor| pose * anchor));
-            out.tracked.push(placed.tracked);
-            out.maps.push(placed.map);
-        }
-        out
-    }
-
-    /// A map's loop edges, by the run's ids.
-    fn run_loops(&self, m: &Map) -> Vec<[i64; 2]> {
-        m.loop_edges
-            .iter()
-            .map(|&[a, b]| [self.kf_base + a, self.kf_base + b])
-            .collect()
-    }
-
-    /// A parent of the current map, by the run's id: -1 kept.
-    fn run_id(&self, parent: i64) -> i64 {
-        if parent >= 0 {
-            self.kf_base + parent
-        } else {
-            -1
-        }
-    }
-
-    /// A map's strong links, by the run's ids.
-    fn run_links(&self, m: &Map) -> Vec<[i64; 3]> {
-        covisibility::strong_links(m, &self.options)
-            .into_iter()
-            .map(|[a, b, weight]| [self.kf_base + a, self.kf_base + b, weight])
-            .collect()
-    }
-
-    /// Dates what this frame made and removed, and empties the map's archive of removals.
-    fn date(&mut self) {
-        let frame = self.frames;
-        self.frames += 1;
-        let (Some(m), Some(map_id)) = (&mut self.map, self.map_id) else {
-            return;
-        };
-        let lives = &mut self.lives;
-        let points = to_index(self.pt_base + m.next_pt_id);
-        lives.point_lives.resize(points, [frame, -1, -1]);
-        lives.point_maps.resize(points, map_id);
-        lives.points.resize(points, Vector3::zeros());
-        let keyframes = to_index(self.kf_base + m.next_kf_id);
-        lives.keyframe_lives.resize(keyframes, [frame, -1, -1]);
-        lives.keyframe_maps.resize(keyframes, map_id);
-        lives.keyframe_times.resize(keyframes, 0.0);
-        lives.keyframe_poses.resize(keyframes, Matrix4::identity());
-        lives.keyframe_parents.resize(keyframes, -1);
-        for ((&id, xyz), &how) in m.gone_pt_id.iter().zip(&m.gone_pt_xyz).zip(&m.gone_pt_how) {
-            let id = to_index(self.pt_base + id);
-            lives.point_lives[id] = [lives.point_lives[id][0], frame, how];
-            lives.points[id] = *xyz;
-        }
-        for (g, &id) in m.gone_kf_id.iter().enumerate() {
-            let id = to_index(self.kf_base + id);
-            lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, Removal::Culled.code()];
-            lives.keyframe_times[id] = m.gone_kf_time[g];
-            lives.keyframe_poses[id] = m.gone_kf_pose[g];
-            let parent = m.gone_kf_parent[g];
-            lives.keyframe_parents[id] = if parent >= 0 {
-                self.kf_base + parent
-            } else {
-                -1
-            };
-            if parent >= 0 {
-                self.culled.insert(
-                    self.kf_base + m.gone_kf_id[g],
-                    (self.kf_base + parent, m.gone_kf_relative[g]),
-                );
-            }
-        }
-        map::clear_gone(m);
+        self.atlas.trajectory(self.owner.map())
     }
 
     /// Closes the map the track was lost in, on this frame: keeps it, or resets it if it has
-    /// `loss.reset_keyframes` keyframes or fewer (its lives end, as [`Removal::Reset`]). The
-    /// tracking state goes with it, so the next frame starts a new map. A stand-in until
-    /// milestone 2B's B4: the map's strong links are counted here, for the run's record, inside
-    /// the frame's timed step (58 to 360 ms in the C++ program on the test set's largest maps);
-    /// B4's atlas keeps maps whole, and the record moves with it (the online-SLAM design,
-    /// section 4).
+    /// `loss.reset_keyframes` keyframes or fewer ([`Atlas::close`]). Tracking's and loop
+    /// closing's state go with it, so the next frame starts a new map.
     ///
     /// # Arguments
     ///
-    /// * `m` - The map, taken out of the pipeline.
+    /// * `m` - The map, given up by the owner.
     ///
     /// # Returns
     ///
     /// The closed map's summary.
     fn close(&mut self, m: &Map) -> LostSummary {
-        let frame = self.frames - 1; // dated already
         let reset = m.kf_id.len() <= self.options.loss.reset_keyframes;
-        let code = Removal::Reset.code();
-        let parents: Vec<i64> = m.kf_parent.iter().map(|&p| self.run_id(p)).collect();
-        let links = self.run_links(m);
-        let loop_edges = self.run_loops(m);
-        let lives = &mut self.lives;
-        for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
-            let id = to_index(self.pt_base + id);
-            lives.points[id] = *xyz;
-            if reset {
-                lives.point_lives[id] = [lives.point_lives[id][0], frame, code];
-            }
-        }
-        for (k, &id) in m.kf_id.iter().enumerate() {
-            let id = to_index(self.kf_base + id);
-            lives.keyframe_times[id] = m.kf_time[k];
-            lives.keyframe_poses[id] = m.kf_pose[k];
-            lives.keyframe_parents[id] = parents[k];
-            if reset {
-                lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, code];
-            }
-        }
-        lives.keyframe_links.extend(links);
-        lives.keyframe_loops.extend(loop_edges);
-        if reset {
-            // Its frames' poses go with it.
-            let closing = self.map_id;
-            self.placements.retain(|p| Some(p.map) != closing);
-        }
-        self.pending = None;
-        self.map_id = None;
+        self.atlas.close(m, reset);
+        self.tracking = TrackingState::default();
+        self.closing = LoopState::default();
         self.state = State::NotInitialized;
-        self.last_frame = None;
-        self.last_tracked = None;
-        self.velocity = None;
-        self.reference = None;
-        self.previous.clear();
-        self.failures = 0;
-        self.since_recovery = None;
-        self.lost_since = None;
-        self.database = None;
         LostSummary {
             keyframes: m.kf_id.len(),
             points: m.pt_id.len(),
@@ -758,7 +1134,7 @@ impl Pipeline {
     /// A stage's error.
     fn initialize(&mut self, frame: &Frame) -> Result<Step> {
         let attempt = if self.mode == Mode::Monocular {
-            self.initialize_monocular(frame)?
+            initialize_monocular(&mut self.tracking, &self.camera, frame, &self.options)?
         } else {
             initialization::initialize_from_depth(frame, &self.options)?
         };
@@ -772,19 +1148,15 @@ impl Pipeline {
                 ..Step::default()
             });
         };
-        if self.vocabulary.is_some() {
-            let mut database = Database::default();
-            self.sync_database(&mut database, &map)?;
-            self.database = Some(database);
-        }
-        self.map_id = Some(self.maps);
-        self.maps += 1;
-        self.kf_base = to_id(self.lives.keyframe_lives.len());
-        self.pt_base = to_id(self.lives.point_lives.len());
+        let reference = map.kf_id[map.keyframes() - 1];
+        self.owner.start(map)?;
+        self.atlas.start();
         self.state = State::Tracking;
-        self.place_frame(&map, frame, &tracked, map.kf_id[map.keyframes() - 1])?;
-        self.map = Some(map);
-        self.accept(frame, &tracked)?;
+        if let Some(m) = self.owner.map() {
+            self.atlas
+                .place_frame(m, frame.timestamp, reference, &tracked.pose)?;
+        }
+        self.tracking.accept(frame, &tracked)?;
         summary.placed_by = Some(Placement::Initialization);
         Ok(Step {
             made: tracked.points.clone(), // every point the frame observes was made of it
@@ -795,11 +1167,11 @@ impl Pipeline {
             matched: Vec::new(),
             lost: false,
             loop_seconds: 0.0,
-            corrected: false,
         })
     }
 
-    /// Pairs a monocular frame with the reference, or makes it the reference.
+    /// Runs the steps on a frame: tracks it, and maps and closes loops if it becomes a
+    /// keyframe.
     ///
     /// # Arguments
     ///
@@ -807,355 +1179,55 @@ impl Pipeline {
     ///
     /// # Returns
     ///
-    /// The started map, if any, and how the attempt went.
-    ///
-    /// # Errors
-    ///
-    /// A stage's error.
-    fn initialize_monocular(&mut self, frame: &Frame) -> Result<Initialization> {
-        if frame.size() <= self.options.initialization.min_features {
-            self.reference = None; // too few features: ORB-SLAM drops its initializer
-            return Ok(Initialization::failed(
-                Outcome::TooFewFeatures,
-                None,
-                Vec::new(),
-            ));
-        }
-        let Some(reference) = &self.reference else {
-            self.set_reference(frame);
-            return Ok(Initialization::failed(
-                Outcome::ReferenceSet,
-                None,
-                Vec::new(),
-            ));
-        };
-        let matched = initialization::match_for_initialization(
-            reference,
-            frame,
-            &self.previous,
-            &self.options,
-        )?;
-        if matched.len() < self.options.initialization.min_matches {
-            let replaced = Some(matched.len());
-            self.set_reference(frame); // the views no longer overlap enough: start again
-            return Ok(Initialization::failed(
-                Outcome::ReferenceReplaced,
-                replaced,
-                Vec::new(),
-            ));
-        }
-        // The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
-        for m in &matched {
-            self.previous[m.first] = frame.features.keypoints[m.second].xy;
-        }
-        let pairs: Vec<[usize; 2]> = matched.iter().map(|m| [m.first, m.second]).collect();
-        // `None` keeps the reference: a later frame may have the parallax.
-        initialization::initialize_monocular(&self.camera, reference, frame, &pairs, &self.options)
-    }
-
-    /// Makes a frame the monocular reference, each keypoint searched from its own position.
-    ///
-    /// # Arguments
-    ///
-    /// * `frame` - The frame.
-    fn set_reference(&mut self, frame: &Frame) {
-        self.previous = frame.features.keypoints.iter().map(|k| k.xy).collect();
-        self.reference = Some(frame.clone());
-    }
-
-    /// Makes a tracked frame the last one; the velocity only spans consecutive frames.
-    ///
-    /// # Arguments
-    ///
-    /// * `frame` - The frame.
-    /// * `tracked` - Its pose and matches.
-    ///
-    /// # Errors
-    ///
-    /// An error if the last pose cannot be inverted.
-    fn accept(&mut self, frame: &Frame, tracked: &Tracked) -> Result<()> {
-        self.velocity = match &self.last_tracked {
-            Some(last) if self.failures == 0 => Some(tracked.pose * se3::inverse(&last.pose)?),
-            _ => None,
-        };
-        self.last_frame = Some(frame.clone());
-        self.last_tracked = Some(tracked.clone());
-        self.failures = 0;
-        self.lost_since = None;
-        Ok(())
-    }
-
-    /// Keeps a tracked frame's place: its reference keyframe and its pose relative to it
-    /// (`slam_it.edge.pipeline.Pipeline._place_frame`).
-    ///
-    /// # Arguments
-    ///
-    /// * `m` - The map.
-    /// * `frame` - The frame.
-    /// * `tracked` - Its pose.
-    /// * `reference` - The reference keyframe's id in the map.
-    ///
-    /// # Errors
-    ///
-    /// `InvalidInput` for a keyframe the map does not hold.
-    fn place_frame(
-        &mut self,
-        m: &Map,
-        frame: &Frame,
-        tracked: &Tracked,
-        reference: i64,
-    ) -> Result<()> {
-        let k = map::keyframe_row(m, reference)?;
-        let relative = tracked.pose * se3::inverse(&m.kf_pose[k])?;
-        self.placements.push(FramePlace {
-            timestamp: frame.timestamp,
-            map: self.map_id.unwrap_or(0),
-            reference: self.kf_base + reference,
-            relative,
-            tracked: tracked.pose,
-        });
-        Ok(())
-    }
-
-    /// Searches the newest keyframe for a loop, and corrects one that closes
-    /// (`slam_it.edge.pipeline.Pipeline._close_loops`).
-    ///
-    /// # Arguments
-    ///
-    /// * `m` - The map, changed in place by a correction.
-    ///
-    /// # Returns
-    ///
-    /// How it went (`None` when loop closing is off, there is no database, or the keyframe is
-    /// the map's first), and whether a loop was corrected.
-    ///
-    /// # Errors
-    ///
-    /// Detection's, the correction's or the database's.
-    fn close_loops(&mut self, m: &mut Map) -> Result<(Option<LoopSummary>, bool)> {
-        let keyframe = m.kf_id[m.keyframes() - 1];
-        let Some(database) = &self.database else {
-            return Ok((None, false));
-        };
-        if !self.options.loops.enabled || keyframe == 0 {
-            return Ok((None, false));
-        }
-        let found = loops::detect(
-            m,
-            database,
-            &self.camera,
-            keyframe,
-            self.pending.as_ref(),
-            self.mode,
-            &self.options,
-        )?;
-        self.pending = found.pending;
-        let mut correction = None;
-        if let Some(closed) = &found.closed {
-            correction = Some(loops::correct(
-                m,
-                &self.camera,
-                closed,
-                self.mode,
-                &self.options,
-            )?);
-            if let Some(mut database) = self.database.take() {
-                let synced = self.sync_database(&mut database, m);
-                self.database = Some(database);
-                synced?;
-            }
-        }
-        let corrected = correction.is_some();
-        Ok((
-            Some(LoopSummary {
-                detection: found.summary,
-                correction,
-            }),
-            corrected,
-        ))
-    }
-
-    /// Counts a frame that was not tracked, which ends the velocity
-    /// (`slam_it.edge.pipeline.Pipeline._record_failure`).
-    ///
-    /// # Arguments
-    ///
-    /// * `frame` - The frame.
-    /// * `keyframes` - The map's keyframes.
-    ///
-    /// # Returns
-    ///
-    /// Whether it loses the track: past `loss.relocalize_seconds` since the first failure, or for a
-    /// small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in a row.
-    fn record_failure(&mut self, frame: &Frame, keyframes: usize) -> bool {
-        self.failures += 1;
-        self.velocity = None;
-        let since = *self.lost_since.get_or_insert(frame.timestamp);
-        if !self.options.relocalization.enabled || keyframes <= self.options.loss.reset_keyframes {
-            return self.failures >= self.options.loss.lost_frames;
-        }
-        frame.timestamp - since > self.options.loss.relocalize_seconds
-    }
-
-    /// Brings a keyframe database to a map's keyframes: adds the new, erases the culled.
-    ///
-    /// # Arguments
-    ///
-    /// * `database` - The database.
-    /// * `m` - The map.
-    ///
-    /// # Errors
-    ///
-    /// A quantisation's error.
-    fn sync_database(&self, database: &mut Database, m: &Map) -> Result<()> {
-        let Some(vocabulary) = &self.vocabulary else {
-            return Ok(()); // no keyframe database
-        };
-        let culled: Vec<i64> = database
-            .keyframes
-            .keys()
-            .copied()
-            .filter(|&id| m.keyframe_row(id).is_none())
-            .collect();
-        for id in culled {
-            database.erase(id)?;
-        }
-        for (k, &id) in m.kf_id.iter().enumerate() {
-            if !database.keyframes.contains_key(&id) {
-                let rows = m.kf_start[k]..m.kf_start[k + 1];
-                database.add(vocabulary, id, &m.kp_descriptor[rows])?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Tracks the last frame, or recovers by PnP.
-    ///
-    /// # Arguments
-    ///
-    /// * `m` - The map.
-    /// * `frame` - The frame.
-    ///
-    /// # Returns
-    ///
-    /// The placed frame, if any, how it was placed, and the last stage's matches.
-    ///
-    /// # Errors
-    ///
-    /// A stage's error.
-    fn place(&self, m: &Map, frame: &Frame) -> Result<Placed> {
-        let (Some(last_frame), Some(last_tracked)) = (&self.last_frame, &self.last_tracked) else {
-            return fail(
-                ErrorKind::InvalidInput,
-                "track: no last frame to track from",
-            );
-        };
-        // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM
-        // tracks its reference keyframe by bag of words here; the lite pipeline's words only
-        // relocalise.
-        let predicted = tracking::predict(&last_tracked.pose, self.velocity.as_ref());
-        let motion = tracking::track_last_frame(
-            m,
-            &self.camera,
-            frame,
-            last_frame,
-            last_tracked,
-            &predicted,
-            self.mode,
-            &self.options,
-        )?;
-        let mut summary = FrameSummary {
-            motion: Some(motion.summary),
-            ..FrameSummary::default()
-        };
-        if motion.tracked.is_some() {
-            summary.placed_by = Some(Placement::Motion);
-            return Ok(Placed {
-                tracked: motion.tracked,
-                summary,
-                matched: motion.matched,
-            });
-        }
-        let recovery = tracking::relocalize_locally(
-            m,
-            &self.camera,
-            frame,
-            &last_tracked.points,
-            &self.options,
-        )?;
-        summary.pnp = Some(recovery.summary);
-        // The database relocalises only with relocalization.enabled: loop closing alone keeps it.
-        let relocalizing = self
-            .database
-            .as_ref()
-            .filter(|_| self.options.relocalization.enabled);
-        let (Some(database), Some(vocabulary), None) =
-            (relocalizing, &self.vocabulary, &recovery.tracked)
-        else {
-            // Placed by the fallback, or not relocalising.
-            if recovery.tracked.is_some() {
-                summary.placed_by = Some(Placement::LocalPnp);
-            }
-            return Ok(Placed {
-                tracked: recovery.tracked,
-                summary,
-                matched: recovery.matched,
-            });
-        };
-        let found = relocalization::relocalize(
-            m,
-            database,
-            vocabulary,
-            &self.camera,
-            frame,
-            &self.options,
-        )?;
-        if found.tracked.is_some() {
-            summary.placed_by = Some(Placement::Relocalization);
-        }
-        summary.relocalization = Some(found.summary);
-        Ok(Placed {
-            tracked: found.tracked,
-            summary,
-            matched: found.matched,
-        })
-    }
-
-    /// Tracks a frame against the map; inserts a keyframe if one is needed (and times it).
-    ///
-    /// # Arguments
-    ///
-    /// * `frame` - The frame.
-    ///
-    /// # Returns
-    ///
-    /// The tracked frame, if any, whether it became a keyframe, the time mapping it took, and
-    /// how its stages went.
+    /// The tracked frame, if any, whether it became a keyframe, the times mapping and loop
+    /// closing took, and how its stages went.
     ///
     /// # Errors
     ///
     /// A stage's error.
     fn track_frame(&mut self, frame: &Frame) -> Result<Step> {
-        let Some(mut m) = self.map.take() else {
-            return fail(ErrorKind::InvalidInput, "track: no map to track against");
+        let found = track_step(
+            &mut self.tracking,
+            &mut self.owner,
+            &self.camera,
+            frame,
+            self.mode,
+            &self.options,
+            self.atlas.keyframe_base(),
+        )?;
+        let (Some(tracked), Some(reference)) = (found.tracked, found.reference) else {
+            return Ok(Step {
+                summary: found.summary,
+                matched: found.matched,
+                lost: found.lost,
+                ..Step::default()
+            });
         };
-        let placed = self.place(&m, frame);
-        let outcome = placed.and_then(|placed| self.refine(&mut m, frame, placed));
-        self.map = Some(m);
-        let mut step = outcome?;
-        if let Some(t) = &step.tracked {
-            self.accept(frame, t)?;
-            if step.corrected
-                && let (Some(m), Some(last)) = (&self.map, &mut self.last_tracked)
-            {
-                // The last frame, the new keyframe's own, moved with it.
-                last.pose = m.kf_pose[m.keyframes() - 1];
-            }
-        } else {
-            let keyframes = self.map.as_ref().map_or(0, Map::keyframes);
-            step.lost = self.record_failure(frame, keyframes);
+        let mut summary = found.summary;
+        let mut mapped = KeyframeMapped::default();
+        if found.keyframe {
+            mapped = self.map_keyframe(frame, &tracked, &mut summary)?;
+        } else if let Some(m) = self.owner.map() {
+            self.atlas
+                .place_frame(m, frame.timestamp, m.kf_id[reference], &tracked.pose)?;
         }
-        Ok(step)
+        self.tracking.accept(frame, &tracked)?;
+        if mapped.corrected
+            && let Some(m) = self.owner.map()
+        {
+            // The last frame, the new keyframe's own, moved with it.
+            self.tracking.move_last(&m.kf_pose[m.keyframes() - 1]);
+        }
+        Ok(Step {
+            tracked: Some(tracked),
+            keyframe: found.keyframe,
+            map_seconds: mapped.map_seconds,
+            summary,
+            matched: found.matched,
+            made: mapped.made,
+            lost: false,
+            loop_seconds: mapped.loop_seconds,
+        })
     }
 
     /// Maps a new keyframe and closes loops on it, timing each: its place in the trajectory is
@@ -1163,7 +1235,6 @@ impl Pipeline {
     ///
     /// # Arguments
     ///
-    /// * `m` - The map, changed in place.
     /// * `frame` - The keyframe's frame.
     /// * `tracked` - Its pose and matches.
     /// * `summary` - The frame's summary, mapping's and loop closing's written in.
@@ -1177,27 +1248,17 @@ impl Pipeline {
     /// Mapping's, loop closing's or the database's.
     fn map_keyframe(
         &mut self,
-        m: &mut Map,
         frame: &Frame,
         tracked: &Tracked,
         summary: &mut FrameSummary,
     ) -> Result<KeyframeMapped> {
         let start = Instant::now();
-        let holding = self.pending.as_ref().map(Pending::held).unwrap_or_default();
-        let mapped = mapping::process(
-            m,
-            &self.camera,
-            frame,
-            tracked,
-            self.mode,
-            &self.options,
-            &holding,
-        )?;
-        if let Some(mut database) = self.database.take() {
-            let synced = self.sync_database(&mut database, m);
-            self.database = Some(database);
-            synced?;
-        }
+        let holding = self.closing.held();
+        let (camera, mode, options) = (&self.camera, self.mode, &self.options);
+        // Local mapping's step: insert the frame as a keyframe and map around it.
+        let mapped = self.owner.apply_mapping(|m| {
+            mapping::process(m, camera, frame, tracked, mode, options, &holding)
+        })?;
         let mut out = KeyframeMapped {
             map_seconds: start.elapsed().as_secs_f64(),
             made: mapped.made,
@@ -1205,130 +1266,22 @@ impl Pipeline {
         };
         summary.mapping = Some(mapped.summary);
         // The frame's reference is its own keyframe, placed where the frame was.
-        self.placements.push(FramePlace {
-            timestamp: frame.timestamp,
-            map: self.map_id.unwrap_or(0),
-            reference: self.kf_base + m.kf_id[m.keyframes() - 1],
-            relative: Matrix4::identity(),
-            tracked: tracked.pose,
-        });
+        if let Some(m) = self.owner.map() {
+            self.atlas.place_keyframe(m, frame.timestamp, &tracked.pose);
+        }
         let searching = Instant::now();
-        let (looped, corrected) = self.close_loops(m)?;
+        let (looped, corrected) = close_loops(
+            &mut self.closing,
+            &mut self.owner,
+            &self.camera,
+            self.mode,
+            &self.options,
+        )?;
         out.corrected = corrected;
         if let Some(looped) = looped {
             out.loop_seconds = searching.elapsed().as_secs_f64();
             summary.loop_closing = Some(looped);
         }
         Ok(out)
-    }
-
-    /// Tracks the local map from a placed frame, counts its points, and maps it if it needs a
-    /// keyframe.
-    ///
-    /// # Arguments
-    ///
-    /// * `m` - The map, changed in place.
-    /// * `frame` - The frame.
-    /// * `placed` - The placed frame, if any, how it was placed, and the last stage's matches.
-    ///
-    /// # Returns
-    ///
-    /// The tracked frame, if any, whether it became a keyframe, the time mapping it took, and
-    /// how its stages went.
-    ///
-    /// # Errors
-    ///
-    /// A stage's error.
-    fn refine(&mut self, m: &mut Map, frame: &Frame, placed: Placed) -> Result<Step> {
-        let Placed {
-            tracked: placed,
-            mut summary,
-            matched,
-        } = placed;
-        let options = self.options;
-        if matches!(
-            summary.placed_by,
-            Some(Placement::LocalPnp | Placement::Relocalization)
-        ) {
-            self.since_recovery = Some(0);
-        } else if let Some(since) = &mut self.since_recovery {
-            *since += 1;
-        }
-        let recent = self
-            .since_recovery
-            .is_some_and(|s| s < options.tracking.max_frames);
-        let wide = self
-            .since_recovery
-            .is_some_and(|s| s < options.tracking.recovery_window_frames);
-        let Some(placed) = placed else {
-            return Ok(Step {
-                summary,
-                matched,
-                ..Step::default()
-            });
-        };
-        let local =
-            tracking::track_local_map(m, &self.camera, frame, &placed, self.mode, &options, wide)?;
-        summary.local_map = Some(local.summary(self.kf_base));
-        map::count(
-            m,
-            &local.visible,
-            &vec![1; local.visible.len()],
-            &vec![0; local.visible.len()],
-        )?;
-        map::count(
-            m,
-            &local.found,
-            &vec![0; local.found.len()],
-            &vec![1; local.found.len()],
-        )?;
-        let needed = if recent {
-            options.tracking.recovery_tracked
-        } else {
-            options.tracking.min_tracked
-        };
-        if local.tracked.inliers() < needed {
-            return Ok(Step {
-                summary,
-                matched: local.matched,
-                ..Step::default()
-            });
-        }
-        let tracked = local.tracked;
-        let held = recent && m.keyframes() > options.tracking.max_frames;
-        // Placed with inliers, the frame was matched to points: its reference keyframe exists.
-        let Some(reference) = local.reference else {
-            return fail(
-                ErrorKind::InvalidInput,
-                "reference: a tracked frame matched no point of the map",
-            );
-        };
-        let keyframe = !held
-            && mapping::need_keyframe(
-                m,
-                &self.camera,
-                &frame.depth,
-                &tracked,
-                reference,
-                self.mode,
-                &options,
-            )?;
-        let mut mapped = KeyframeMapped::default();
-        if keyframe {
-            mapped = self.map_keyframe(m, frame, &tracked, &mut summary)?;
-        } else {
-            self.place_frame(m, frame, &tracked, m.kf_id[reference])?;
-        }
-        Ok(Step {
-            tracked: Some(tracked),
-            keyframe,
-            map_seconds: mapped.map_seconds,
-            summary,
-            matched: local.matched,
-            made: mapped.made,
-            lost: false,
-            loop_seconds: mapped.loop_seconds,
-            corrected: mapped.corrected,
-        })
     }
 }

@@ -7,12 +7,11 @@ use std::time::Instant;
 use nalgebra::{Matrix4, Vector2};
 
 use slam_it_edge::adjust::Solve;
+use slam_it_edge::atlas::{Lifetimes, Trajectory};
 use slam_it_edge::frames::{self, Camera, DepthMap, Frame};
 use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummary};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
-use slam_it_edge::pipeline::{
-    Fates, FrameResult, FrameSummary, Lifetimes, LoopSummary, Pipeline, Trajectory,
-};
+use slam_it_edge::pipeline::{Fates, FrameResult, FrameSummary, LoopSummary, Pipeline};
 use slam_it_edge::relocalization::RelocalizationSummary;
 use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
 use slam_it_eval::{euroc, png, text, tum, vocabularies};
