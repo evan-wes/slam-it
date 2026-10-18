@@ -824,6 +824,13 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
      it is lost on (kept until now, decided with evan-wes on 2026-10-16).
    - A map's keyframes and points carry their run ids rather than a base, since a merge brings
      one map's into another's.
+
+   *As built:* a map's keyframes and points keep their map's own ids, beside its tables of their
+   run ids, which a merge joins. The active map's ids move on by the matched map's next keyframe
+   and point ids (the merge's offsets), so the frame a merge is made on reports its matches and
+   the points it made by the merged map's ids. What the active map removed before the merge (its
+   points' and keyframes' last places, each culled keyframe's pose relative to its parent) is
+   carried into the matched map's world by the merge's similarity, as the map itself is.
 2. **Relocalisation in every map** (L7), as ORB-SLAM3's paper describes it; its source searches
    the active map alone.
    - Each map's database finds its own candidates, its words counted within the map. All maps'
@@ -832,6 +839,13 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    - ORB-SLAM3's source counts words across the atlas before it drops other maps' candidates,
      so a strong match in another map can raise the cut past every candidate in the active one.
    - Found in another map, tracking goes on in it, and the lost map is kept.
+
+   *As built:* the map left is kept or reset as a lost map is (`loss.reset_keyframes` or fewer
+   keyframes), and the frame's diagnostics say how under `left`, as a lost frame's do under
+   `lost` (null otherwise); tracking goes on in the map found, the last frame's points and
+   motion left behind. When every candidate fails and the last one tried was another map's, its
+   rejected matches are points of that map: they are dropped from the frame's keypoint fates
+   rather than read by the tracked map's ids, in all three languages.
 3. **Detecting a merge, ORB-SLAM3's** (`NewDetectCommonRegions`'s merge branch). It runs on each
    keyframe beside loop detection, by the same stages (section 10, item 2, with B3's
    departures):
@@ -845,6 +859,10 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    so it takes two misses in a row to drop a merge. A monocular merge's Sim(3) carries the two
    maps' scale ratio, with no bound on it (ORB-SLAM3's 0.9 to 1.1 is for inertial maps). The
    loop's searches take two maps: the new keyframe's and the matched one's.
+
+   *As built:* culling spares the last keyframe of a merge being confirmed, as it spares a
+   loop's. The diagnostics' `loop` object records each keyframe's merge search (`merging`) and a
+   merge made (`merge`), null where none ran.
 4. **The merge** (`MergeLocal`, its correction the paper's):
    - mapping is stopped and global BA aborted (B3b's handshake);
    - the matched map, the older, survives with its frame, scale and number. The active map's
@@ -871,11 +889,31 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    - **global BA after,** as after a loop (section 10, item 6), in B3b's thread; ORB-SLAM3's
      source runs it only where one was interrupted. `loops.global_ba` turns it off for both;
    - the two keyframes are recorded as merged (`AddMergeEdge`), and mapping is released.
+
+   *As built:* a loop being confirmed in the active map when it merges is carried into the
+   merged map: its ids moved on by the merge's offsets, and its similarity S carried into the
+   matched map's world, S G⁻¹ for the merge's similarity G. The frame the merge is made on
+   reports the map it was tracked in, the one merged away.
 5. **Sessions:** a run over several sequences in turn, with a new map at each one's start, as
    ORB-SLAM3's `ChangeDataset` starts one (a map of fewer than 12 keyframes reset, others kept).
    The input takes a list of sequences.
+
+   *As built:* `loss.session_keyframes` (12; 0 keeps every map). Before the first frame of each
+   session after the first is tracked, the map tracked is closed by that rule (a reset map's
+   lives ending on that frame), and tracking and loop closing start again. The sequences share
+   one camera. A session keeps its own clock while its first time comes after the last time
+   before; otherwise it is moved on to one frame period after it (the session before's median
+   frame interval), its frames' times with it. That frame's diagnostics record the session
+   (`session`: its index, its sequence, its offset and how the map was closed), and the run's
+   `sequence` names every folder, joined by `+`. The measure (`scripts/measure_testset.py`)
+   takes a sequence's `folders` in turn, and scores the run against their ground truths in turn,
+   each moved on by its session's offset.
 6. **The loss window, measured both ways:** B1's 3 s stays the default. A new map at once is
    measured beside it on the test set (section 15), and decided with evan-wes on the numbers.
+
+   *As built (the measure written, not yet run):* the setting must be positive, so "at once" is
+   `loss.relocalize_seconds` 1e-9 s: the map is lost on its second failed frame in a row, the
+   first trying relocalisation, where ORB-SLAM3's would be lost on the first.
 7. **The run format, version 9, and the bundle's, version 5:**
    - each keyframe and point records the map it ends in; each frame records the map it ends in
      (the final trajectory's) and the map it was tracked in (the as-tracked one's);
@@ -886,6 +924,11 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    - each map is still aligned on its own. The final trajectory holds every kept map's frames,
      where ORB-SLAM3's saves only its largest map's;
    - the viewer draws the merges.
+
+   *As built:* the map each frame was tracked in is `tracked_maps.npy`. The diagnostics' `loop`
+   gains `merging` and `merge` (item 3), and a frame gains `left` (item 2) and, on a session's
+   first frame, `session` (item 5), each null where absent. Not built yet: the bundle stays at
+   version 4, and the viewer does not draw the merges.
 8. **Tests:**
    - the merge room: the loop room's circle with black frames partway, longer than the loss
      window, so the track is lost and a new map starts, and the path passing its start again, so
@@ -893,6 +936,13 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
      ATE and its points' distance to the walls within bounds set from the first runs;
    - the stage comparisons with Python's reference, for the two-map searches and the merge;
    - the records, one per language, regenerated.
+
+   *As built:* the merge room runs at `MERGE_OPTIONS`, the room's settings scaled to its size
+   (`loss.reset_keyframes` 0, `loops.min_keyframes` 6): at ORB-SLAM3's numbers its first map, of
+   about 6 keyframes when the black frames begin, would be reset, and the second would not reach
+   12 keyframes before the camera passes the first map's start. Its bounds are about half again
+   the first runs' (2026-10-17, the same in every language), whose final ATE over the one merged
+   map, aligned once, was 5.46 cm (RGB-D), 5.17 cm (stereo) and 1.85 cm (monocular).
 9. **Not in B4:** reifyscene's adapter for several maps (A10, which lives in reifyscene);
    merging inertial maps (`MergeLocal2`, milestone 6).
 10. **Sim(3) as a group in rung 0, from B3's review panel** (A5, with H3;
