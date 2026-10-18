@@ -1,8 +1,9 @@
 /// @file
 /// @brief The 3x3 SVD every C++ module uses, `Eigen::JacobiSVD<Matrix3d>`, against the golden
-///        fixture `tests/fixtures/foundations/svd3.json`, which Rust's `linalg::svd3` (a port of
-///        the same algorithm) is held to bit for bit. Eigen is the oracle: this program also
-///        writes the fixture, from its own hard matrices, with `--regenerate`:
+///        fixture `tests/fixtures/foundations/svd3.json`, which Rust's
+///        `linalg::jacobi_svd3::svd3` (a port of the same algorithm) is held to bit for bit.
+///        Eigen is the oracle: this program also writes the fixture, from its own hard matrices,
+///        with `--regenerate`:
 ///
 ///            build/native/foundations_test_svd3 --regenerate >
 ///            tests/fixtures/foundations/svd3.json
@@ -174,7 +175,7 @@ int regenerate() {
   const nlohmann::json fixture = {
       {"description",
        "Eigen::JacobiSVD<Matrix3d>'s factors (U, singular values, V; matrices row by row), the "
-       "oracle Rust's linalg::svd3 is held to bit for bit. Written by "
+       "oracle Rust's linalg::jacobi_svd3::svd3 is held to bit for bit. Written by "
        "build/native/foundations_test_svd3 --regenerate (cpp/tests/foundations/test_svd3.cpp)."},
       {"cases", cases}};
   std::cout << fixture.dump(1) << "\n";

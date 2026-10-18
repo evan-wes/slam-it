@@ -1,3 +1,5 @@
+// The P3P solvers follow PoseLib's (Viktor Larsson, BSD-3-Clause; see THIRD_PARTY_NOTICES.md).
+
 //! P3P: the Rust core's camera pose from three world points and their bearings.
 //!
 //! Mirrors `slam_it.foundations.p3p`, whose docstring states the maths: the three distance

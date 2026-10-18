@@ -13,7 +13,7 @@ use crate::correspondences::{
     hartley_normalisation, homogeneous, normalised_plane, null_vector,
 };
 use crate::error::{ErrorKind, Result, fail, fail_setting};
-use crate::linalg::{singular_values3, svd3};
+use crate::linalg::jacobi_svd3::{singular_values3, svd3};
 use crate::ransac::{self, Estimator, Options, RefinedSolution};
 use crate::{fivepoint, nls, se3, so3};
 

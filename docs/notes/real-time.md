@@ -167,14 +167,14 @@ bit-identity here, with the verification below.
   `search_by_projection` reads is built when the frame is assembled, as ORB-SLAM's `Frame`
   assigns its features to a grid, not on every search (about 16 µs a frame saved). Python's
   search needs no grid.
-- **Rust's 3x3 SVD on the stack** (`linalg::svd3`, `singular_values3`): two-sided Jacobi, a
-  port of Eigen's `JacobiSVD` for a square matrix (2x2 SVDs swept over the off-diagonal pairs
-  to 2ε of the largest diagonal entry, signs moved into U, values sorted), where faer
-  allocated. It is the algorithm C++ runs, and gives C++'s bits: on 39,005 test matrices
-  (random, graded, rotations, rank 1 and 2, essential-like, zero, scaled to 1e±300) its U, σ
-  and V equal Eigen's exactly. 0.5 µs a call, against faer's 1 µs. A golden fixture of 20 hard
-  matrices, written by Eigen itself (`foundations_test_svd3 --regenerate`), holds both: the C++
-  test fails if Eigen's factors move, the Rust one if the port's do.
+- **Rust's 3x3 SVD on the stack** (`linalg::jacobi_svd3::svd3`, `singular_values3`): two-sided
+  Jacobi, a port of Eigen's `JacobiSVD` for a square matrix (2x2 SVDs swept over the
+  off-diagonal pairs to 2ε of the largest diagonal entry, signs moved into U, values sorted),
+  where faer allocated. It is the algorithm C++ runs, and gives C++'s bits: on 39,005 test
+  matrices (random, graded, rotations, rank 1 and 2, essential-like, zero, scaled to 1e±300) its
+  U, σ and V equal Eigen's exactly. 0.5 µs a call, against faer's 1 µs. A golden fixture of 20
+  hard matrices, written by Eigen itself (`foundations_test_svd3 --regenerate`), holds both: the
+  C++ test fails if Eigen's factors move, the Rust one if the port's do.
 
 ## Verifying what is no longer the same to the bit
 

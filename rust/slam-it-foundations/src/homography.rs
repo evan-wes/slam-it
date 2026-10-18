@@ -11,7 +11,7 @@ use crate::correspondences::{
     RANK_TOLERANCE, check_point_pairs, fit_sample, hartley_normalisation, null_vector,
 };
 use crate::error::{ErrorKind, Result, fail};
-use crate::linalg::singular_values3;
+use crate::linalg::jacobi_svd3::singular_values3;
 use crate::ransac::{self, Estimator, Options};
 use crate::{se3, so3};
 

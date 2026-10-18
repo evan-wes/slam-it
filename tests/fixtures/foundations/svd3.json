@@ -862,5 +862,5 @@
    ]
   }
  ],
- "description": "Eigen::JacobiSVD<Matrix3d>'s factors (U, singular values, V; matrices row by row), the oracle Rust's linalg::svd3 is held to bit for bit. Written by build/native/foundations_test_svd3 --regenerate (cpp/tests/foundations/test_svd3.cpp)."
+ "description": "Eigen::JacobiSVD<Matrix3d>'s factors (U, singular values, V; matrices row by row), the oracle Rust's linalg::jacobi_svd3::svd3 is held to bit for bit. Written by build/native/foundations_test_svd3 --regenerate (cpp/tests/foundations/test_svd3.cpp)."
 }

@@ -17,7 +17,8 @@ use nalgebra::{DMatrix, DVector, Matrix3, SMatrix, Vector3};
 
 use crate::correspondences::{RANK_TOLERANCE, check_bearing_pairs};
 use crate::error::{ErrorKind, Result, fail};
-use crate::linalg::{eigen_real, least_squares, singular_values3, svd};
+use crate::linalg::jacobi_svd3::singular_values3;
+use crate::linalg::{eigen_real, least_squares, svd};
 
 /// Correspondences a 5-point solver takes.
 pub const SAMPLE_SIZE: usize = 5;
