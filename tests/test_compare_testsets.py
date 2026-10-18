@@ -134,3 +134,25 @@ def test_a_measure_made_without_its_runs_details_is_given_them(
     assert json.loads((copy / "results.jsonl").read_text()) == measured
     assert json.loads((copy / script.UNDETAILED).read_text()) == bare
     assert script.summarize(copy, config) == 0  # nothing left to give
+
+
+def test_summarize_reads_each_sequences_truth_as_its_dataset(
+    script: ModuleType,
+    batches: tuple[Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sequence's truth is read as its config names its dataset (B3's review panel, H10)."""
+    _, on, config = batches
+    copy = tmp_path / "on"
+    shutil.copytree(on, copy)
+    (measured,) = [json.loads(line) for line in (on / "results.jsonl").read_text().splitlines()]
+    bare = {k: v for k, v in measured.items() if k not in script.measure_testset.DETAILS}
+    (copy / "results.jsonl").write_text(json.dumps(bare) + "\n")
+    euroc = tmp_path / "euroc.toml"
+    euroc.write_text(config.read_text() + 'dataset = "euroc"\n')
+    read: list[tuple[str, Path]] = []
+    monkeypatch.setattr(script.runs, "ground_truth", lambda *given: read.append(given))
+    assert script.summarize(copy, euroc) == 1
+    (folder,) = [e.folder for e in script.measure_testset.read_config(config)]
+    assert read == [("euroc", folder)]

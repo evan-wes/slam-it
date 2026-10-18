@@ -118,16 +118,17 @@ def summarize(folder: Path, config: Path) -> int:
     slam_it.foundations.errors.InvalidInputError
         If a result's sequence is not in the config, or ``results.undetailed.jsonl`` exists.
     """
-    folders = {e.name: e.folder for e in measure_testset.read_config(config)}
+    entries = {e.name: e for e in measure_testset.read_config(config)}
     rows = _rows(folder)
     given = 0
     for row in rows:
         if "failed" in row or set(measure_testset.DETAILS) <= set(row):
             continue
-        if row["name"] not in folders:
+        if row["name"] not in entries:
             raise InvalidInputError(f"{config}: no sequence {row['name']!r}")
         run = runs.read_run(folder / row["name"] / "run")
-        truth = runs.ground_truth("tum", folders[row["name"]])
+        entry = entries[row["name"]]
+        truth = runs.ground_truth(entry.dataset, entry.folder)
         scored = None
         if truth is not None:
             with contextlib.suppress(DegenerateError):  # no map aligned: its ATE says so
