@@ -21,6 +21,7 @@
   --graph-tree: #2e8b57;
   --graph-link: #8fbc8f;
   --graph-loop: #c2185b;
+  --graph-merge: #1565c0;
   --point: #3b4a50;
   --camera: #d1453b;
   --backend-cpp: #0e7c8b;
@@ -54,6 +55,7 @@
     --graph-tree: #5fd38d;
     --graph-link: #3c7a52;
     --graph-loop: #f06292;
+    --graph-merge: #64b5f6;
     --point: #c9d3d5;
     --camera: #ef6a5f;
     --backend-cpp: #3fb6c6;

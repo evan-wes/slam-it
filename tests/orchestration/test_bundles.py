@@ -442,3 +442,21 @@ def test_main_bakes_and_says_what(
     out = tmp_path / "bundle"
     assert bundles.main([str(folder), "--sequence", str(sequence), "--out", str(out)]) == 0
     assert capsys.readouterr().out == f"{out}: room_tum (rgbd), {FRAMES} frames, backends python\n"
+
+
+def test_a_merge_is_baked_as_made(merge_runs: RoomRun, tmp_path: Path) -> None:
+    """The merge room's RGB-D run (C++): its merges are baked as the run made them.
+
+    Each joins two keyframes of the map they were merged into, which the page draws while both
+    live; a bundle of merges is version 5.
+    """
+    run = merge_runs("tum", "rgbd", "cpp")
+    assert len(run.keyframe_merges) >= 1
+    out = tmp_path / "bundle"
+    bundles.bake([merge_runs.folder("tum", "rgbd", "cpp")], merge_runs.sequence("tum"), out)
+    assert json.loads((out / "bundle.json").read_text())["version"] == bundles.VERSION == 5
+    baked = np.load(out / "cpp" / "keyframe_merges.npy")
+    assert baked.dtype == np.int32
+    np.testing.assert_array_equal(baked, run.keyframe_merges)
+    maps = np.load(out / "cpp" / "keyframe_maps.npy")
+    assert np.all(maps[baked[:, 0]] == maps[baked[:, 1]])

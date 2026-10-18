@@ -79,6 +79,8 @@ test("each golden backend's arrays agree with its header", async () => {
       const [a, b, weight] = run.keyframeLinks.subarray(l, l + 3);
       assert.ok(a < b && weight >= 1 && run.keyframeMaps[a] === run.keyframeMaps[b], name);
     }
+    // The room closes no loop and makes no merge: both are read, empty.
+    assert.deepEqual([run.keyframeLoops.length, run.keyframeMerges.length], [0, 0], name);
     assert.equal(run.pointLives.length / 3, info.made.points, name);
     assert.equal(run.pointMaps.length, info.made.points, name);
     // Each map's tracked frames are its poses'.
@@ -103,7 +105,7 @@ test("the loader refuses another format, a mis-shaped array, an unknown backend 
   const older = new TextEncoder().encode(JSON.stringify({ ...info, version: 0 })).buffer;
   await assert.rejects(
     loadBundle(over({ "bundle.json": older })),
-    /expected slam-it-bundle version 4/,
+    /expected slam-it-bundle version 5/,
   );
   const short = npy("<f4", "2,", new Float32Array([0, 1]));
   await assert.rejects(
@@ -139,17 +141,23 @@ test("the loader refuses another format, a mis-shaped array, an unknown backend 
     loadBackend(over({ [`${name}/keyframe_links.npy`]: unnamed }), track),
     /keyframe_links.npy: -1 names none/,
   );
-  // A loop's two keyframes are both ids: one past the last, or under 0, names none.
-  for (const ends of [
-    [0, k],
-    [-1, 0],
-  ]) {
-    const loop = npy("<i4", "1, 2", new Int32Array(ends));
-    await assert.rejects(
-      loadBackend(over({ [`${name}/keyframe_loops.npy`]: loop }), track),
-      new RegExp(`keyframe_loops.npy: ${ends[0] < 0 ? -1 : k} names none`),
-    );
+  // A loop's or a merge's two keyframes are both ids: one past the last, or under 0, names none.
+  for (const file of ["keyframe_loops.npy", "keyframe_merges.npy"]) {
+    for (const ends of [
+      [0, k],
+      [-1, 0],
+    ]) {
+      const pair = npy("<i4", "1, 2", new Int32Array(ends));
+      await assert.rejects(
+        loadBackend(over({ [`${name}/${file}`]: pair }), track),
+        new RegExp(`${file}: ${ends[0] < 0 ? -1 : k} names none`),
+      );
+    }
   }
+  // A merge of two of the run's keyframes is read as baked.
+  const merge = npy("<i4", "1, 2", new Int32Array([0, k - 1]));
+  const merged = await loadBackend(over({ [`${name}/keyframe_merges.npy`]: merge }), track);
+  assert.deepEqual(Array.from(merged.keyframeMerges), [0, k - 1]);
 });
 
 /**

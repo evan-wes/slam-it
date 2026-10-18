@@ -929,8 +929,9 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
 
    *As built:* the map each frame was tracked in is `tracked_maps.npy`. The diagnostics' `loop`
    gains `merging` and `merge` (item 3), and a frame gains `left` (item 2) and, on a session's
-   first frame, `session` (item 5), each null where absent. Not built yet: the bundle stays at
-   version 4, and the viewer does not draw the merges.
+   first frame, `session` (item 5), each null where absent. The bundle, version 5, holds each
+   run's merges (`keyframe_merges.npy`), which the viewer draws with the graph as it draws the
+   loops, in a colour of their own.
 8. **Tests:**
    - the merge room: the loop room's circle with black frames partway, longer than the loss
      window, so the track is lost and a new map starts, and the path passing its start again, so
