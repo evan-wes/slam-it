@@ -509,9 +509,12 @@ measure; As tracked is always the frames'.
 - **10 loops close,** one in each of 10 runs, and none at a wrong place. V1_02 monocular's has a
   poor pose (keyframes 130 and 179); fr3_nstr_tex_near_loop RGB-D's is not judged, its first
   keyframe 0.11 s before the ground truth starts.
-- **The final trajectory is closer to the truth than the poses as tracked** on 20 of the 22 runs
-  and the same on 2, the runs with no loop too: each frame takes its keyframe's pose after the
-  local BAs that came later.
+- **The final trajectory is closer to the truth than the poses as tracked:** the frames' final
+  ATE (the measure's `ate`; the Final column holds the keyframes' on TUM's monocular rows) is
+  lower than their ATE as tracked (`ate_tracked`) by 0.1 mm or more on 20 of the 22 runs, the
+  runs with no loop too, and within 0.1 mm on 2 (V1_01 monocular 0.03 mm lower, MH_01 stereo
+  0.004 mm higher), in C++ and Rust alike: each frame takes its keyframe's pose after the local
+  BAs that came later.
 - **Global BA after a loop** lowers the final ATE on 4 runs (fr3_long_office monocular by 2.5
   mm and RGB-D by 5.3, V1_02 stereo by 1.8, V1_03 monocular by 6.3) and raises it on 4
   (fr3_nstr_tex_near_loop monocular by 2.4 mm and RGB-D by 1.9, MH_05 monocular by 1.4, V1_03

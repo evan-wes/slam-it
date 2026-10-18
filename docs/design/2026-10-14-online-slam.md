@@ -280,6 +280,9 @@ Each gets its own section here before its PR, its forks put to the owner then.
   format 7 and the bundle's 4; a record per language, the loop room and the bar; the loop
   sequences and the test set measured. The review panel on the finished slice; offline CI
   before the merge.
+- **Global BA's damping** (after B3, its own PR; B3's review panel, L2, section 11): scaled
+  Levenberg-Marquardt damping in the three languages, measured on the loop sequences and the
+  test set, the records regenerated.
 - **B3b** (0.3.12.0 -> 0.3.13.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
@@ -563,8 +566,11 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
         fr2_360_hemisphere whose keyframes turned 88° but looked 18° apart, its corrected
         relative pose within 0.09 m and 2.3° of the truth;
       - **a poor pose,** which is reported: with the map aligned to the ground truth as the ATE
-        aligns it, the two keyframes' relative pose after the correction misses the truth by
-        more than five times the map's median error, or by more than 5°.
+        aligns it, the two keyframes' relative pose misses the truth by more than five times the
+        map's median error, or by more than 5°; *as built,* their final relative pose, at the
+        run's end, after every later local BA and loop, not the poses just after the correction
+        (B3's review panel, L7), judged by `slam_it.eval.loops`, for the rooms and the measure
+        alike (A7).
 
 ## 11. Measurements (B3)
 
@@ -575,7 +581,11 @@ alone, and runs on real data only when asked.
   the RMSE of the ATE that ORB-SLAM3's paper gives for EuRoC, monocular and stereo, ORB-SLAM2's
   for TUM RGB-D, and ORB-SLAM's for TUM monocular, each checked against its paper. Our headline
   ATE is the same measure. A sequence and mode with no published figure has no ATE bar until
-  ORB-SLAM3 is built and run here, after phase B.
+  ORB-SLAM3 is built and run here, after phase B. *The protocols differ* (B3's review panel,
+  L6): ORB-SLAM3's EuRoC figures are the median of 10 runs, its monocular ones with its atlas
+  merging maps (V1_03 monocular, its paper says, is solved by merging); the bar compares one run
+  at seed 0, without merging, which arrives in B4. Some of the runs that track under 95% of
+  their frames may be what B4's merging addresses.
 - **The loop sequences**, C++ and Rust at seed 0, sharded:
   - TUM's fr3_long_office_household, fr1_desk and fr3_nostructure_texture_near_withloop,
     monocular and RGB-D;
@@ -608,6 +618,17 @@ alone, and runs on real data only when asked.
     passes. Frames tracked: 209,148 in C++ and 209,019 in Rust, against B2's 208,906;
   - the languages decide alike on all 22 loop sequences and on 59 of the test set's 77 runs;
     17 of the other 18 are monocular, which the bar allows (section 10).
+- **Deferred from B3's review panel**
+  ([the report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md), decided by evan-wes on
+  2026-10-17):
+  - **Global BA's damping (L2).** GTSAM's Levenberg-Marquardt damps by λ·I, absolute, from 1e-5
+    up to its bound of 1e5, while a BA's Hessian holds 1e6 to 1e9 on its poses' diagonal: one
+    observation just in front of a camera's image plane stops global BA at its damping limit in
+    its first iteration, the map left as the essential graph made it (advio-13's). g2o, under
+    ORB-SLAM, starts λ at τ times the Hessian's largest diagonal entry; GTSAM offers
+    Marquardt's scaling (`setDiagonalDamping`). In the three languages, in a PR of its own
+    after B3, measured on the loop sequences and the test set, since it changes decisions and
+    the records (section 7).
 
 ## 12. B3b: the threads (0.3.12.0 -> 0.3.13.0)
 
@@ -711,6 +732,11 @@ measures how much.
     - each handshake (stop, release, abort, the view's swap) is tested natively in each
       language;
     - layer 1 builds the C++ tests once more with ThreadSanitizer; Rust's threads are safe code.
+14. **A failed correction, a question from B3's review panel** (H17;
+    [the report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md)): a GTSAM failure inside a
+    loop's correction propagates out of the pipeline's loop closing and ends the whole run. Whether a failed
+    correction should instead be recorded and the loop skipped is decided with B3b's design,
+    where loop closing runs in a thread of its own.
 
 ## 13. Measurements (B3b)
 
@@ -812,6 +838,14 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    - the records, one per language, regenerated.
 9. **Not in B4:** reifyscene's adapter for several maps (A10, which lives in reifyscene);
    merging inertial maps (`MergeLocal2`, milestone 6).
+10. **Sim(3) as a group in rung 0, from B3's review panel** (A5, with H3;
+    [the report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md), decided by evan-wes on
+    2026-10-17), which B4's review panel checks: Sim(3)'s group operations (inverse, scale,
+    rigid part, compose) in one rung-0 module in each language, the RANSAC module named for what
+    it estimates; `graphs` and `edge.loops` use it, one validated split of a similarity (so a
+    similarity `loops.detect` accepts, `graphs` accepts too), and `so3.hat` in place of
+    `graphs._hat`. B4's merge corrects by a Sim(3) with the same operations, and the scale has
+    two definitions today (`cbrt(det)` and a column's norm), which agree only on exact inputs.
 
 ## 15. Measurements (B4)
 

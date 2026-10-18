@@ -1082,6 +1082,35 @@ shared with the owner's other projects.
     sequences and the test set, several runs each since it is threaded, and scored by our
     evaluation: the whole system's yardstick, and the bar's anchor where ORB-SLAM's papers
     publish no figure.
+- **Deferred from milestone 2B's B3 review panel**
+  ([report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md); decided by evan-wes on
+  2026-10-17):
+  - **The loop room's depth bounds (L8).** Its final-ATE bounds are 7 cm in RGB-D and 5.5 cm in
+    stereo against 2 cm in monocular, and its points' distance to the walls 11 cm against 6.5,
+    on exact rendered depth; RGB-D tracking jumps by 3 degrees looking level at a wall
+    (`LOOP_PITCH`). Bounds this loose cannot catch a regression on the depth path: find the
+    cause, then tighten them.
+  - **Guarding against loops at a wrong place (L9).** advio-13's wrong-place loop passed every
+    ORB-SLAM3 check, whose temporal consistency is the only guard here. Back ends now reject
+    inconsistent loops themselves (Graduated Non-Convexity, Yang et al., RA-L 2020, GTSAM's
+    `GncOptimizer`; PCM, Mangelson et al., ICRA 2018), and retrieval has moved to learned global
+    descriptors (MegaLoc, Berton and Masone, CVPR 2025): context for the later rungs.
+  - **Everything that links rung 0 builds GTSAM (A12).** `slam_it_eval` and `slam-it-eval`,
+    every rung-0 test and benchmark, and the Rust crates need GTSAM, and Rust a C++ toolchain; a
+    phone target would cross-build it. If that or an eval-only build comes to matter, a default-on
+    CMake option and cargo feature around `graphs` keeps one library and one crate per rung:
+    weigh it in "Hand-built parts a standard library could replace".
+  - **Loop closing's APIs mirrored unevenly (A14).** `essential_graph` is public in Python and
+    Rust but internal in C++, and the search settings are `Window` in C++ and `Search` in Rust;
+    the Protocol checks only the dispatched functions. Align them when B4 reuses the essential
+    graph.
+  - **`loops` split for B4 (A15, H8).** About 2,200 lines in each language, half of which B4's
+    merge reuses (detection's stages, the essential graph and global BA: the online-SLAM
+    design's section 14, items 3 and 4). When B4 lands, split common-region detection, and
+    perhaps the correction's solves, into modules of their own, rather than growing `loops` or
+    having merging reach into it; and split `correct` (C++'s about 115 lines, under a
+    cognitive-complexity NOLINT) into moving, replacing and fusing, collecting the new links,
+    and the solves, and `slam_it.eval.loops.judge_loops` into its place and pose judgements.
 - **Deferred from the readiness PR's review panel**
   ([report](../reviews/2026-10-18-chore-public-readiness.md)):
   - **The `slam-it-rs` wheel's licence files (readiness PR hygiene review, H7).** The wheel
