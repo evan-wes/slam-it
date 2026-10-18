@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <limits>
 #include <map>
+#include <string>
 #include <utility>
 
 #include "slam_it/eval/png.hpp"
@@ -258,7 +259,20 @@ Result<Frames> read_frames(const std::string& root, double max_difference) {
              .timestamps = colour->stamps,
              .images = {},
              .depths = {},
-             .camera = std::move(*camera)};
+             .camera = std::move(*camera),
+             .mask = std::nullopt};
+  if (const fs::path mask_file = folder / kMaskFile; fs::exists(mask_file)) {
+    auto mask = png::read_gray(mask_file.string());
+    if (!mask) {
+      return std::unexpected(std::move(mask.error()));
+    }
+    if (mask->rows != out.camera.height || mask->cols != out.camera.width) {
+      return fail(ErrorKind::kInvalidInput, mask_file.string() + ": expected the camera's size " +
+                                                std::to_string(out.camera.width) + "x" +
+                                                std::to_string(out.camera.height));
+    }
+    out.mask = std::move(*mask);
+  }
   for (const std::string& name : colour->names) {
     out.images.push_back((folder / name).string());
   }

@@ -14,6 +14,12 @@ they run in:
 Keypoints stay where ORB found them, in the distorted image: bearings come from
 :func:`slam_it.foundations.camera.unproject_or_nan`, and projections go through the full
 camera model, so nothing is undistorted.
+
+**A mask** (each builder's ``mask``: uint8, the image's shape, 0 where nothing is to be
+tracked, such as a camera's burned-in overlay or the car's own body) drops every feature whose
+keypoint falls on a 0, at its nearest pixel, half up (:func:`unmasked`), after extraction: the
+extractor and its parity are unchanged, and the features a mask drops are not replaced. A
+stereo pair's mask is the left image's: the right image's features are matched unmasked.
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it import backends
 from slam_it.foundations import camera as camera_model
 from slam_it.foundations import matching, orb, stereo
-from slam_it.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_number, as_real
+from slam_it.foundations.arrays import MAX_IMAGE_SIDE, as_count, as_image, as_number, as_real
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.foundations.image import pyramid
 
@@ -267,12 +273,13 @@ def _frame(
     )
 
 
-def monocular(
+def monocular(  # noqa: PLR0913 -- the image, its time, the camera, the settings; mask, backend
     image: ArrayLike,
     timestamp: float,
     camera: Camera,
     options: orb.Options,
     *,
+    mask: ArrayLike | None = None,
     backend: str = "python",
 ) -> Frame:
     """Build a monocular frame: features and bearings, no depth.
@@ -287,6 +294,8 @@ def monocular(
         The camera.
     options : slam_it.foundations.orb.Options
         The extraction settings.
+    mask : array_like of uint8, shape (H, W), optional
+        The features to drop: those on a 0 (the module docstring); None keeps them all.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation extracts the features.
 
@@ -294,8 +303,13 @@ def monocular(
     -------
     Frame
         The frame.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the mask's shape differs from the image's.
     """
-    features = orb.extract(image, options, backend=backend)
+    features = _masked(orb.extract(image, options, backend=backend), mask, np.shape(image), backend)
     n = len(features.descriptors)
     return _frame(timestamp, features, camera, np.full(n, np.nan), np.full(n, np.nan))
 
@@ -307,6 +321,10 @@ class Implementation(Protocol):
         self, xy: NDArray[np.float64], depth_map: NDArray[np.float64]
     ) -> NDArray[np.float64]:
         """Read a depth map at each keypoint's nearest pixel."""
+        ...
+
+    def unmasked(self, xy: NDArray[np.float64], mask: NDArray[np.uint8]) -> NDArray[np.int64]:
+        """Return the indices of the keypoints whose nearest pixel the mask keeps."""
         ...
 
 
@@ -349,6 +367,82 @@ def depth_at(xy: ArrayLike, depth_map: ArrayLike, *, backend: str = "python") ->
     return backends.dispatch(backend, __name__, "depth_at", _depth_at, pixels, depths)
 
 
+def _unmasked(xy: Array, mask: NDArray[np.uint8]) -> IntArray:
+    """Return the keypoints the mask keeps (reference)."""
+    h, w = mask.shape
+    col = np.clip(np.floor(xy[:, 0] + 0.5).astype(np.int64), 0, w - 1)
+    row = np.clip(np.floor(xy[:, 1] + 0.5).astype(np.int64), 0, h - 1)
+    return np.flatnonzero(mask[row, col] != 0).astype(np.int64)
+
+
+def _decode_rows(raw: Any, codes: backends.Codes) -> IntArray:  # noqa: ANN401 -- a backend's array
+    """Return a compiled backend's kept rows, checked (never cast)."""
+    del codes  # crosses no codes
+    out: IntArray = backends.checked_array(raw, np.int64, 1, "frames unmasked")
+    return out
+
+
+def unmasked(xy: ArrayLike, mask: ArrayLike, *, backend: str = "python") -> IntArray:
+    """Return the keypoints a mask keeps: those whose nearest pixel (half up) is not 0.
+
+    Parameters
+    ----------
+    xy : array_like, shape (N, 2)
+        The keypoints, in pixels, finite (clamped to the mask's edge, as :func:`depth_at`
+        clamps them).
+    mask : array_like of uint8, shape (H, W)
+        0 where features are dropped, anything else where they are kept.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64
+        The kept keypoints' indices, ascending.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the keypoints are not a finite (N, 2) array, or the mask is not a non-empty (H, W)
+        uint8 array.
+    """
+    pixels = as_real(xy, "xy").reshape(-1, 2) if np.size(xy) else np.zeros((0, 2))
+    keep = as_image(mask, "mask")
+    return backends.call(
+        backend,
+        __name__,
+        "unmasked",
+        reference=lambda: _unmasked(pixels, keep),
+        arguments={"xy": pixels, "mask": keep},
+        decode=_decode_rows,
+    )
+
+
+def _take(features: orb.Features, rows: IntArray) -> orb.Features:
+    """Return the features' rows `rows`, every array kept together."""
+    k = features.keypoints
+    return orb.Features(
+        keypoints=orb.Keypoints(
+            xy=k.xy[rows], level=k.level[rows], level_xy=k.level_xy[rows],
+            response=k.response[rows], angle=k.angle[rows],
+        ),
+        descriptors=features.descriptors[rows],
+        scale_factor=features.scale_factor,
+        levels=features.levels,
+    )  # fmt: skip
+
+
+def _masked(
+    features: orb.Features, mask: ArrayLike | None, shape: tuple[int, ...], backend: str
+) -> orb.Features:
+    """Drop the features a mask of the image's `shape` covers; all of them kept without one."""
+    if mask is None:
+        return features
+    if np.shape(mask) != shape:
+        raise InvalidInputError(f"mask: expected the image's shape {shape}, got {np.shape(mask)}")
+    return _take(features, unmasked(features.keypoints.xy, mask, backend=backend))
+
+
 def rgbd(  # noqa: PLR0913 -- the image and its depth, its time, the camera, the settings
     image: ArrayLike,
     depth_map: ArrayLike,
@@ -356,6 +450,7 @@ def rgbd(  # noqa: PLR0913 -- the image and its depth, its time, the camera, the
     camera: Camera,
     options: orb.Options,
     *,
+    mask: ArrayLike | None = None,
     backend: str = "python",
 ) -> Frame:
     """Build an RGB-D frame: features, and each keypoint's depth and virtual right column.
@@ -372,6 +467,8 @@ def rgbd(  # noqa: PLR0913 -- the image and its depth, its time, the camera, the
         The camera; its ``baseline`` is the virtual one (positive).
     options : slam_it.foundations.orb.Options
         The extraction settings.
+    mask : array_like of uint8, shape (H, W), optional
+        The features to drop: those on a 0 (the module docstring); None keeps them all.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation extracts the features.
 
@@ -383,7 +480,7 @@ def rgbd(  # noqa: PLR0913 -- the image and its depth, its time, the camera, the
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the depth map's shape differs from the image's, or the baseline is 0.
+        If the depth map's or the mask's shape differs from the image's, or the baseline is 0.
     """
     depths = as_real(depth_map, "depth_map", allow_nan=True)
     if depths.shape != np.shape(image):
@@ -392,7 +489,7 @@ def rgbd(  # noqa: PLR0913 -- the image and its depth, its time, the camera, the
         )
     if camera.baseline <= 0.0:
         raise InvalidInputError("camera.baseline: an RGB-D camera needs a virtual baseline")
-    features = orb.extract(image, options, backend=backend)
+    features = _masked(orb.extract(image, options, backend=backend), mask, np.shape(image), backend)
     xy = features.keypoints.xy
     depth = _depth_at(xy, depths)
     right = xy[:, 0] - camera.focal * camera.baseline / depth
@@ -407,6 +504,7 @@ def stereo_pair(  # noqa: PLR0913 -- the pair, its time, the camera, both settin
     options: orb.Options,
     *,
     stereo_options: stereo.Options | None = None,
+    mask: ArrayLike | None = None,
     backend: str = "python",
 ) -> Frame:
     """Build a stereo frame from a rectified pair: left features, matched along rows.
@@ -423,6 +521,9 @@ def stereo_pair(  # noqa: PLR0913 -- the pair, its time, the camera, both settin
         The extraction settings.
     stereo_options : slam_it.foundations.stereo.Options, optional
         The row matching's settings.
+    mask : array_like of uint8, shape (H, W), optional
+        The left image's features to drop: those on a 0 (the module docstring), before the
+        row matching; the right image's are matched unmasked. None keeps them all.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation extracts and matches.
 
@@ -434,7 +535,8 @@ def stereo_pair(  # noqa: PLR0913 -- the pair, its time, the camera, both settin
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the camera is not ``pinhole`` or the baseline is 0.
+        If the camera is not ``pinhole`` or the baseline is 0, or the mask's shape differs from
+        the left image's.
     """
     if camera.model != "pinhole" or camera.baseline <= 0.0:
         raise InvalidInputError(
@@ -443,7 +545,9 @@ def stereo_pair(  # noqa: PLR0913 -- the pair, its time, the camera, both settin
     # Each image's pyramid, built once: extraction and the row matching both read it.
     left_levels = pyramid(left, options.levels, options.scale_factor, backend=backend)
     right_levels = pyramid(right, options.levels, options.scale_factor, backend=backend)
-    features = orb.extract_levels(left_levels, options, backend=backend)
+    features = _masked(
+        orb.extract_levels(left_levels, options, backend=backend), mask, np.shape(left), backend
+    )
     other = orb.extract_levels(right_levels, options, backend=backend)
     found = stereo.match(
         left_levels,

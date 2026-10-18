@@ -146,15 +146,27 @@ struct DepthMap {
 [[nodiscard]] foundations::Result<std::vector<double>> depth_at(
     std::span<const std::array<double, 2>> xy, const DepthMap& depth_map);
 
+/// @brief Return the keypoints a mask keeps: those whose nearest pixel, half up and clamped to
+///        the mask as `depth_at` reads it, is not 0 (`slam_it.edge.frames.unmasked`).
+/// @param xy The keypoints' pixels.
+/// @param mask The mask: 0 where features are dropped.
+/// @return The kept keypoints' indices, ascending; `InvalidInput` for a mask whose pixels do
+///         not fill its shape, or a pixel that is not finite.
+[[nodiscard]] foundations::Result<std::vector<std::int64_t>> unmasked(
+    std::span<const std::array<double, 2>> xy, const foundations::image::Image& mask);
+
 /// @brief Build a monocular frame: features and bearings, no depth.
 /// @param image The gray image.
 /// @param timestamp Its time.
 /// @param camera The camera.
 /// @param options The extraction settings.
-/// @return The frame, or the extraction's error.
+/// @param mask The features to drop after extraction, those on a 0 (`unmasked`); null keeps
+///        them all.
+/// @return The frame; the extraction's error; `InvalidInput` for a mask of another shape.
 [[nodiscard]] foundations::Result<Frame> monocular(const foundations::image::Image& image,
                                                    double timestamp, const Camera& camera,
-                                                   const foundations::orb::Options& options);
+                                                   const foundations::orb::Options& options,
+                                                   const foundations::image::Image* mask = nullptr);
 
 /// @brief Build an RGB-D frame: each keypoint's depth and virtual right column.
 /// @param image The gray image.
@@ -162,11 +174,15 @@ struct DepthMap {
 /// @param timestamp Its time.
 /// @param camera The camera, with its virtual baseline.
 /// @param options The extraction settings.
-/// @return The frame; `InvalidInput` for a depth map of another shape, or no baseline.
+/// @param mask The features to drop after extraction, those on a 0 (`unmasked`); null keeps
+///        them all.
+/// @return The frame; `InvalidInput` for a depth map or a mask of another shape, or no
+///         baseline.
 [[nodiscard]] foundations::Result<Frame> rgbd(const foundations::image::Image& image,
                                               const DepthMap& depth_map, double timestamp,
                                               const Camera& camera,
-                                              const foundations::orb::Options& options);
+                                              const foundations::orb::Options& options,
+                                              const foundations::image::Image* mask = nullptr);
 
 /// @brief Build a stereo frame from a rectified pair: left features, matched along rows.
 /// @param left The rectified left image.
@@ -175,11 +191,15 @@ struct DepthMap {
 /// @param camera The rectified left camera (pinhole) and the pair's baseline.
 /// @param options The extraction settings.
 /// @param stereo_options The row matching's settings.
-/// @return The frame; `InvalidInput` for a camera that is not pinhole or has no baseline.
+/// @param mask The left image's features to drop, those on a 0 (`unmasked`), before the row
+///        matching; the right image's are matched unmasked. Null keeps them all.
+/// @return The frame; `InvalidInput` for a camera that is not pinhole or has no baseline, or a
+///         mask of another shape than the left image's.
 [[nodiscard]] foundations::Result<Frame> stereo_pair(
     const foundations::image::Image& left, const foundations::image::Image& right, double timestamp,
     const Camera& camera, const foundations::orb::Options& options,
-    const foundations::stereo::MatchOptions& stereo_options);
+    const foundations::stereo::MatchOptions& stereo_options,
+    const foundations::image::Image* mask = nullptr);
 
 /// @brief Match projected map points to a frame's keypoints, its right columns checked
 ///        (`slam_it.edge.frames.search`): `foundations::matching::search_by_projection` over

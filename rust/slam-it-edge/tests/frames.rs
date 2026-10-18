@@ -2,7 +2,7 @@
 //! builders' refusals. Parity with the Python reference is checked through the whole-run tests
 //! (tests/orchestration).
 
-use slam_it_edge::frames::{Camera, DepthMap, monocular, rgbd, stereo_pair};
+use slam_it_edge::frames::{Camera, DepthMap, monocular, rgbd, stereo_pair, unmasked};
 use slam_it_foundations::camera::Model;
 use slam_it_foundations::error::ErrorKind;
 use slam_it_foundations::image::Image;
@@ -67,11 +67,11 @@ fn flat(rows: usize, cols: usize) -> DepthMap {
 fn every_mode_builds_a_frame() {
     let image = textured(0);
     let options = orb::Options::default();
-    let mono = monocular(&image, 1.5, &camera(0.0), &options).unwrap();
+    let mono = monocular(&image, 1.5, &camera(0.0), &options, None).unwrap();
     assert!(mono.size() > 100);
     assert!(mono.depth[0].is_nan() && mono.right[0].is_nan());
     assert!((mono.bearings[0].norm() - 1.0).abs() < 1e-12);
-    let depth = rgbd(&image, &flat(ROWS, COLS), 0.0, &camera(0.1), &options).unwrap();
+    let depth = rgbd(&image, &flat(ROWS, COLS), 0.0, &camera(0.1), &options, None).unwrap();
     assert!(depth.size() > 100);
     for (i, k) in depth.features.keypoints.iter().enumerate() {
         assert!((depth.depth[i] - 2.0).abs() < f64::EPSILON);
@@ -83,6 +83,7 @@ fn every_mode_builds_a_frame() {
         &camera(0.1),
         &options,
         &MatchOptions::default(),
+        None,
     )
     .unwrap();
     let truth = 250.0 * 0.1 / DISPARITY as f64;
@@ -103,15 +104,76 @@ fn the_builders_refuse_what_they_cannot_build() {
         0.0,
         &camera(0.1),
         &options,
+        None,
     );
     assert_eq!(wrong.unwrap_err().kind, ErrorKind::InvalidInput);
-    let virtual_less = rgbd(&image, &flat(ROWS, COLS), 0.0, &camera(0.0), &options);
+    let virtual_less = rgbd(&image, &flat(ROWS, COLS), 0.0, &camera(0.0), &options, None);
     assert_eq!(virtual_less.unwrap_err().kind, ErrorKind::InvalidInput);
-    let baseline_less = stereo_pair((&image, &image), 0.0, &camera(0.0), &options, &stereo);
+    let baseline_less = stereo_pair((&image, &image), 0.0, &camera(0.0), &options, &stereo, None);
     assert_eq!(baseline_less.unwrap_err().kind, ErrorKind::InvalidInput);
     let mut distorted = camera(0.1);
     distorted.model = Model::RadTan;
     distorted.intrinsics = vec![250.0, 250.0, 160.0, 120.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-    let not_pinhole = stereo_pair((&image, &image), 0.0, &distorted, &options, &stereo);
+    let not_pinhole = stereo_pair((&image, &image), 0.0, &distorted, &options, &stereo, None);
     assert_eq!(not_pinhole.unwrap_err().kind, ErrorKind::InvalidInput);
+}
+
+/// The smallest column a keypoint kept by the right-half mask can have: the mask keeps from
+/// column `COLS / 2` (160), which a keypoint reaches from 159.5 on, half up.
+const KEPT_FROM: f64 = 159.5;
+
+/// A mask drops the features on its zeros, in every mode, and keeps the rest as extracted; a
+/// mask of another shape is refused.
+#[test]
+fn a_mask_drops_the_features_on_its_zeros() {
+    let image = textured(0);
+    let options = orb::Options::default();
+    let mut mask = Image {
+        rows: ROWS,
+        cols: COLS,
+        pixels: vec![0; ROWS * COLS],
+    };
+    for row in 0..ROWS {
+        for col in COLS / 2..COLS {
+            mask.pixels[row * COLS + col] = 255;
+        }
+    }
+    let all = monocular(&image, 0.0, &camera(0.0), &options, None).unwrap();
+    let kept = monocular(&image, 0.0, &camera(0.0), &options, Some(&mask)).unwrap();
+    let xy: Vec<[f64; 2]> = all.features.keypoints.iter().map(|k| k.xy).collect();
+    let rows = unmasked(&xy, &mask).unwrap();
+    assert!(!rows.is_empty() && rows.len() < all.size());
+    assert_eq!(kept.size(), rows.len());
+    for (j, &i) in rows.iter().enumerate() {
+        assert_eq!(kept.features.keypoints[j], all.features.keypoints[i]);
+        assert_eq!(kept.features.descriptors[j], all.features.descriptors[i]);
+        assert!(kept.features.keypoints[j].xy[0] >= KEPT_FROM);
+    }
+    let depth = rgbd(
+        &image,
+        &flat(ROWS, COLS),
+        0.0,
+        &camera(0.1),
+        &options,
+        Some(&mask),
+    )
+    .unwrap();
+    assert_eq!(depth.size(), rows.len());
+    let pair = stereo_pair(
+        (&image, &textured(DISPARITY)),
+        0.0,
+        &camera(0.1),
+        &options,
+        &MatchOptions::default(),
+        Some(&mask),
+    )
+    .unwrap();
+    assert!(pair.features.keypoints.iter().all(|k| k.xy[0] >= KEPT_FROM));
+    let small = Image {
+        rows: ROWS / 2,
+        cols: COLS / 2,
+        pixels: vec![255; ROWS * COLS / 4],
+    };
+    let wrong = monocular(&image, 0.0, &camera(0.0), &options, Some(&small));
+    assert_eq!(wrong.unwrap_err().kind, ErrorKind::InvalidInput);
 }

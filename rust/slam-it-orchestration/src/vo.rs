@@ -137,6 +137,9 @@ struct Source {
     frames: usize,
     /// Reads one.
     read: Reader,
+    /// The features every frame drops, those on a 0 (a TUM-format folder's `mask.png`); none
+    /// keeps them all.
+    mask: Option<Image>,
 }
 
 /// Builds a frame from its images, for the mode they were delivered for.
@@ -147,6 +150,7 @@ struct Source {
 /// * `camera` - The camera.
 /// * `extraction` - The extraction settings the pipeline asks for.
 /// * `matching` - The stereo matcher's settings.
+/// * `mask` - The features to drop, those on a 0; none keeps them all.
 ///
 /// # Returns
 ///
@@ -160,14 +164,17 @@ fn build(
     camera: &Camera,
     extraction: &orb::Options,
     matching: &stereo::MatchOptions,
+    mask: Option<&Image>,
 ) -> Result<Frame> {
     let timestamp = delivered.timestamp;
     match &delivered.images {
-        Images::Monocular(image) => frames::monocular(image, timestamp, camera, extraction),
+        Images::Monocular(image) => frames::monocular(image, timestamp, camera, extraction, mask),
         Images::Stereo(left, right) => {
-            frames::stereo_pair((left, right), timestamp, camera, extraction, matching)
+            frames::stereo_pair((left, right), timestamp, camera, extraction, matching, mask)
         }
-        Images::Rgbd(image, depth) => frames::rgbd(image, depth, timestamp, camera, extraction),
+        Images::Rgbd(image, depth) => {
+            frames::rgbd(image, depth, timestamp, camera, extraction, mask)
+        }
     }
 }
 
@@ -186,7 +193,8 @@ fn build(
 ///
 /// The reader's.
 fn tum_source(root: &Path, mode: Mode) -> Result<Source> {
-    let read = tum::read_frames(root, tum::MAX_DIFFERENCE)?;
+    let mut read = tum::read_frames(root, tum::MAX_DIFFERENCE)?;
+    let mask = read.mask.take();
     let sensor = &read.camera;
     let baseline = match (mode, sensor.bf) {
         (Mode::Rgbd, Some(bf)) => bf / sensor.intrinsics[0],
@@ -237,6 +245,7 @@ fn tum_source(root: &Path, mode: Mode) -> Result<Source> {
         camera,
         frames: count,
         read: deliver,
+        mask,
     })
 }
 
@@ -334,6 +343,7 @@ fn stereo_source(read: euroc::Frames) -> Result<Source> {
         camera,
         frames: count,
         read: deliver,
+        mask: None,
     })
 }
 
@@ -375,6 +385,7 @@ fn euroc_source(root: &Path, mode: Mode) -> Result<Source> {
         camera,
         frames: count,
         read: deliver,
+        mask: None,
     })
 }
 
@@ -767,6 +778,7 @@ fn track(
             &source.camera,
             &pipeline.extraction(),
             &matching,
+            source.mask.as_ref(),
         )?;
         let built = start.elapsed().as_secs_f64();
         let result = pipeline.track(&frame)?;

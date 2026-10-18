@@ -43,6 +43,7 @@ from tests.orchestration.datasets import (
     WINDOW_BLANKS,
     WINDOW_OPTIONS,
     Room,
+    png,
     room_inputs,
 )
 
@@ -267,6 +268,27 @@ def test_every_backend_matches_the_golden_record(
     golden = np.reshape(expected["poses"], (-1, 16))  # a run whose every map was reset has none
     assert_matches_fixture(run.poses.reshape(-1, 16), golden, GOLDEN["tolerance"])
     assert_records_match(summaries(run), expected["summaries"], SOLVER_TOLERANCE)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_folders_mask_drops_the_features_on_its_zeros(
+    backend: str, room_folders: Room, tmp_path: Path
+) -> None:
+    """A run on a folder with a mask.png records no feature on the mask's zeros, and tracks."""
+    folder = tmp_path / "masked"
+    shutil.copytree(room_folders.tum, folder)
+    mask = np.zeros((240, 320), np.uint8)
+    mask[:, 160:] = 255  # the right half kept: a keypoint from x = 159.5 on, half up
+    png(folder / "mask.png", mask)
+    out = tmp_path / "run"
+    run = vo.run(
+        "tum", folder, "rgbd", out, backend=require_program(backend), count=10,
+        record_features=True,
+    )  # fmt: skip
+    assert len(run.timestamps) > 0
+    pixels = np.asarray(runs.read_features(out, run).pixels)
+    assert len(pixels) > 0
+    assert np.all(pixels[:, 0] >= 159.5)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

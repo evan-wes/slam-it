@@ -1,7 +1,7 @@
 /// @file
 /// @brief Native tests for the sequence readers (slam_it/eval/{tum,euroc}.hpp) against the
 ///        shared fixtures `tests/fixtures/eval/sequences/` and the Python readers' frames,
-///        `sequences.json`; and their refusals.
+///        `sequences.json`; a folder's mask; and their refusals.
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -153,6 +153,37 @@ void check_refusals(int& failures) {
          failures);
 }
 
+/// @brief Check a folder's mask: read when the folder has one, of the camera's size; refused
+///        when it is another size or unreadable.
+/// @param failures Running failure count.
+void check_mask(int& failures) {
+  const slam_it::testing::ScratchDir folder("slam_it_test_sequences_mask");
+  const fs::path recording = folder.path() / "masked";
+  fs::create_directories(recording);
+  std::ofstream(recording / "rgb.txt") << "1.0 a.png\n";
+  std::ofstream(recording / "camera.txt")
+      << "model pinhole\nintrinsics 1 1 0 0\nsize 10 6\ndepth_scale 1\n";
+  const auto bare = tum::read_frames(recording.string());
+  expect(bare.has_value() && !bare->mask.has_value(), "a folder without a mask has none", failures);
+  // The bilevel fixture's first row: 255 255 255 0 0 255 0 0 255 255.
+  fs::copy_file(slam_it::testing::fixture_path("eval/png/bilevel.png"), recording / tum::kMaskFile);
+  const auto masked = tum::read_frames(recording.string());
+  expect(masked.has_value() && masked->mask.has_value() && masked->mask->rows == 6 &&
+             masked->mask->cols == 10 && masked->mask->pixels[2] == 255 &&
+             masked->mask->pixels[3] == 0,
+         "a folder's mask is read as stored", failures);
+  std::ofstream(recording / "camera.txt")
+      << "model pinhole\nintrinsics 1 1 0 0\nsize 9 7\ndepth_scale 1\n";
+  expect(is_invalid_input(tum::read_frames(recording.string())),
+         "a mask of another size than the camera's is refused", failures);
+  fs::copy_file(slam_it::testing::fixture_path("eval/png/truncated.png"),
+                recording / tum::kMaskFile, fs::copy_options::overwrite_existing);
+  std::ofstream(recording / "camera.txt")
+      << "model pinhole\nintrinsics 1 1 0 0\nsize 8 6\ndepth_scale 1\n";
+  expect(is_invalid_input(tum::read_frames(recording.string())), "an unreadable mask is refused",
+         failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run() {
@@ -161,6 +192,7 @@ int run() {
   check_tum(cases["tum"], failures);
   check_euroc(cases["euroc"]["euroc"], failures);
   check_refusals(failures);
+  check_mask(failures);
   return slam_it::testing::finish("eval/sequences", failures);
 }
 

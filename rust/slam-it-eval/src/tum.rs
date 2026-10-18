@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use slam_it_foundations::camera::{self, Model};
 use slam_it_foundations::error::{Error, ErrorKind, Result, fail};
-use slam_it_foundations::image::MAX_SIDE;
+use slam_it_foundations::image::{Image, MAX_SIDE};
 
 use crate::png;
 use crate::text;
@@ -23,6 +23,10 @@ pub const SIZE: (usize, usize) = (640, 480);
 
 /// The file a TUM-format folder describes its own camera in.
 pub const CAMERA_FILE: &str = "camera.txt";
+
+/// The file a TUM-format folder's mask is in, if it has one (`slam_it.eval.tum.MASK_FILE`): an
+/// 8-bit gray PNG the frames' size, 0 where features are dropped.
+pub const MASK_FILE: &str = "mask.png";
 
 /// `camera.txt`'s keys.
 const CAMERA_KEYS: [&str; 4] = ["model", "intrinsics", "size", "depth_scale"];
@@ -85,6 +89,8 @@ pub struct Frames {
     pub depths: Vec<Option<PathBuf>>,
     /// The camera.
     pub camera: Camera,
+    /// The folder's mask ([`MASK_FILE`]), 0 where features are dropped; `None` without one.
+    pub mask: Option<Image>,
 }
 
 /// A depth map in metres (`slam_it.eval.tum.read_depth`).
@@ -406,7 +412,8 @@ pub fn read_camera(root: &Path) -> Result<Camera> {
 /// # Errors
 ///
 /// `InvalidInput` for a missing `rgb.txt`, a malformed file (named with its line), a negative
-/// `max_difference`, or an unreadable camera.
+/// `max_difference`, an unreadable camera, or a mask that is not a readable 8-bit PNG of the
+/// camera's size.
 pub fn read_frames(root: &Path, max_difference: f64) -> Result<Frames> {
     if !(max_difference.is_finite() && max_difference >= 0.0) {
         return fail(
@@ -428,13 +435,51 @@ pub fn read_frames(root: &Path, max_difference: f64) -> Result<Frames> {
             }
         }
     }
+    let mask = read_mask(root, &camera)?;
     Ok(Frames {
         root: root.to_path_buf(),
         images: colour.names.iter().map(|n| root.join(n)).collect(),
         timestamps: colour.stamps,
         depths,
         camera,
+        mask,
     })
+}
+
+/// Reads a folder's mask ([`MASK_FILE`]), if it has one (`slam_it.eval.tum.read_mask`).
+///
+/// # Arguments
+///
+/// * `root` - The folder.
+/// * `camera` - Its camera, whose size the mask must have.
+///
+/// # Returns
+///
+/// The mask, 0 where features are dropped; `None` if the folder has none.
+///
+/// # Errors
+///
+/// `InvalidInput` for a mask that is not a readable 8-bit PNG, or not the camera's size.
+pub fn read_mask(root: &Path, camera: &Camera) -> Result<Option<Image>> {
+    let path = root.join(MASK_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let mask = png::read_gray(&path)?;
+    if (mask.cols, mask.rows) != (camera.width, camera.height) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!(
+                "{}: expected the camera's size {}x{}, got {}x{}",
+                path.display(),
+                camera.width,
+                camera.height,
+                mask.cols,
+                mask.rows
+            ),
+        );
+    }
+    Ok(Some(mask))
 }
 
 /// Reads a depth map in metres (`slam_it.eval.tum.read_depth`).
@@ -615,6 +660,52 @@ mod tests {
             camera.message.contains("intrinsics: 'y'"),
             "{}",
             camera.message
+        );
+    }
+
+    /// A folder's mask: read when the folder has one, of the camera's size; refused when it is
+    /// another size or unreadable.
+    #[test]
+    fn a_folders_mask_is_read_or_refused() {
+        let scratch =
+            std::env::temp_dir().join(format!("slam_it_rust_test_tum_mask_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let _guard = Scratch(scratch.clone());
+        let folder = scratch.join("masked");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("rgb.txt"), "1.0 a.png\n").unwrap();
+        let camera = |size: &str| {
+            std::fs::write(
+                folder.join("camera.txt"),
+                format!("model pinhole\nintrinsics 1 1 0 0\nsize {size}\ndepth_scale 1\n"),
+            )
+            .unwrap();
+        };
+        camera("10 6");
+        assert!(read_frames(&folder, MAX_DIFFERENCE).unwrap().mask.is_none());
+        // The bilevel fixture's first row: 255 255 255 0 0 255 0 0 255 255.
+        std::fs::copy(
+            fixtures().join("png").join("bilevel.png"),
+            folder.join(MASK_FILE),
+        )
+        .unwrap();
+        let mask = read_frames(&folder, MAX_DIFFERENCE).unwrap().mask.unwrap();
+        assert_eq!((mask.rows, mask.cols), (6, 10));
+        assert_eq!((mask.pixels[2], mask.pixels[3]), (255, 0));
+        camera("9 7");
+        assert_eq!(
+            read_frames(&folder, MAX_DIFFERENCE).unwrap_err().kind,
+            ErrorKind::InvalidInput
+        );
+        std::fs::copy(
+            fixtures().join("png").join("truncated.png"),
+            folder.join(MASK_FILE),
+        )
+        .unwrap();
+        camera("8 6");
+        assert_eq!(
+            read_frames(&folder, MAX_DIFFERENCE).unwrap_err().kind,
+            ErrorKind::InvalidInput
         );
     }
 }

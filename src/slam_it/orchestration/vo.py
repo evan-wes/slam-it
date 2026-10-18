@@ -539,12 +539,16 @@ class Source:
     view : callable
         ``view(i)``: frame ``i``'s image as the pipeline sees it (a stereo pair's left image
         rectified), in colour where the sequence has colour: uint8, (H, W) or (H, W, 3).
+    mask : ndarray of uint8, shape (H, W), or None
+        The features every frame drops, those on a 0 (a TUM-format folder's
+        ``mask.png``, :func:`slam_it.eval.tum.read_mask`); None keeps them all.
     """
 
     camera: frames.Camera
     times: NDArray[np.float64]
     read: Callable[[int], Delivered | None]
     view: Callable[[int], NDArray[np.uint8]]
+    mask: NDArray[np.uint8] | None = None
 
 
 def _build(
@@ -552,18 +556,19 @@ def _build(
     camera: frames.Camera,
     extraction: orb.Options,
     matching: stereo.Options,
+    mask: NDArray[np.uint8] | None,
 ) -> frames.Frame:
-    """Build a frame from its images, for the mode they were delivered for."""
+    """Build a frame from its images, for the mode they were delivered for, masked if asked."""
     if delivered.right is not None:
         return frames.stereo_pair(
             delivered.image, delivered.right, delivered.timestamp, camera, extraction,
-            stereo_options=matching,
+            stereo_options=matching, mask=mask,
         )  # fmt: skip
     if delivered.depth is not None:
         return frames.rgbd(
-            delivered.image, delivered.depth, delivered.timestamp, camera, extraction
+            delivered.image, delivered.depth, delivered.timestamp, camera, extraction, mask=mask
         )
-    return frames.monocular(delivered.image, delivered.timestamp, camera, extraction)
+    return frames.monocular(delivered.image, delivered.timestamp, camera, extraction, mask=mask)
 
 
 def _tum_source(root: Path, mode: str) -> Source:
@@ -593,7 +598,7 @@ def _tum_source(root: Path, mode: str) -> Source:
     def view(i: int) -> NDArray[np.uint8]:
         return images.read_rgb(read.images[i])
 
-    return Source(camera, np.asarray(read.timestamps, dtype=np.float64), deliver, view)
+    return Source(camera, np.asarray(read.timestamps, dtype=np.float64), deliver, view, read.mask)
 
 
 def _stereo_source(read: euroc.Frames) -> Source:
@@ -697,7 +702,7 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
             after_read = time.perf_counter()
             if delivered is None:
                 continue
-            frame = _build(delivered, source.camera, tracker.extraction(), matching)
+            frame = _build(delivered, source.camera, tracker.extraction(), matching, source.mask)
             after_build = time.perf_counter()
             result = tracker.track(frame)
             diagnostics.append(
