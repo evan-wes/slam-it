@@ -407,17 +407,20 @@ def _matches(count: int = 12) -> tuple[Array, Array, Array, Array, Array]:
     )
 
 
-@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("bad", [[np.nan, 210.0], [np.inf, 210.0], [300.0, -np.inf]])
-def test_a_half_unseen_or_infinite_pixels2_row_is_refused(backend: str, bad: list[float]) -> None:
-    """A row of pixels2 is finite, or wholly NaN (unseen); anything else is refused (H1, L1)."""
-    chosen = require_function(backend, graphs.__name__, "refine_similarity")
+def test_a_half_unseen_or_infinite_pixels2_row_is_refused(bad: list[float]) -> None:
+    """A row of pixels2 is finite, or wholly NaN (unseen); anything else is refused (H1, L1).
+
+    Python's boundary: the check runs before any backend is called, so each core's own check is
+    tested natively (``test_bad_input`` in ``cpp/tests/foundations/test_graphs.cpp``,
+    ``bad_graphs_are_refused`` in ``graphs.rs``; B3's review panel, run 2, H21).
+    """
     truth, points1, points2, pixels1, pixels2 = _matches()
     pixels2[1] = bad
     with pytest.raises(InvalidInputError, match="pixels2"):
         graphs.refine_similarity(
             truth, points1, points2, pixels1, pixels2, np.ones((12, 2)), model=PINHOLE[0],
-            intrinsics=PINHOLE[1], fixed_scale=False, huber=None, backend=chosen,
+            intrinsics=PINHOLE[1], fixed_scale=False, huber=None,
         )  # fmt: skip
 
 

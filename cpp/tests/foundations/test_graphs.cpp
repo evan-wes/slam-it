@@ -441,6 +441,33 @@ void test_bad_input(int& failures) {
                                                                   .information = info},
                                              camera::Model::kPinhole, pinhole(), 0.0, fixed, {})),
       "a right column without bf is refused", failures);
+  // A row of pixels2 is finite, or wholly NaN (unseen): anything else is refused (H1, L1).
+  graphs::Points same(3, 3);
+  same << 0.0, 0.0, 3.0, 0.1, 0.0, 3.0, 0.2, 0.1, 3.0;
+  graphs::Pairs seen(3, 2);
+  for (int k = 0; k < 3; ++k) {
+    const Eigen::Vector3d p = same.row(k).transpose();
+    seen.row(k) = camera::project(camera::Model::kPinhole, pinhole(), p)->transpose();
+  }
+  const auto refine = [&](const graphs::Pairs& pixels2) {
+    return graphs::refine_similarity(Eigen::Matrix4d::Identity(), same, same, seen, pixels2,
+                                     graphs::Pairs::Ones(3, 2), camera::Model::kPinhole, pinhole(),
+                                     true, std::nullopt, {});
+  };
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  const std::array<Eigen::RowVector2d, 3> bad = {Eigen::RowVector2d(nan, 210.0),
+                                                 Eigen::RowVector2d(inf, 210.0),
+                                                 Eigen::RowVector2d(300.0, -inf)};
+  for (const Eigen::RowVector2d& row : bad) {
+    graphs::Pairs pixels2 = seen;
+    pixels2.row(1) = row;
+    expect(is_invalid_input(refine(pixels2)), "a half-unseen or infinite pixels2 row is refused",
+           failures);
+  }
+  graphs::Pairs unseen = seen;
+  unseen.row(1).setConstant(nan);
+  expect(refine(unseen).has_value(), "a wholly unseen pixels2 row is taken", failures);
 }
 
 /// @brief The test body.

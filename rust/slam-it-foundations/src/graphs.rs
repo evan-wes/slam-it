@@ -1981,5 +1981,46 @@ mod tests {
             .is_err()
         );
         assert_eq!(Termination::DampingLimit.name(), "damping_limit");
+        // A row of pixels2 is finite, or wholly NaN (unseen): anything else is refused (H1, L1).
+        let lens = pinhole();
+        let points = [
+            Vector3::new(0.0, 0.0, 3.0),
+            Vector3::new(0.1, 0.0, 3.0),
+            Vector3::new(0.2, 0.1, 3.0),
+        ];
+        let seen: Vec<Vector2<f64>> = points
+            .iter()
+            .map(|p| camera::project(lens.model, &lens.intrinsics, p).unwrap())
+            .collect();
+        let information = [[1.0, 1.0]; 3];
+        let refine = |pixels2: &[Vector2<f64>]| {
+            refine_similarity(
+                &Matrix4::identity(),
+                &Matches {
+                    points1: &points,
+                    points2: &points,
+                    pixels1: &seen,
+                    pixels2,
+                    information: &information,
+                },
+                lens.model,
+                &lens.intrinsics,
+                true,
+                None,
+                &options,
+            )
+        };
+        for bad in [
+            Vector2::new(f64::NAN, 210.0),
+            Vector2::new(f64::INFINITY, 210.0),
+            Vector2::new(300.0, f64::NEG_INFINITY),
+        ] {
+            let mut pixels2 = seen.clone();
+            pixels2[1] = bad;
+            assert!(matches!(refine(&pixels2), Err(e) if e.kind == ErrorKind::InvalidInput));
+        }
+        let mut unseen = seen.clone();
+        unseen[1] = Vector2::new(f64::NAN, f64::NAN);
+        assert!(refine(&unseen).is_ok());
     }
 }
