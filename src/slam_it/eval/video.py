@@ -20,6 +20,9 @@ shares).
 **Frames.**
 
 - Decoded with PyAV (FFmpeg): this is the one module that imports it, by a contract.
+- Read and decoded packet by packet, to the last frame (:func:`_decoded`): a read that says
+  "try again" (EAGAIN) is read again, not taken for damage, and the decoder is flushed at the
+  end, so a decoder working on several frames at once gives up those it holds.
 - Turned upright: the rotation the file declares (a phone stores a portrait video on its side)
   is applied, and the intrinsics are turned with it.
 - Timed by each frame's presentation time, since a phone's frame rate varies. A frame closer
@@ -116,6 +119,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import io
 import json
 import re
@@ -230,6 +234,12 @@ local recordings of :mod:`slam_it.eval.dashcam`, never an upload."""
 _SEGMENT_OPTIONS = {"protocol_whitelist": "file"}
 """How a segment is opened: as a file alone."""
 
+_READ_RETRIES = 64
+"""The most times in a row a read may say "try again" (EAGAIN), no packet between, before the
+error stands (:func:`_packets`). FFmpeg's MPEG-TS demuxer says it where it finds no sync byte
+within its resync window (64 KiB by default) or before the file ends, and moves on each time:
+this many in a row is some 4 MiB holding no packet, a read going nowhere."""
+
 
 class DamagedSegmentError(InvalidInputError):
     """A recorded segment that cannot be read through: a damaged file.
@@ -237,9 +247,11 @@ class DamagedSegmentError(InvalidInputError):
     Raised when the segment does not open as MPEG-TS, has no video stream or no stated frame
     size, its demuxing or decoding raises, a frame has no presentation time, or it holds no
     frame at all. A decoder that conceals a corrupt frame and goes on raises nothing, and a
-    file cut short decodes the frames it holds: neither is damage. A missing file, or one over
-    the caller's limits, is the caller's to fix, not damage. The dashcam's steps skip a
-    damaged segment (:func:`import_segments`).
+    file cut short decodes the frames it holds: neither is damage. Nor is a read that says "try
+    again" (EAGAIN), as FFmpeg's MPEG-TS demuxer does in the bytes a camera may leave after a
+    segment's last packet: it is read again, a bounded number of times (:func:`_packets`). A
+    missing file, or one over the caller's limits, is the caller's to fix, not damage. The
+    dashcam's steps skip a damaged segment (:func:`import_segments`).
     """
 
 
@@ -346,6 +358,53 @@ def _open(path: Path, *, edits: bool = True) -> av.container.InputContainer:
     return container
 
 
+def _packets(
+    container: av.container.InputContainer, *streams: av.stream.Stream
+) -> Iterator[av.Packet[av.stream.Stream]]:
+    """Yield the streams' packets in file order, a read that says "try again" read again.
+
+    A read's EAGAIN (:class:`av.error.BlockingIOError`) is not damage. FFmpeg's MPEG-TS demuxer
+    says it where it finds no TS packet's sync byte, as in the bytes a camera may leave after a
+    segment's last packet, and says it before its parser has given up the last frame, which the
+    next read gives; FFmpeg's own ``ffmpeg`` reads again after it (``fftools/ffmpeg_demux.c``).
+    PyAV's demuxing ends at it, so it is started again where the file was left, up to
+    :data:`_READ_RETRIES` times in a row; then the error stands, as any other does. The last
+    packets are PyAV's empty ones, one a stream, which flush its decoder.
+    """
+    packets = container.demux(*streams)
+    again = 0
+    while True:
+        try:
+            packet = next(packets)
+        except StopIteration:
+            return
+        except av.error.BlockingIOError as error:
+            again += 1
+            if error.errno != errno.EAGAIN or again > _READ_RETRIES:
+                raise
+            packets = container.demux(*streams)
+            continue
+        again = 0
+        yield packet
+
+
+def _decoded(
+    container: av.container.InputContainer, stream: av.VideoStream
+) -> Iterator[av.VideoFrame]:
+    """Yield a video stream's frames, decoded packet by packet, every one to the last.
+
+    Each packet read (:func:`_packets`) is sent to the decoder and the frames it has ready are
+    taken. PyAV's empty packet at the end flushes it, so a decoder working on several frames at
+    once (frame threading) gives up those it holds; that packet carries the stream's time base,
+    so the frames it gives are timed, where ``decode(None)``'s come with no time (NaN). A decode
+    that raises stands, EAGAIN included: FFmpeg's decoder says it to a packet only while the one
+    sent before is still waiting (``avcodec_send_packet``), and PyAV, taking every frame ready
+    after each packet it sends, leaves none waiting.
+    """
+    for packet in _packets(container, stream):
+        yield from stream.decode(packet)
+
+
 def _decode(
     path: Path, *, edits: bool = True, limits: Limits = UPLOAD
 ) -> Iterator[tuple[float, av.VideoFrame]]:
@@ -353,7 +412,7 @@ def _decode(
     with _open(path, edits=edits) as container:
         first = None
         try:
-            for index, frame in enumerate(container.decode(video=0)):
+            for index, frame in enumerate(_decoded(container, container.streams.video[0])):
                 if index >= limits.max_frames:
                     raise InvalidInputError(f"{path.name}: more than {limits.max_frames} frames")
                 if frame.time is None:
@@ -718,13 +777,14 @@ def _decode_segment(path: Path, limits: Limits) -> Iterator[tuple[float, av.Vide
     """Yield a segment's frames, decoded straight through, with each one's time since its first.
 
     Straight through: seeking into a segment whose recording dropped data decodes garbage until
-    the next intact keyframe.
+    the next intact keyframe. On several threads, and to the last frame (:func:`_decoded`).
     """
     with _open_segment(path) as container:
-        container.streams.video[0].thread_type = "AUTO"
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
         first = None
         try:
-            for frame in container.decode(video=0):
+            for frame in _decoded(container, stream):
                 if frame.time is None:
                     raise DamagedSegmentError(f"{path.name}: a frame without a presentation time")
                 first = frame.time if first is None else first
@@ -824,7 +884,8 @@ def data_packets(segment: str | Path) -> list[tuple[float, bytes]]:
     FileNotFoundError
         If the segment does not exist.
     DamagedSegmentError
-        If it is not a readable MPEG-TS video, or its demuxing raises.
+        If it is not a readable MPEG-TS video, or its demuxing raises (a read that says "try
+        again" is read again, :func:`_packets`).
     """
     path = Path(segment)
     out: list[tuple[float, bytes]] = []
@@ -834,7 +895,7 @@ def data_packets(segment: str | Path) -> list[tuple[float, bytes]]:
         first: float | None = None
         last = 0.0
         try:
-            for packet in container.demux(video, *data):
+            for packet in _packets(container, video, *data):
                 base = video.time_base
                 if packet.stream.type == "video" and packet.pts is not None and base:
                     time = float(packet.pts * base)

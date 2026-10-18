@@ -30,10 +30,16 @@ def write_segment(
     *,
     rate: int = 10,
     records: Mapping[int, bytes] | None = None,
+    lengths: bool = False,
 ) -> Path:
-    """Write RGB pictures as an MPEG-TS segment, a data packet after each frame `records` names."""
+    """Write RGB pictures as an MPEG-TS segment, a data packet after each frame `records` names.
+
+    With `lengths`, each video PES packet states its length, as some cameras write them; FFmpeg
+    leaves it unstated by default.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with av.open(str(path), "w", format="mpegts") as out:
+    options = {"omit_video_pes_length": "0"} if lengths else {}
+    with av.open(str(path), "w", format="mpegts", options=options) as out:
         stream = out.add_stream("libx264", rate=rate, options={"qp": "0"})
         stream.height, stream.width = pictures[0].shape[:2]
         stream.pix_fmt = "yuv420p"
