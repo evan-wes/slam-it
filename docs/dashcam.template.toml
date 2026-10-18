@@ -1,0 +1,61 @@
+# A dashcam's config, for `python -m slam_it.eval.dashcam <step> CONFIG`
+# (src/slam_it/eval/dashcam, docs/notes/dashcam.md).
+#
+# Copy this file next to your recordings, OUTSIDE the repo, and fill it in: it holds where
+# your card is and what was measured of your car (its masks, its lenses, its rig), none of
+# which belongs in SLAM It!. Relative paths are taken from this file's folder; ~ is expanded.
+# An unknown key is refused, so a misspelt one is not silently ignored.
+
+[card]
+# The card's root, or a copy of it: the folder that holds video/F and video/R.
+root = "sdcard"
+
+[work]
+# Where the steps write, a folder a drive (named by the drive's id, from the `drives` step):
+# the mask previews, overlay_F.json and overlay_R.json, the calibration and its report.
+folder = "work"
+
+[rig]
+# The distance from the front camera to the rear, in metres, measured with a tape: the prior
+# the calibration's translation starts from (the rear camera that far behind the front).
+baseline = 1.8
+
+[front]
+# The static mask: written by the `mask` step, read by `calibrate` and `import`.
+mask = "masks/front.png"
+# Optional: drop everything below this fraction of the height too (the hood).
+# bottom = 0.9
+# Optional: lines drawn into the mask, too soft to measure, each [x0, y0, x1, y1, width] as
+# fractions of the frame's width and height (the width a fraction of the frame's width).
+# lines = [[0.10, 0.20, 0.30, 0.25, 0.01]]
+
+# Filled in from the `calibrate` step's calibration.json, at the video's size:
+# [front.lens]
+# model = "fisheye"        # or "pinhole" (then no k)
+# size = [3840, 2160]
+# fx = 0.0
+# fy = 0.0
+# cx = 0.0
+# cy = 0.0
+# k = [0.0, 0.0, 0.0, 0.0]
+
+[rear]
+mask = "masks/rear.png"
+# bottom = 0.9
+# lines = []
+
+# [rear.lens]
+# model = "fisheye"
+# size = [2560, 1440]
+# fx = 0.0
+# fy = 0.0
+# cx = 0.0
+# cy = 0.0
+# k = [0.0, 0.0, 0.0, 0.0]
+
+[import]
+# The import's limits (defaults shown): the longest segment in seconds, the most frames in all,
+# and the frames' short side in pixels.
+# max_seconds = 600.0
+# max_frames = 20000
+# short_side = 480
