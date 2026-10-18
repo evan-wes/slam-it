@@ -401,6 +401,58 @@ void clear_gone(Map& m) {
 
 void index_observations(Map& m) { m.pt_observations = indexed(m); }
 
+Map sub_map(const Map& m, std::span<const std::int64_t> rows) {
+  Map out = empty_map(m.levels, m.scale_factor);
+  out.next_kf_id = m.next_kf_id;
+  out.next_pt_id = m.next_pt_id;
+  out.loop_edges = m.loop_edges;
+  std::vector<bool> seen(point_count(m), false);
+  for (const std::int64_t chosen : rows) {
+    const auto k = static_cast<std::size_t>(chosen);
+    out.kf_id.push_back(m.kf_id[k]);
+    out.kf_time.push_back(m.kf_time[k]);
+    out.kf_pose.push_back(m.kf_pose[k]);
+    out.kf_parent.push_back(m.kf_parent[k]);  // -1 below if not among them
+    for (std::int64_t row = m.kf_start[k]; row < m.kf_start[k + 1]; ++row) {
+      const auto kp = static_cast<std::size_t>(row);
+      out.kp_xy.push_back(m.kp_xy[kp]);
+      out.kp_level.push_back(m.kp_level[kp]);
+      out.kp_angle.push_back(m.kp_angle[kp]);
+      out.kp_descriptor.push_back(m.kp_descriptor[kp]);
+      out.kp_bearing.push_back(m.kp_bearing[kp]);
+      out.kp_depth.push_back(m.kp_depth[kp]);
+      out.kp_right.push_back(m.kp_right[kp]);
+      out.kp_point.push_back(m.kp_point[kp]);
+      if (const std::int64_t p = m.kp_point[kp] >= 0 ? point_row(m, m.kp_point[kp]) : -1; p >= 0) {
+        seen[static_cast<std::size_t>(p)] = true;
+      }
+    }
+    out.kf_start.push_back(static_cast<std::int64_t>(out.kp_point.size()));
+  }
+  for (std::size_t p = 0; p < seen.size(); ++p) {
+    if (!seen[p]) {
+      continue;
+    }
+    out.pt_id.push_back(m.pt_id[p]);
+    out.pt_xyz.push_back(m.pt_xyz[p]);
+    out.pt_descriptor.push_back(m.pt_descriptor[p]);
+    out.pt_normal.push_back(m.pt_normal[p]);
+    out.pt_min_distance.push_back(m.pt_min_distance[p]);
+    out.pt_max_distance.push_back(m.pt_max_distance[p]);
+    out.pt_visible.push_back(m.pt_visible[p]);
+    out.pt_found.push_back(m.pt_found[p]);
+    out.pt_first_kf.push_back(m.pt_first_kf[p]);
+    out.pt_reference_kf.push_back(m.pt_reference_kf[p]);
+  }
+  for (std::int64_t& parent : out.kf_parent) {
+    if (parent >= 0 && keyframe_row(out, parent) < 0) {
+      parent = -1;
+    }
+  }
+  index_observations(out);
+  return out;
+}
+
 std::int64_t point_row(const Map& m, std::int64_t id) { return row_of(m.pt_id, id); }
 
 std::int64_t keyframe_row(const Map& m, std::int64_t id) { return row_of(m.kf_id, id); }

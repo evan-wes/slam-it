@@ -115,7 +115,7 @@ def test_every_frame_records_its_handshakes_inline(
     for i, d in enumerate(run.diagnostics):
         assert set(runs.HANDSHAKES) <= d.keys()
         assert (d["wait_seconds"], d["refused"], d["queue"]) == (0.0, False, 0)
-        assert (d["global_ba"], d["global_ba_seconds"]) == ([], 0.0)
+        assert (d["global_ba"], d["global_ba_seconds"], d["views"]) == ([], 0.0, [])
         mapped = d["keyframe"] and i > start
         assert d["schedule"] == (ran if mapped else None)
         assert d["asked"] == mapped
@@ -317,6 +317,32 @@ def test_a_folders_mask_drops_the_features_on_its_zeros(
     assert np.all(pixels[:, 0] >= 159.5)
 
 
+VIEWED = ("cpp", "rust")
+"""The backends whose writers publish views of their own: Python's view is the map itself."""
+
+
+@pytest.mark.parametrize("backend", VIEWED)
+@pytest.mark.parametrize(("name", "dataset", "mode"), RECORDED)
+def test_tracking_on_a_view_decides_as_on_the_map(
+    name: str, dataset: str, mode: str, backend: str, request: pytest.FixtureRequest
+) -> None:
+    """Each frame tracked on a view decides exactly as on the whole map.
+
+    On the view a writer would publish then (``views``): the in-order run's record, poses and
+    summaries to the bit, and its final keyframes and points (the online-SLAM design's section
+    12, item 3).
+    """
+    runs_of: RoomRun = request.getfixturevalue(f"{name}_runs")
+    in_order = runs_of(dataset, mode, backend)
+    viewed = runs_of.viewed(dataset, mode, backend)
+    assert record(viewed, runs_of.viewed_features(dataset, mode, backend)) == record(
+        in_order, runs_of.features(dataset, mode, backend)
+    )
+    assert np.array_equal(viewed.keyframe_poses, in_order.keyframe_poses)
+    assert np.array_equal(viewed.points, in_order.points)
+    assert all(d["views"] == [] for d in viewed.diagnostics)  # in turn, none is published
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize(("dataset", "mode"), CASES)
 def test_a_lost_track_starts_a_new_map_and_the_run_goes_on(
@@ -428,6 +454,9 @@ def test_a_request_crosses_as_a_command_line() -> None:
     threaded = replace(request, threaded=True, locks=True).arguments()
     assert threaded[threaded.index("--record-features") + 1 :][:2] == ["--threaded", "--locks"]
     assert vo.parse(threaded) == replace(request, threaded=True, locks=True)
+    viewed = replace(request, views=True).arguments()
+    assert viewed[viewed.index("--record-features") + 1] == "--views"
+    assert vo.parse(viewed) == replace(request, views=True)
 
 
 def test_parse_reads_a_command_line() -> None:
@@ -825,6 +854,31 @@ def test_locks_need_threads_and_the_cpp_program(tmp_path: Path) -> None:
                    locks=True)  # fmt: skip
 
 
+def _fails_the_run(backend: str, request: vo.Request, message: str) -> None:
+    """Run a backend's program on a request it refuses: it fails the run and says why."""
+    program = vo.command(require_program(backend))
+    done = subprocess.run(
+        [*program, *request.arguments()], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == vo.EXIT_FAILED
+    assert done.stderr.startswith(f"slam_it_vo: {message}")
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_views_track_in_turn(backend: str, tmp_path: Path) -> None:
+    """``--views`` is a test of tracking in turn: refused threaded, by every program.
+
+    Each fails the run and writes none; Python's check refuses it before any program runs.
+    """
+    request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "run", count=0,
+                         vocabulary=vocabularies.DEFAULT, threaded=True, views=True)  # fmt: skip
+    message = "--views: tracks in turn, not with --threaded"
+    with pytest.raises(InvalidInputError, match=message):
+        vo.check(request)
+    _fails_the_run(backend, request, message)
+    assert not request.out.exists()
+
+
 def test_the_vocabulary_and_a_flag_setting_cross_the_command_line() -> None:
     """``--vocabulary`` is read and passed on; a flag setting crosses as true or false."""
     base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
@@ -949,12 +1003,7 @@ def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
         folder = _foreign_vocabulary(tmp_path / "foreign")
         request = replace(request, vocabulary=folder)
         message = f"{folder}: trained on descriptor version 99"
-    program = vo.command(require_program(backend))
-    done = subprocess.run(
-        [*program, *request.arguments()], capture_output=True, text=True, check=False
-    )
-    assert done.returncode == vo.EXIT_FAILED
-    assert done.stderr.startswith(f"slam_it_vo: {message}")
+    _fails_the_run(backend, request, message)
     assert not (out / "run.json").exists()
 
 

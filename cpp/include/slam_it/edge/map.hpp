@@ -216,6 +216,15 @@ void index_observations(Map& m);
 /// @return The centre.
 [[nodiscard]] Eigen::Vector3d centre(const Map& m, std::size_t k);
 
+/// @brief The part of a map some of its keyframes make: those keyframes, every keypoint of
+///        theirs, and the points they observe, ids kept and in the same order, each point's
+///        observations those keyframes' (a writer's view, `covisibility::view_keyframes`).
+/// @param m The map.
+/// @param rows The keyframes' rows, ascending, each a row of `m` once.
+/// @return The map of them: a parent not among them -1, as for a keyframe without one; the
+///         archive of removals empty, the loops and next ids as `m`'s.
+[[nodiscard]] Map sub_map(const Map& m, std::span<const std::int64_t> rows);
+
 /// @brief The points the given keyframes observe.
 /// @param m The map.
 /// @param keyframes Keyframe rows.

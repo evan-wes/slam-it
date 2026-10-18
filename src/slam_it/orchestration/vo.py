@@ -45,6 +45,9 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
   written then, a keyframe's points made among their fates. Python is fed its frames as fast as
   it tracks them; the native programs feed theirs at their recorded rate. C++'s program also
   shares the map by ORB-SLAM's locks, the design's baseline (``locks``, its ``--locks``).
+- **Views** (``views``, ``--views``), the native programs track in turn, each frame on the view
+  a writer would publish then rather than on the whole map: a test that tracking decides on a
+  view as on the map. Python's view is the map itself, so its run is the in-order run.
 - **At the end,** every keyframe and point the run made (their times, last ``T_world_cam`` and
   positions), their lives and their maps (:meth:`slam_it.edge.pipeline.Pipeline.lifetimes`).
   The run's ``sequence`` is its folder's name (the path resolved), its ``settings`` the
@@ -103,7 +106,7 @@ MODULE = "slam_it.orchestration.vo"
 USAGE = (
     f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH --mode "
     "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--vocabulary FOLDER] "
-    "[--record-features] [--threaded [--locks]] [--option KEY=VALUE ...]"
+    "[--record-features] [--threaded [--locks] | --views] [--option KEY=VALUE ...]"
 )
 """Python's program's command line: the native programs' (their ``kUsage``/``USAGE``)."""
 
@@ -130,6 +133,9 @@ _THREADED = "--threaded"
 
 _LOCKS = "--locks"
 """A flag without a value: with :data:`_THREADED`, share the map by ORB-SLAM's locks (C++)."""
+
+_VIEWS = "--views"
+"""A flag without a value: track in turn, each frame on the view a writer would publish."""
 
 
 class UsageError(InvalidInputError):
@@ -165,6 +171,9 @@ class Request:
         Whether the steps run in threads of their own.
     locks : bool
         Whether those threads share the map by ORB-SLAM's locks, C++'s baseline.
+    views : bool
+        In turn, whether each frame is tracked on the view a writer would publish then (the
+        native programs; Python's view is the map itself).
     """
 
     dataset: str
@@ -178,6 +187,7 @@ class Request:
     vocabulary: Path | None = None
     threaded: bool = False
     locks: bool = False
+    views: bool = False
 
     def arguments(self) -> list[str]:
         """Return the native program's command line for the request.
@@ -186,7 +196,7 @@ class Request:
         -------
         list of str
             The arguments after the program's name: every flag (``--vocabulary`` if given,
-            ``--record-features``, ``--threaded`` and ``--locks`` if asked), and
+            ``--record-features``, ``--threaded``, ``--locks`` and ``--views`` if asked), and
             ``--option KEY=VALUE`` for
             each setting that differs from its default (flags as ``true`` or ``false``, integers
             as integers, reals round-tripping).
@@ -213,6 +223,8 @@ class Request:
             out.append(_THREADED)
         if self.locks:
             out.append(_LOCKS)
+        if self.views:
+            out.append(_VIEWS)
         defaults = Options().settings()
         for name, value in self.options.settings().items():
             default = defaults[name]
@@ -240,9 +252,9 @@ def check(request: Request) -> None:
     slam_it.foundations.errors.InvalidInputError
         For an unknown dataset or mode, a mode the dataset does not record (TUM has no stereo
         pairs, EuRoC no depth maps), a negative `first` or `count`, a vocabulary missing
-        while relocalising or closing loops, or given while doing neither, or ``locks`` without
-        ``threaded``. (The options checked themselves when they were made; the vocabulary's
-        folder is checked when it is read.)
+        while relocalising or closing loops, or given while doing neither, ``locks`` without
+        ``threaded``, or ``views`` with it. (The options checked themselves when they were
+        made; the vocabulary's folder is checked when it is read.)
     """
     if request.dataset not in runs.DATASETS:
         wanted = " or ".join(runs.DATASETS)
@@ -264,6 +276,8 @@ def check(request: Request) -> None:
         )
     if request.locks and not request.threaded:
         raise InvalidInputError("--locks: needs --threaded")
+    if request.views and request.threaded:
+        raise InvalidInputError("--views: tracks in turn, not with --threaded")
 
 
 def _integer(flag: str, text: str) -> int:
@@ -320,8 +334,8 @@ def parse_setting(text: str) -> tuple[str, bool | int | float]:
 def parse(arguments: Sequence[str]) -> Request:
     """Read a program's command line (:data:`USAGE`), as the native programs read theirs.
 
-    Flags come in any order, each with its value but ``--record-features``, ``--threaded`` and
-    ``--locks``;
+    Flags come in any order, each with its value but ``--record-features``, ``--threaded``,
+    ``--locks`` and ``--views``;
     ``--option KEY=VALUE`` is repeatable and names a setting of
     :class:`~slam_it.edge.options.Options` by its group and field.
 
@@ -349,7 +363,7 @@ def parse(arguments: Sequence[str]) -> Request:
     i = 0
     while i < len(arguments):
         flag = arguments[i]
-        if flag in (_RECORD_FEATURES, _THREADED, _LOCKS):
+        if flag in (_RECORD_FEATURES, _THREADED, _LOCKS, _VIEWS):
             if flag in values:
                 raise UsageError(f"{flag}: given twice")
             values[flag] = ""
@@ -387,6 +401,7 @@ def parse(arguments: Sequence[str]) -> Request:
         vocabulary=Path(values["--vocabulary"]) if "--vocabulary" in values else None,
         threaded=_THREADED in values,
         locks=_LOCKS in values,
+        views=_VIEWS in values,
     )
 
 
@@ -457,6 +472,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     vocabulary: str | Path | None = None,
     threaded: bool = False,
     locks: bool = False,
+    views: bool = False,
 ) -> runs.Run:
     """Run a sequence through the edge pipeline and write its run folder.
 
@@ -495,6 +511,9 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     locks : bool, optional
         Whether those threads share the map by ORB-SLAM's locks, the design's baseline: C++'s
         program alone (default: our design).
+    views : bool, optional
+        In turn, whether each frame is tracked on the view a writer would publish then, a test
+        that tracking decides on it as on the map (default: no; Python's view is the map).
 
     Returns
     -------
@@ -530,6 +549,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         vocabulary=None if vocabulary is None else Path(vocabulary),
         threaded=threaded,
         locks=locks,
+        views=views,
     )
     if request.vocabulary is None and request.options.keeps_keyframe_database():
         request = replace(request, vocabulary=vocabularies.DEFAULT)
@@ -777,6 +797,7 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
                     "schedule": None if result.schedule is None else result.schedule.as_dict(),
                     "global_ba": [],
                     "global_ba_seconds": 0.0,
+                    "views": [],  # Python's view is the map itself, published by reference
                 }
             )
             if features is not None:

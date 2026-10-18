@@ -123,13 +123,16 @@ struct Mapped {
 /// @param idle Whether local mapping is idle (as when it runs inline).
 /// @param since_keyframe The frames since the last keyframe, read only with mapping busy; none,
 ///        as if too few.
+/// @param keyframes The whole map's keyframes, which the rules count, when `m` is a view of it
+///        (`sub_map`); none, `m`'s own.
 /// @return Whether to insert a keyframe; `InvalidInput` for a map without keyframes, matches
 ///         that are not one per depth, a reference out of range, or an invalid camera or
 ///         settings.
 [[nodiscard]] foundations::Result<bool> need_keyframe(
     const Map& m, const Camera& camera, std::span<const double> depth, const Tracked& tracked,
     std::int64_t reference, Mode mode, const Options& options, bool idle = true,
-    std::optional<std::int64_t> since_keyframe = std::nullopt);
+    std::optional<std::int64_t> since_keyframe = std::nullopt,
+    std::optional<std::int64_t> keyframes = std::nullopt);
 
 /// @brief Create points from the newest keyframe's close depth
 ///        (`slam_it.edge.mapping.create_points_from_depth`, ORB-SLAM's `CreateNewKeyFrame`).

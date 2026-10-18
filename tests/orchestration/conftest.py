@@ -5,7 +5,8 @@ to lose the track), found (blanked, then back at the start) and the window room 
 lost by the time); the loop room is rendered apart (:func:`loop_folders`). :func:`room_runs`,
 :func:`gap_runs`, :func:`lost_runs`, :func:`kept_runs`, :func:`found_runs`, :func:`window_runs`
 and :func:`loop_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
-recording their features; :func:`loop_threaded_runs` runs the loop room threaded.
+recording their features, and each again on views when asked (:meth:`RoomRun.viewed`);
+:func:`loop_threaded_runs` runs the loop room threaded.
 """
 
 from __future__ import annotations
@@ -138,22 +139,38 @@ class RoomRun:
         self._options = options
         self._out = out
         self._threaded = threaded
-        self._done: dict[tuple[str, str, str], runs.Run] = {}
+        self._done: dict[tuple[str, str, str, bool], runs.Run] = {}
 
     def __call__(self, dataset: str, mode: str, backend: str) -> runs.Run:
         """Return a case's run, run the first time it is asked for."""
-        key = (dataset, mode, require_program(backend))
-        if key not in self._done:
-            folder = self._folders.tum if dataset == "tum" else self._folders.euroc
-            self._done[key] = vo.run(
-                dataset, folder, mode, self._folder(key), backend=backend, options=self._options,
-                record_features=True, threaded=self._threaded,
-            )  # fmt: skip
-        return self._done[key]
+        return self._run((dataset, mode, require_program(backend)), views=False)
+
+    def viewed(self, dataset: str, mode: str, backend: str) -> runs.Run:
+        """Return a case's run in order, each frame tracked on a view, run the first time asked.
+
+        The view a writer would publish then (``views``).
+        """
+        return self._run((dataset, mode, require_program(backend)), views=True)
 
     def features(self, dataset: str, mode: str, backend: str) -> runs.Features:
         """Return a case's feature records."""
         return runs.read_features(self.folder(dataset, mode, backend), self(dataset, mode, backend))
+
+    def viewed_features(self, dataset: str, mode: str, backend: str) -> runs.Features:
+        """Return a case's feature records, its frames tracked on views."""
+        run = self.viewed(dataset, mode, backend)
+        return runs.read_features(self._folder((dataset, mode, backend), views=True), run)
+
+    def _run(self, key: tuple[str, str, str], *, views: bool) -> runs.Run:
+        """Return a case's run, on views or not, run the first time it is asked for."""
+        dataset, mode, backend = key
+        if (*key, views) not in self._done:
+            self._done[(*key, views)] = vo.run(
+                dataset, self.sequence(dataset), mode, self._folder(key, views=views),
+                backend=backend, options=self._options, record_features=True,
+                threaded=self._threaded, views=views,
+            )  # fmt: skip
+        return self._done[(*key, views)]
 
     def folder(self, dataset: str, mode: str, backend: str) -> Path:
         """Return a case's run folder, run the first time it is asked for."""
@@ -164,9 +181,9 @@ class RoomRun:
         """Return the folder a dataset's runs read."""
         return self._folders.tum if dataset == "tum" else self._folders.euroc
 
-    def _folder(self, key: tuple[str, str, str]) -> Path:
-        """Return a case's run folder."""
-        return self._out / "-".join(key)
+    def _folder(self, key: tuple[str, str, str], *, views: bool = False) -> Path:
+        """Return a case's run folder, on views or not."""
+        return self._out / "-".join((*key, "views") if views else key)
 
 
 @pytest.fixture(scope="session")

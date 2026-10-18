@@ -74,9 +74,12 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   mapped, how mapping scheduled its fusion, local BA and culling
   (:meth:`slam_it.edge.mapping.Schedule.as_dict`), else null; and ``global_ba``, the global BAs
   that ended on the frame (:meth:`slam_it.edge.loops.GlobalSummary.as_dict`), with
-  ``global_ba_seconds`` their time. Inline, nothing waits, nothing is refused, and global BA runs
-  in a loop's correction. A threaded run's mapping and loop closing are its keyframe's frame's,
-  though they ended later.
+  ``global_ba_seconds`` their time; and ``views``, the views a writer published for tracking
+  while the frame was tracked, each its ``keyframes``, ``points`` and the ``bytes`` its copy
+  holds (the native pipelines' copy of the part of the map tracking may read; Python's view is
+  the map itself, published by reference, and lists none). Inline, nothing waits, nothing is
+  refused, global BA runs in a loop's correction, and no view is published. A threaded run's
+  mapping and loop closing are its keyframe's frame's, though they ended later.
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
@@ -148,6 +151,7 @@ HANDSHAKES = (
     "schedule",
     "global_ba",
     "global_ba_seconds",
+    "views",
 )
 """The keys each frame of the edge pipeline gives how the threads' handshakes went (the module
 docstring)."""

@@ -285,6 +285,29 @@ fn erase_keyframe<'py>(
     map_dict(py, &out)
 }
 
+/// The part of a map some of its keyframes make.
+///
+/// # Arguments
+///
+/// * `m` - The map, as a dict.
+/// * `rows` - The keyframes' rows, ascending.
+///
+/// # Returns
+///
+/// The sub-map, as a dict.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument.
+#[pyfunction]
+fn sub_map<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    rows: Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    map_dict(py, &core::sub_map(&map_in(py, m)?, &indices(&rows)?))
+}
+
 /// Adds to points' visible and found counts.
 ///
 /// # Arguments
@@ -331,6 +354,6 @@ fn count<'py>(
 pub fn map(m: &Bound<'_, PyModule>) -> PyResult<()> {
     add_functions!(m; predict_level, insert_keyframe, add_points, distinctive_descriptor,
         refresh_points, erase_points, observation_weight, forget_observations, erase_keyframe,
-        count);
+        sub_map, count);
     Ok(())
 }

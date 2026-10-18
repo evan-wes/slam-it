@@ -77,6 +77,43 @@ fn local_map<'py>(
     Ok(out)
 }
 
+/// The keyframes tracking's next frame may read.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The map, as a dict.
+/// * `last` - The point each of the last frame's keypoints tracked, -1 for none.
+/// * `reference` - Its reference keyframe's id, or -1.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// The keyframes' rows (int64), ascending.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+fn view_keyframes<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    last: PyReadonlyArray1<'py, i64>,
+    reference: i64,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let rows = unwrap(
+        py,
+        core::view_keyframes(
+            &map_in(py, m)?,
+            contiguous(&last)?,
+            reference,
+            &options_in(options)?,
+        ),
+    )?;
+    Ok(indices_array(py, &rows))
+}
+
 /// Gives a keyframe its parent.
 ///
 /// # Arguments
@@ -216,6 +253,6 @@ fn strong_links<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn covisibility(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; links, local_map, adopt, reparent, cull, strong_links);
+    add_functions!(m; links, local_map, view_keyframes, adopt, reparent, cull, strong_links);
     Ok(())
 }

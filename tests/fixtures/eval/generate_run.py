@@ -43,9 +43,14 @@ def _handshakes(k: int) -> dict[str, Any]:
     """Return frame ``k``'s handshakes, as a threaded run writes them.
 
     Frame 1 waits for the map and is refused a keyframe, three queued; frame 4's keyframe is
-    mapped, its local BA aborted, and the global BA its loop started ends on it.
+    mapped, its local BA aborted, and the global BA its loop started ends on it. A view is
+    published on frame 0, two on frame 4.
     """
     solve = {"initial_error": 3.5, "final_error": 0.25, "iterations": 7, "termination": "converged"}
+
+    def view(keyframes: int, points: int, size: int) -> dict[str, int]:
+        return {"keyframes": keyframes, "points": points, "bytes": size}
+
     global_ba = {
         "generation": 1, "applied": True, "solve": solve, "adjusted": 2, "propagated": 1,
         "points": 4, "carried": 1,
@@ -60,6 +65,7 @@ def _handshakes(k: int) -> dict[str, Any]:
         else None,
         "global_ba": [global_ba] if k == 4 else [],
         "global_ba_seconds": 0.40625 if k == 4 else 0.0,
+        "views": {0: [view(1, 60, 15528)], 4: [view(2, 56, 20392), view(3, 44, 23864)]}.get(k, []),
     }
 
 

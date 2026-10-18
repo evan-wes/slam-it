@@ -57,6 +57,7 @@ fn keyframes_and_points_follow_the_rules() {
             &Options::default(),
             true,
             None,
+            None,
         )
         .unwrap()
     };
@@ -77,6 +78,7 @@ fn keyframes_and_points_follow_the_rules() {
         Mode::Rgbd,
         &Options::default(),
         true,
+        None,
         None,
     );
     assert!(

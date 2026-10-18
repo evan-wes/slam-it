@@ -3,7 +3,9 @@
 ///        along a sideways path: RGB-D and stereo track every frame exactly, monocular starts
 ///        its map and keeps the path's direction, and empty frames lose the track, the next
 ///        frame starting a new map; relocalising, a kept map is lost in time and a small one in
-///        frames, and a frame the fallback cannot reach is relocalised.
+///        frames, and a frame the fallback cannot reach is relocalised. Tracking on the view a
+///        writer would publish decides as on the map, and threaded, the views published are a
+///        part of the map, their sizes kept.
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -52,10 +54,13 @@ edge::Options small_scene() {
 /// @brief Run the path through a pipeline.
 /// @param mode The mode.
 /// @param results Where each frame's result goes.
+/// @param threading How the steps run, in turn: inline, or each frame on a view.
 /// @return The pipeline, or an error.
-slam_it::foundations::Result<edge::Pipeline> run(edge::Mode mode,
-                                                 std::vector<edge::FrameResult>& results) {
-  auto pipeline = edge::Pipeline::create(mode, scene::camera(), small_scene(), std::nullopt);
+slam_it::foundations::Result<edge::Pipeline> run(
+    edge::Mode mode, std::vector<edge::FrameResult>& results,
+    edge::Threading threading = edge::Threading::kInline) {
+  auto pipeline =
+      edge::Pipeline::create(mode, scene::camera(), small_scene(), std::nullopt, threading);
   if (!pipeline) {
     return pipeline;
   }
@@ -116,6 +121,51 @@ void check_monocular(int& failures) {
     }
   }
   expect(along_path, "monocular starts its map and tracks the path's direction", failures);
+}
+
+/// @brief Whether two frames' results decided alike: state, map, pose, matches, keyframe, how
+///        they were placed and what became of each keypoint.
+/// @param a One.
+/// @param b The other.
+/// @return Whether they did.
+bool decided_alike(const edge::FrameResult& a, const edge::FrameResult& b) {
+  return a.state == b.state && a.map == b.map && a.pose == b.pose && a.tracked == b.tracked &&
+         a.keyframe == b.keyframe && a.asked == b.asked &&
+         a.summary.placed_by == b.summary.placed_by && a.fates.fate == b.fates.fate &&
+         a.fates.point == b.fates.point;
+}
+
+/// @brief Whether two maps hold the same keyframes, points, observations and counts.
+/// @param a One, if any.
+/// @param b The other, if any.
+/// @return Whether both exist and do.
+bool same_map(const std::optional<edge::Map>& a, const std::optional<edge::Map>& b) {
+  if (!a || !b) {
+    return false;
+  }
+  return a->kf_id == b->kf_id && a->kf_pose == b->kf_pose && a->kf_parent == b->kf_parent &&
+         a->kp_point == b->kp_point && a->pt_id == b->pt_id && a->pt_xyz == b->pt_xyz &&
+         a->pt_visible == b->pt_visible && a->pt_found == b->pt_found;
+}
+
+/// @brief Check that tracking each frame on the view a writer would publish then decides as on
+///        the whole map (`Threading::kInlineView`): the same frames and the same map, and
+///        nothing published in turn.
+/// @param failures Running failure count.
+void check_views_decide_as_the_map(int& failures) {
+  for (const edge::Mode mode : {edge::Mode::kRgbd, edge::Mode::kStereo, edge::Mode::kMonocular}) {
+    std::vector<edge::FrameResult> on_map;
+    std::vector<edge::FrameResult> on_view;
+    auto whole = run(mode, on_map);
+    auto viewed = run(mode, on_view, edge::Threading::kInlineView);
+    bool alike = whole && viewed && on_map.size() == on_view.size() &&
+                 same_map(whole->map(), viewed->map()) && viewed->completed().empty();
+    for (std::size_t i = 0; alike && i < on_map.size(); ++i) {
+      alike = decided_alike(on_map[i], on_view[i]);
+    }
+    expect(alike, "each frame tracked on a view decides as on the map, and makes the same map",
+           failures);
+  }
 }
 
 /// @brief A frame with no keypoints.
@@ -404,7 +454,8 @@ void check_threaded(edge::Threading threading, int& failures) {
          failures);
   std::vector<std::int64_t> mapped;
   bool scheduled = true;
-  for (const edge::Completion& done : pipeline->completed()) {
+  const std::vector<edge::Completion> published = pipeline->completed();
+  for (const edge::Completion& done : published) {
     if (done.mapping) {
       mapped.push_back(done.frame);
       scheduled = scheduled && done.schedule.has_value() && done.map_seconds.has_value();
@@ -417,6 +468,22 @@ void check_threaded(edge::Threading threading, int& failures) {
          failures);
   const edge::Lifetimes lives = pipeline->lifetimes();
   const edge::Trajectory trajectory = pipeline->trajectory();
+  std::vector<edge::ViewSize> views;
+  for (const edge::Completion& done : published) {
+    if (done.view) {
+      views.push_back(*done.view);
+    }
+  }
+  const bool sized = std::ranges::all_of(views, [&](const edge::ViewSize& v) {
+    return v.keyframes >= 1 && v.points >= 1 && v.bytes > 0 &&
+           std::cmp_less_equal(v.keyframes, lives.keyframe_times.size()) &&
+           std::cmp_less_equal(v.points, lives.points.size());
+  });
+  // Ours publishes a view at the start and as each keyframe is mapped; the baseline none.
+  expect(
+      threading == edge::Threading::kLocks ? views.empty() : views.size() > given.size() && sized,
+      threaded_check("the views published are a part of the map, sized", threading).c_str(),
+      failures);
   expect(
       lives.keyframe_times.size() == 1 + given.size() &&
           trajectory.timestamps.size() == results.size() &&
@@ -503,6 +570,7 @@ int run_tests() {
   check_lost_relocalizing(failures);
   check_closing_loops_alone(failures);
   check_relocalized(failures);
+  check_views_decide_as_the_map(failures);
   for (const edge::Threading threading : {edge::Threading::kView, edge::Threading::kLocks}) {
     check_threaded(threading, failures);
     check_a_stop_refuses_keyframes(threading, failures);

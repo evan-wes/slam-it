@@ -71,9 +71,11 @@ global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
 
 - **Tracking** reads only the map's published view (:attr:`MapOwner.view`), the one it took for
   the whole frame, and takes no lock: its counts of the points seen and found go to mapping as
-  messages, applied before its next keyframe. Relocalisation reads the database with mapping
-  held off, against the view published last, which the database matches, and the frame goes on
-  with that view. A frame
+  messages, applied before its next keyframe. Python's view is its immutable map, published by
+  reference; the native pipelines publish a copy of the part tracking's next frame may read
+  (:func:`slam_it.edge.covisibility.view_keyframes`, :func:`slam_it.edge.map.sub_map`).
+  Relocalisation reads the database with mapping held off, against the view published last,
+  which the database matches, and the frame goes on with that view. A frame
   that wants a keyframe asks for one as ORB-SLAM's ``NeedNewKeyFrame`` does: none while mapping
   is stopped or being stopped; taken at once with mapping idle; busy, the local BA is
   interrupted, and a stereo or RGB-D keyframe is queued while fewer than ``mapping.max_queued``

@@ -67,6 +67,9 @@ constexpr std::string_view kThreaded = "--threaded";
 /// @brief A flag without a value: with `kThreaded`, share the map by ORB-SLAM's locks.
 constexpr std::string_view kLocks = "--locks";
 
+/// @brief A flag without a value: in turn, track each frame on the view a writer would publish.
+constexpr std::string_view kViews = "--views";
+
 /// @brief A stereo pair, rectified.
 struct StereoImages {
   /// @brief The left image.
@@ -708,8 +711,9 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
   line.emplace_back("refused", result.refused);
   line.emplace_back("queue", result.queue);
   line.emplace_back("schedule", *std::move(schedule));
-  line.emplace_back("global_ba", *std::move(none));
+  line.emplace_back("global_ba", *none);
   line.emplace_back("global_ba_seconds", 0.0);
+  line.emplace_back("views", *std::move(none));
   return {};
 }
 
@@ -823,16 +827,18 @@ void mark_made(edge::Fates& fates, const std::vector<std::int64_t>& made) {
   }
 }
 
-/// @brief A frame's global BAs, as the completions bring them.
+/// @brief A frame's global BAs and views published, as the completions bring them.
 struct Globals {
-  /// @brief Each one's record.
+  /// @brief Each global BA's record.
   std::vector<eval::runs::JsonValue> listed;
   /// @brief Their time, in seconds.
   double seconds{0.0};
+  /// @brief Each view's size.
+  std::vector<eval::runs::JsonValue> views;
 };
 
 /// @brief Add one completion to its frame's diagnostics: a keyframe's mapping, its schedule and
-///        loop closing set, a global BA kept for the frame's list.
+///        loop closing set, a global BA and a view published kept for the frame's lists.
 /// @param line The frame's diagnostics.
 /// @param completion The completion.
 /// @param globals The frame's global BAs so far.
@@ -875,6 +881,15 @@ Result<void> merge_one(eval::runs::JsonObject& line, const edge::Completion& com
     globals.listed.push_back(*std::move(global));
     globals.seconds += completion.global_ba_seconds;
   }
+  if (completion.view) {
+    auto view = nested({{"keyframes", completion.view->keyframes},
+                        {"points", completion.view->points},
+                        {"bytes", completion.view->bytes}});
+    if (!view) {
+      return std::unexpected(std::move(view.error()));
+    }
+    globals.views.push_back(*std::move(view));
+  }
   return {};
 }
 
@@ -903,15 +918,21 @@ Result<void> merge(eval::runs::Run& out, std::vector<Keypoints>& held,
     }
   }
   for (auto& [at, global] : globals) {
-    if (global.listed.empty()) {
-      continue;
+    if (!global.listed.empty()) {
+      auto listed = eval::runs::json_array(global.listed);
+      if (!listed) {
+        return std::unexpected(std::move(listed.error()));
+      }
+      set_key(out.diagnostics[at], "global_ba", *std::move(listed));
+      set_key(out.diagnostics[at], "global_ba_seconds", global.seconds);
     }
-    auto listed = eval::runs::json_array(global.listed);
-    if (!listed) {
-      return std::unexpected(std::move(listed.error()));
+    if (!global.views.empty()) {
+      auto views = eval::runs::json_array(global.views);
+      if (!views) {
+        return std::unexpected(std::move(views.error()));
+      }
+      set_key(out.diagnostics[at], "views", *std::move(views));
     }
-    set_key(out.diagnostics[at], "global_ba", *std::move(listed));
-    set_key(out.diagnostics[at], "global_ba_seconds", global.seconds);
   }
   return {};
 }
@@ -1175,6 +1196,9 @@ bool* switched(Request& out, std::string_view flag) {
   if (flag == kLocks) {
     return &out.locks;
   }
+  if (flag == kViews) {
+    return &out.views;
+  }
   return nullptr;
 }
 
@@ -1183,7 +1207,7 @@ bool* switched(Request& out, std::string_view flag) {
 /// @return Inline, or in threads of their own by our design or by ORB-SLAM's locks.
 edge::Threading threading_of(const Request& request) {
   if (!request.threaded) {
-    return edge::Threading::kInline;
+    return request.views ? edge::Threading::kInlineView : edge::Threading::kInline;
   }
   return request.locks ? edge::Threading::kLocks : edge::Threading::kView;
 }
@@ -1247,6 +1271,9 @@ Result<void> check(const Request& request) {
   }
   if (request.locks && !request.threaded) {
     return fail(ErrorKind::kInvalidInput, "--locks: needs --threaded");
+  }
+  if (request.views && request.threaded) {
+    return fail(ErrorKind::kInvalidInput, "--views: tracks in turn, not with --threaded");
   }
   return edge::check_options(request.options);
 }

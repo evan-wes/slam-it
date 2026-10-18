@@ -3,12 +3,14 @@
 //! per-frame loop, the steps' own state, the map's owner and the steps in threads of their own.
 //! It runs in the native program, not across the binding.
 //!
-//! Threaded, the map is shared with the view a writer publishes (`Arc<Map>`) and copied when a
-//! writer next changes it while tracking still reads that view; tracking holds the view it read
-//! for its whole frame. Inline, the view is the map itself.
+//! Threaded, the view a writer publishes ([`View`]) is a copy of the part of the map tracking's
+//! next frame may read, from where its last frame left it
+//! ([`crate::covisibility::view_keyframes`]), made each time a writer publishes: tracking holds
+//! the view it read for its whole frame, and the writers go on changing the map in place. Inline,
+//! the view is the map itself.
 
 use std::fmt;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -20,6 +22,7 @@ use slam_it_foundations::vocabulary::Vocabulary;
 use slam_it_foundations::{orb, se3};
 
 use crate::atlas::{Atlas, Lifetimes, Trajectory};
+use crate::covisibility;
 use crate::database::Database;
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
@@ -229,6 +232,72 @@ pub struct FrameResult {
     pub schedule: Option<Schedule>,
 }
 
+/// What tracking reads of the map on a frame ([`MapOwner::view`]).
+#[derive(Debug, Clone)]
+pub struct View {
+    /// The map itself (inline), or the part of it a writer published: those keyframes, their
+    /// keypoints and points, ids kept ([`map::sub_map`]). Never changed after.
+    pub map: Arc<Map>,
+    /// The whole map's keyframes, which tracking's rules count.
+    pub keyframes: usize,
+}
+
+/// A published view's size, as a run records it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewSize {
+    /// Its keyframes.
+    pub keyframes: usize,
+    /// Its points.
+    pub points: usize,
+    /// The bytes its arrays hold.
+    pub bytes: usize,
+}
+
+/// A map's size, as a view's is recorded.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+///
+/// # Returns
+///
+/// Its keyframes, points, and the bytes its arrays hold.
+#[must_use]
+pub fn size_of(m: &Map) -> ViewSize {
+    const fn bytes<T>(values: &[T]) -> usize {
+        std::mem::size_of_val(values)
+    }
+    let observations: usize = m.pt_observations.iter().map(|rows| bytes(rows)).sum();
+    ViewSize {
+        keyframes: m.keyframes(),
+        points: m.points(),
+        bytes: bytes(&m.kf_id)
+            + bytes(&m.kf_time)
+            + bytes(&m.kf_pose)
+            + bytes(&m.kf_parent)
+            + bytes(&m.kf_start)
+            + bytes(&m.kp_xy)
+            + bytes(&m.kp_level)
+            + bytes(&m.kp_angle)
+            + bytes(&m.kp_descriptor)
+            + bytes(&m.kp_bearing)
+            + bytes(&m.kp_depth)
+            + bytes(&m.kp_right)
+            + bytes(&m.kp_point)
+            + bytes(&m.pt_id)
+            + bytes(&m.pt_xyz)
+            + bytes(&m.pt_descriptor)
+            + bytes(&m.pt_normal)
+            + bytes(&m.pt_min_distance)
+            + bytes(&m.pt_max_distance)
+            + bytes(&m.pt_visible)
+            + bytes(&m.pt_found)
+            + bytes(&m.pt_first_kf)
+            + bytes(&m.pt_reference_kf)
+            + observations,
+    }
+}
+
 /// What a thread of its own finished after its frame's result was given
 /// (`slam_it.edge.pipeline.Completion`, threaded runs): a keyframe's mapping and loop closing on
 /// the keyframe's frame; a global BA's on the frame being tracked when it ended, or the last
@@ -254,6 +323,8 @@ pub struct Completion {
     pub global_ba: Option<GlobalSummary>,
     /// Its time, in seconds.
     pub global_ba_seconds: f64,
+    /// A view a writer published.
+    pub view: Option<ViewSize>,
 }
 
 /// A frame handled, as `Pipeline::initialize` and `Pipeline::track_frame` give it.
@@ -326,7 +397,7 @@ struct Placed {
 #[derive(Debug, Default)]
 struct Tracking {
     /// The map tracking read, held for the frame; `None` only when there was none.
-    view: Option<Arc<Map>>,
+    view: Option<View>,
     /// The tracked frame, if it kept enough inliers.
     tracked: Option<Tracked>,
     /// How its stages went.
@@ -505,8 +576,8 @@ impl LoopState {
 /// The map and its database, which only a writer changes ([`MapOwner`]'s).
 #[derive(Debug, Default)]
 pub struct Held {
-    /// The map, once initialised: shared with the view a writer published, copied on the next
-    /// write while tracking still reads it.
+    /// The map, once initialised: inline, shared with tracking's view, which tracking gives up
+    /// before the map is changed; threaded, never shared, a view being a copy of its own.
     map: Option<Arc<Map>>,
     /// The map's keyframe database, when relocalising or closing loops and a map exists.
     database: Option<Database>,
@@ -538,20 +609,31 @@ impl Held {
 /// change to them goes through here. The steps change the map in place, so the owner runs each
 /// step that changes it on its map, then keeps the database in step. Inline, it holds the map
 /// between the steps, and the view is the map. Threaded (a writer given), one thread writes the
-/// map at a time ([`Writer`]), tracking reads the view the writers publish, and tracking's counts
-/// wait for local mapping to apply them ([`MapOwner::apply_counts`]). The map is shared with a
-/// view published (`Arc`), and copied when a writer next changes it while tracking still reads
-/// that view: a copy per publish at most, made only when needed.
+/// map at a time ([`Writer`]), tracking reads the view the writers publish, a copy of the part its
+/// next frame may read from where it says its last frame left it ([`MapOwner::anchor`]), and
+/// tracking's counts wait for local mapping to apply them ([`MapOwner::apply_counts`]). The map
+/// is never shared with a reader while it is changed, so it is never copied whole.
 #[derive(Debug)]
 pub struct MapOwner {
     /// The vocabulary, when relocalising or closing loops.
     vocabulary: Option<Vocabulary>,
     /// The handshake between the threads; `None` inline.
     writer: Option<Arc<Writer>>,
+    /// The settings: the local map's, which a view's keyframes follow.
+    options: Options,
+    /// Inline, whether tracking reads each frame a view made then ([`Threading::InlineView`]).
+    views: bool,
     /// The map and its database.
     held: Mutex<Held>,
-    /// The map as last published, threaded.
-    view: Mutex<Option<Arc<Map>>>,
+    /// The view as last published, threaded.
+    view: Mutex<Option<View>>,
+    /// Where tracking's last frame left it: its points, by id, and its reference keyframe's id
+    /// or -1.
+    anchor: Mutex<(Vec<i64>, i64)>,
+    /// The views published and not yet taken, each a completion with its frame.
+    published: Mutex<Vec<Completion>>,
+    /// The frame being tracked now, which a view published is dated by.
+    frame: AtomicI64,
     /// Tracking's counts waiting for local mapping: the points seen, and found, per frame.
     counts: Mutex<Vec<(Vec<i64>, Vec<i64>)>>,
     /// The corrections applied: loops corrected, and global BAs carried onto the map.
@@ -565,18 +647,24 @@ impl MapOwner {
     ///
     /// * `vocabulary` - The database's vocabulary; `None` when neither relocalising nor closing
     ///   loops, and there is no database.
-    /// * `threaded` - Whether the steps run in threads of their own (a writer made).
+    /// * `threading` - How the steps run: threaded, a writer is made.
+    /// * `options` - The settings: the local map's, which a view's keyframes follow.
     ///
     /// # Returns
     ///
     /// The owner.
     #[must_use]
-    pub fn new(vocabulary: Option<Vocabulary>, threaded: bool) -> Self {
+    pub fn new(vocabulary: Option<Vocabulary>, threading: Threading, options: Options) -> Self {
         Self {
             vocabulary,
-            writer: threaded.then(|| Arc::new(Writer::default())),
+            writer: threading.threaded().then(|| Arc::new(Writer::default())),
+            options,
+            views: threading == Threading::InlineView,
             held: Mutex::new(Held::default()),
             view: Mutex::new(None),
+            anchor: Mutex::new((Vec::new(), -1)),
+            published: Mutex::new(Vec::new()),
+            frame: AtomicI64::new(0),
             counts: Mutex::new(Vec::new()),
             corrections: AtomicU64::new(0),
         }
@@ -592,18 +680,107 @@ impl MapOwner {
         self.writer.as_deref()
     }
 
-    /// The map as last published, what tracking reads: threaded, a view the writers published;
-    /// inline, the map itself.
+    /// Whether tracking reads views, not the map itself: threaded, or inline as their test.
+    ///
+    /// # Returns
+    ///
+    /// Whether it does.
+    #[must_use]
+    pub const fn views(&self) -> bool {
+        self.writer.is_some() || self.views
+    }
+
+    /// What tracking reads: threaded, the view last published; inline, the map itself, or a view
+    /// made now ([`Threading::InlineView`]).
     ///
     /// # Returns
     ///
     /// The view, or `None` with no map.
-    pub fn view(&self) -> Option<Arc<Map>> {
+    pub fn view(&self) -> Option<View> {
         if self.writer.is_some() {
-            lock(&self.view).clone()
-        } else {
-            lock(&self.held).map.clone()
+            return lock(&self.view).clone();
         }
+        let held = lock(&self.held);
+        let m = held.map.as_ref()?;
+        if self.views {
+            let (points, reference) = lock(&self.anchor).clone();
+            return Some(self.view_of(m, &points, reference));
+        }
+        Some(View {
+            map: Arc::clone(m),
+            keyframes: m.keyframes(),
+        })
+    }
+
+    /// A view of a map from where a frame left tracking: the map's part those keyframes make
+    /// ([`covisibility::view_keyframes`], [`map::sub_map`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map.
+    /// * `points` - The point each of the frame's keypoints tracked, -1 for none.
+    /// * `reference` - Its reference keyframe's id, or -1.
+    ///
+    /// # Returns
+    ///
+    /// The view.
+    fn view_of(&self, m: &Map, points: &[i64], reference: i64) -> View {
+        // Tracking's points are ids, -1 where none, which view_keyframes takes: it cannot fail.
+        let rows = covisibility::view_keyframes(m, points, reference, &self.options)
+            .unwrap_or_else(|_| (0..m.keyframes()).collect());
+        View {
+            map: Arc::new(map::sub_map(m, &rows)),
+            keyframes: m.keyframes(),
+        }
+    }
+
+    /// Says where tracking's last frame left it, which the views published follow.
+    ///
+    /// # Arguments
+    ///
+    /// * `points` - The point each of its keypoints tracked, -1 for none.
+    /// * `reference` - Its reference keyframe's id, or -1.
+    pub fn anchor(&self, points: Vec<i64>, reference: i64) {
+        *lock(&self.anchor) = (points, reference);
+    }
+
+    /// Follows a frame relocalisation placed: the views follow it from now, and, threaded, one
+    /// is published at once (under the hold relocalisation took), so that the frames after it
+    /// read where it was placed.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map, held.
+    /// * `points` - The point each of the frame's keypoints was matched to, -1 for none.
+    ///
+    /// # Returns
+    ///
+    /// The view of where it was placed.
+    pub fn relocalized(&self, m: &Map, points: Vec<i64>) -> View {
+        let made = self.view_of(m, &points, -1);
+        self.anchor(points, -1);
+        if self.writer.is_some() {
+            self.keep(made.clone());
+        }
+        made
+    }
+
+    /// Dates the views published from now: by the frame being tracked.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - Its number ([`Atlas::frame`]).
+    pub fn date(&self, frame: i64) {
+        self.frame.store(frame, Ordering::SeqCst);
+    }
+
+    /// The views published since the last call, each with its frame.
+    ///
+    /// # Returns
+    ///
+    /// The completions saying so, in the order published.
+    pub fn published(&self) -> Vec<Completion> {
+        std::mem::take(&mut *lock(&self.published))
     }
 
     /// Whether a map is being tracked.
@@ -671,29 +848,38 @@ impl MapOwner {
     ///
     /// # Arguments
     ///
-    /// * `view` - The map tracking read, given up inline so that the map is changed in place.
+    /// * `view` - The map tracking read, given up inline where it is the map itself, so that
+    ///   the map is changed in place.
     /// * `visible` - The points the frame's view held, by the map's ids.
     /// * `found` - The points it tracked.
     ///
     /// # Returns
     ///
-    /// The map tracking goes on with: its view threaded, the map as counted inline.
+    /// The view tracking goes on with: the map as counted, where it is the map itself.
     ///
     /// # Errors
     ///
     /// `InvalidInput` with no map, inline.
-    pub fn count(&self, view: Arc<Map>, visible: &[i64], found: &[i64]) -> Result<Arc<Map>> {
+    pub fn count(&self, view: View, visible: &[i64], found: &[i64]) -> Result<View> {
         if self.writer.is_some() {
             lock(&self.counts).push((visible.to_vec(), found.to_vec()));
             return Ok(view);
         }
-        drop(view);
         let mut held = lock(&self.held);
         let Some(m) = &mut held.map else {
             return fail(ErrorKind::InvalidInput, "count: no map");
         };
-        add_counts(Arc::make_mut(m), visible, found)?;
-        Ok(Arc::clone(m))
+        if self.views {
+            add_counts(writable(m)?, visible, found)?;
+            return Ok(view);
+        }
+        let keyframes = view.keyframes;
+        drop(view);
+        add_counts(writable(m)?, visible, found)?;
+        Ok(View {
+            map: Arc::clone(m),
+            keyframes,
+        })
     }
 
     /// Applies the counts tracking sent since the last (threaded; local mapping's, in its turn).
@@ -711,7 +897,7 @@ impl MapOwner {
         let Some(m) = &mut held.map else {
             return fail(ErrorKind::InvalidInput, "apply_counts: no map");
         };
-        let m = Arc::make_mut(m);
+        let m = writable(m)?;
         for (visible, found) in &counts {
             add_counts(m, visible, found)?;
         }
@@ -719,7 +905,7 @@ impl MapOwner {
     }
 
     /// Runs a mapping step on the map, then brings the database to its keyframes and, threaded,
-    /// publishes the map.
+    /// publishes a view.
     ///
     /// # Arguments
     ///
@@ -737,7 +923,7 @@ impl MapOwner {
         let Some(m) = &mut held.map else {
             return fail(ErrorKind::InvalidInput, "mapping: no map");
         };
-        let out = step(Arc::make_mut(m))?;
+        let out = step(writable(m)?)?;
         self.changed(&mut held)?;
         Ok(out)
     }
@@ -745,7 +931,7 @@ impl MapOwner {
     /// The handshake: runs a change on the map held, mapping stopped and its local BA aborted,
     /// then mapping released, as ORB-SLAM's loop closing does (`RequestStop`, `Release`; a
     /// global BA running is superseded by the caller's new generation). A change that gives a
-    /// value corrected the map: its database is brought to it, it is published, and the
+    /// value corrected the map: its database is brought to it, a view is published, and the
     /// correction counted. Inline nothing runs beside the change, so there is nothing to stop.
     /// Loop corrections, global BAs' results and milestone 2B's B4's merges all enter here.
     ///
@@ -769,7 +955,7 @@ impl MapOwner {
         let Some(m) = &mut held.map else {
             return fail(ErrorKind::InvalidInput, "stopped: no map");
         };
-        let out = step(Arc::make_mut(m))?;
+        let out = step(writable(m)?)?;
         if out.is_some() {
             self.changed(&mut held)?;
             self.corrections.fetch_add(1, Ordering::SeqCst);
@@ -777,15 +963,30 @@ impl MapOwner {
         Ok(out)
     }
 
-    /// Publishes the map so far for tracking to read, while its writer goes on (threaded): a
-    /// copy.
+    /// Publishes a view of the map so far for tracking to read, while its writer goes on
+    /// (threaded): a copy of the part tracking's next frame may read, from where it last said it
+    /// was ([`MapOwner::anchor`]), its size kept for the run ([`MapOwner::published`]).
     ///
     /// # Arguments
     ///
     /// * `m` - The map so far.
     pub fn publish(&self, m: &Map) {
-        let copy = Arc::new(m.clone());
-        *lock(&self.view) = Some(copy);
+        let (points, reference) = lock(&self.anchor).clone();
+        self.keep(self.view_of(m, &points, reference));
+    }
+
+    /// Makes a view the one tracking reads, its size kept for the run.
+    ///
+    /// # Arguments
+    ///
+    /// * `view` - The view.
+    fn keep(&self, view: View) {
+        lock(&self.published).push(Completion {
+            frame: self.frame.load(Ordering::SeqCst),
+            view: Some(size_of(&view.map)),
+            ..Completion::default()
+        });
+        *lock(&self.view) = Some(view);
     }
 
     /// Runs something with the map and its database held whole, local mapping held off (a
@@ -828,28 +1029,35 @@ impl MapOwner {
     }
 
     /// Empties the map's archive of removals, once the atlas has dated them.
-    pub fn clear_gone(&self) {
+    ///
+    /// # Errors
+    ///
+    /// [`writable`]'s.
+    pub fn clear_gone(&self) -> Result<()> {
         if let Some(m) = &mut lock(&self.held).map
             && !(m.gone_pt_id.is_empty() && m.gone_kf_id.is_empty())
         {
-            map::clear_gone(Arc::make_mut(m));
+            map::clear_gone(writable(m)?);
         }
+        Ok(())
     }
 
-    /// Gives up the map, lost: the database, the view and the counts waiting go with it.
+    /// Gives up the map, lost: the database, the view, where tracking was and the counts
+    /// waiting go with it.
     ///
     /// # Returns
     ///
     /// The map, if there was one.
     pub fn close(&self) -> Option<Arc<Map>> {
         *lock(&self.view) = None;
+        *lock(&self.anchor) = (Vec::new(), -1);
         lock(&self.counts).clear();
         let mut held = lock(&self.held);
         held.database = None;
         held.map.take()
     }
 
-    /// After a step changed the map: brings the database to it and, threaded, publishes it.
+    /// After a step changed the map: brings the database to it and, threaded, publishes a view.
     ///
     /// # Arguments
     ///
@@ -860,10 +1068,36 @@ impl MapOwner {
     /// A quantisation's error.
     fn changed(&self, held: &mut Held) -> Result<()> {
         sync_database(self.vocabulary.as_ref(), held)?;
-        if self.writer.is_some() {
-            lock(&self.view).clone_from(&held.map);
+        if self.writer.is_some()
+            && let Some(m) = held.map.as_deref()
+        {
+            self.publish(m);
         }
         Ok(())
+    }
+}
+
+/// The map to change in place: never shared while it is changed (threaded, a view is a copy of
+/// its own; inline, tracking gives its view up first), so never copied.
+///
+/// # Arguments
+///
+/// * `m` - The map, held.
+///
+/// # Returns
+///
+/// The map.
+///
+/// # Errors
+///
+/// `InvalidInput` if a reader still holds it.
+fn writable(m: &mut Arc<Map>) -> Result<&mut Map> {
+    match Arc::get_mut(m) {
+        Some(m) => Ok(m),
+        None => fail(
+            ErrorKind::InvalidInput,
+            "map: still read while it is changed",
+        ),
     }
 }
 
@@ -976,15 +1210,16 @@ fn initialize_monocular(
     initialization::initialize_monocular(camera, reference, frame, &pairs, options)
 }
 
-/// Tracks the last frame against the view, or recovers by PnP, or relocalises. Threaded,
-/// relocalisation reads the database with mapping held off, against the view published last,
-/// which the database matches; the frame goes on with that view.
+/// Tracks the last frame against the view, or recovers by PnP, or relocalises. Relocalisation
+/// reads the database and the whole map (threaded, with mapping held off); where tracking reads
+/// views, the frame goes on with the view of where it was placed, published for the frames
+/// after it.
 ///
 /// # Arguments
 ///
 /// * `state` - Tracking's state.
-/// * `owner` - The map's owner, for its database.
-/// * `view` - The map tracking reads; threaded, a relocalisation's view replaces it.
+/// * `owner` - The map's owner, for its database and the view of a relocalised frame.
+/// * `view` - What tracking reads; where it reads views, a relocalisation's replaces it.
 /// * `camera` - The camera.
 /// * `frame` - The frame.
 /// * `mode` - The sensor mode.
@@ -1001,7 +1236,7 @@ fn initialize_monocular(
 fn place(
     state: &TrackingState,
     owner: &MapOwner,
-    view: &mut Arc<Map>,
+    view: &mut View,
     camera: &Camera,
     frame: &Frame,
     mode: Mode,
@@ -1013,7 +1248,7 @@ fn place(
             "track: no last frame to track from",
         );
     };
-    let m = Arc::clone(view);
+    let m = Arc::clone(&view.map);
     // No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM tracks
     // its reference keyframe by bag of words here; the lite pipeline's words only relocalise.
     let predicted = tracking::predict(&last_tracked.pose, state.velocity.as_ref());
@@ -1060,18 +1295,21 @@ fn place(
     };
     let asked = Instant::now();
     let mut held_at = asked;
-    let found = owner.reading(|held| {
+    let found = owner.reading(|held| -> Result<_> {
         held_at = Instant::now();
-        if owner.writer().is_some()
-            && let Some(latest) = owner.view()
+        let (Some(whole), Some(database)) = (held.map(), held.database()) else {
+            return Ok(None);
+        };
+        let found =
+            relocalization::relocalize(whole, database, vocabulary, camera, frame, options)?;
+        // A view holds the part of the map its frame may read: the frame goes on with the view
+        // of where it was placed.
+        if owner.views()
+            && let Some(tracked) = &found.tracked
         {
-            *view = latest;
+            *view = owner.relocalized(whole, tracked.points.clone());
         }
-        held.database()
-            .map(|database| {
-                relocalization::relocalize(view, database, vocabulary, camera, frame, options)
-            })
-            .transpose()
+        Ok(Some(found))
     })?;
     let Some(found) = found else {
         return Ok(Placed {
@@ -1179,6 +1417,7 @@ fn track_step(
         matched,
         waited,
     } = place(state, owner, &mut view, camera, frame, mode, options)?;
+    // The rules count the whole map's keyframes, which a view holds a part of.
     if matches!(
         summary.placed_by,
         Some(Placement::LocalPnp | Placement::Relocalization)
@@ -1194,7 +1433,7 @@ fn track_step(
         .since_recovery
         .is_some_and(|s| s < options.tracking.recovery_window_frames);
     let Some(placed) = placed else {
-        let lost = state.record_failure(frame, view.keyframes(), options);
+        let lost = state.record_failure(frame, view.keyframes, options);
         return Ok(Tracking {
             view: Some(view),
             summary,
@@ -1207,7 +1446,7 @@ fn track_step(
             ..Tracking::default()
         });
     };
-    let local = tracking::track_local_map(&view, camera, frame, &placed, mode, options, wide)?;
+    let local = tracking::track_local_map(&view.map, camera, frame, &placed, mode, options, wide)?;
     summary.local_map = Some(local.summary(keyframe_base));
     let view = owner.count(view, &local.visible, &local.found)?;
     let needed = if recent {
@@ -1216,7 +1455,7 @@ fn track_step(
         options.tracking.min_tracked
     };
     if local.tracked.inliers() < needed {
-        let lost = state.record_failure(frame, view.keyframes(), options);
+        let lost = state.record_failure(frame, view.keyframes, options);
         return Ok(Tracking {
             view: Some(view),
             summary,
@@ -1246,11 +1485,11 @@ fn track_step(
         },
         ..Tracking::default()
     };
-    if !(recent && view.keyframes() > options.tracking.max_frames) {
+    if !(recent && view.keyframes > options.tracking.max_frames) {
         // none just after a recovery
         let idle = threads.is_none_or(Threads::idle);
         out.handshake.asked = mapping::need_keyframe(
-            &view,
+            &view.map,
             camera,
             &frame.depth,
             &local.tracked,
@@ -1259,6 +1498,7 @@ fn track_step(
             options,
             idle,
             Some(state.since_keyframe),
+            Some(view.keyframes),
         )?;
         if out.handshake.asked {
             ask_mapping(&mut out, threads, idle, mode, options);
@@ -1337,6 +1577,32 @@ fn close_loops(
     ))
 }
 
+/// How a pipeline's steps run (C++'s `Threading`, but its baseline's locks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Threading {
+    /// In turn, each step on the map itself: a run repeats exactly.
+    #[default]
+    Inline,
+    /// Each in a thread of its own, our design: tracking reads the views the writers publish.
+    View,
+    /// In turn, as [`Threading::Inline`], tracking each frame on the view a writer would
+    /// publish from the map as it is then: a test that tracking on a view decides as on the
+    /// whole map (each frame copies its view).
+    InlineView,
+}
+
+impl Threading {
+    /// Whether the steps run in threads of their own.
+    ///
+    /// # Returns
+    ///
+    /// Whether they do.
+    #[must_use]
+    pub const fn threaded(self) -> bool {
+        matches!(self, Self::View)
+    }
+}
+
 /// What the threads share with tracking: the map's owner, the run's records and loop closing's
 /// state.
 #[derive(Debug)]
@@ -1347,6 +1613,24 @@ struct Shared {
     atlas: Mutex<Atlas>,
     /// Loop closing's own state.
     closing: Mutex<LoopState>,
+}
+
+impl Shared {
+    /// Counts a frame in the run's records: what is recorded from now on, and the views
+    /// published, are dated by the next.
+    fn tick(&self) {
+        let mut atlas = lock(&self.atlas);
+        atlas.tick();
+        self.owner.date(atlas.frame());
+    }
+
+    /// Ends the run's frames: what threads record after the last, and the views they publish,
+    /// are dated by it.
+    fn end(&self) {
+        let mut atlas = lock(&self.atlas);
+        atlas.end();
+        self.owner.date(atlas.frame());
+    }
 }
 
 /// A keyframe tracking asked local mapping for (`slam_it.edge.pipeline._Request`).
@@ -1933,8 +2217,7 @@ impl Pipeline {
     /// * `options` - The settings.
     /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalization.enabled`
     ///   or `loops.enabled` on, refused with both off.
-    /// * `threaded` - Whether the steps run in threads of their own; inline, a run repeats
-    ///   exactly.
+    /// * `threading` - How the steps run: inline, a run repeats exactly.
     ///
     /// # Returns
     ///
@@ -1950,7 +2233,7 @@ impl Pipeline {
         camera: Camera,
         options: Options,
         vocabulary: Option<Vocabulary>,
-        threaded: bool,
+        threading: Threading,
     ) -> Result<Self> {
         check_setup(&camera, &options)?;
         if mode != Mode::Monocular && !(camera.baseline > 0.0) {
@@ -1973,11 +2256,13 @@ impl Pipeline {
             );
         }
         let shared = Arc::new(Shared {
-            owner: MapOwner::new(vocabulary, threaded),
+            owner: MapOwner::new(vocabulary, threading, options),
             atlas: Mutex::new(Atlas::new(options)),
             closing: Mutex::new(LoopState::default()),
         });
-        let threads = threaded.then(|| Threads::start(&shared, mode, &camera, &options));
+        let threads = threading
+            .threaded()
+            .then(|| Threads::start(&shared, mode, &camera, &options));
         Ok(Self {
             mode,
             camera,
@@ -2069,7 +2354,7 @@ impl Pipeline {
                 let m = owner.map();
                 lock(&self.shared.atlas).record(m.as_deref());
                 drop(m);
-                owner.clear_gone();
+                owner.clear_gone()?;
             }
             if step.lost && owner.has_map() {
                 // The threads end the map's work first.
@@ -2077,12 +2362,12 @@ impl Pipeline {
                 threads.settle(false)?;
                 waited += settling.elapsed().as_secs_f64();
             }
-            lock(&self.shared.atlas).tick();
+            self.shared.tick();
         } else {
             let m = owner.map();
             lock(&self.shared.atlas).date(m.as_deref());
             drop(m);
-            owner.clear_gone();
+            owner.clear_gone()?;
         }
         let state = if step.lost { State::Lost } else { self.state };
         let (map_id, base) = {
@@ -2141,22 +2426,26 @@ impl Pipeline {
         if already {
             return Ok(());
         }
-        lock(&self.shared.atlas).end();
+        self.shared.end();
         let settled = threads.settle(true);
         threads.stop();
         settled
     }
 
-    /// What the threads finished since the last call (threaded; none inline).
+    /// What the threads finished since the last call, and the views the writers published
+    /// (threaded; none inline).
     ///
     /// # Returns
     ///
-    /// The completions, in the order they came.
+    /// The completions, in the order they came, then the views in the order published.
     #[must_use]
     pub fn completed(&self) -> Vec<Completion> {
-        self.threads
-            .as_ref()
-            .map_or_else(Vec::new, Threads::completed)
+        let Some(threads) = &self.threads else {
+            return Vec::new();
+        };
+        let mut out = threads.completed();
+        out.extend(self.shared.owner.published());
+        out
     }
 
     /// Every point and keyframe the run has made, with their lives ([`Atlas::lifetimes`], with
@@ -2243,13 +2532,15 @@ impl Pipeline {
         lock(&self.shared.atlas).start();
         self.state = State::Tracking;
         lock(&self.shared.atlas).place_frame(&map, frame.timestamp, reference, &tracked.pose)?;
-        let row = map.keyframes() - 1;
+        self.shared.owner.anchor(tracked.points.clone(), reference); // what the first view follows
         self.shared.owner.start(map)?;
         self.tracking.accept(frame, &tracked)?;
         if self.threads.is_some()
             && let Some(view) = self.shared.owner.view()
+            && let Some(row) = view.map.keyframe_row(reference)
         {
-            self.tracking.anchor_to(&view, row)?;
+            // The map's first view, of the keyframe it started on.
+            self.tracking.anchor_to(&view.map, row)?;
             self.tracking.corrections = self.shared.owner.corrections();
         }
         summary.placed_by = Some(Placement::Initialization);
@@ -2281,7 +2572,8 @@ impl Pipeline {
         if self.threads.is_some()
             && let Some(view) = self.shared.owner.view()
         {
-            self.tracking.follow(&view, self.shared.owner.corrections());
+            self.tracking
+                .follow(&view.map, self.shared.owner.corrections());
         }
         let keyframe_base = lock(&self.shared.atlas).keyframe_base();
         let mut found = track_step(
@@ -2308,21 +2600,22 @@ impl Pipeline {
         };
         step.keyframe = found.keyframe;
         if self.threads.is_some() {
-            self.hand_over(frame, &view, &tracked, reference, found.keyframe)?;
+            self.hand_over(frame, &view.map, &tracked, reference, found.keyframe)?;
             step.tracked = Some(tracked);
             return Ok(step);
         }
-        drop(view); // inline, the view is the map itself, which mapping changes in place
+        // Inline, the frame's reference by its id in the view it was tracked on (the map itself,
+        // or the test's view of it); then the view given up, the map being changed in place.
+        let reference = view.map.kf_id[reference];
+        drop(view);
+        if self.shared.owner.views() {
+            self.shared.owner.anchor(tracked.points.clone(), reference); // the next view follows
+        }
         let mut mapped = KeyframeMapped::default();
         if found.keyframe {
             mapped = self.map_keyframe(frame, &tracked, &mut step.summary)?;
         } else if let Some(m) = self.shared.owner.map() {
-            lock(&self.shared.atlas).place_frame(
-                &m,
-                frame.timestamp,
-                m.kf_id[reference],
-                &tracked.pose,
-            )?;
+            lock(&self.shared.atlas).place_frame(&m, frame.timestamp, reference, &tracked.pose)?;
         }
         self.tracking.accept(frame, &tracked)?;
         if mapped.corrected
@@ -2378,7 +2671,12 @@ impl Pipeline {
             }
         }
         self.tracking.accept(frame, tracked)?;
-        self.tracking.anchor_to(view, reference)
+        self.tracking.anchor_to(view, reference)?;
+        // What the next views follow.
+        self.shared
+            .owner
+            .anchor(tracked.points.clone(), view.kf_id[reference]);
+        Ok(())
     }
 
     /// Maps a new keyframe and closes loops on it, timing each: its place in the trajectory is

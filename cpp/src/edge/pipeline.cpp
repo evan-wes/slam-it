@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -12,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/mapping.hpp"
 #include "slam_it/edge/threads.hpp"
@@ -522,7 +524,7 @@ struct Refined {
 ///        (`slam_it.edge.pipeline._Tracking`).
 struct Tracking {
   /// @brief The map tracking read: the view, held for the frame.
-  std::shared_ptr<const Map> view;
+  View view;
   /// @brief The tracked frame, if it kept enough inliers.
   std::optional<Tracked> tracked;
   /// @brief How its stages went.
@@ -586,21 +588,21 @@ Result<Initialization> initialize_monocular(TrackingState& state, const Camera& 
 }
 
 /// @brief Track the last frame against the view, or recover by PnP, or relocalise. Threaded,
-///        relocalisation reads the database with mapping held off, against the view published
-///        last, which the database matches; the frame goes on with that view.
+///        relocalisation reads the database with mapping held off, against the whole map, and
+///        the frame goes on with the view of where it was placed, published for the frames
+///        after it.
 /// @param state Tracking's state.
-/// @param owner The map's owner, for its database.
-/// @param view The map tracking reads; threaded, a relocalisation's view replaces it.
+/// @param owner The map's owner, for its database and the view of a relocalised frame.
+/// @param view What tracking reads; where it reads views, a relocalisation's replaces it.
 /// @param camera The camera.
 /// @param frame The frame.
 /// @param mode The sensor mode.
 /// @param options The settings.
 /// @return The placed frame, if any, how it was placed, the last stage's matches and the time
 ///         spent waiting for the map; a stage's error.
-Result<Placed> place(const TrackingState& state, const MapOwner& owner,
-                     std::shared_ptr<const Map>& view, const Camera& camera, const Frame& frame,
-                     Mode mode, const Options& options) {
-  const Map& m = *view;
+Result<Placed> place(const TrackingState& state, MapOwner& owner, View& view, const Camera& camera,
+                     const Frame& frame, Mode mode, const Options& options) {
+  const Map& m = *view.map;
   if (!state.last_frame || !state.last_tracked) {
     return fail(ErrorKind::kInvalidInput, "track: no last frame to track from");
   }
@@ -641,10 +643,16 @@ Result<Placed> place(const TrackingState& state, const MapOwner& owner,
   auto held = asked;
   const auto search = [&] {
     held = Clock::now();
-    if (owner.publishing()) {
-      view = owner.view();
+    if (!owner.views()) {
+      return relocalize(*view.map, *owner.database(), *words, camera, frame, options);
     }
-    return relocalize(*view, *owner.database(), *words, camera, frame, options);
+    // A view holds the part of the map its frame may read: relocalisation reads the whole map,
+    // and the frame goes on with the view of where it was placed.
+    auto found = relocalize(*owner.map(), *owner.database(), *words, camera, frame, options);
+    if (found && found->tracked) {
+      view = owner.relocalized(found->tracked->points);
+    }
+    return found;
   };
   // The baseline's tracking holds the map's lock already, through its frame.
   auto found = owner.publishing() ? owner.reading(search) : search();
@@ -739,15 +747,15 @@ Result<Tracking> track_step(TrackingState& state, MapOwner& owner, const Camera&
                             const Frame& frame, Mode mode, const Options& options,
                             std::int64_t keyframe_base, PipelineThreads* threads) {
   ++state.since_keyframe;
-  std::shared_ptr<const Map> view = owner.view();
-  if (!view) {
+  View view = owner.view();
+  if (!view.map) {
     return fail(ErrorKind::kInvalidInput, "track: no map to track against");
   }
   auto placed = place(state, owner, view, camera, frame, mode, options);
   if (!placed) {
     return std::unexpected(std::move(placed.error()));
   }
-  const Map& m = *view;
+  const Map& m = *view.map;
   auto& [where, summary, matched, waited] = *placed;
   if (summary.placed_by == Placement::kLocalPnp ||
       summary.placed_by == Placement::kRelocalization) {
@@ -782,16 +790,17 @@ Result<Tracking> track_step(TrackingState& state, MapOwner& owner, const Camera&
   }
   out.summary = std::move(summary);
   out.matched = std::move(matched);
+  // The rules count the whole map's keyframes, which a view holds a part of.
   if (!out.tracked) {
-    out.lost = record_failure(state, frame, keyframe_count(m), options);
+    out.lost = record_failure(state, frame, static_cast<std::size_t>(view.keyframes), options);
     return out;
   }
-  if (recent && std::cmp_greater(keyframe_count(m), options.tracking.max_frames)) {
+  if (recent && std::cmp_greater(view.keyframes, options.tracking.max_frames)) {
     return out;  // none just after a recovery
   }
   const bool idle = threads == nullptr || threads->idle();
   auto need = need_keyframe(m, camera, frame.depth, *out.tracked, out.reference, mode, options,
-                            idle, state.since_keyframe);
+                            idle, state.since_keyframe, view.keyframes);
   if (!need) {
     return std::unexpected(std::move(need.error()));
   }
@@ -944,12 +953,76 @@ std::vector<std::int64_t> held(const LoopState& state) {
   return state.pending ? loops::held(*state.pending) : std::vector<std::int64_t>{};
 }
 
-std::shared_ptr<const Map> MapOwner::view() const {
-  if (!publishing()) {  // the map itself, not owned
-    return map_ ? std::shared_ptr<const Map>(std::shared_ptr<const Map>(), &*map_) : nullptr;
+ViewSize size_of(const Map& m) {
+  const auto bytes = [](const auto& values) {
+    return static_cast<std::int64_t>(values.size() * sizeof(values.front()));
+  };
+  std::int64_t observations = 0;
+  for (const std::vector<std::int64_t>& rows : m.pt_observations) {
+    observations += bytes(rows);
   }
+  return {.keyframes = static_cast<std::int64_t>(keyframe_count(m)),
+          .points = static_cast<std::int64_t>(point_count(m)),
+          .bytes = bytes(m.kf_id) + bytes(m.kf_time) + bytes(m.kf_pose) + bytes(m.kf_parent) +
+                   bytes(m.kf_start) + bytes(m.kp_xy) + bytes(m.kp_level) + bytes(m.kp_angle) +
+                   bytes(m.kp_descriptor) + bytes(m.kp_bearing) + bytes(m.kp_depth) +
+                   bytes(m.kp_right) + bytes(m.kp_point) + bytes(m.pt_id) + bytes(m.pt_xyz) +
+                   bytes(m.pt_descriptor) + bytes(m.pt_normal) + bytes(m.pt_min_distance) +
+                   bytes(m.pt_max_distance) + bytes(m.pt_visible) + bytes(m.pt_found) +
+                   bytes(m.pt_first_kf) + bytes(m.pt_reference_kf) + observations};
+}
+
+View MapOwner::view() const {
+  if (publishing()) {
+    const std::scoped_lock lock(view_mutex_);
+    return view_;
+  }
+  if (!map_) {
+    return {};
+  }
+  if (views_ && writer_ == nullptr) {  // inline, the test: the view a writer would publish now
+    std::vector<std::int64_t> points;
+    std::int64_t reference = -1;
+    {
+      const std::scoped_lock lock(view_mutex_);
+      points = anchor_points_;
+      reference = anchor_reference_;
+    }
+    return view_of(points, reference);
+  }
+  // The map itself, not owned.
+  return {.map = std::shared_ptr<const Map>(std::shared_ptr<const Map>(), &*map_),
+          .keyframes = static_cast<std::int64_t>(keyframe_count(*map_))};
+}
+
+View MapOwner::view_of(std::span<const std::int64_t> points, std::int64_t reference) const {
+  if (!map_) {
+    return {};
+  }
+  const Map& m = *map_;
+  const auto rows = view_keyframes(m, points, reference, options_);
+  // Tracking's points are ids, -1 where none, which view_keyframes takes: it cannot fail here.
+  return {.map = std::make_shared<const Map>(rows ? sub_map(m, *rows) : m),
+          .keyframes = static_cast<std::int64_t>(keyframe_count(m))};
+}
+
+void MapOwner::anchor(std::vector<std::int64_t> points, std::int64_t reference) {
   const std::scoped_lock lock(view_mutex_);
-  return view_;
+  anchor_points_ = std::move(points);
+  anchor_reference_ = reference;
+}
+
+View MapOwner::relocalized(std::vector<std::int64_t> points) {
+  anchor(std::move(points), -1);
+  if (publishing() && map_) {
+    publish(*map_);
+  }
+  return view();
+}
+
+std::vector<Completion> MapOwner::published() {
+  const std::scoped_lock lock(view_mutex_);
+  return std::exchange(published_, {});
 }
 
 Result<void> MapOwner::start(Map m) {
@@ -1003,9 +1076,22 @@ Result<void> MapOwner::corrected() {
 }
 
 void MapOwner::publish(const Map& m) {
-  auto copy = std::make_shared<const Map>(m);
+  std::vector<std::int64_t> points;
+  std::int64_t reference = -1;
+  {
+    const std::scoped_lock lock(view_mutex_);
+    points = anchor_points_;
+    reference = anchor_reference_;
+  }
+  const auto rows = view_keyframes(m, points, reference, options_);
+  View made{.map = std::make_shared<const Map>(rows ? sub_map(m, *rows) : m),
+            .keyframes = static_cast<std::int64_t>(keyframe_count(m))};
+  Completion done;
+  done.frame = clock_ ? clock_() : 0;
+  done.view = size_of(*made.map);
   const std::scoped_lock lock(view_mutex_);
-  view_ = std::move(copy);
+  view_ = std::move(made);
+  published_.push_back(std::move(done));
 }
 
 void MapOwner::clear_gone() {
@@ -1020,7 +1106,9 @@ std::optional<Map> MapOwner::close() {
   database_.reset();
   {
     const std::scoped_lock lock(view_mutex_);
-    view_.reset();
+    view_ = {};
+    anchor_points_.clear();
+    anchor_reference_ = -1;
   }
   const std::scoped_lock lock(counts_mutex_);
   counts_.clear();
@@ -1074,7 +1162,7 @@ Pipeline::Pipeline(Mode mode, Camera camera, Options options,
       camera_(std::move(camera)),
       options_(options),
       shared_(std::make_unique<Shared>(std::move(vocabulary), options_, threading)) {
-  if (threading != Threading::kInline) {
+  if (threaded(threading)) {
     threads_ = std::make_unique<PipelineThreads>(shared_->owner(), shared_->atlas(),
                                                  shared_->closing(), mode_, camera_, options_);
   }
@@ -1192,7 +1280,9 @@ Result<void> Pipeline::finish() {
 }
 
 std::vector<Completion> Pipeline::completed() {
-  return threads_ ? threads_->completed() : std::vector<Completion>{};
+  std::vector<Completion> out = threads_ ? threads_->completed() : std::vector<Completion>{};
+  std::ranges::move(shared_->owner().published(), std::back_inserter(out));
+  return out;
 }
 
 Lifetimes Pipeline::lifetimes() const {
@@ -1255,7 +1345,9 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
   state_ = State::kTracking;
   Tracked tracked = attempt->started->tracked;
   const Map& started = attempt->started->map;
-  atlas.place_frame(started, frame.timestamp, started.kf_id.back(), tracked.pose);
+  const std::int64_t first = started.kf_id.back();  // the keyframe it started on
+  atlas.place_frame(started, frame.timestamp, first, tracked.pose);
+  owner.anchor(tracked.points, first);  // what the first view follows
   if (auto ok = owner.start(std::move(attempt->started->map)); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -1263,8 +1355,9 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
     return std::unexpected(std::move(ok.error()));
   }
   if (threads_) {
-    const std::shared_ptr<const Map> view = owner.view();
-    anchor_to(tracking_, *view, keyframe_count(*view) - 1);
+    const View view = owner.view();  // the map's first view, of the keyframe it started on
+    const std::int64_t newest = keyframe_row(*view.map, first);
+    anchor_to(tracking_, *view.map, static_cast<std::size_t>(newest));
     tracking_.corrections = owner.corrections();
   }
   step.made = tracked.points;  // every point the frame observes was made of it
@@ -1323,6 +1416,7 @@ Result<void> Pipeline::hand_over(const Frame& frame, const Map& view, const Trac
     return ok;
   }
   anchor_to(tracking_, view, k);
+  shared_->owner().anchor(tracked.points, view.kf_id[k]);  // what the next views follow
   return {};
 }
 
@@ -1333,8 +1427,8 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   // The baseline's tracking waits for the map's lock as ours waits for a hold: its wait.
   const double locked = lock.owns_lock() ? Seconds(Clock::now() - asked).count() : 0.0;
   if (threads_) {
-    if (const std::shared_ptr<const Map> view = owner.view()) {
-      follow(tracking_, *view, owner.corrections());
+    if (const View view = owner.view(); view.map) {
+      follow(tracking_, *view.map, owner.corrections());
     }
   }
   auto found = track_step(tracking_, owner, camera_, frame, mode_, options_,
@@ -1358,16 +1452,29 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   if (!found->tracked) {
     return step;
   }
-  // The frame's view; inline, the map itself, which mapping changes in place.
-  const Map& m = *found->view;
   const Tracked& tracked = *found->tracked;
   step.keyframe = found->keyframe;
   if (threads_) {
-    if (auto ok = hand_over(frame, m, tracked, found->reference, found->keyframe); !ok) {
+    if (auto ok = hand_over(frame, *found->view.map, tracked, found->reference, found->keyframe);
+        !ok) {
       return std::unexpected(std::move(ok.error()));
     }
     step.tracked = std::move(found->tracked);
     return step;
+  }
+  // Inline, the map itself, which mapping changes in place; the frame's reference by its id in
+  // the view it was tracked on (the map itself, or the test's view of it).
+  const std::optional<Map>& current = owner.map();
+  if (!current) {
+    return fail(ErrorKind::kInvalidInput, "track: no map to track against");
+  }
+  const Map& m = *current;
+  const Map& seen = *found->view.map;
+  const std::int64_t reference = seen.kf_id[static_cast<std::size_t>(
+      found->reference >= 0 ? found->reference
+                            : static_cast<std::int64_t>(keyframe_count(seen)) - 1)];
+  if (owner.views()) {
+    owner.anchor(tracked.points, reference);  // what the next frame's view follows
   }
   Keyframed keyframed;
   if (found->keyframe) {
@@ -1378,10 +1485,7 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
     keyframed = std::move(*made);
     step.schedule = keyframed.schedule;
   } else {
-    const std::int64_t row =
-        found->reference >= 0 ? found->reference : static_cast<std::int64_t>(keyframe_count(m)) - 1;
-    shared_->atlas().place_frame(m, frame.timestamp, m.kf_id[static_cast<std::size_t>(row)],
-                                 tracked.pose);
+    shared_->atlas().place_frame(m, frame.timestamp, reference, tracked.pose);
   }
   if (auto ok = accept(tracking_, frame, tracked); !ok) {
     return std::unexpected(std::move(ok.error()));

@@ -16,6 +16,7 @@ otherwise.
 
 The compiled backends hold the same bar threaded (:data:`THREADED`), their frames fed at the
 room's rate (the online-SLAM design's section 12); Python's threaded run is measured, not tested.
+Their writers publish views of a part of the map, each recorded with its size.
 """
 
 from __future__ import annotations
@@ -88,6 +89,28 @@ def test_every_backend_closes_the_loop_room(  # noqa: PLR0917 -- the case, the f
     tracked = runs.evaluate_absolute(run, loop_folders.timestamps, loop_folders.poses, tracked=True)
     assert final.ate_rmse < LOOP_ATE[mode]
     assert final.ate_rmse < tracked.ate_rmse
+
+
+@pytest.mark.parametrize("backend", THREADED)
+@pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
+def test_threaded_the_views_published_are_parts_of_the_map(
+    request: pytest.FixtureRequest, dataset: str, mode: str, backend: str
+) -> None:
+    """Each view a writer published is a part of the map, its size recorded on its frame.
+
+    One at the start and more as each keyframe is mapped; each holds a keyframe and a point at
+    least, and no more than the run made; most hold fewer keyframes than the final map.
+    """
+    run = _run(request, dataset, mode, backend, threaded=True)
+    views = [view for d in run.diagnostics for view in d["views"]]
+    mapped = sum(d["schedule"] is not None for d in run.diagnostics)
+    assert len(views) > mapped
+    for view in views:
+        assert 1 <= view["keyframes"] <= len(run.keyframe_timestamps)
+        assert 1 <= view["points"] <= len(run.points)
+        assert view["bytes"] > 0
+    final = len(run.final_keyframes()[0])
+    assert np.median([view["keyframes"] for view in views]) < final
 
 
 @pytest.mark.parametrize(("backend", "threaded"), RUNS)

@@ -258,6 +258,7 @@ class Implementation(Protocol):
         options: Crossing,
         idle: bool,
         since_keyframe: int | None,
+        keyframes: int | None,
     ) -> bool:
         """Decide whether a tracked frame becomes a keyframe."""
         ...
@@ -400,9 +401,11 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
     options: Options,
     idle: bool = True,
     since_keyframe: int | None = None,
+    keyframes: int | None = None,
 ) -> bool:
     """Decide whether a tracked frame becomes a keyframe (reference)."""
-    early = m.keyframes <= 2  # NeedNewKeyFrame's nKFs <= 2
+    total = m.keyframes if keyframes is None else keyframes
+    early = total <= 2  # NeedNewKeyFrame's nKFs <= 2
     min_observations = (
         options.keyframes.ref_min_observations_early
         if early
@@ -421,7 +424,7 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
             tracked_close < options.keyframes.close_tracked
             and untracked_close > options.keyframes.close_untracked
         )
-    ratio = options.keyframes.first_ref_ratio if m.keyframes < 2 else options.keyframes.ref_ratio
+    ratio = options.keyframes.first_ref_ratio if total < 2 else options.keyframes.ref_ratio
     if mode == "monocular":
         ratio = options.keyframes.mono_ref_ratio
     weak = tracked.inliers < tracked_reference * ratio or need_close
@@ -446,6 +449,7 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     options: Options,
     idle: bool = True,
     since_keyframe: int | None = None,
+    keyframes: int | None = None,
     backend: str = "python",
 ) -> bool:
     """Decide whether a tracked frame becomes a keyframe (``NeedNewKeyFrame``).
@@ -482,6 +486,9 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     since_keyframe : int, optional
         The frames since the last keyframe, read only with mapping busy (default: unknown, as
         if too few).
+    keyframes : int, optional
+        The whole map's keyframes, which the rules count, when `m` is a view of it
+        (:func:`slam_it.edge.map.sub_map`; default: `m`'s own).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -518,6 +525,7 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
             options=options,
             idle=idle,
             since_keyframe=since_keyframe,
+            keyframes=keyframes,
         ),
         arguments=_arguments(
             m,
@@ -529,6 +537,7 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
             mode=mode,
             idle=idle,
             since_keyframe=since_keyframe,
+            keyframes=keyframes,
         ),
         decode=lambda raw, codes: bool(raw),
     )

@@ -688,7 +688,9 @@ const char* name(Scheduled scheduled) {
 Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const double> depth,
                            const Tracked& tracked, std::int64_t reference, Mode mode,
                            const Options& options, bool idle,
-                           std::optional<std::int64_t> since_keyframe) {
+                           // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): two counts
+                           std::optional<std::int64_t> since_keyframe,
+                           std::optional<std::int64_t> keyframes) {
   if (auto ok = check_newest(m, camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -701,7 +703,8 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
     return fail(ErrorKind::kInvalidInput,
                 "tracked.points: expected one point id (or -1) per depth");
   }
-  const std::int64_t min_observations = keyframe_count(m) <= 2  // NeedNewKeyFrame's nKFs <= 2
+  const std::int64_t total = keyframes.value_or(static_cast<std::int64_t>(keyframe_count(m)));
+  const std::int64_t min_observations = total <= 2  // NeedNewKeyFrame's nKFs <= 2
                                             ? options.keyframes.ref_min_observations_early
                                             : options.keyframes.ref_min_observations;
   std::vector<std::int64_t> rows;
@@ -723,8 +726,7 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
     need_close = tracked_close < options.keyframes.close_tracked &&
                  untracked_close > options.keyframes.close_untracked;
   }
-  double ratio =
-      keyframe_count(m) < 2 ? options.keyframes.first_ref_ratio : options.keyframes.ref_ratio;
+  double ratio = total < 2 ? options.keyframes.first_ref_ratio : options.keyframes.ref_ratio;
   if (mode == Mode::kMonocular) {
     ratio = options.keyframes.mono_ref_ratio;
   }

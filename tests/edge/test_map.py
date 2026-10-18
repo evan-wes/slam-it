@@ -76,6 +76,24 @@ def _cases(truth: Truth) -> dict[str, list[tuple[tuple[object, ...], dict[str, o
             # a loop edge crosses with the map, its keyframes kept
             ((maps.add_loop_edge(m, int(m.kf_id[1]), int(m.kf_id[0])), m.keyframes - 1), {}),
         ],
+        "sub_map": [
+            ((m, np.arange(m.keyframes)), {}),
+            ((m, np.arange(1, m.keyframes, 2)), {}),
+            ((m, np.array([m.keyframes - 1])), {}),
+            ((m, np.zeros(0, dtype=np.int64)), {}),
+            # the archive left out, a loop edge kept
+            (
+                (
+                    maps.add_loop_edge(
+                        maps.erase_points(m, rng.random(p) < 0.2, Removal.CULLED),
+                        int(m.kf_id[1]),
+                        int(m.kf_id[0]),
+                    ),
+                    np.arange(m.keyframes - 1),
+                ),
+                {},
+            ),
+        ],
         "count": [
             (
                 (m, np.concatenate([m.pt_id[:30], m.pt_id[:5], [-1, m.next_pt_id + 7]])),

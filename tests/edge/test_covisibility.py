@@ -8,7 +8,9 @@ the parent :func:`~slam_it.edge.covisibility.adopt` gives, the parents
 local BA take (:func:`~slam_it.edge.mapping.fuse_targets`,
 :func:`~slam_it.edge.mapping.local_ba_keyframes`), computed from point sets by the rules
 alone. Every backend is held to it; the C++ and Rust native tests hold their cores to the same
-file.
+file. The view a native writer publishes (:func:`~slam_it.edge.covisibility.view_keyframes`,
+:func:`~slam_it.edge.map.sub_map`) is held to the same point sets, and tracking's local map
+read from it to the whole map's.
 """
 
 from __future__ import annotations
@@ -180,6 +182,108 @@ def test_the_stages_take_the_graphs_keyframes(case: dict[str, Any], backend: str
         got = mapping.fuse_targets(m, mode, options, backend=chosen)
         assert got.tolist() == case["fuse_targets"][key], mode
     assert mapping.local_ba_keyframes(m, options, backend=chosen).tolist() == case["local_ba"]
+
+
+def _view_rows(case: dict[str, Any], local: list[int], reference: int) -> list[int]:
+    """Return the rows a view holds, from the point sets alone.
+
+    The local map's points' observers, and for each of those every keyframe sharing a point with
+    it, its children and its parent; and the reference keyframe (an id, or -1).
+    """
+    keyframes = case["keyframes"]
+    seen = [{p for p in k["points"] if p >= 0} for k in keyframes]
+    ids = [k["id"] for k in keyframes]
+    near = set().union(*(seen[k] for k in local))
+    first = [k for k, own in enumerate(seen) if own & near]
+    inside = set(first)
+    for k in first:
+        inside |= {other for other, own in enumerate(seen) if own & seen[k]}
+        inside |= {child for child, kf in enumerate(keyframes) if kf["parent"] == ids[k]}
+        inside |= {ids.index(keyframes[k]["parent"])} if keyframes[k]["parent"] in ids else set()
+    inside |= {ids.index(reference)} if reference in ids else set()
+    return sorted(inside)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_a_view_holds_what_the_next_frame_may_read(case: dict[str, Any], backend: str) -> None:
+    """A view holds the local map's points' observers, their neighbours, and the reference.
+
+    For each observer, every keyframe sharing a point with it, its children and its parent;
+    nothing else.
+    """
+    chosen = require_function(backend, covisibility.__name__, "view_keyframes")
+    m, options = fixture_map(case), fixture_options(case)
+    for expected in case["local_maps"]:
+        last = np.array(expected["points"])
+        for reference in (-1, int(m.kf_id[-1])):
+            got = covisibility.view_keyframes(m, last, reference, options, backend=chosen)
+            assert got.tolist() == _view_rows(case, expected["keyframes"], reference)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", CASES, ids=NAMES)
+def test_a_view_is_those_keyframes_and_their_points(case: dict[str, Any], backend: str) -> None:
+    """A view's sub-map holds its keyframes, their keypoints and exactly their points.
+
+    Ids kept, a parent outside it -1, the archive empty and the loops and next ids the map's;
+    tracking's local map read from it is the whole map's.
+    """
+    chosen = require_function(backend, maps.__name__, "sub_map")
+    m, options = fixture_map(case), fixture_options(case)
+    for expected in case["local_maps"]:
+        last = np.array(expected["points"])
+        rows = covisibility.view_keyframes(m, last, -1, options)
+        view = maps.sub_map(m, rows, backend=chosen)
+        assert view.kf_id.tolist() == m.kf_id[rows].tolist()
+        parents = m.kf_parent[rows]
+        inside = np.where(np.isin(parents, view.kf_id), parents, -1)
+        assert view.kf_parent.tolist() == inside.tolist()
+        kept = m.kp_point[np.isin(m.keypoint_keyframe(), rows)]
+        assert view.kp_point.tolist() == kept.tolist()
+        assert view.pt_id.tolist() == np.unique(kept[kept >= 0]).tolist()
+        assert np.array_equal(view.pt_xyz, m.pt_xyz[m.point_rows(view.pt_id)])
+        assert (view.next_kf_id, view.next_pt_id) == (m.next_kf_id, m.next_pt_id)
+        assert view.gone_pt_id.size == 0
+        assert view.gone_kf_id.size == 0
+        assert np.array_equal(view.loop_edges, m.loop_edges)
+        on_view = covisibility.local_map(view, last, options)
+        assert view.kf_id[on_view.keyframes].tolist() == m.kf_id[expected["keyframes"]].tolist()
+        if expected["reference"] < 0:  # matched to no point: no view, no reference
+            assert on_view.reference == -1
+        else:
+            assert view.kf_id[on_view.reference] == m.kf_id[expected["reference"]]
+
+
+def test_a_view_refuses_rows_out_of_order() -> None:
+    """A sub-map's rows are the map's keyframe rows, ascending, each once."""
+    m = fixture_map(CASES[0])
+    for rows in ([1, 0], [0, 0], [m.keyframes], [-1]):
+        with pytest.raises(InvalidInputError, match="rows: "):
+            maps.sub_map(m, np.array(rows))
+
+
+@pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])
+def test_tracking_reads_on_a_view_what_it_reads_on_the_map(mode: str, runs: dict[str, Run]) -> None:
+    """On the room's last map, the next frame's local map is the same read from a view.
+
+    From where its last keyframe left tracking, and from any of the points the next frame may
+    match; the view is a part of the map.
+    """
+    m = runs[mode].pipeline.map
+    assert m is not None
+    options = Options()
+    last = m.kp_point[m.keypoint_rows(m.keyframes - 1)]
+    rows = covisibility.view_keyframes(m, last, int(m.kf_id[-1]), options)
+    view = maps.sub_map(m, rows)
+    assert view.keyframes <= m.keyframes
+    assert view.points <= m.points
+    near = covisibility.local_map(m, last, options).keyframes
+    reachable = m.pt_id[m.observed_by(near)]
+    for points in (last, reachable, reachable[::2]):
+        whole = covisibility.local_map(m, points, options)
+        part = covisibility.local_map(view, points, options)
+        assert view.kf_id[part.keyframes].tolist() == m.kf_id[whole.keyframes].tolist()
 
 
 def test_a_parent_is_not_erased() -> None:

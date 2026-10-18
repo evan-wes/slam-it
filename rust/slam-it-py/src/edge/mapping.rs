@@ -38,7 +38,7 @@ use crate::common::{add_functions, contiguous, enum_codes, to_i64, unwrap};
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (m, camera, depth, tracked, reference, mode, options, idle, since_keyframe))]
+#[pyo3(signature = (m, camera, depth, tracked, reference, mode, options, idle, since_keyframe, keyframes))]
 #[allow(
     clippy::too_many_arguments,
     reason = "the stage's state, as the reference takes it"
@@ -54,6 +54,7 @@ fn need_keyframe<'py>(
     options: &Bound<'py, PyDict>,
     idle: bool,
     since_keyframe: Option<usize>,
+    keyframes: Option<usize>,
 ) -> PyResult<bool> {
     unwrap(
         py,
@@ -67,6 +68,7 @@ fn need_keyframe<'py>(
             &options_in(options)?,
             idle,
             since_keyframe,
+            keyframes,
         ),
     )
 }

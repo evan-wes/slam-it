@@ -557,7 +557,14 @@
    "queue": 0,
    "schedule": null,
    "global_ba": [],
-   "global_ba_seconds": 0.0
+   "global_ba_seconds": 0.0,
+   "views": [
+    {
+     "keyframes": 1,
+     "points": 60,
+     "bytes": 15528
+    }
+   ]
   },
   {
    "timestamp": 1305031102.2086039,
@@ -592,7 +599,8 @@
    "queue": 3,
    "schedule": null,
    "global_ba": [],
-   "global_ba_seconds": 0.0
+   "global_ba_seconds": 0.0,
+   "views": []
   },
   {
    "timestamp": 1305031102.241904,
@@ -634,7 +642,8 @@
    "queue": 0,
    "schedule": null,
    "global_ba": [],
-   "global_ba_seconds": 0.0
+   "global_ba_seconds": 0.0,
+   "views": []
   },
   {
    "timestamp": 1305031102.275204,
@@ -665,7 +674,8 @@
    "queue": 0,
    "schedule": null,
    "global_ba": [],
-   "global_ba_seconds": 0.0
+   "global_ba_seconds": 0.0,
+   "views": []
   },
   {
    "timestamp": 1305031102.3085039,
@@ -811,7 +821,19 @@
      "carried": 1
     }
    ],
-   "global_ba_seconds": 0.40625
+   "global_ba_seconds": 0.40625,
+   "views": [
+    {
+     "keyframes": 2,
+     "points": 56,
+     "bytes": 20392
+    },
+    {
+     "keyframes": 3,
+     "points": 44,
+     "bytes": 23864
+    }
+   ]
   },
   {
    "timestamp": 1305031102.341804,
@@ -846,7 +868,8 @@
    "queue": 0,
    "schedule": null,
    "global_ba": [],
-   "global_ba_seconds": 0.0
+   "global_ba_seconds": 0.0,
+   "views": []
   }
  ],
  "tracked_poses": [

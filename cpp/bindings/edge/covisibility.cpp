@@ -61,6 +61,21 @@ nb::dict local_map(const nb::dict& m, const edge_crossing::Int64In& points,
   return out;
 }
 
+/// @brief The keyframes tracking's next frame may read.
+/// @param m The map, as a dict.
+/// @param last The point each of the last frame's keypoints tracked, -1 for none.
+/// @param reference Its reference keyframe's id, or -1.
+/// @param options The settings, as a dict.
+/// @return The keyframes' rows, ascending.
+/// @throws CoreError for an id below -1.
+nb::ndarray<nb::numpy, std::int64_t> view_keyframes(const nb::dict& m,
+                                                    const edge_crossing::Int64In& last,
+                                                    std::int64_t reference,
+                                                    const nb::dict& options) {
+  return vector_array(unwrap(edge::view_keyframes(map_in(m), edge_crossing::int64_in(last),
+                                                  reference, options_in(options))));
+}
+
 /// @brief Give a keyframe its parent.
 /// @param m The map, as a dict.
 /// @param k The keyframe's row.
@@ -121,6 +136,8 @@ void bind_covisibility(nb::module_& m) {
         "A keyframe's links: the rows and the points each shares.");
   m.def("local_map", &local_map, nb::arg("m"), nb::arg("points").noconvert(), nb::arg("options"),
         "Tracking's local map: its keyframes and the reference keyframe.");
+  m.def("view_keyframes", &view_keyframes, nb::arg("m"), nb::arg("last").noconvert(),
+        nb::arg("reference"), nb::arg("options"), "The keyframes tracking's next frame may read.");
   m.def("adopt", &adopt, nb::arg("m"), nb::arg("k"), "Give a keyframe its parent.");
   m.def("reparent", &reparent, nb::arg("m"), nb::arg("k"), nb::arg("options"),
         "Give a keyframe's children new parents.");

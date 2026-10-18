@@ -14,7 +14,7 @@ use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummar
 use slam_it_edge::mapping::{MappingSummary, Schedule};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
 use slam_it_edge::pipeline::{
-    Completion, Fate, Fates, FrameResult, FrameSummary, LoopSummary, Pipeline,
+    Completion, Fate, Fates, FrameResult, FrameSummary, LoopSummary, Pipeline, Threading, ViewSize,
 };
 use slam_it_edge::relocalization::RelocalizationSummary;
 use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
@@ -31,7 +31,7 @@ pub const DATASETS: [&str; 2] = ["tum", "euroc"];
 /// The program's command line.
 pub const USAGE: &str = "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode \
                          monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] \
-                         [--vocabulary FOLDER] [--record-features] [--threaded] \
+                         [--vocabulary FOLDER] [--record-features] [--threaded | --views] \
                          [--option KEY=VALUE ...]";
 
 /// A flag without a value: record each frame's keypoints, with their fates.
@@ -39,6 +39,9 @@ const RECORD_FEATURES: &str = "--record-features";
 
 /// A flag without a value: run the steps in threads of their own.
 const THREADED: &str = "--threaded";
+
+/// A flag without a value: track in turn, each frame on the view a writer would publish.
+const VIEWS: &str = "--views";
 
 /// The program's exit code for a command line it cannot read.
 pub const EXIT_USAGE: u8 = 2;
@@ -70,6 +73,9 @@ pub struct Request {
     pub vocabulary: Option<PathBuf>,
     /// Whether the steps run in threads of their own, the frames fed at their recorded rate.
     pub threaded: bool,
+    /// In turn, whether each frame is tracked on the view a writer would publish then: a test
+    /// that tracking decides on it as on the whole map.
+    pub views: bool,
 }
 
 impl Request {
@@ -99,6 +105,7 @@ impl Request {
             record_features: false,
             vocabulary: None,
             threaded: false,
+            views: false,
         }
     }
 }
@@ -886,6 +893,7 @@ fn record(out: &mut Run, result: &FrameResult, read_seconds: f64, build_seconds:
             ),
             ("global_ba", JsonValue::Array(Vec::new())),
             ("global_ba_seconds", JsonValue::Number(0.0)),
+            ("views", JsonValue::Array(Vec::new())),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value)),
@@ -1172,6 +1180,23 @@ fn set_key(line: &mut JsonObject, key: &str, value: JsonValue) {
     }
 }
 
+/// A view a writer published, as JSON: its keyframes, points and bytes.
+///
+/// # Arguments
+///
+/// * `view` - Its size.
+///
+/// # Returns
+///
+/// The record.
+fn view_json(view: ViewSize) -> JsonValue {
+    object([
+        ("keyframes", count(view.keyframes)),
+        ("points", count(view.points)),
+        ("bytes", count(view.bytes)),
+    ])
+}
+
 /// Adds a global BA to a frame's diagnostics: listed, its time summed.
 ///
 /// # Arguments
@@ -1223,6 +1248,12 @@ fn merge(out: &mut Run, held: &mut [Keypoints], done: &[Completion]) {
         }
         if let Some(global) = &completion.global_ba {
             add_global(line, &global_json(global), completion.global_ba_seconds);
+        }
+        if let Some(view) = completion.view
+            && let Some((_, JsonValue::Array(views))) =
+                line.iter_mut().find(|(name, _)| name == "views")
+        {
+            views.push(view_json(view));
         }
         if let Some(keypoints) = held.get_mut(frame) {
             keypoints.made(&completion.made);
@@ -1354,7 +1385,7 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
 }
 
 /// Reads the command line: [`USAGE`], flags in any order, each with its value but
-/// `--record-features` and `--threaded`, `--option` repeatable and naming a field of
+/// `--record-features`, `--threaded` and `--views`, `--option` repeatable and naming a field of
 /// `slam_it.edge.options.Options`.
 ///
 /// # Arguments
@@ -1379,12 +1410,8 @@ pub fn parse(arguments: &[String]) -> Result<Request> {
             return invalid(format!("{flag}: given twice"));
         }
         seen.push(flag);
-        if flag == RECORD_FEATURES || flag == THREADED {
-            if flag == THREADED {
-                out.threaded = true;
-            } else {
-                out.record_features = true;
-            }
+        if let Some(set) = switch(&mut out, flag) {
+            *set = true;
             rest = after;
             continue;
         }
@@ -1402,6 +1429,25 @@ pub fn parse(arguments: &[String]) -> Result<Request> {
     Ok(out)
 }
 
+/// The switch a flag without a value sets.
+///
+/// # Arguments
+///
+/// * `request` - The request.
+/// * `flag` - The flag.
+///
+/// # Returns
+///
+/// The request's field it sets, or `None` for a flag with a value.
+fn switch<'a>(request: &'a mut Request, flag: &str) -> Option<&'a mut bool> {
+    match flag {
+        RECORD_FEATURES => Some(&mut request.record_features),
+        THREADED => Some(&mut request.threaded),
+        VIEWS => Some(&mut request.views),
+        _ => None,
+    }
+}
+
 /// Checks a request (`slam_it.orchestration.vo.check`).
 ///
 /// # Arguments
@@ -1411,7 +1457,8 @@ pub fn parse(arguments: &[String]) -> Result<Request> {
 /// # Errors
 ///
 /// `InvalidInput` for an unknown dataset, a mode it does not record (TUM has no stereo pairs,
-/// EuRoC no depth maps), a negative `first` or `count`, or settings out of range.
+/// EuRoC no depth maps), a negative `first` or `count`, `views` with `threaded`, or settings
+/// out of range.
 pub fn check(request: &Request) -> Result<()> {
     if !DATASETS.contains(&request.dataset.as_str()) {
         return invalid(format!(
@@ -1439,6 +1486,9 @@ pub fn check(request: &Request) -> Result<()> {
             "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
                 .to_owned(),
         );
+    }
+    if request.views && request.threaded {
+        return invalid("--views: tracks in turn, not with --threaded".to_owned());
     }
     check_options(&request.options)
 }
@@ -1477,7 +1527,13 @@ pub fn run(request: &Request) -> Result<Run> {
         source.camera.clone(),
         request.options,
         words,
-        request.threaded,
+        if request.threaded {
+            Threading::View
+        } else if request.views {
+            Threading::InlineView
+        } else {
+            Threading::Inline
+        },
     )?;
     let mut out = Run {
         dataset: request.dataset.clone(),

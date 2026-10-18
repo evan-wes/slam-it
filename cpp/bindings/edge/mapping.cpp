@@ -40,16 +40,18 @@ using edge_crossing::options_in;
 /// @param options The settings, as a dict.
 /// @param idle Whether local mapping is idle.
 /// @param since_keyframe The frames since the last keyframe, or none.
+/// @param keyframes The whole map's keyframes when `m` is a view of it, or none.
 /// @return Whether to insert a keyframe.
 /// @throws CoreError for invalid input.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
 bool need_keyframe(const nb::dict& m, const nb::dict& camera, const VectorIn<double>& depth,
                    const nb::dict& tracked, std::int64_t reference, const std::string& mode,
-                   const nb::dict& options, bool idle, std::optional<std::int64_t> since_keyframe) {
+                   const nb::dict& options, bool idle, std::optional<std::int64_t> since_keyframe,
+                   std::optional<std::int64_t> keyframes) {
   return unwrap(edge::need_keyframe(map_in(m), camera_in(camera),
                                     copy_vector<std::vector<double>>(depth),
                                     edge_crossing::tracked_in(tracked), reference, mode_in(mode),
-                                    options_in(options), idle, since_keyframe));
+                                    options_in(options), idle, since_keyframe, keyframes));
 }
 
 /// @brief Create points from the newest keyframe's close depth.
@@ -213,7 +215,7 @@ void bind_mapping(nb::module_& m) {
   m.def("need_keyframe", &need_keyframe, nb::arg("m"), nb::arg("camera"),
         nb::arg("depth").noconvert(), nb::arg("tracked"), nb::arg("reference"), nb::arg("mode"),
         nb::arg("options"), nb::arg("idle"), nb::arg("since_keyframe").none(),
-        "Decide whether a tracked frame becomes a keyframe.");
+        nb::arg("keyframes").none(), "Decide whether a tracked frame becomes a keyframe.");
   m.def("create_points_from_depth", &create_points_from_depth, nb::arg("m"), nb::arg("camera"),
         nb::arg("options"), "Create points from the newest keyframe's close depth.");
   m.def("cull_points", &cull_points, nb::arg("m"), nb::arg("mode"), nb::arg("options"),

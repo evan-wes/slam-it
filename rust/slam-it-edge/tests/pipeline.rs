@@ -3,7 +3,8 @@
 //! keeps the path's direction, and empty frames lose the track, the next frame starting a new
 //! map; relocalising, a kept map is lost in time and a small one in frames, and a frame the
 //! fallback cannot reach is relocalised; the final trajectory follows the keyframes, and a reset
-//! map's frames leave it.
+//! map's frames leave it. Tracking on the view a writer would publish decides as on the map, and
+//! threaded, the views published are a part of the map, their sizes kept.
 
 mod scene;
 
@@ -13,7 +14,9 @@ use slam_it_edge::map::Removal;
 use slam_it_edge::options::{
     InitializationOptions, LoopOptions, Mode, Options, RelocalizationOptions,
 };
-use slam_it_edge::pipeline::{Fate, FrameResult, LostSummary, Pipeline, Placement, State};
+use slam_it_edge::pipeline::{
+    Fate, FrameResult, LostSummary, Pipeline, Placement, State, Threading,
+};
 use slam_it_foundations::error::ErrorKind;
 
 use scene::{camera, empty_frame, frame_at, one_word};
@@ -51,9 +54,14 @@ fn small_scene() -> Options {
 }
 
 /// Runs the path through a pipeline.
-#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn run(mode: Mode) -> (Pipeline, Vec<FrameResult>) {
-    let mut pipeline = Pipeline::new(mode, camera(), small_scene(), None, false).unwrap();
+    run_as(mode, Threading::Inline)
+}
+
+/// Runs the path through a pipeline whose steps run in turn, inline or each frame on a view.
+#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
+fn run_as(mode: Mode, threading: Threading) -> (Pipeline, Vec<FrameResult>) {
+    let mut pipeline = Pipeline::new(mode, camera(), small_scene(), None, threading).unwrap();
     let results = (0..FRAMES)
         .map(|i| {
             let frame = Frame {
@@ -76,6 +84,35 @@ fn depth_modes_track_every_frame_on_the_path() {
             let pose = result.pose.expect("every frame is tracked");
             assert!((pose - along(i)).abs().max() < 1e-6);
         }
+    }
+}
+
+/// Each frame tracked on the view a writer would publish then decides as on the whole map
+/// (`Threading::InlineView`): the same frames, poses, matches and stages, and the same map.
+#[test]
+fn tracking_on_a_view_decides_as_on_the_map() {
+    for mode in [Mode::Rgbd, Mode::Stereo, Mode::Monocular] {
+        let (whole, on_map) = run_as(mode, Threading::Inline);
+        let (viewed, on_view) = run_as(mode, Threading::InlineView);
+        assert_eq!(on_map.len(), on_view.len());
+        for (a, b) in on_map.iter().zip(&on_view) {
+            assert_eq!(
+                (a.state, a.map, a.pose, a.tracked, a.keyframe, a.asked),
+                (b.state, b.map, b.pose, b.tracked, b.keyframe, b.asked)
+            );
+            assert_eq!(a.summary, b.summary);
+            assert_eq!(a.fates, b.fates);
+        }
+        // Printed, a monocular map's NaN depths compare equal.
+        assert_eq!(
+            format!("{:?}", whole.map()),
+            format!("{:?}", viewed.map()),
+            "{mode:?}: the same map"
+        );
+        assert!(
+            viewed.completed().is_empty(),
+            "in turn, nothing is published"
+        );
     }
 }
 
@@ -128,7 +165,8 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     for reset_keyframes in [1, 0] {
         let mut options = small_scene();
         options.loss.reset_keyframes = reset_keyframes;
-        let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, None, false).unwrap();
+        let mut pipeline =
+            Pipeline::new(Mode::Rgbd, camera(), options, None, Threading::Inline).unwrap();
         let started = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
         assert_eq!(started.map, Some(0));
         let empty = empty_frame(1.0);
@@ -179,7 +217,14 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     }
     let mut monocular = camera();
     monocular.baseline = 0.0;
-    let err = Pipeline::new(Mode::Rgbd, monocular, Options::default(), None, false).unwrap_err();
+    let err = Pipeline::new(
+        Mode::Rgbd,
+        monocular,
+        Options::default(),
+        None,
+        Threading::Inline,
+    )
+    .unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
@@ -198,8 +243,14 @@ fn relocalizing(reset_keyframes: usize) -> Options {
 /// alone loses the track.
 #[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn lose_the_track(options: &Options, step: f64, count: usize) -> Vec<FrameResult> {
-    let mut pipeline =
-        Pipeline::new(Mode::Rgbd, camera(), *options, Some(one_word()), false).unwrap();
+    let mut pipeline = Pipeline::new(
+        Mode::Rgbd,
+        camera(),
+        *options,
+        Some(one_word()),
+        Threading::Inline,
+    )
+    .unwrap();
     assert!(
         pipeline
             .track(&frame_at(&along(0), true, 0))
@@ -250,8 +301,14 @@ fn a_frame_out_of_the_fallbacks_reach_is_relocalized_in_its_map() {
     let mut options = relocalizing(0);
     options.tracking.pnp_min_inliers = 1 << 20; // the local fallback out of reach
     options.tracking.motion_window = 5.0; // 10 px widened: the 25 px back to the start out of reach
-    let mut pipeline =
-        Pipeline::new(Mode::Rgbd, camera(), options, Some(one_word()), false).unwrap();
+    let mut pipeline = Pipeline::new(
+        Mode::Rgbd,
+        camera(),
+        options,
+        Some(one_word()),
+        Threading::Inline,
+    )
+    .unwrap();
     for i in 0..FRAMES {
         let mut frame = frame_at(&along(i), true, 0);
         frame.timestamp = i as f64;
@@ -314,7 +371,8 @@ fn track_path(pipeline: &mut Pipeline, frames: std::ops::Range<usize>) -> Vec<Fr
 /// finished run tracks no more; and inline, nothing completes later.
 #[test]
 fn threaded_the_path_is_tracked_and_every_keyframe_mapped() {
-    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), asking(), None, true).unwrap();
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), asking(), None, Threading::View).unwrap();
     let results = track_path(&mut pipeline, 0..FRAMES);
     pipeline.finish().unwrap();
     for (i, r) in results.iter().enumerate() {
@@ -345,6 +403,21 @@ fn threaded_the_path_is_tracked_and_every_keyframe_mapped() {
     );
     let lives = pipeline.lifetimes();
     assert_eq!(lives.keyframe_times.len(), 1 + given.len());
+    let views: Vec<_> = done.iter().filter_map(|c| c.view).collect();
+    assert!(
+        views.len() > given.len(),
+        "a view at the start, and each keyframe's"
+    );
+    assert!(
+        views
+            .iter()
+            .all(|v| v.keyframes >= 1 && v.points >= 1 && v.bytes > 0)
+    );
+    assert!(
+        views.iter().all(|v| {
+            v.keyframes <= lives.keyframe_times.len() && v.points <= lives.points.len()
+        })
+    );
     let trajectory = pipeline.trajectory();
     assert_eq!(trajectory.timestamps.len(), results.len());
     assert!(trajectory.timestamps.windows(2).all(|w| w[0] < w[1]));
@@ -366,7 +439,8 @@ fn threaded_the_path_is_tracked_and_every_keyframe_mapped() {
 /// (`test_a_stop_refuses_every_keyframe_asked`).
 #[test]
 fn threaded_a_stop_refuses_every_keyframe_asked() {
-    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), asking(), None, true).unwrap();
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), asking(), None, Threading::View).unwrap();
     track_path(&mut pipeline, 0..FRAMES / 2);
     let writer = pipeline.writer().unwrap();
     let held = {
@@ -391,11 +465,11 @@ type Outcome = (State, Option<i64>, Option<LostSummary>);
 fn threaded_a_lost_map_settles_the_threads_then_closes() {
     let mut options = small_scene();
     options.loss.reset_keyframes = 0;
-    let outcomes: Vec<Vec<Outcome>> = [false, true]
+    let outcomes: Vec<Vec<Outcome>> = [Threading::Inline, Threading::View]
         .into_iter()
-        .map(|threaded| {
+        .map(|threading| {
             let mut pipeline =
-                Pipeline::new(Mode::Rgbd, camera(), options, None, threaded).unwrap();
+                Pipeline::new(Mode::Rgbd, camera(), options, None, threading).unwrap();
             let mut results = track_path(&mut pipeline, 0..1);
             for t in 1..=options.loss.lost_frames {
                 #[allow(clippy::cast_precision_loss, reason = "a few frames")]

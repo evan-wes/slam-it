@@ -140,6 +140,8 @@ pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
 /// * `idle` - Whether local mapping is idle (as when it runs inline).
 /// * `since_keyframe` - The frames since the last keyframe, read only with mapping busy; `None`,
 ///   as if too few.
+/// * `keyframes` - The whole map's keyframes, which the rules count, when `m` is a view of it
+///   ([`map::sub_map`]); `None`, `m`'s own.
 ///
 /// # Returns
 ///
@@ -167,6 +169,7 @@ pub fn need_keyframe(
     options: &Options,
     idle: bool,
     since_keyframe: Option<usize>,
+    keyframes: Option<usize>,
 ) -> Result<bool> {
     check_newest(m, camera, options)?;
     check_range("reference", reference, 0, m.keyframes() - 1)?;
@@ -176,8 +179,9 @@ pub fn need_keyframe(
             "tracked.points: expected one point id (or -1) per depth",
         );
     }
+    let total = keyframes.unwrap_or_else(|| m.keyframes());
     // NeedNewKeyFrame's nKFs <= 2.
-    let min_observations = i64::try_from(if m.keyframes() <= 2 {
+    let min_observations = i64::try_from(if total <= 2 {
         options.keyframes.ref_min_observations_early
     } else {
         options.keyframes.ref_min_observations
@@ -206,7 +210,7 @@ pub fn need_keyframe(
         need_close = tracked_close < options.keyframes.close_tracked
             && untracked_close > options.keyframes.close_untracked;
     }
-    let mut ratio = if m.keyframes() < 2 {
+    let mut ratio = if total < 2 {
         options.keyframes.first_ref_ratio
     } else {
         options.keyframes.ref_ratio

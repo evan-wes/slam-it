@@ -4,9 +4,10 @@
 ///        loop, the steps' own state, the map's owner and the steps in threads of their own. It
 ///        runs in the native program, not across the binding.
 ///
-/// Threaded, the published view is a copy of the map (`std::shared_ptr<const Map>`), made
-/// each time a writer publishes: tracking holds the copy it read for its whole frame, and the
-/// writers go on changing the map in place. Inline, the view is the map itself.
+/// Threaded, the published view (`View`) is a copy of the part of the map tracking's next frame
+/// may read, from where its last frame left it (`view_keyframes`), made each time
+/// a writer publishes: tracking holds the view it read for its whole frame, and the writers go
+/// on changing the map in place. Inline, the view is the map itself.
 ///
 /// C++ also runs the threads by ORB-SLAM's own locking (`Threading::kLocks`), the baseline the
 /// design compares ours with (section 12, item 7).
@@ -16,9 +17,11 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -189,6 +192,30 @@ struct FrameResult {
   std::optional<Schedule> schedule;
 };
 
+/// @brief What tracking reads of the map on a frame (`MapOwner::view`).
+struct View {
+  /// @brief The map itself (inline), or the part of it a writer published: those keyframes,
+  ///        their keypoints and points, ids kept (`sub_map`). Never changed after.
+  std::shared_ptr<const Map> map;
+  /// @brief The whole map's keyframes, which tracking's rules count.
+  std::int64_t keyframes{0};
+};
+
+/// @brief A published view's size, as a run records it.
+struct ViewSize {
+  /// @brief Its keyframes.
+  std::int64_t keyframes{0};
+  /// @brief Its points.
+  std::int64_t points{0};
+  /// @brief The bytes its arrays hold.
+  std::int64_t bytes{0};
+};
+
+/// @brief A map's size, as a view's is recorded.
+/// @param m The map.
+/// @return Its keyframes, points, and the bytes its arrays hold.
+[[nodiscard]] ViewSize size_of(const Map& m);
+
 /// @brief What a thread of its own finished after its frame's result was given
 ///        (`slam_it.edge.pipeline.Completion`, threaded runs): a keyframe's mapping and loop
 ///        closing on the keyframe's frame; a global BA's on the frame being tracked when it
@@ -214,6 +241,8 @@ struct Completion {
   std::optional<loops::GlobalSummary> global_ba;
   /// @brief Its time, in seconds.
   double global_ba_seconds{0.0};
+  /// @brief A view a writer published.
+  std::optional<ViewSize> view;
 };
 
 /// @brief Tracking's own state from frame to frame (`slam_it.edge.pipeline.TrackingState`,
@@ -310,9 +339,10 @@ struct LoopState {
 ///        owner runs each step that changes it on its map, then keeps the database in step.
 ///        Inline, it holds the map between the steps, and the view is the map. Threaded (a
 ///        writer given), one thread writes the map at a time (`threads::Writer`), tracking reads
-///        the view the writers publish, a copy, and tracking's counts wait for local mapping to
-///        apply them (`apply_counts`). The map and the database are read and written only under
-///        the writer's hand-over: local mapping's turn, a hold or a stop.
+///        the view the writers publish, a copy of the part its next frame may read from where
+///        it says its last frame left it (`anchor`), and tracking's counts wait for local
+///        mapping to apply them (`apply_counts`). The map and the database are read and written
+///        only under the writer's hand-over: local mapping's turn, a hold or a stop.
 class MapOwner {
  public:
   /// @brief An owner with no map yet.
@@ -321,19 +351,58 @@ class MapOwner {
   /// @param writer The handshake between the threads, not owned; null inline.
   /// @param lock The map's lock, ORB-SLAM's `mMutexMapUpdate`, not owned: the baseline's
   ///        (`Threading::kLocks`), which publishes no view; null otherwise.
+  /// @param options The settings: the local map's, which a view's keyframes follow.
+  /// @param views Inline, whether tracking reads each frame a view made then, as a writer
+  ///        would publish it (`Threading::kInlineView`, a test); threaded, ignored.
   MapOwner(std::optional<foundations::vocabulary::Vocabulary> vocabulary, threads::Writer* writer,
-           std::mutex* lock)
-      : vocabulary_(std::move(vocabulary)), writer_(writer), lock_(lock) {}
+           std::mutex* lock, const Options& options, bool views)
+      : vocabulary_(std::move(vocabulary)),
+        writer_(writer),
+        lock_(lock),
+        options_(options),
+        views_(views) {}
 
   /// @brief The map being tracked: none until one starts, and from a lost one to the next.
   ///        Threaded, read it only under the writer's hand-over.
   /// @return The map, if any.
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
-  /// @brief The map as last published, what tracking reads: a copy, threaded; the map itself,
-  ///        inline and in the baseline (not owned, valid while the map is).
-  /// @return The view, or null with no map.
-  [[nodiscard]] std::shared_ptr<const Map> view() const;
+  /// @brief What tracking reads: the view last published, threaded; inline and in the baseline,
+  ///        the map itself (not owned, valid while the map is), or a view made now (`views`).
+  /// @return The view; its map null with no map.
+  [[nodiscard]] View view() const;
+
+  /// @brief A view of the map as it is, from where a frame left tracking: its map's part those
+  ///        keyframes make (`view_keyframes`, `sub_map`). Threaded, under a hold.
+  /// @param points The point each of the frame's keypoints tracked, -1 for none.
+  /// @param reference Its reference keyframe's id, or -1.
+  /// @return The view; its map null with no map.
+  [[nodiscard]] View view_of(std::span<const std::int64_t> points, std::int64_t reference) const;
+
+  /// @brief Say where tracking's last frame left it, which the views published follow.
+  /// @param points The point each of its keypoints tracked, -1 for none.
+  /// @param reference Its reference keyframe's id, or -1.
+  void anchor(std::vector<std::int64_t> points, std::int64_t reference);
+
+  /// @brief Follow a frame relocalisation placed: the views follow it from now, and, threaded,
+  ///        one is published at once (under the hold relocalisation took), so that the frames
+  ///        after it read where it was placed.
+  /// @param points The point each of its keypoints was matched to, -1 for none.
+  /// @return The view of where it was placed.
+  [[nodiscard]] View relocalized(std::vector<std::int64_t> points);
+
+  /// @brief Whether tracking reads views, not the map itself: threaded by our design, or inline
+  ///        as its test.
+  /// @return Whether it does.
+  [[nodiscard]] bool views() const { return publishing() || (views_ && writer_ == nullptr); }
+
+  /// @brief Give the views published the frame they were published on.
+  /// @param clock The frame being tracked now (`Atlas::frame`).
+  void set_clock(std::function<std::int64_t()> clock) { clock_ = std::move(clock); }
+
+  /// @brief The views published since the last call, each with its frame.
+  /// @return The completions saying so, in the order published.
+  [[nodiscard]] std::vector<Completion> published();
 
   /// @brief Whether the writers publish a view: threaded, our design.
   /// @return Whether they do.
@@ -450,7 +519,8 @@ class MapOwner {
   foundations::Result<void> corrected();
 
   /// @brief Publish the map so far for tracking to read, while its writer goes on (threaded):
-  ///        a copy.
+  ///        a copy of the part tracking's next frame may read, from where it last said it was
+  ///        (`anchor`), its size kept for the run (`published`).
   /// @param m The map so far.
   void publish(const Map& m);
 
@@ -495,10 +565,22 @@ class MapOwner {
   std::optional<Map> map_;
   /// @brief The map's keyframe database, when relocalising or closing loops and a map exists.
   std::optional<Database> database_;
-  /// @brief Guards `view_`.
+  /// @brief The settings.
+  Options options_;
+  /// @brief Inline, whether tracking reads views made each frame.
+  bool views_;
+  /// @brief Guards the fields below, to `published_`.
   mutable std::mutex view_mutex_;
-  /// @brief The map as last published.
-  std::shared_ptr<const Map> view_;
+  /// @brief The view as last published.
+  View view_;
+  /// @brief Where tracking's last frame left it: its points, by id.
+  std::vector<std::int64_t> anchor_points_;
+  /// @brief Its reference keyframe's id, or -1.
+  std::int64_t anchor_reference_{-1};
+  /// @brief The views published and not yet taken.
+  std::vector<Completion> published_;
+  /// @brief The frame being tracked now.
+  std::function<std::int64_t()> clock_;
   /// @brief Guards `counts_`.
   std::mutex counts_mutex_;
   /// @brief Tracking's counts waiting for local mapping: the points seen, and found, per frame.
@@ -527,7 +609,18 @@ enum class Threading : std::uint8_t {
   ///        corrects with mapping stopped and under it, a loop whose keyframes went in between
   ///        left; a global BA's result is carried under it, mapping stopped.
   kLocks = 2,
+  /// @brief In turn, as `kInline`, tracking each frame on the view a writer would publish from
+  ///        the map as it is then: a test that tracking on a view decides as on the whole map
+  ///        (each frame copies its view).
+  kInlineView = 3,
 };
+
+/// @brief Whether a pipeline's steps run in threads of their own.
+/// @param threading How they run.
+/// @return Whether they do: our design or the baseline.
+[[nodiscard]] constexpr bool threaded(Threading threading) {
+  return threading == Threading::kView || threading == Threading::kLocks;
+}
 
 /// @brief The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`): tracking, local
 ///        mapping and loop closing as steps over state of their own, called in turn, or each in
@@ -661,10 +754,13 @@ class Pipeline {
     ///        lock used by the baseline.
     Shared(std::optional<foundations::vocabulary::Vocabulary> vocabulary, const Options& options,
            Threading threading)
-        : writer_(threading != Threading::kInline ? std::make_unique<threads::Writer>() : nullptr),
+        : writer_(threaded(threading) ? std::make_unique<threads::Writer>() : nullptr),
           owner_(std::move(vocabulary), writer_.get(),
-                 threading == Threading::kLocks ? &lock_ : nullptr),
-          atlas_(options) {}
+                 threading == Threading::kLocks ? &lock_ : nullptr, options,
+                 threading == Threading::kInlineView),
+          atlas_(options) {
+      owner_.set_clock([this] { return atlas_.frame(); });
+    }
 
     /// @brief The handshake between the threads.
     /// @return The writer; null inline.
