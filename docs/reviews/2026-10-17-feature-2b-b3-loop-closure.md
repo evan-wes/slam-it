@@ -493,3 +493,381 @@ Files:
 - `refine_similarity_pixels2_validation.py`
 - `gtsam_ba_near_plane_damping.py`
 - `gtsam_sim3_between_jacobian.py`
+
+## Run 2 -- 2026-10-17
+
+| | |
+|---|---|
+| **Branch** | `feature/2b-b3-loop-closure` |
+| **Range** | `5d857bbb6a03daa913665c7c51cc6d22a289b052..eedb319` (the fixes of run 1) |
+| **Reviewers** | hygiene (sonnet), architecture (opus); the algorithm reviewer's area changed little |
+| **How they ran** | registered slam-it-* agents |
+| **Layer 1** | running on `eedb319` when the reviewers started |
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| H18 | should-fix | hygiene | `cpp/src/edge/loops.cpp:1589-1630` | H8 not applied to C++: the id re-lookup and the contradicting comment remain | fix | fixed (c28a1fe) -- decided by evan-wes, 2026-10-17 |
+| H19 | should-fix | hygiene | `loops.py:1365`, `loops.rs:2235` | The new comment says moving changes "never keyframes", but it sets their poses | fix | fixed (c28a1fe: in Python, Rust and C++) -- decided by evan-wes, 2026-10-17 |
+| H20 | should-fix | hygiene | `loops.py:1254-1315, 2074`, `test_loops.py` | H4's new refusals of `essential_graph` and global BA's keyframe-0 rule are untested | fix | fixed (78e40ee: four BAD_CALLS cases) -- decided by evan-wes, 2026-10-17 |
+| H21 | should-fix | hygiene | `test_graphs.py:410-420` | The pixels2 refusal test's `backend` parameter never reaches a core; the cores' checks are untested | fix | fixed (2553ee9: Python's boundary said; a native case in each core) -- decided by evan-wes, 2026-10-17 |
+| H22 | should-fix | hygiene | `generate_graphs.py`, `test_graphs.py:503-521` | The graphs parity fixture's own tolerance format and comparison (same as A19) | fix | fixed (7512bd0: per-field policies, an oracle, assert_matches_fixture and parity_params) -- decided by evan-wes, 2026-10-17 |
+| H23 | should-fix | hygiene | 7 copies across the languages | The "relocalisation or loops" predicate written seven times; no test that a loop closes with relocalisation off | fix | fixed (5de9e2f: keeps_keyframe_database in each language; a loop closes with relocalisation off) -- decided by evan-wes, 2026-10-17 |
+| H24 | should-fix | hygiene | `loops.py` `refine`, `detect`, `global_bundle_adjust`, `correct`; `loops.hpp` | `NotConvergedError` not listed where it now escapes | fix | fixed (1588dde) -- decided by evan-wes, 2026-10-17 |
+| H25 | should-fix | hygiene | `CHANGELOG.md` 0.3.12.0 | The fixes' visible changes not recorded (same as A25) | fix | fixed (db8a0b6: Changed and Tests, the vocabulary contract included) -- decided by evan-wes, 2026-10-17 |
+| H26 | note | hygiene | `tests/test_measure_testset.py:238-283` | `slam_it.eval.loops`' tests live in the script's test file (same as A23) | fix | fixed (9c439ad: tests/eval/test_loops.py, sharing tests/eval/synthetic_runs.line_run) -- decided by evan-wes, 2026-10-17 |
+| H27 | note | hygiene | `generate_graphs.py`, `test_check_layers.py` | Dead or unexplained items in the new tests and generator | fix | fixed (7512bd0: the generator's two; 331c15a: check_layers' dead setup) -- decided by evan-wes, 2026-10-17 |
+| H28 | note | hygiene | `pipeline.rs:1087`, `options.py:489-492`, two long lines | Smaller readability and format items | fix | fixed (5de9e2f: Rust's gate stated, LoopOptions' docstring; ee3ac3c: the two long lines; 38327f2: the shape test's caveat in its docstring) -- decided by evan-wes, 2026-10-17 |
+| H29 | note | hygiene | the ladder's deferred `loops` split | "About 2,200 lines in each language"; C++ is 1,685 | fix | fixed (ee3ac3c: 2,208 / 2,284 / 1,685 at eedb319) -- decided by evan-wes, 2026-10-17 |
+| H30 | note | hygiene | `.github/workflows/test.yml` | The GitHub runner's memory against the wrapper's >8 GB (with A22) | defer: try by workflow_dispatch before the next release | deferred (the ladder's open items, Deferred from milestone 2B's B3 review panel: run the workflow by workflow_dispatch before the next release, or name a larger runner) -- decided by evan-wes, 2026-10-17 |
+| A17 | should-fix | architecture | `scripts/check_layers.py:953-1003`, `test_check_layers.py:514` | The native GTSAM check allows rung 0's public header to include GTSAM | fix | fixed (331c15a: GTSAM's headers only in graphs.cpp and graphs_bridge.cpp; row 514 expects a report) -- decided by evan-wes, 2026-10-17 |
+| A18 | should-fix | architecture | `test_loop_room.py:117-130` | The A8 shape check never sees the relocalisation, PnP or loss records | fix | fixed (38327f2: the lost and found rooms' runs too) -- decided by evan-wes, 2026-10-17 |
+| A19 | should-fix | architecture | `generate_graphs.py:40`, `graphs.json`, `test_graphs.py:504-521` | The graphs fixture's own tolerance shape and loop (same as H22) | fix (with H22) | fixed (7512bd0, with H22) -- decided by evan-wes, 2026-10-17 |
+| A20 | should-fix | architecture | `pipeline.rs:1087-1092`, native pipeline tests | Rust's (and C++'s) new relocalisation gate has no core test | fix | fixed (5de9e2f: each core's gate tested natively; each test fails with its gate dropped) -- decided by evan-wes, 2026-10-17 |
+| A21 | should-fix | architecture | ladder:122-128, 436-457, 459-466 | The ladder's GTSAM entry trails the worker image and the new contracts | fix (docs) | fixed (ee3ac3c: the GTSAM entry, Dependency contracts and check_layers' list) -- decided by evan-wes, 2026-10-17 |
+| A22 | note | architecture | `offline_ci.sh`, `test.yml` | The sibling 16 GB scope not yet run; the GitHub runner's memory (with H30) | offline CI runs it before this merge; the runner deferred with H30 | deferred (the ladder's open items, Deferred from milestone 2B's B3 review panel, with H30); offline CI runs the 16 GB scope before this merge -- decided by evan-wes, 2026-10-17 |
+| A23 | note | architecture | `tests/test_measure_testset.py:245,270` | `eval.loops`' tests belong in `tests/eval/test_loops.py` (same as H26) | fix (with H26) | fixed (9c439ad, with H26) -- decided by evan-wes, 2026-10-17 |
+| A24 | note | architecture | `check_layers.py` `check_confined` | The Rust confinement scan stops at `<crate>/cxx/` | defer to B4, if it adds a bridge | deferred (the ladder's open items, Deferred from milestone 2B's B3 review panel: widen the scan if B4 adds a bridge) -- decided by evan-wes, 2026-10-17 |
+| A25 | note | architecture | `CHANGELOG.md` | The vocabulary contract change not recorded (same as H25) | fix (with H25) | fixed (db8a0b6, with H25) -- decided by evan-wes, 2026-10-17 |
+
+### Hygiene review
+
+
+**Scope:** `5d857bb..eedb319` on `feature/2b-b3-loop-closure` (15 commits, 57 files), read at HEAD with the repo clean. I read the review report first, then every changed source, test, script, build and doc file in the delta. I also read the surrounding code where a fix touched it: `loops.py` `_correct` and its helpers, C++ `correct`, the Dockerfile and setup script, `ba.json`'s fixture precedent, and `check_layers.py`.
+
+I checked these against their sources:
+- the test-set note's reworded count, against the B3 measurement results (see Checked and fine);
+- the ladder's open items;
+- design sections 7, 10, 11, 12 and 14.
+
+I ran only read-only things:
+- `tests/test_build_copies.py` and the new `check_layers` tests (copies run from the scratchpad, 11 passed);
+- a nested `systemd-run` probe;
+- a `ninja -n` dry run.
+
+I did not import `slam_it`, because the editable install would rebuild into `build/`. So I did not run the Python, C++ or Rust suites. I could not build the Docker image or run offline CI.
+
+**Summary:** Most of the 17 hygiene findings are fixed correctly. The 43-row report is accurate. H1 and H2 are fixed in Python, and H7, H12 and H14 in the compiled code too. H10, H13, H15, H16 and the docs changes check out against their sources. Three fixes are incomplete:
+- H8 was not applied to C++.
+- H4's new refusal checks are partly untested.
+- H1's backend-parametrised test does not exercise the cores.
+
+The new parity fixture departs from the repository's fixture conventions. There are no must-fix findings.
+
+### Findings
+
+#### [should-fix] H8 was not applied to C++: `correct` keeps the id re-lookup, and its comment contradicts it
+- **Where:** `cpp/src/edge/loops.cpp:1589-1591` (`moved_ids`), `:1617-1618` (`checked_keyframe_row(m, moved_ids[i])` in the fuse loop), `:1630` (the comment), `:1562` (the NOLINT claiming "Python's `_correct`, step for step").
+- **Issue:** The H8 fix (fe228fb) changed only Python and Rust. C++ still builds `moved_ids` and re-finds each moved keyframe's row by id before fusing. Five lines later it says "The keyframes are the same rows before and after: nothing here adds or removes one." That is the contradiction run 1 flagged. The run-1 report misread it as "C++ skips the lookup", which is true only of the later `moved_now` lookup.
+- **Why it matters:** The three languages are meant to move in lock-step. C++ is no longer step for step with Python's `_correct`, and the dead lookup and vector are still there.
+- **Evidence:** `Ids moved_ids;` … `auto r = checked_keyframe_row(m, moved_ids[i]);` … `fuse_by_similarity(m, camera, *r, corrected.at(moved_rows[i]) …`. `moved_rows[i]` is already the row.
+- **Suggested fix:** Fuse by `moved_rows` directly and drop `moved_ids`. Use the same comment wording as the other two languages once it is corrected (next finding).
+
+#### [should-fix] The new comment in `_correct` says moving changes "never keyframes", but moving sets keyframe poses
+- **Where:** `src/slam_it/edge/loops.py:1365` and `rust/slam-it-edge/src/loops.rs:2235`.
+- **Issue:** The comment reads "Moving, replacing and fusing change points, never keyframes". But `_move_keyframes` does `poses[r] = rigid_of(corrected[r])` (`loops.py:1159`) and returns a map with new `kf_pose`. What holds is that no keyframe is added, removed or reordered. The old comment said exactly that, and the rewrite is less accurate. The commit message repeats the wording.
+- **Suggested fix:** "…change points and the moved keyframes' poses, but never add, remove or reorder a keyframe: every keyframe keeps its row…".
+
+#### [should-fix] H4's new refusal checks are partly untested
+- **Where:**
+  - `src/slam_it/edge/loops.py:1254-1315` (`essential_graph`).
+  - `loops.py:2074` (`global_bundle_adjust`).
+  - `tests/edge/test_loops.py` (`BAD_CALLS`, about line 530).
+- **Issue:** fe228fb added three refusals to `essential_graph`: `start`/`before` not one 4x4 per keyframe, an end or link outside the keyframe rows, and equal ends. `BAD_CALLS` has twelve cases and none is `essential_graph`. `grep essential_graph tests/edge/test_loops.py` finds only two valid-input tests (`:360`, `:428`). Run 1's H4 also named `global_bundle_adjust`'s "map must hold keyframe 0" refusal, and no test covers it.
+- **Why it matters:** New validation with no test is the production-quality gap this fix was meant to close. It is the checks H5 asked for.
+- **Suggested fix:** Add four `BAD_CALLS` entries: `essential_graph` with a short `start`, with a link row out of range, and with equal ends, and `global_bundle_adjust` on a map without id 0.
+
+#### [should-fix] The `backend` parameter of the pixels2 refusal test exercises no core
+- **Where:** `tests/foundations/test_graphs.py:410-420` (`test_a_half_unseen_or_infinite_pixels2_row_is_refused`, parametrised over `backends.BACKENDS`). Related: `cpp/tests/foundations/test_graphs.cpp:395-445` and `rust/slam-it-foundations/src/graphs.rs:1932`.
+- **Issue:** The H1 check sits in Python's `refine_similarity` before `backends.call`, so every parametrisation raises in Python and never reaches the backend. The commit message says "refused in every backend", and run 1 asked for the cases "for every backend". The cores do have their own check (Rust `graphs.rs:1017`, C++ `isFinite().rowwise().all() || unseen`). The C++ and Rust unit tests cover refusals for the pose graph and BA only, so the cores' half-NaN check is untested. The native programs reach the cores without Python.
+- **Why it matters:** The parametrisation looks like per-backend coverage and is not.
+- **Suggested fix:** Drop the `backend` parameter and say it is Python's boundary, and add a native case to each core's refusal tests (`bad_graphs_are_refused` in Rust, the refusal block in `test_graphs.cpp`).
+
+#### [should-fix] The graphs parity fixture invents its own tolerance format and comparison
+- **Where:** `tests/fixtures/foundations/generate_graphs.py:36-38` (`TOLERANCE = {"value_atol": 1e-8, "error_rtol": 1e-6}`) and `tests/foundations/test_graphs.py:503-521` (`test_matches_fixture`).
+- **Issue:** Precedent is `ba.json` / `generate_ba.py`. It has a per-field `TOLERANCES` of `{comparison, rtol, atol, reason}`, applied by `tests/conftest.assert_matches_fixture`. The test also uses `parity_params` for one pytest case per fixture case. The new fixture has a bespoke two-key policy, no `reason`, and a hand-rolled loop of `assert_allclose` and `np.isclose` inside one test per function. CLAUDE.md says parity fixtures state their policy "applied by `tests/conftest.assert_matches_fixture`".
+- **Why it matters:** This is the same logic written two ways, and it leaves a tolerance unjustified. 1e-8 absolute is applied to chi-squares from 3 to 5,643 (`graphs.json`), about 2e-12 relative at the top. That is tight across three independent factor implementations, with no stated reason, and it could fail on a last-bit change. A failure also stops at the first case of its function instead of naming the case as a pytest id.
+- **Suggested fix:** Use the `{comparison, rtol, atol, reason}` policy per field and `assert_matches_fixture` / `parity_params`. Give the 1e-8 a reason, or scale the chi-squares relatively.
+
+#### [should-fix] The "relocalisation or loops" predicate is written six times and no test shows a loop closes without relocalisation
+- **Where:**
+  - Predicate copies: `src/slam_it/edge/pipeline.py:541`, `src/slam_it/orchestration/vo.py:239` (`_needs_vocabulary`, called twice in `check`), `tests/edge/support.py:77`, `cpp/src/edge/pipeline.cpp:83`, `cpp/src/orchestration/vo.cpp:965`, `rust/slam-it-edge/src/pipeline.rs:430`, `rust/slam-it-orchestration/src/vo.rs:1179`.
+  - Missing test: `tests/edge/test_pipeline.py:279-312`.
+- **Issue:**
+  - The predicate is `options.relocalization.enabled or options.loops.enabled`. Python has three copies, C++ two, Rust two. The rule is what H7 added, and it will change again when B4 adds merging. It belongs on `Options` (for example `keeps_keyframe_database`) in each language.
+  - H7's defect was that loop closing silently did nothing without relocalisation. The new tests cover the vocabulary rule, the recorded vocabulary, and that nothing relocalises. None shows that a loop closes with `relocalization.enabled=false` and `loops.enabled=true`. The loop room runs both on.
+- **Suggested fix:** Add one `Options` predicate per language. Run one loop-room case (monocular, for speed) with relocalisation off and assert a loop closes.
+
+#### [should-fix] `Raises` / `@throws` do not list `NotConvergedError` where H2 now lets it escape
+- **Where:** `src/slam_it/edge/loops.py` `refine` (`:1879`), `detect` (`:2090`), `global_bundle_adjust` (`:2044`) and `correct` (`:2158`); the C++ `loops.hpp` equivalents.
+- **Issue:** `essential_graph` documents `NotConvergedError`, but its callers do not. Examples are `_correct` → `essential_graph`, `global_bundle_adjust` → `graphs.bundle_adjust`, and `_refine` → `graphs.refine_similarity`. Nothing in `loops.py` catches it (the only `except` is `:794`, `DegenerateError`). Rust's `correct` says "a stage's", which covers it.
+- **Suggested fix:** Add the `NotConvergedError` line to those four docstrings and the C++ `@return`.
+
+#### [should-fix] CHANGELOG omits the fixes' visible changes
+- **Where:** `CHANGELOG.md`, the 0.3.12.0 entry (only the GTSAM line was edited).
+- **Issue:** Not recorded:
+  - A run with loop closing on now needs and records a vocabulary even with relocalisation off, so `--option relocalization.enabled=false` no longer means "no database".
+  - `vo.check` and both native programs have new refusal messages.
+  - There is a new public module, `slam_it.eval.loops`, with the judge moved out of the script.
+  - The graphs parity fixture is new, as are `tests/test_build_copies.py`, the diagnostics schema test, and the GTSAM confinement contract with its `check_layers.py` check.
+  - `refine_similarity` and the graphs now raise on cases they used to accept.
+- **Why it matters:** The CHANGELOG is the PR's record, and the first item changes how existing measure invocations behave.
+- **Suggested fix:** Add a few lines under Changed and Tests.
+
+#### [note] Tests of `slam_it.eval.loops` live in `tests/test_measure_testset.py`
+`tests/test_measure_testset.py:238-283` tests `loops.judge_loops` and `loops.WRONG_DISTANCE`, but the module is now `slam_it/eval/loops.py`. CLAUDE.md says tests mirror the packages (`tests/eval/` has no `test_loops.py`). Behaviour is covered, so this is only a location problem. Moving them needs `_line_run` shared, for example into `tests/eval/`.
+
+#### [note] Dead or unexplained items in the new tests and generator
+- `tests/fixtures/foundations/generate_graphs.py:109-134`: `_matches` returns `np.arange(count)`, and the only caller discards it (`first, _ = _matches(...)`, `:139`).
+- `generate_graphs.py:67`: `_summary` has no docstring, unlike its siblings. Ruff does not require it for private names; CLAUDE.md asks for one.
+- `tests/test_check_layers.py`, in `test_only_graphs_includes_gtsam_natively`: the conditional write of an empty `graphs.hpp` is dead setup. I ran a copy without it and all 9 tests still passed.
+
+#### [note] A few smaller readability and format items
+- `rust/slam-it-edge/src/pipeline.rs:1087`: a bare `true` as the fourth pattern in `let (Some(database), Some(vocabulary), None, true) = (…, self.options.relocalization.enabled)`. Python and C++ state the condition explicitly.
+- `src/slam_it/edge/options.py:489-492` (`LoopOptions.enabled`): "a vocabulary, which the pipeline keeps whether `relocalization.enabled` is on or off" is garbled. With both off there is no database. Say "needs the keyframe database, which `loops.enabled` alone now keeps".
+- `scripts/locks/worker-gtsam.lock:6` is 116 characters against the 100-column wrap used elsewhere, and `docs/design/2026-10-14-online-slam.md:736` (section 12, item 14) is 108.
+- `test_every_program_writes_pythons_diagnostics` (`tests/orchestration/test_loop_room.py`): key paths such as a lost-state record exist only when a decision occurs. The test passes on today's data, but it will flake if a later decision change (for example the global-BA damping PR) makes one language lose, or not lose, a frame the others do not. It is the right check and worth knowing.
+
+#### [note] Docs claim "about 2,200 lines in each language"; C++ is 1,685
+Ladder, "Deferred from milestone 2B's B3 review panel", the `loops` split item (A15, H8). `wc -l`: `loops.py` 2,208, `loops.rs` 2,284, `cpp/src/edge/loops.cpp` 1,685 (run 1's own count). The architecture finding's rounding was carried over without checking.
+
+#### [note] Possible memory gap in the on-demand workflow (architecture's A4)
+`.github/workflows/test.yml` raised the timeout to 120 min for the GTSAM wrapper. It does not address that the wrapper's largest file needs more than 8 GB (the setup script's own comment), and the job sets no `SLAM_IT_GTSAM_PYTHON_CAP`. If `ubuntu-latest` for this private repository is the standard small runner (I believe about 7 GB, which I could not verify), the job could be OOM-killed. The workflow runs only on demand and on pushes to `main`.
+
+### Checked and fine
+- **H1:** `refine_similarity` refuses wholly-unseen exceptions only. `np.isfinite(raw2[~unseen]).all()` runs on the raw array before any conversion, `np.where(...)` builds a new array so the caller's is not mutated, and the Raises text is right. The test has the three bad rows (NaN, inf, -inf), and the message names `pixels2`.
+- **H2/A1:** `_solve` translates GTSAM failures with a stated reason for the broad catch. The three public solves and `essential_graph` document `NotConvergedError`, and `test_a_failure_inside_gtsam_is_not_converged` provokes a real missing-key failure.
+- **A6, A10:**
+  - `Options.as_dict` is `asdict(self)`.
+  - The converters are private.
+  - The import-linter contract and `check_confined` / `_native_module` are consistent: bindings are not modules, and the Rust bridges map by stem.
+  - `bindings` excluded and the eight parametrised cases assert exact messages and locations.
+- **H5:** `search_by_similarity` validates `window` and `distance` with `as_count(…, 0, MAX_DISTANCE)`, matching `Options`. Four of its cases are in `BAD_CALLS`.
+- **H7 (code):** all three languages and both native `check` functions agree on the rule and the messages, and the database is created whenever a vocabulary exists. Relocalisation stays gated by `relocalization.enabled` in each language (Python `pipeline.py:894`, C++ `:502`, Rust `:1087`). The golden records changed by exactly one line each (`loops.enabled: false` in the kept room's settings).
+- **H9, H11, H12, H14, H15, H16:**
+  - The Protocol names real functions.
+  - `references` is hoisted once, with the same indexing.
+  - The bridge constants and `tangent_dimension` are correct and documented, and the `evaluate` doc states its invariant.
+  - `test_build_copies.py` compares real values (sorted option lists, version, hash pattern, lint tables) and passes.
+  - One `judge_loops` serves the room test and the measure. The room test is stricter now: a loop with no truth within `MAX_DIFFERENCE` fails, because `None != False`.
+- **H10:** `summarize` passes `entry.dataset`, and the new test asserts the exact `("euroc", folder)` read.
+- **H13 (the reworded count):** verified against the B3 results. Both `loops-cpp/seed-0` and `loops-rust/seed-0` have 22 rows with `ate_tracked − ate ≥ 0.1 mm` on 20, V1_01 monocular +0.029 mm, and MH_01 stereo −0.0043 mm, as the note says. The "11 of 14 closer and 2 farther" count in the test-set table also checks.
+- **H17 and the deferral docs:**
+  - The design section 12 item 14 claim is true (`pipeline.py` has no `except`).
+  - The section 14 item 10 text matches H3.
+  - The L2, L6 and L7 wordings match the algorithm review.
+  - The L8 numbers match `test_loop_room.py` (7/5.5/2 cm; 11/6.5 cm) and the `LOOP_PITCH` docstring.
+  - Every ID in the report's resolution column points to a real change or section.
+- **A8 test, A2 fixture content:** `_shapes` compares key paths and types. The fixture's 8 cases and the "36 matches kept" figure in the commit message are right.
+- **Build and CI:**
+  - The scoped-cap claim is true: a nested `systemd-run --scope -p MemoryMax=16G` lands in a sibling scope with `memory.max` of 17179869184, outside the 8 GB parent.
+  - The gtsam wheel's metadata requires `numpy` and `pytest`, as the lock comment says.
+  - The Dockerfile's commit message reports a build; I could not repeat it.
+  - The `--exclude-libs` CMake option is Linux-only and commented.
+- **Docstrings:** new and changed Python, C++ and Rust docs state shapes, units and behaviour. The `slam_it.eval.loops` module docstring states purpose, ladder position and null cases.
+
+**Disclosure:** I wrote only to the session scratchpad (`.../scratchpad/tbc`, `.../scratchpad/tcl`: copies of two test files with the repo path patched). I ran `conda run -n slam-it ninja -C build/slam-it -n` as a dry run, which changes nothing. `git status` in the repo is clean at `eedb319`.
+### Architecture review
+
+
+**Scope:** Run 2 of `feature/2b-b3-loop-closure`, covering the delta `5d857bbb..eedb319` (15 commits, 57 files). I read it against the run-1 report (`docs/reviews/2026-10-17-feature-2b-b3-loop-closure.md`), `CLAUDE.md`, the ladder and the online-SLAM design (sections 7, 10, 11, 12 and 14).
+
+I checked these fixes in all three languages wherever the fix reaches them:
+- A1–A16, H1/L1, H2, H6, H7, H15 and H16;
+- every deferral, against the place the report says it is recorded;
+- the new `slam_it.eval.loops`, the GTSAM confinement contract, the worker image's hashed lock, offline CI's sibling 16 GB scope, the graphs parity fixture and the three golden-record lines.
+
+I ran:
+- `pytest tests/foundations/test_graphs.py tests/test_check_layers.py tests/test_build_copies.py`: 153 passed;
+- `lint-imports`: 23 kept, 0 broken;
+- `scripts/check_layers.py`: exit 0;
+- `nm -D` on the built `_cpp`;
+- a preprocessor probe with the env's compiler.
+
+**Summary:** Every fix decided as "fixed" is in place, and every deferral is recorded where the report says. The Python error contract, the `pixels2` validation, the keyframe database's gate, the worker image's lock and the `--exclude-libs` change are right in every language they touch. Three fixes are weaker than their findings asked:
+- the native GTSAM check allows rung 0's public header to include GTSAM, and the env's compiler would accept that include silently;
+- the A8 shape check never sees the relocalisation, PnP or loss records;
+- the graphs fixture uses a tolerance shape of its own.
+
+Rust's new relocalisation gate has no test, and the ladder's GTSAM entry trails the worker image and the new contract.
+
+### Findings
+
+#### [should-fix] The native GTSAM check allows rung 0's public header to include GTSAM
+- **Where:**
+  - `scripts/check_layers.py:953-1003`: `check_confined`, and `_native_module`, which maps `cpp/include/slam_it/foundations/graphs.hpp` to the module `foundations.graphs`.
+  - `tests/test_check_layers.py:514`: this row asserts that `graphs.hpp` including `<gtsam/inference/Key.h>` is *not* reported.
+- **Issue:**
+  - The check lets the module's public header include GTSAM. The bridge's header is allowed too.
+  - `CMakeLists.txt:98` links GTSAM `PRIVATE` on the premise that no header includes it. Run 1 recorded that premise as the property worth holding.
+  - Run 1's suggested fix was to allow `<gtsam/...>` only in `cpp/src/foundations/graphs.cpp` and the Rust bridge.
+- **Why it matters:**
+  - The `PRIVATE` link does not stop such an include from compiling. `setup_slam_it.sh` installs GTSAM into the env's prefix, and the env's compiler searches `$CONDA_PREFIX/include` by default.
+  - So a GTSAM include in `graphs.hpp` would compile in every file that includes it (edge's `loops.cpp`, the bindings, the programs). GTSAM's types would spread to the edge rung with no build error and no check failing.
+  - That is the regression the native half of A10 exists to catch.
+- **Evidence:**
+  - Edge's `loops.cpp` in `build/native/compile_commands.json` has only `-I .../cpp/include -isystem .../envs/slam-it/include/eigen3`.
+  - With those same flags, `echo '#include <gtsam/inference/Key.h>' | x86_64-conda-linux-gnu-c++ -E -x c++ - ...` exits 0.
+  - The compiler's `<...>` search list begins with `$HOME/miniconda3/envs/slam-it/include`, which holds `gtsam/`.
+- **Suggested fix:**
+  - Allow GTSAM headers only in the module's sources: `cpp/src/foundations/graphs.cpp` and `rust/slam-it-foundations/cxx/graphs_bridge.cpp`.
+  - Change test row 514 to expect a report.
+  - Say "GTSAM in no header" in the ladder's GTSAM entry (see the doc finding below).
+
+#### [should-fix] The A8 shape check never sees the relocalisation, PnP or loss records
+- **Where:** `tests/orchestration/test_loop_room.py:117-130` (`test_every_program_writes_pythons_diagnostics`, which runs on the loop room only).
+- **Issue:**
+  - On the loop room, `relocalization`, `pnp` and `lost` are null on every frame. `_shapes` skips nulls, so these stages' keys are never compared across languages.
+  - Before B3, the removed cross-language whole-run tests held them. Now each language's own golden record holds them, and a regenerated record takes in a misspelt key. That is the gap A8 named, still open for these stages.
+- **Evidence:** I counted non-null records per case in `tests/fixtures/edge/room_runs_python.json`.
+
+  | Room cases | `relocalization` | `pnp` | `lost` | `loop` |
+  |---|---|---|---|---|
+  | `loop/*` (all three) | 0 | 0 | 0 | 28 to 151 |
+  | `found/*` | 4 | 4 | – | – |
+  | `lost/*` | 10 | 10 | 2 | – |
+- **Suggested fix:** Parametrize the same test over the rooms whose runs the golden-record tests already make for every backend: the session fixtures `lost_runs`, `found_runs`, `kept_runs` and the others. No new run is needed. The lost and found rooms are the minimum.
+
+#### [should-fix] The graphs parity fixture uses a tolerance shape of its own and compares by its own loop
+- **Where:**
+  - `tests/fixtures/foundations/generate_graphs.py:40`: `TOLERANCE = {"value_atol": 1e-8, "error_rtol": 1e-6}`.
+  - `tests/fixtures/foundations/graphs.json:3-6`.
+  - `tests/foundations/test_graphs.py:504-521`: a hand-written `assert_allclose`/`np.isclose` loop.
+- **Issue:**
+  - `CLAUDE.md` says a parity fixture "states its tolerance policy (applied by `tests/conftest.assert_matches_fixture`)".
+  - Rung 0's other fixtures give each field a policy of the form `{comparison, rtol, atol, reason}`. For example, `ba.json` has `poses`, `points`, `cost` and an exact `codes` policy for termination and iterations.
+  - `sim3.json`, from this same PR, also states an `oracle`. `graphs.json` has no `oracle` and no `reason`, and its two-key policy bypasses the helper's guards (an exact policy cannot set `rtol`; an unknown comparison fails).
+- **Why it matters:**
+  - B2's deferred A4 ("Every fixture states its oracle and tolerance", ladder line 1115) plans one test over `tests/fixtures/**/*.json`.
+  - This fixture was written after that decision and adds one more case that such a test would fail.
+- **Suggested fix:**
+  - Mirror `ba.json`:
+    - `poses`, `points`, `similarity` and `chi2`: `close`, `atol` 1e-8, each with a reason;
+    - `errors`: `close`, `rtol` 1e-6;
+    - `codes`: `exact`, for iterations and termination.
+  - Add `"oracle": "the Python reference (generate_graphs.py)"`.
+  - Compare through `assert_matches_fixture`. Its `assert_allclose` keeps numpy's default `equal_nan=True`, so the null (NaN) `chi2` rows still compare.
+
+#### [should-fix] Rust's new relocalisation gate (A9) has no test
+- **Where:**
+  - `rust/slam-it-edge/src/pipeline.rs:1087-1092`: the let-else's fourth element, `self.options.relocalization.enabled`.
+  - `rust/slam-it-edge/tests/pipeline.rs:33-50, 188-194`: `small_scene` turns both flags off, and `relocalizing` turns both on.
+  - `cpp/tests/edge/test_pipeline.cpp:40-45, 203-210`: the same pattern.
+- **Issue:**
+  - With A9's fix, the database exists with relocalisation off, so `place` needed a new condition in each language.
+  - Python tests it: `tests/edge/test_pipeline.py`'s `test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes` is now parametrized over `close_loops`.
+  - C++ is tested only through its program, by the measure test's "off" run (`test_the_found_room_relocalises_unless_an_option_turns_it_off`, `relocalizations == 0`, backend `cpp`).
+  - No Rust test runs with relocalisation off and loops on. The native tests move both flags together, and the kept room now turns loops off too.
+  - Dropping the gate from Rust's let-else would pass every test.
+- **Suggested fix:** Add Python's `close_loops=True` case to the Rust and C++ native pipeline tests, so each core's gate is tested in the core.
+
+#### [should-fix] The ladder's GTSAM entry trails the worker image and the new contracts (doc change recommended)
+- **Where:**
+  - `docs/design/2026-10-02-slam-it-ladder.md:122-128` ("Runtime dependencies");
+  - `:436-457` ("Dependency contracts");
+  - `:459-466` (`check_layers.py`'s list).
+- **Issue:**
+  - The entry says "Python uses its official bindings built over the same library".
+  - In the worker image, Python takes PyPI's 4.3.0 wheel, pinned by hash in `scripts/locks/worker-gtsam.lock`. That is a different build, without `EIGEN_NO_CPUID`.
+  - The online-SLAM design's section 10, the CHANGELOG and `pyproject.toml` say so; the ladder, the stated authority, does not.
+  - The ladder records Pillow's and the file-reading contracts beside their dependencies (`:99-106`) and lists every import-linter contract and native check. The new "Only foundations.graphs may import gtsam" contract and `check_confined` appear in neither list.
+- **Suggested fix:** The code is right, so change the doc:
+  - one sentence in the GTSAM entry: the worker image's Python takes PyPI's wheel, pinned by hash, and imports it without solving, since `worker.py:473` runs backend `"cpp"`; GTSAM is in no header;
+  - one bullet in "Dependency contracts";
+  - one bullet in `check_layers.py`'s list.
+
+#### [note] Offline CI's sibling 16 GB scope is right, but nothing has run it yet, and the GitHub runner's memory is not addressed
+- **The mechanism is right** (`scripts/offline_ci.sh:39-41`, `scripts/setup_slam_it.sh:165-171`):
+  - `systemd-run --user --scope` makes a transient unit under the user manager, not nested in `CAP`'s scope, so its own 16G cap holds.
+  - `--scope` runs the command in the caller's environment, so `conda run`'s `PATH` reaches ninja.
+  - In the workflow the variable is unset, the array is empty, and the step runs as before.
+- **It has not run yet:**
+  - `~/.cache/slam-it-offline-ci/results.tsv` ends at B2's `64e42ade`.
+  - `LOCK_HASH` covers `setup_slam_it.sh`, so the next offline CI run recreates `slam-it-ci` and builds the wrapper under the new scope. That run is the real check.
+  - It also means every edit to the setup script now costs a fresh GTSAM build (about 14 min). A4's suggestion to cache on `GTSAM_BUILD_ID` was not taken.
+- **The GitHub runner:**
+  - `test.yml` runs setup uncapped on `ubuntu-latest`. GitHub's standard Linux runner for a private repository has 2 vCPUs and 7 GB RAM (from memory; I did not check the current figure), below the wrapper's largest file (more than 8 GB).
+  - The 120 min timeout fixes time, not memory.
+  - The workflow runs only on demand and on pushes to `main`, so try it once by `workflow_dispatch` before the release, or name the runner it needs.
+
+#### [note] `slam_it.eval.loops`' unit tests live in the measure script's test file
+`tests/test_measure_testset.py:245` and `:270` test `slam_it.eval.loops.judge_loops`; `tests/eval/` has no `test_loops.py`. `CLAUDE.md` says tests mirror the packages. Move both tests to `tests/eval/test_loops.py`, so that the library module's tests do not depend on the script's.
+
+#### [note] The Rust side of the native confinement stops at `<crate>/cxx/`
+- `check_confined` scans `cpp/**` and `rust/slam-it-*/cxx/**` only.
+- These would escape it:
+  - a C++ bridge file placed elsewhere in a crate (for example `src/`);
+  - another crate's `build.rs` linking GTSAM.
+- Today only `slam-it-foundations` has a bridge, and its `ffi` module is private, so the compiler holds the rest.
+- If B4 adds a bridge, scan every C++ file under `rust/` (excluding `target/`), or check that only `slam-it-foundations` depends on `cxx`.
+
+#### [note] The CHANGELOG does not record the vocabulary contract change (hygiene reviewer's lane)
+- After H7, `--vocabulary` (and `vo.run`'s default) is required with `loops.enabled` alone.
+- `--option relocalization.enabled=false` no longer turns loop closing off.
+- `run.json`'s `vocabulary` is non-null for a run that closes loops but does not relocalise.
+- `measure_testset.py`'s docstring says this; the 0.3.12.0 entry does not. One line under "Changed" would do.
+
+### Checked and fine
+- **A1/H2:** `_solve` turns GTSAM failures in both the optimiser's construction and `iterate()` into `NotConvergedError("GTSAM failed: ...")`, and the broad catch is justified in a comment. The three public functions list it under `Raises`. `test_a_failure_inside_gtsam_is_not_converged` covers it. C++ and Rust already returned `NotConverged`.
+- **H1/L1:** Python refuses a `pixels2` row that is neither finite nor wholly NaN before any conversion. The test covers three bad rows on every backend, and all pass.
+- **A2:** The fixture covers:
+  - SE(3) and Sim(3) rings;
+  - both refinement rounds, monocular and stereo, with unseen rows;
+  - a monocular radtan BA, with two cameras held to fix the scale gauge, and a stereo pinhole BA.
+
+  It records summaries (iterations and termination exact). All backends pass. Stage-level parity like this is consistent with the owner's "no identical whole runs" rule.
+- **A3/H6:** The worker image installs the wheel alone (`--no-deps --only-binary=:all:`, hash-checked), then the slam_it wheel under the env lock, then runs `pip check`. GTSAM's own requirements (`numpy>=1.11.0`, `pytest>=9.0.1` in the installed metadata) are pinned by `slam-it.lock`. `worker.py:473` hard-codes backend `"cpp"`, so the PyPI build is imported but never solves. The Dockerfile, `pyproject.toml`, CHANGELOG and section 10 comments are corrected.
+- **H15:** `tests/test_build_copies.py` holds the image's GTSAM version and options (the wrapper flag aside) to the setup script's, checks the lock's pin shape, and holds rung 0's lint tables equal to the workspace's except `unsafe_code`.
+- **A6:** `Options.as_dict` is now `asdict(self)`.
+- **A7/H16:**
+  - `slam_it.eval.loops` sits in eval's exhaustive internal order at the `budgets` layer and imports only `eval.runs`.
+  - It is the one definition, in degrees throughout.
+  - The loop-room test and `measure_testset.py` both call it; the test's radian copy and `_truth_at` are gone.
+  - The eval docstring and design section 10 name it.
+- **A9/H7:**
+  - The keyframe database is kept whenever either feature is on, in the Python, C++ and Rust pipelines and in the three programs' request checks, with identical messages.
+  - `vo.run` gives the default vocabulary.
+  - `tests/edge/support.words_for` follows.
+  - The relocalisation gate in `place` is in all three languages.
+  - The docs in `eval.runs`, `eval.vocabularies` and `options` are updated.
+  - No other caller gates on `relocalization.enabled` alone.
+- **Golden records:** The kept room's `loops.enabled: false` is right:
+  - The room exists to lose kept maps without relocalisation, as before 2B.
+  - Before the fix, `loops.enabled: true` there did nothing, because no database existed.
+  - Turning it off keeps that run exactly, and the three records' results are unchanged; only the inputs line moved, which confirms it.
+  - The lost and found rooms keep relocalisation on, so they already had the database. Their loop records (2 to 11 per case) are unchanged.
+- **A10 (Python half):**
+  - The `forbidden` contract is kept, with one ignored import.
+  - The converters are private.
+  - Nothing else in `src/`, `scripts/` or `server/` imports `gtsam`.
+  - `test_gtsam_is_confined_to_rung_0s_graphs` pins the parsed confinement, so deleting the contract fails a test.
+  - Bindings and C++ tests are not module roots, so a GTSAM include there is reported.
+- **A11:** The edge and foundations docstrings place `loops`, `graphs` and `sim3`, with loop closing's load in the edge rung's budget line.
+- **A13:** Verified: `nm -D --defined-only -C build/slam-it/_cpp...so` shows 0 `gtsam::` symbols (run 1 counted 3,511) and 91 dynamic symbols in all. Built at 21:57, after `f0d87c6`.
+- **A16:** `graphs.hpp`'s `in_front` now states GTSAM's constant. No "contributes nothing" remains for BA in C++ or Rust.
+- **H12/H14:** The Rust bridge gained named sizes and `tangent_dimension`, and is still glue only. `evaluate`'s doc states its invariant.
+- **Deferrals recorded where the report says:**
+  - A5/H3: online-SLAM design §14, item 10.
+  - A12, A14, A15/H8, L8 and L9: the ladder's "Deferred from milestone 2B's B3 review panel".
+  - L2: §11, and §7's PR list.
+  - H17: §12, item 14.
+- **New code:** no globals, import-time side effects or compatibility shims. `SLAM_IT_GTSAM_PYTHON_CAP` is a named, documented setting that only setup reads.
+
+**Disclosure:** Running pytest imported `slam_it`, which can trigger the editable install's rebuild into the git-ignored `build/`. I also ran the env's compiler with `-E -o /dev/null`. `git status` is clean at `eedb319`.
+
+Files:
+- scripts/check_layers.py
+- tests/test_check_layers.py
+- tests/orchestration/test_loop_room.py
+- tests/fixtures/foundations/generate_graphs.py
+- tests/fixtures/foundations/graphs.json
+- tests/foundations/test_graphs.py
+- rust/slam-it-edge/src/pipeline.rs
+- rust/slam-it-edge/tests/pipeline.rs
+- cpp/tests/edge/test_pipeline.cpp
+- docs/design/2026-10-02-slam-it-ladder.md
+- scripts/offline_ci.sh
+- .github/workflows/test.yml
+- tests/test_measure_testset.py
+- CHANGELOG.md
