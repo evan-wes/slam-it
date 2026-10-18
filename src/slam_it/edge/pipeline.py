@@ -65,6 +65,36 @@ the run's ids, each point's and keyframe's life, and each tracked frame's place,
 final trajectory is made (:meth:`Pipeline.lifetimes`, :meth:`Pipeline.trajectory`). After each
 frame the atlas dates what the frame made and removed.
 
+**In threads of their own** (``threaded``, milestone 2B's B3b; the online-SLAM design,
+section 12), tracking runs in the caller's thread, and local mapping, loop closing and each
+global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
+
+- **Tracking** reads only the map's published view (:attr:`MapOwner.view`), and takes no lock:
+  its counts of the points seen and found go to mapping as messages, applied before its next
+  keyframe. Relocalisation reads the whole map and its database with mapping held off. A frame
+  that wants a keyframe asks for one as ORB-SLAM's ``NeedNewKeyFrame`` does: none while mapping
+  is stopped or being stopped; taken at once with mapping idle; busy, the local BA is
+  interrupted, and a stereo or RGB-D keyframe is queued while fewer than :data:`MAX_QUEUED`
+  wait, a monocular one refused. After a correction, the last frame moves with the keyframe it
+  was tracked against.
+- **Local mapping** maps each keyframe in turn, the one writer of the map while it does,
+  interrupted as ORB-SLAM's ``LocalMapping::Run`` is (:class:`slam_it.edge.mapping.Interrupts`),
+  publishes the map once the keyframe's points are made and again when done, and gives the
+  keyframe to loop closing.
+- **Loop closing** searches each keyframe with mapping held off; a loop found is corrected with
+  mapping stopped (:meth:`MapOwner.stopped`), without global BA, which then solves a copy of the
+  map in a thread of its own. A new loop supersedes a global BA still running
+  (:class:`slam_it.edge.threads.Generation`); one that finishes is carried onto the map as it
+  has become (:func:`slam_it.edge.loops.propagate_global_ba`), mapping stopped.
+- **A map lost** waits for local mapping and loop closing to finish the keyframes given, and
+  supersedes a global BA running, before it closes.
+
+A frame's result is then what tracking made of it; what the threads finish later comes as
+:class:`Completion` records (:meth:`Pipeline.completed`), each naming its frame, and
+:meth:`Pipeline.finish` ends the run, waiting for the threads. Inline, the default, the steps
+run in turn in the caller's thread and a run repeats exactly; the golden records and the stage
+tests run so.
+
 Each frame's result carries how its stages went (:class:`FrameSummary`), which a run records
 in its diagnostics, and what became of each of its keypoints (:class:`Fates`), which a run
 records if asked (:mod:`slam_it.eval.runs`).
@@ -75,9 +105,10 @@ The C++ and Rust pipelines run in their native programs; this one runs in-proces
 from __future__ import annotations
 
 import enum
+import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
@@ -92,9 +123,10 @@ from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.initialization import Initialization, InitSummary, Outcome
 from slam_it.edge.loops import CorrectionSummary, DetectionSummary, Pending
 from slam_it.edge.map import Map
-from slam_it.edge.mapping import Mapped, MappingSummary
+from slam_it.edge.mapping import Mapped, MappingSummary, Schedule
 from slam_it.edge.options import MODES, Options
 from slam_it.edge.relocalization import RelocalizationSummary
+from slam_it.edge.threads import Generation, Worker, Writer
 from slam_it.edge.tracking import LocalMapSummary, MotionSummary, PnpSummary
 from slam_it.foundations import orb, se3
 from slam_it.foundations.errors import InvalidInputError
@@ -102,6 +134,10 @@ from slam_it.foundations.vocabulary import Vocabulary
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
+
+MAX_QUEUED = 3
+"""With mapping busy, a stereo or RGB-D frame's keyframe is queued only while fewer than this
+many wait (ORB-SLAM's ``KeyframesInQueue() < 3``)."""
 
 
 class State(enum.StrEnum):
@@ -329,6 +365,19 @@ class FrameResult:
         How its stages went.
     fates : Fates
         What became of each of its keypoints.
+    wait_seconds : float
+        The time tracking waited for the map, part of ``track_seconds``: 0 inline; threaded,
+        relocalisation's wait for mapping to let the map go, and a lost map's for the threads.
+    asked : bool
+        Whether it wanted a keyframe (:func:`slam_it.edge.mapping.need_keyframe`).
+    refused : bool
+        Whether it wanted one and mapping could not take it: stopped, or busy and its queue
+        full (a monocular frame's queue being none). Never inline.
+    queue : int
+        The keyframes waiting for mapping when it asked; 0 inline, and when it did not ask.
+    schedule : slam_it.edge.mapping.Schedule or None
+        How mapping scheduled its keyframe's steps, inline; threaded, it comes later
+        (:class:`Completion`).
     """
 
     timestamp: float
@@ -342,6 +391,36 @@ class FrameResult:
     loop_seconds: float
     summary: FrameSummary
     fates: Fates
+    wait_seconds: float = 0.0
+    asked: bool = False
+    refused: bool = False
+    queue: int = 0
+    schedule: Schedule | None = None
+
+
+@dataclass(frozen=True)
+class Completion:
+    """What a thread of its own finished after its frame's result was given (threaded runs).
+
+    A run adds its ``entries`` to frame ``frame``'s diagnostics: a keyframe's mapping
+    (``map_seconds``, ``mapping``, ``schedule``) and loop closing (``loop_seconds``, ``loop``)
+    on the keyframe's frame; a global BA's (``global_ba``, ``global_ba_seconds``) on the frame
+    being tracked when it ended, or past the last frame when the run's end waited for it.
+
+    Attributes
+    ----------
+    frame : int
+        The frame, counted from 0, one per :meth:`Pipeline.track`.
+    entries : dict
+        Its diagnostics' keys, as JSON values.
+    made : ndarray of int64, shape (N,) or None
+        The keyframe's keypoints' points made by mapping, by the run's ids, -1 where none:
+        their fate is :attr:`Fate.MADE`. None but for a keyframe's mapping.
+    """
+
+    frame: int
+    entries: dict[str, Any]
+    made: IntArray | None = None
 
 
 @dataclass
@@ -371,6 +450,14 @@ class TrackingState:
         none was.
     lost_since : float or None
         The time of the first frame not tracked since the last one tracked; None while tracking.
+    since_keyframe : int
+        The frames since the last that became a keyframe (ORB-SLAM's ``mnLastKeyFrameId``).
+    anchor : int or None
+        Threaded: the keyframe the last frame was tracked against, by the map's id.
+    anchor_relative : ndarray of float64, shape (4, 4) or None
+        Threaded: the last frame's pose relative to it, ``T_last_anchor``.
+    corrections : int
+        Threaded: the corrections of the map seen (:attr:`MapOwner.corrections`).
     """
 
     last_frame: Frame | None = None
@@ -381,6 +468,10 @@ class TrackingState:
     failures: int = 0
     since_recovery: int | None = None
     lost_since: float | None = None
+    since_keyframe: int = 0
+    anchor: int | None = None
+    anchor_relative: Array | None = None
+    corrections: int = 0
 
     def accept(self, frame: Frame, tracked: Tracked) -> None:
         """Make a tracked frame the last one; the velocity only spans consecutive frames.
@@ -440,6 +531,42 @@ class TrackingState:
         assert self.last_tracked is not None
         self.last_tracked = replace(self.last_tracked, pose=pose.copy())
 
+    def anchor_to(self, view: Map, row: int) -> None:
+        """Keep the last frame's pose relative to the keyframe it was tracked against (threaded).
+
+        Parameters
+        ----------
+        view : Map
+            The map tracking read.
+        row : int
+            The keyframe's row in it.
+        """
+        assert self.last_tracked is not None
+        self.anchor = int(view.kf_id[row])
+        self.anchor_relative = self.last_tracked.pose @ se3.inverse(view.kf_pose[row])
+
+    def follow(self, view: Map, corrections: int) -> None:
+        """Move the last frame with its anchor keyframe, if the map was corrected since (threaded).
+
+        ORB-SLAM's ``UpdateLastFrame`` places the last frame by its reference keyframe; here,
+        only after a correction, as inline only the keyframe's own frame moves.
+
+        Parameters
+        ----------
+        view : Map
+            The map's view now.
+        corrections : int
+            The corrections of the map so far.
+        """
+        if corrections == self.corrections:
+            return
+        self.corrections = corrections
+        if self.last_tracked is None or self.anchor is None or self.anchor_relative is None:
+            return
+        row = int(view.keyframe_rows(np.array([self.anchor], dtype=np.int64))[0])
+        if row >= 0:
+            self.move_last(self.anchor_relative @ view.kf_pose[row])
+
 
 @dataclass
 class LoopState:
@@ -470,25 +597,40 @@ class LoopState:
 class MapOwner:
     """The map being tracked and its keyframe database: every change to them goes through here.
 
-    In one thread the steps change the map in turn, and the owner holds it between them. It is
-    the one place milestone 2B's B3b gives the map one writer at a time and tracking a published
-    view of it (``docs/design/2026-10-14-online-slam.md``, section 12).
+    Inline, the steps change the map in turn and the owner holds it between them; the view is
+    the map. Threaded (``writer`` given), one thread writes it at a time
+    (:class:`slam_it.edge.threads.Writer`), tracking reads the view the writers publish, and
+    tracking's counts wait for local mapping to apply them (:meth:`apply_counts`).
 
     Attributes
     ----------
     vocabulary : slam_it.foundations.vocabulary.Vocabulary or None
         The database's words' vocabulary; None when neither relocalising nor closing loops, and
         there is no database.
+    writer : slam_it.edge.threads.Writer or None
+        The handshake between the threads; None inline.
+    corrections : int
+        The corrections applied: loops corrected, and global BAs carried onto the map.
     """
 
     vocabulary: Vocabulary | None = field(default=None, repr=False)
+    writer: Writer | None = field(default=None, repr=False)
+    corrections: int = field(default=0, init=False)
     _map: Map | None = field(default=None, init=False, repr=False)
+    _view: Map | None = field(default=None, init=False, repr=False)
     _database: Database | None = field(default=None, init=False, repr=False)
+    _counts: list[tuple[IntArray, IntArray]] = field(default_factory=list, init=False, repr=False)
+    _counting: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     @property
     def map(self) -> Map | None:
         """The map being tracked; None until one starts, and from a lost one to the next."""
         return self._map
+
+    @property
+    def view(self) -> Map | None:
+        """The map as last published, what tracking reads; the map itself, inline."""
+        return self._view
 
     @property
     def database(self) -> Database | None:
@@ -514,13 +656,15 @@ class MapOwner:
         m : Map
             The new map.
         """
-        self._map = m
+        self._map = self._view = m
         if self.vocabulary is not None:
             self._database = Database(self.vocabulary)
             self._sync_database()
 
     def count(self, visible: IntArray, found: IntArray) -> None:
         """Count a frame tracked against the local map: the points seen, and found, in it.
+
+        Threaded, the counts wait for local mapping (:meth:`apply_counts`).
 
         Parameters
         ----------
@@ -529,11 +673,23 @@ class MapOwner:
         found : ndarray of int64, shape (F,)
             The points it tracked.
         """
+        if self.writer is not None:
+            with self._counting:
+                self._counts.append((visible.copy(), found.copy()))
+            return
         m = maps.count(self.read(), visible, visible=np.ones(len(visible), dtype=np.int64))
-        self._map = maps.count(m, found, found=np.ones(len(found), dtype=np.int64))
+        self._set(maps.count(m, found, found=np.ones(len(found), dtype=np.int64)))
+
+    def apply_counts(self) -> None:
+        """Apply the counts tracking sent since the last (threaded; local mapping's)."""
+        with self._counting:
+            counts, self._counts = self._counts, []
+        for visible, found in counts:
+            m = maps.count(self.read(), visible, visible=np.ones(len(visible), dtype=np.int64))
+            self._map = maps.count(m, found, found=np.ones(len(found), dtype=np.int64))
 
     def apply_mapping(self, m: Map) -> None:
-        """Take a mapping step's map, and bring the database to its keyframes.
+        """Take a mapping step's map, bring the database to its keyframes, and publish it.
 
         Parameters
         ----------
@@ -542,23 +698,36 @@ class MapOwner:
         """
         self._map = m
         self._sync_database()
+        self._view = m
 
     def apply_correction(self, m: Map) -> None:
-        """Take a loop's corrected map, and bring the database to its keyframes.
+        """Take a corrected map, bring the database to its keyframes, and publish it.
 
         Parameters
         ----------
         m : Map
-            The map after the correction.
+            The map after a loop's correction, or a global BA carried onto it.
         """
         self._map = m
         self._sync_database()
+        self._view = m
+        self.corrections += 1
+
+    def publish(self, m: Map) -> None:
+        """Publish a map for tracking to read, while its writer goes on (threaded).
+
+        Parameters
+        ----------
+        m : Map
+            The map so far.
+        """
+        self._view = m
 
     def clear_gone(self) -> None:
         """Empty the map's archive of removals, once the atlas has dated them."""
         m = self._map
         if m is not None and (len(m.gone_pt_id) or len(m.gone_kf_id)):
-            self._map = maps.clear_gone(m)
+            self._set(maps.clear_gone(m))
 
     def close(self) -> Map:
         """Give up the map, lost: the database goes with it.
@@ -569,24 +738,53 @@ class MapOwner:
             The map.
         """
         m = self.read()
-        self._map, self._database = None, None
+        self._map, self._view, self._database = None, None, None
         return m
+
+    def reading(self) -> AbstractContextManager[None]:
+        """Hold the map whole, with local mapping held off: nothing to hold inline.
+
+        Returns
+        -------
+        contextlib.AbstractContextManager
+            The hold.
+        """
+        return nullcontext() if self.writer is None else self.writer.held()
+
+    def writing(self) -> AbstractContextManager[None]:
+        """Hold the map for local mapping, in turn: nothing to hold inline.
+
+        Returns
+        -------
+        contextlib.AbstractContextManager
+            The hold.
+        """
+        return nullcontext() if self.writer is None else self.writer.mapping()
 
     @contextmanager
     def stopped(self) -> Iterator[Map]:
         """Hold the map for a correction: mapping stopped, global BA aborted, then released.
 
         ORB-SLAM's loop closing stops local mapping (``RequestStop``), aborts a global BA that
-        is running (``mbStopGBA``), changes the map, and releases mapping (``Release``). In one
-        thread nothing runs beside the correction, so there is nothing to stop or abort: this is
-        the one place milestone 2B's B3b's threads do it, and its merge (B4) enters it too.
+        is running (``mbStopGBA``), changes the map, and releases mapping (``Release``). Inline
+        nothing runs beside the correction, so there is nothing to stop or abort. Threaded, the
+        writer stops mapping (:meth:`slam_it.edge.threads.Writer.stopped`); a global BA running
+        is superseded by the caller's new generation. Loop corrections, global BAs' results and
+        milestone 2B's B4's merges all enter here.
 
         Yields
         ------
         Map
             The map, to be corrected and given back through :meth:`apply_correction`.
         """
-        yield self.read()
+        with nullcontext() if self.writer is None else self.writer.stopped():
+            yield self.read()
+
+    def _set(self, m: Map) -> None:
+        """Take a map changed in place of a step: inline, the view is the map."""
+        self._map = m
+        if self.writer is None:
+            self._view = m
 
     def _sync_database(self) -> None:
         """Bring the keyframe database to the map's keyframes: add the new, erase the culled."""
@@ -618,6 +816,11 @@ class _Step:
     made: IntArray | None = None
     lost: bool = False
     loop_seconds: float = 0.0
+    wait_seconds: float = 0.0
+    asked: bool = False
+    refused: bool = False
+    queue: int = 0
+    schedule: Schedule | None = None
 
     def fates(self, size: int, base: int) -> Fates:
         """Return what became of each of the frame's `size` keypoints (:class:`Fate`).
@@ -644,7 +847,7 @@ class _Tracking:
 
     ``matched`` holds the last stage's matches before refinement; ``reference`` is the frame's
     reference keyframe's row in the map, -1 when not tracked; ``lost`` says the frame lost the
-    track.
+    track; ``wait_seconds``, ``asked``, ``refused`` and ``queue`` are :class:`FrameResult`'s.
     """
 
     tracked: Tracked | None
@@ -653,6 +856,49 @@ class _Tracking:
     reference: int = -1
     keyframe: bool = False
     lost: bool = False
+    wait_seconds: float = 0.0
+    asked: bool = False
+    refused: bool = False
+    queue: int = 0
+
+
+class _Mapping(Protocol):
+    """Local mapping, as tracking sees it when it wants a keyframe (``NeedNewKeyFrame``)."""
+
+    def idle(self) -> bool:
+        """Return whether mapping takes a keyframe at once (``AcceptKeyFrames``)."""
+        ...
+
+    def stopping(self) -> bool:
+        """Return whether mapping is stopped or being stopped."""
+        ...
+
+    def waiting(self) -> int:
+        """Return the keyframes waiting for mapping (``KeyframesInQueue``)."""
+        ...
+
+    def interrupt(self) -> None:
+        """Interrupt mapping's local BA (``InterruptBA``)."""
+        ...
+
+
+class _Inline:
+    """Local mapping run inline: always idle, never stopped, nothing waiting."""
+
+    def idle(self) -> bool:
+        """Return True: inline, mapping runs as soon as asked."""
+        return True
+
+    def stopping(self) -> bool:
+        """Return False: nothing stops mapping inline."""
+        return False
+
+    def waiting(self) -> int:
+        """Return 0: nothing queues inline."""
+        return 0
+
+    def interrupt(self) -> None:
+        """Do nothing: inline, no local BA runs while tracking does."""
 
 
 def _initialize_monocular(
@@ -679,19 +925,21 @@ def _initialize_monocular(
     return initialization.initialize_monocular(camera, state.reference, frame, matched, options)
 
 
-def _place(  # noqa: PLR0913 -- tracking's state, the map, its database, the frame, the settings
+def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the frame, the settings
     state: TrackingState,
     m: Map,
-    db: Database | None,
+    owner: MapOwner,
     camera: Camera,
     frame: Frame,
     *,
     mode: str,
     options: Options,
-) -> tuple[Tracked | None, FrameSummary, IntArray]:
-    """Track the last frame, or recover by PnP, or relocalise.
+) -> tuple[Tracked | None, FrameSummary, IntArray, float]:
+    """Track the last frame against `m`, the view, or recover by PnP, or relocalise.
 
-    Return the frame, how it was placed, and the last stage's matches before refinement.
+    Relocalisation reads the whole map and its database with mapping held off. Return the
+    frame, how it was placed, the last stage's matches before refinement, and the time spent
+    waiting for the map (0 inline).
     """
     assert state.last_frame is not None
     assert state.last_tracked is not None
@@ -705,21 +953,27 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map, its database, the fra
     )  # fmt: skip
     summary = FrameSummary(motion=motion.summary)
     if motion.tracked is not None:
-        return motion.tracked, replace(summary, placed_by=Placement.MOTION), motion.matched
+        return motion.tracked, replace(summary, placed_by=Placement.MOTION), motion.matched, 0.0
     last = state.last_tracked.points
     recovery = tracking.relocalize_locally(m, camera, frame, last, options)
     summary = replace(summary, pnp=recovery.summary)
     if recovery.tracked is not None:
         placed_by = Placement.LOCAL_PNP
-        return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched
-    if db is None or not options.relocalization.enabled:
-        return None, summary, recovery.matched
-    found = relocalization.relocalize(m, db, camera, frame, options)
+        return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched, 0.0
+    if owner.database is None or not options.relocalization.enabled:
+        return None, summary, recovery.matched, 0.0
+    asked = time.perf_counter()
+    with owner.reading():
+        held = time.perf_counter()
+        db = owner.database
+        assert db is not None
+        found = relocalization.relocalize(owner.read(), db, camera, frame, options)
+    waited = 0.0 if owner.writer is None else held - asked
     summary = replace(summary, relocalization=found.summary)
     if found.tracked is None:
-        return None, summary, found.matched
+        return None, summary, found.matched, waited
     placed_by = Placement.RELOCALIZATION
-    return found.tracked, replace(summary, placed_by=placed_by), found.matched
+    return found.tracked, replace(summary, placed_by=placed_by), found.matched, waited
 
 
 def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the frame, the settings
@@ -731,15 +985,19 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
     mode: str,
     options: Options,
     keyframe_base: int,
+    mapper: _Mapping,
 ) -> _Tracking:
-    """Tracking's step: place a frame against the map, track the local map, ask a keyframe.
+    """Tracking's step: place a frame against the map's view, track the local map, ask a keyframe.
 
     The frame's counts go to the map through `owner`; a frame not tracked is counted as a
-    failure. `keyframe_base` is the run's id of the map's keyframe 0, for the summary.
+    failure. `keyframe_base` is the run's id of the map's keyframe 0, for the summary; `mapper`
+    says whether local mapping takes a keyframe (the module docstring).
     """
-    m = owner.read()
-    placed, summary, matched = _place(
-        state, m, owner.database, camera, frame, mode=mode, options=options
+    state.since_keyframe += 1
+    m = owner.view
+    assert m is not None
+    placed, summary, matched, waited = _place(
+        state, m, owner, camera, frame, mode=mode, options=options
     )
     if summary.placed_by in (Placement.LOCAL_PNP, Placement.RELOCALIZATION):
         state.since_recovery = 0
@@ -760,15 +1018,36 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
         needed = options.tracking.recovery_tracked if recent else options.tracking.min_tracked
         tracked = local.tracked if local.tracked.inliers >= needed else None
         reference = local.reference
-    m = owner.read()
+    m = owner.view
+    assert m is not None
     if tracked is None:
         lost = state.fail(frame, m.keyframes, options)
-        return _Tracking(None, summary, matched, lost=lost)
-    held = recent and m.keyframes > options.tracking.max_frames
-    keyframe = not held and mapping.need_keyframe(
-        m, camera, frame.depth, tracked, reference=reference, mode=mode, options=options
-    )
-    return _Tracking(tracked, summary, matched, reference=reference, keyframe=keyframe)
+        return _Tracking(None, summary, matched, lost=lost, wait_seconds=waited)
+    if recent and m.keyframes > options.tracking.max_frames:  # none just after a recovery
+        return _Tracking(tracked, summary, matched, reference=reference, wait_seconds=waited)
+    idle = mapper.idle()
+    asked = mapping.need_keyframe(
+        m, camera, frame.depth, tracked, reference=reference, mode=mode, options=options,
+        idle=idle, since_keyframe=state.since_keyframe,
+    )  # fmt: skip
+    keyframe = refused = False
+    queue = 0
+    if asked:
+        queue = mapper.waiting()
+        if mapper.stopping():
+            refused = True
+        elif idle:
+            keyframe = True
+        else:
+            mapper.interrupt()
+            keyframe = mode != "monocular" and queue < MAX_QUEUED
+            refused = not keyframe
+    if keyframe:
+        state.since_keyframe = 0
+    return _Tracking(
+        tracked, summary, matched, reference=reference, keyframe=keyframe,
+        wait_seconds=waited, asked=asked, refused=refused, queue=queue,
+    )  # fmt: skip
 
 
 def _map_keyframe(  # noqa: PLR0913 -- the map's owner, the keyframe, the settings, what is held
@@ -816,6 +1095,244 @@ def _close_loops(
     return summary, correction is not None
 
 
+@dataclass(frozen=True)
+class _Request:
+    """A keyframe tracking asked local mapping for: the frame, its number, and how it tracked."""
+
+    index: int
+    frame: Frame
+    tracked: Tracked
+
+
+def _still_mapped(tracked: Tracked, m: Map) -> Tracked:
+    """Return a frame as tracked, its points no longer in `m` dropped (``ProcessNewKeyFrame``).
+
+    Threaded, mapping may cull or fuse a point a keyframe tracked before it inserts the
+    keyframe; ORB-SLAM skips the points gone bad.
+    """
+    kept = tracked.points.copy()
+    seen = kept >= 0
+    kept[seen] = np.where(m.point_rows(kept[seen]) >= 0, kept[seen], -1)
+    return replace(tracked, points=kept)
+
+
+class _Interrupts:
+    """What local mapping's thread is asked between its steps (:class:`mapping.Interrupts`)."""
+
+    def __init__(self, threads: _Threads) -> None:
+        """Ask `threads`."""
+        self._threads = threads
+
+    def waiting(self) -> bool:
+        """Return whether another keyframe waits."""
+        return self._threads.waiting() > 0
+
+    def stopping(self) -> bool:
+        """Return whether a stop is requested."""
+        return self._threads.stopping()
+
+    def aborted(self) -> bool:
+        """Return whether the local BA is to stop."""
+        return self._threads.writer.abort.is_set()
+
+    def publish(self, m: Map) -> None:
+        """Publish the map so far for tracking."""
+        self._threads.owner.publish(m)
+
+
+class _Threads:
+    """Local mapping, loop closing and the global BAs, each in a thread (the module docstring).
+
+    Tracking asks it whether mapping takes a keyframe (:class:`_Mapping`), and gives it the
+    keyframes; the threads give back :class:`Completion` records.
+    """
+
+    def __init__(self, pipeline: Pipeline, writer: Writer) -> None:
+        """Start the threads for `pipeline`, its writer `writer`."""
+        self.mode, self.camera, self.options = pipeline.mode, pipeline.camera, pipeline.options
+        self.owner, self.atlas, self.closing = pipeline.owner, pipeline.atlas, pipeline.closing
+        self.writer = writer
+        self.generation = Generation()
+        self._inline_ba_off = self.options.with_settings({"loops.global_ba": False})
+        self._lock = threading.Lock()
+        self._completions: list[Completion] = []
+        self._global: list[threading.Thread] = []
+        self._errors: list[BaseException] = []
+        self._busy = False
+        self.loop_closing: Worker[tuple[int, int]] = Worker("loop closing", self._close_loops)
+        self.mapping: Worker[_Request] = Worker("local mapping", self._map)
+
+    def idle(self) -> bool:
+        """Return whether local mapping takes a keyframe at once: none in hand, none waiting."""
+        return not self._busy and self.mapping.queue.waiting() == 0
+
+    def stopping(self) -> bool:
+        """Return whether local mapping is stopped or being stopped."""
+        return self.writer.stopping()
+
+    def waiting(self) -> int:
+        """Return the keyframes waiting for local mapping."""
+        return self.mapping.queue.waiting()
+
+    def interrupt(self) -> None:
+        """Interrupt local mapping's local BA."""
+        self.writer.abort.set()
+
+    def request(self, request: _Request) -> None:
+        """Queue a keyframe for local mapping, aborting its local BA (``InsertKeyFrame``)."""
+        self.mapping.queue.put(request)
+        self.writer.abort.set()
+
+    def completed(self) -> list[Completion]:
+        """Return the completions since the last call, in the order they came."""
+        with self._lock:
+            out, self._completions = self._completions, []
+        return out
+
+    def check(self) -> None:
+        """Raise the error a thread failed with, if one did.
+
+        Raises
+        ------
+        BaseException
+            The error.
+        """
+        self.mapping.check()
+        self.loop_closing.check()
+        with self._lock:
+            if self._errors:
+                raise self._errors[0]
+
+    def settle(self, *, apply: bool) -> None:
+        """Wait for mapping and loop closing to handle every keyframe given, and the global BAs.
+
+        Parameters
+        ----------
+        apply : bool
+            Whether a global BA still running applies its result when it ends (the run's end);
+            if not (a map lost), it is superseded.
+
+        Raises
+        ------
+        BaseException
+            The error a thread failed with, if one did.
+        """
+        self.mapping.queue.drain()
+        self.loop_closing.queue.drain()
+        if not apply:
+            self.generation.next()
+        with self._lock:
+            running, self._global = self._global, []
+        for thread in running:
+            thread.join()
+        self.check()
+
+    def stop(self) -> None:
+        """End the threads; :meth:`settle` first."""
+        self.mapping.stop()
+        self.loop_closing.stop()
+
+    def _complete(self, completion: Completion) -> None:
+        """Keep a completion for the run."""
+        with self._lock:
+            self._completions.append(completion)
+
+    def _map(self, request: _Request) -> None:
+        """Local mapping's thread: map a keyframe, the one writer while it does."""
+        self._busy = True
+        try:
+            with self.owner.writing():
+                self.writer.abort.clear()
+                self.owner.apply_counts()
+                start = time.perf_counter()
+                tracked = _still_mapped(request.tracked, self.owner.read())
+                mapped = mapping.process(
+                    self.owner.read(), self.camera, request.frame, tracked,
+                    mode=self.mode, options=self.options, held=self.closing.held(),
+                    interrupts=_Interrupts(self),
+                )  # fmt: skip
+                self.owner.apply_mapping(mapped.map)
+                seconds = time.perf_counter() - start
+                m = self.owner.read()
+                self.atlas.resolve(request.index, m)
+                self.atlas.record(m)
+                self.owner.clear_gone()
+                keyframe, base = int(m.kf_id[-1]), self.atlas.point_base
+        finally:
+            self._busy = False
+        schedule = None if mapped.schedule is None else mapped.schedule.as_dict()
+        entries = {
+            "map_seconds": seconds,
+            "mapping": mapped.summary.as_dict(),
+            "schedule": schedule,
+        }
+        made = np.where(mapped.made >= 0, base + mapped.made, -1)
+        self._complete(Completion(request.index, entries, made=made))
+        self.loop_closing.queue.put((request.index, keyframe))
+
+    def _close_loops(self, item: tuple[int, int]) -> None:
+        """Loop closing's thread: search a keyframe for a loop, and correct one that closes."""
+        index, keyframe = item
+        if self.owner.database is None or not self.options.loops.enabled or keyframe == 0:
+            return
+        start = time.perf_counter()
+        copy, generation = None, 0
+        with self.owner.reading():
+            m, db = self.owner.read(), self.owner.database
+            assert db is not None
+            if keyframe not in m.kf_id:  # culled since it was mapped
+                return
+            found = loops.detect(
+                m, db, self.camera, keyframe, self.closing.pending, mode=self.mode,
+                options=self.options,
+            )  # fmt: skip
+            self.closing.pending = found.pending
+            correction = None
+            if found.loop is not None:
+                with self.owner.stopped() as held:
+                    generation = self.generation.next()
+                    fixed = loops.correct(
+                        held, self.camera, found.loop, mode=self.mode, options=self._inline_ba_off
+                    )
+                    self.owner.apply_correction(fixed.map)
+                    self.atlas.record(self.owner.read())
+                    self.owner.clear_gone()
+                    correction = fixed.summary
+                    if self.options.loops.global_ba:
+                        copy = self.owner.read()
+        summary = LoopSummary(detection=found.summary, correction=correction)
+        seconds = time.perf_counter() - start
+        self._complete(Completion(index, {"loop_seconds": seconds, "loop": summary.as_dict()}))
+        if copy is not None:
+            thread = threading.Thread(
+                target=self._global_ba, args=(copy, generation), name="global BA", daemon=True
+            )
+            with self._lock:
+                self._global.append(thread)
+            thread.start()
+
+    def _global_ba(self, copy: Map, generation: int) -> None:
+        """Solve a copy in a global BA's thread, and carry the result onto the map if still due."""
+        try:
+            start = time.perf_counter()
+            solved, solve = loops.global_bundle_adjust(copy, self.camera, self.options)
+            moved = None
+            with self.owner.stopped() as now:
+                if self.generation.current(generation):
+                    moved = loops.propagate_global_ba(now, solved)
+                    self.owner.apply_correction(moved.map)
+                    self.atlas.record(self.owner.read())
+                    self.owner.clear_gone()
+                frame = self.atlas.frame
+            summary = loops.GlobalSummary(generation, moved is not None, solve, moved)
+            seconds = time.perf_counter() - start
+            entries = {"global_ba": summary.as_dict(), "global_ba_seconds": seconds}
+            self._complete(Completion(frame, entries))
+        except BaseException as error:  # kept, and raised in tracking's thread
+            with self._lock:
+                self._errors.append(error)
+
+
 @dataclass
 class Pipeline:
     """The edge pipeline for one sequence (see the module docstring).
@@ -831,6 +1348,8 @@ class Pipeline:
     vocabulary : slam_it.foundations.vocabulary.Vocabulary or None
         The vocabulary the keyframe database's words are of: required with
         ``relocalization.enabled`` or ``loops.enabled`` on, refused with both off.
+    threaded : bool
+        Whether the steps run in threads of their own (the module docstring); default, inline.
     state : State
         Where the pipeline is: never :attr:`State.LOST`, which a lost frame's result has.
     tracking : TrackingState
@@ -847,14 +1366,17 @@ class Pipeline:
     camera: Camera
     options: Options = field(default_factory=Options)
     vocabulary: Vocabulary | None = field(default=None, repr=False)
+    threaded: bool = False
     state: State = field(default=State.NOT_INITIALIZED, init=False)
     tracking: TrackingState = field(default_factory=TrackingState, init=False, repr=False)
     closing: LoopState = field(default_factory=LoopState, init=False, repr=False)
     owner: MapOwner = field(init=False, repr=False)
     atlas: Atlas = field(init=False, repr=False)
+    _threads: _Threads | None = field(default=None, init=False, repr=False)
+    _finished: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Check the mode, and start the owner and the atlas.
+        """Check the mode, and start the owner, the atlas and, threaded, the threads.
 
         Raises
         ------
@@ -873,8 +1395,11 @@ class Pipeline:
             raise InvalidInputError(
                 "vocabulary: given, but relocalization.enabled and loops.enabled are both off"
             )
-        self.owner = MapOwner(self.vocabulary)
+        writer = Writer() if self.threaded else None
+        self.owner = MapOwner(self.vocabulary, writer)
         self.atlas = Atlas(self.options)
+        if writer is not None:
+            self._threads = _Threads(self, writer)
 
     @property
     def map(self) -> Map | None:
@@ -905,11 +1430,34 @@ class Pipeline:
         -------
         FrameResult
             Its pose, or why there is none.
+
+        Raises
+        ------
+        slam_it.foundations.errors.InvalidInputError
+            If the run was finished (:meth:`finish`).
+        BaseException
+            Threaded, the error a thread failed with, if one did.
         """
+        if self._finished:
+            raise InvalidInputError("track: the run is finished")
         start = time.perf_counter()
-        step = self._track(frame) if self.state is State.TRACKING else self._initialize(frame)
-        self.atlas.date(self.owner.map)
-        self.owner.clear_gone()
+        tracking_map = self.state is State.TRACKING
+        step = self._track(frame) if tracking_map else self._initialize(frame)
+        threads = self._threads
+        waited = step.wait_seconds
+        if threads is None:
+            self.atlas.date(self.owner.map)
+            self.owner.clear_gone()
+        else:
+            threads.check()
+            if not tracking_map and self.owner.map is not None:  # a map started on it
+                self.atlas.record(self.owner.map)
+                self.owner.clear_gone()
+            if step.lost and self.owner.map is not None:  # the threads end the map's work first
+                settling = time.perf_counter()
+                threads.settle(apply=False)
+                waited += time.perf_counter() - settling
+            self.atlas.tick()
         state = State.LOST if step.lost else self.state
         map_id, summary = self.atlas.map_id, step.summary
         fates = step.fates(frame.size, self.atlas.point_base)
@@ -929,7 +1477,41 @@ class Pipeline:
             loop_seconds=step.loop_seconds,
             summary=summary,
             fates=fates,
+            wait_seconds=waited,
+            asked=step.asked,
+            refused=step.refused,
+            queue=step.queue,
+            schedule=step.schedule,
         )
+
+    def finish(self) -> None:
+        """End the run: threaded, wait for the threads to finish their work, then end them.
+
+        Local mapping and loop closing handle every keyframe given, and each global BA running
+        ends, the latest carried onto the map; then the threads end. Inline, nothing waits.
+        No frame is tracked after.
+
+        Raises
+        ------
+        BaseException
+            Threaded, the error a thread failed with, if one did.
+        """
+        if self._threads is not None and not self._finished:
+            self._finished = True
+            self.atlas.end()
+            self._threads.settle(apply=True)
+            self._threads.stop()
+        self._finished = True
+
+    def completed(self) -> list[Completion]:
+        """Return what the threads finished since the last call (threaded; none inline).
+
+        Returns
+        -------
+        list of Completion
+            The completions, in the order they came.
+        """
+        return [] if self._threads is None else self._threads.completed()
 
     def lifetimes(self) -> Lifetimes:
         """Return every point and keyframe the run has made, with their lives.
@@ -940,7 +1522,8 @@ class Pipeline:
             The points and keyframes by the run's id: those in the current map where it has
             them, the others where they last were (:meth:`slam_it.edge.atlas.Atlas.lifetimes`).
         """
-        return self.atlas.lifetimes(self.owner.map)
+        with self.owner.reading():
+            return self.atlas.lifetimes(self.owner.map)
 
     def trajectory(self) -> Trajectory:
         """Return the run's trajectory so far: each tracked frame's final pose, and as tracked.
@@ -951,7 +1534,8 @@ class Pipeline:
             The frames tracked, but a reset map's, each placed by its reference keyframe's last
             pose (:meth:`slam_it.edge.atlas.Atlas.trajectory`).
         """
-        return self.atlas.trajectory(self.owner.map)
+        with self.owner.reading():
+            return self.atlas.trajectory(self.owner.map)
 
     def _close(self) -> LostSummary:
         """Close the map the track was lost in, on this frame: keep it, or reset it if small.
@@ -961,7 +1545,8 @@ class Pipeline:
         m = self.owner.close()
         reset = m.keyframes <= self.options.loss.reset_keyframes
         self.atlas.close(m, reset=reset)
-        self.tracking, self.closing = TrackingState(), LoopState()
+        self.tracking = TrackingState()
+        self.closing.pending = None  # shared with loop closing's thread, settled by now
         self.state = State.NOT_INITIALIZED
         return LostSummary(keyframes=m.keyframes, points=m.points, reset=reset)
 
@@ -980,21 +1565,39 @@ class Pipeline:
         self.state = State.TRACKING
         self.atlas.place_frame(m, frame.timestamp, int(m.kf_id[-1]), tracked.pose)
         self.tracking.accept(frame, tracked)
+        if self._threads is not None:
+            self.tracking.anchor_to(m, m.keyframes - 1)
+            self.tracking.corrections = self.owner.corrections
         summary = replace(summary, placed_by=Placement.INITIALIZATION)
         # Every point the frame observes was made of it.
         return _Step(tracked, keyframe=True, map_seconds=0.0, summary=summary, made=tracked.points)
 
     def _track(self, frame: Frame) -> _Step:
-        """Run the steps on a frame: track it, and map and close loops if it becomes a keyframe."""
+        """Run the steps on a frame: track it, and map and close loops if it becomes a keyframe.
+
+        Threaded, a keyframe goes to local mapping's thread instead (:meth:`_hand_over`).
+        """
+        threads = self._threads
+        if threads is not None:
+            view = self.owner.view
+            assert view is not None
+            self.tracking.follow(view, self.owner.corrections)
         found = _track_frame(
             self.tracking, self.owner, self.camera, frame, mode=self.mode, options=self.options,
             keyframe_base=self.atlas.keyframe_base,
+            mapper=_Inline() if threads is None else threads,
         )  # fmt: skip
         if found.tracked is None:
-            return _Step(None, False, 0.0, found.summary, matched=found.matched, lost=found.lost)
+            return _Step(
+                None, False, 0.0, found.summary, matched=found.matched, lost=found.lost,
+                wait_seconds=found.wait_seconds,
+            )  # fmt: skip
+        if threads is not None:
+            return self._hand_over(threads, frame, found)
         tracked, summary = found.tracked, found.summary
         map_seconds = loop_seconds = 0.0
         made = None
+        schedule = None
         corrected = False
         if found.keyframe:
             start = time.perf_counter()
@@ -1002,7 +1605,7 @@ class Pipeline:
                 self.owner, self.camera, frame, tracked, mode=self.mode, options=self.options,
                 held=self.closing.held(),
             )  # fmt: skip
-            made = mapped.made
+            made, schedule = mapped.made, mapped.schedule
             map_seconds = time.perf_counter() - start
             summary = replace(summary, mapping=mapped.summary)
             # The frame's reference is its own keyframe, placed where the frame was.
@@ -1022,5 +1625,26 @@ class Pipeline:
             self.tracking.move_last(self.owner.read().kf_pose[-1])
         return _Step(
             tracked, found.keyframe, map_seconds, summary, matched=found.matched, made=made,
-            loop_seconds=loop_seconds,
+            loop_seconds=loop_seconds, asked=found.asked, schedule=schedule,
+        )  # fmt: skip
+
+    def _hand_over(self, threads: _Threads, frame: Frame, found: _Tracking) -> _Step:
+        """Threaded: place a tracked frame, and give local mapping its keyframe if it is one."""
+        tracked = found.tracked
+        assert tracked is not None
+        view = self.owner.view
+        assert view is not None
+        if found.keyframe:
+            index = self.atlas.frames
+            self.atlas.place_pending(index, frame.timestamp, tracked.pose)
+            threads.request(_Request(index, frame, tracked))
+        else:
+            reference = int(view.kf_id[found.reference])
+            self.atlas.place_frame(view, frame.timestamp, reference, tracked.pose)
+        self.tracking.accept(frame, tracked)
+        self.tracking.anchor_to(view, found.reference)
+        return _Step(
+            tracked, found.keyframe, 0.0, found.summary, matched=found.matched,
+            wait_seconds=found.wait_seconds, asked=found.asked, refused=found.refused,
+            queue=found.queue,
         )  # fmt: skip

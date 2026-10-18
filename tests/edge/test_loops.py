@@ -19,7 +19,7 @@ from slam_it.edge import covisibility, loops
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
 from slam_it.edge.loops import Outcome, Pending
-from slam_it.edge.map import Map
+from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options
 from slam_it.foundations import matching, se3, so3
 from slam_it.foundations.errors import InvalidInputError
@@ -798,3 +798,32 @@ def test_the_compiled_codes_match(backend: str) -> None:
     """The outcome and termination codes Python decodes are each compiled core's, in order."""
     chosen = require_function(backend, loops.__name__, "codes")
     assert backends.implementation(chosen, loops.__name__).codes() == loops.codes()
+
+
+def _moved_world(m: Map, motion: np.ndarray) -> Map:
+    """Return `m` with its world moved by ``motion`` (``X' = motion X``)."""
+    xyz = m.pt_xyz @ motion[:3, :3].T + motion[:3, 3]
+    return replace(m, kf_pose=m.kf_pose @ se3.inverse(motion), pt_xyz=xyz)
+
+
+def test_a_global_ba_carries_what_was_made_since(loop_rigid: Loop) -> None:
+    """Solved on an earlier copy, the result carries onto keyframes and points made since.
+
+    The copy lacks the loop map's last keyframe and the points first seen there. Were the BA
+    to move the copy's world rigidly, every keyframe and point of the map now moves the same
+    way: the solved ones by their result, the newest keyframe with its parent, and its points
+    with it, their reference keyframe.
+    """
+    now = loop_rigid.map
+    newest = int(now.kf_id[-1])
+    made_there = now.pt_id[now.pt_reference_kf == newest]
+    earlier = maps.erase_keyframe(now, now.keyframes - 1)
+    earlier = maps.erase_points(earlier, np.isin(earlier.pt_id, made_there), Removal.CULLED)
+    motion = se3.exp(np.array([0.05, -0.02, 0.03, 0.01, 0.02, -0.015]))
+    out = loops.propagate_global_ba(now, _moved_world(earlier, motion))
+    expected = _moved_world(now, motion)
+    np.testing.assert_allclose(out.map.kf_pose, expected.kf_pose, atol=1e-12)
+    np.testing.assert_allclose(out.map.pt_xyz, expected.pt_xyz, atol=1e-12)
+    assert (out.adjusted, out.propagated) == (now.keyframes - 1, 1)
+    assert out.points == earlier.points
+    assert out.carried == now.points - earlier.points > 0

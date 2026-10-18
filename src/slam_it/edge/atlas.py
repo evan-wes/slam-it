@@ -26,11 +26,18 @@ of the run (ORB-SLAM3's ``Atlas``; so far its bookkeeping):
 
 The atlas only reads a map: the map being tracked, and every change to it, belong to the
 pipeline's owner (:class:`slam_it.edge.pipeline.MapOwner`).
+
+**With the steps in threads of their own** (milestone 2B's B3b), the threads that change the map
+record what they made and removed as they change it (:meth:`Atlas.record`), dated by the frame
+being tracked then, and tracking counts the frames (:meth:`Atlas.tick`); a frame that became a
+keyframe is placed before local mapping makes its keyframe (:meth:`Atlas.place_pending`), its
+reference set once it has (:meth:`Atlas.resolve`). Every method holds the atlas's lock.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import threading
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from numpy.typing import NDArray
@@ -163,6 +170,25 @@ class Atlas:
     # the run's ids: the final trajectory's (trajectory()).
     _placements: list[_Placement] = field(default_factory=list, init=False)
     _culled: dict[int, tuple[int, Array]] = field(default_factory=dict, init=False)
+    # Each frame placed before its keyframe was made: the frame, at its place's index.
+    _pending: dict[int, int] = field(default_factory=dict, init=False)
+    _ended: bool = field(default=False, init=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+
+    @property
+    def frames(self) -> int:
+        """The frames counted so far: the number of the frame being tracked."""
+        return self._frames
+
+    @property
+    def frame(self) -> int:
+        """The frame a record is dated by now: the one tracked, or the last after :meth:`end`."""
+        return self._frames - 1 if self._ended else self._frames
+
+    def end(self) -> None:
+        """End the run's frames: what threads record after the last is dated by it."""
+        with self._lock:
+            self._ended = True
 
     @property
     def map_id(self) -> int | None:
@@ -181,8 +207,9 @@ class Atlas:
 
     def start(self) -> None:
         """Give the map starting on this frame its number, and its ids past every map before it."""
-        self._map_id, self._maps = self._maps, self._maps + 1
-        self._kf_base, self._pt_base = len(self._keyframe_lives), len(self._point_lives)
+        with self._lock:
+            self._map_id, self._maps = self._maps, self._maps + 1
+            self._kf_base, self._pt_base = len(self._keyframe_lives), len(self._point_lives)
 
     def date(self, m: Map | None) -> None:
         """Date what this frame made in `m`, the current map, and what it removed from it.
@@ -190,15 +217,39 @@ class Atlas:
         Every frame is dated, one a frame, whether or not a map is being tracked; the frame
         numbers the lives. What `m` removed is read from its archive
         (:attr:`slam_it.edge.map.Map.gone_pt_id` and the rest), which the map's owner then
-        empties.
+        empties. The steps in order: :meth:`record` then :meth:`tick`.
 
         Parameters
         ----------
         m : Map or None
             The current map after the frame, None if there is none.
         """
-        frame = self._frames
-        self._frames += 1
+        with self._lock:
+            self.record(m)
+            self.tick()
+
+    def tick(self) -> None:
+        """Count a frame: what is recorded from now on is dated by the next."""
+        with self._lock:
+            self._frames += 1
+
+    def record(self, m: Map | None) -> None:
+        """Record what `m`, the current map, made and removed since the last record.
+
+        Dated by the frame being tracked (:attr:`frame`). What `m` removed is read from its
+        archive, which the map's owner then empties.
+
+        Parameters
+        ----------
+        m : Map or None
+            The current map, None if there is none.
+        """
+        with self._lock:
+            self._record(m)
+
+    def _record(self, m: Map | None) -> None:
+        """Record what `m` made and removed (the lock held)."""
+        frame = self.frame
         map_id = self._map_id
         if m is None or map_id is None:
             return
@@ -240,6 +291,11 @@ class Atlas:
         reset : bool
             Whether it is reset rather than kept.
         """
+        with self._lock:
+            self._close(m, reset=reset)
+
+    def _close(self, m: Map, *, reset: bool) -> None:
+        """Close `m` (the lock held)."""
         frame = self._frames - 1  # dated already
         for point_id, xyz in zip(m.pt_id, m.pt_xyz, strict=True):
             run_id = self._pt_base + int(point_id)
@@ -258,6 +314,7 @@ class Atlas:
         if reset:  # its frames' poses go with it
             self._placements = [p for p in self._placements if p.map != self._map_id]
         self._map_id = None
+        self._pending.clear()
 
     def place_frame(self, m: Map, timestamp: float, reference: int, pose: Array) -> None:
         """Keep a tracked frame's place: its reference keyframe and its pose relative to it.
@@ -275,15 +332,16 @@ class Atlas:
         """
         k = int(m.keyframe_rows(np.array([reference], dtype=np.int64))[0])
         relative = pose @ se3.inverse(m.kf_pose[k])
-        self._placements.append(
-            _Placement(
-                timestamp=timestamp,
-                map=self._current(),
-                reference=self._kf_base + reference,
-                relative=relative,
-                tracked=pose.copy(),
+        with self._lock:
+            self._placements.append(
+                _Placement(
+                    timestamp=timestamp,
+                    map=self._current(),
+                    reference=self._kf_base + reference,
+                    relative=relative,
+                    tracked=pose.copy(),
+                )
             )
-        )
 
     def place_keyframe(self, m: Map, timestamp: float, pose: Array) -> None:
         """Keep the place of a frame that became `m`'s newest keyframe: its own, where it was.
@@ -297,10 +355,48 @@ class Atlas:
         pose : ndarray of float64, shape (4, 4)
             Its ``T_cam_world`` as tracked.
         """
-        reference = self._kf_base + int(m.kf_id[-1])
-        self._placements.append(
-            _Placement(timestamp, self._current(), reference, np.eye(4), pose.copy())
-        )
+        with self._lock:
+            reference = self._kf_base + int(m.kf_id[-1])
+            self._placements.append(
+                _Placement(timestamp, self._current(), reference, np.eye(4), pose.copy())
+            )
+
+    def place_pending(self, frame: int, timestamp: float, pose: Array) -> None:
+        """Place a frame that will be the current map's next keyframe, once local mapping makes it.
+
+        Its reference is its own keyframe, its pose relative to it the identity, set by
+        :meth:`resolve`; until then the trajectory gives its pose as tracked.
+
+        Parameters
+        ----------
+        frame : int
+            The frame's number (:attr:`frames` when it was tracked).
+        timestamp : float
+            Its time.
+        pose : ndarray of float64, shape (4, 4)
+            Its ``T_cam_world`` as tracked.
+        """
+        with self._lock:
+            self._pending[frame] = len(self._placements)
+            self._placements.append(
+                _Placement(timestamp, self._current(), -1, np.eye(4), pose.copy())
+            )
+
+    def resolve(self, frame: int, m: Map) -> None:
+        """Set a pending frame's reference to `m`'s newest keyframe, the one made of it.
+
+        Parameters
+        ----------
+        frame : int
+            The frame's number, as :meth:`place_pending` was given it.
+        m : Map
+            The current map, the frame's keyframe its last.
+        """
+        with self._lock:
+            at = self._pending.pop(frame)
+            placed = self._placements[at]
+            reference = self._kf_base + int(m.kf_id[-1])
+            self._placements[at] = replace(placed, reference=reference)
 
     def lifetimes(self, m: Map | None) -> Lifetimes:
         """Return every point and keyframe the run has made, with their lives.
@@ -316,6 +412,11 @@ class Atlas:
             The points and keyframes by the run's id: those in `m` where it has them, the
             others where they last were.
         """
+        with self._lock:
+            return self._lifetimes(m)
+
+    def _lifetimes(self, m: Map | None) -> Lifetimes:
+        """Return every point's and keyframe's life (the lock held)."""
         points = np.zeros((len(self._point_lives), 3))
         times = np.zeros(len(self._keyframe_lives))
         poses = np.tile(np.eye(4), (len(self._keyframe_lives), 1, 1))
@@ -361,6 +462,11 @@ class Atlas:
             pose (the module docstring); a frame whose keyframe chain ends at none (a culled
             keyframe that had no parent) keeps its pose as tracked.
         """
+        with self._lock:
+            return self._trajectory(m)
+
+    def _trajectory(self, m: Map | None) -> Trajectory:
+        """Return the trajectory (the lock held)."""
         last: dict[int, Array] = {k: pose for k, (_, pose, _) in self._past_keyframes.items()}
         if m is not None:
             last.update(zip((self._kf_base + m.kf_id).tolist(), m.kf_pose, strict=True))
