@@ -364,7 +364,7 @@ def write_source(folder: str | Path, record: dict[str, Any]) -> None:
     """Write a folder's ``source.json``: what its import read and how.
 
     Every import's record has ``kind``, the importer (``video``, ``stray``, ``zju``, ``advio``,
-    ``arkitscenes``); a dataset's names what it imported (``sequence``, or ARKitScenes'
+    ``arkitscenes``, ``7scenes``); a dataset's names what it imported (``sequence``, or ARKitScenes'
     ``capture``, and ADVIO's ``calibration``); and ``depth`` is the LiDAR depth imported, null
     without it. The rest is the importer's own (a video's intrinsics and metadata).
 

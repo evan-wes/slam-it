@@ -276,7 +276,7 @@ exhaustive = true
 containers = ["slam_it.eval"]
 layers = [
   "(advio) | (dashcam)",
-  "(budgets) | (video) | (zju) | (arkitscenes) | (loops) | (gnss)",
+  "(budgets) | (video) | (zju) | (arkitscenes) | (loops) | (gnss) | (sevenscenes)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
   "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml) | (vocabularies)",
