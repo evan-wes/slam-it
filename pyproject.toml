@@ -207,7 +207,8 @@ layers = [
 # adjustment and the keyframe database, independent of each other, on those (the database needs
 # only the map and the graph); initialisation, tracking and mapping, independent of each other,
 # on those; relocalisation on tracking; the atlas (the run's records) on those; the pipeline on
-# top. New modules are optional layers.
+# top. The threads' handshakes need nothing of the rung, beneath it all. New modules are optional
+# layers.
 [[tool.importlinter.contracts]]
 name = "The edge rung's internal order"
 type = "layers"
@@ -223,6 +224,7 @@ layers = [
   "map",
   "frames",
   "options",
+  "(threads)",
 ]
 
 # The order of modules inside orchestration: the run program at the bottom, so the program the
