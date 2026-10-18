@@ -1,3 +1,5 @@
+// Decomposing H follows OpenCV's HomographyDecompInria (BSD-3-Clause; see THIRD_PARTY_NOTICES.md).
+
 //! Homographies: the Rust core's normalised DLT, its Sampson error, the decomposition of a
 //! calibrated H, and its RANSAC estimator.
 //!

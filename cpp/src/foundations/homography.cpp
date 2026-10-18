@@ -1,3 +1,4 @@
+// Decomposing H follows OpenCV's HomographyDecompInria (BSD-3-Clause; see THIRD_PARTY_NOTICES.md).
 /// @file
 /// @brief Implementation of the homographies declared in slam_it/foundations/homography.hpp.
 #include "slam_it/foundations/homography.hpp"

@@ -52,7 +52,7 @@ rounds alike; the C++ cores are compiled with `-ffp-contract=off`, so no compile
 - **Orientation** from the intensity centroid over a radius-15 disc, quantised to 30 bins of
   12 degrees (as the ORB paper discretises it), by fixed-point directions: each bin is the
   nearest to the centroid's angle.
-- **rBRIEF**: OpenCV's learned 256-pair pattern (BSD, see `THIRD_PARTY_NOTICES`), rotated to
+- **rBRIEF**: OpenCV's learned 256-pair pattern (BSD, see `THIRD_PARTY_NOTICES.md`), rotated to
   the bin, on the level blurred by a 7-tap integer Gaussian. Given our keypoints and angles,
   OpenCV's ORB computes descriptors that differ from ours in 0.15 bits of 256 on average (its
   blur and rotation round in float): the pattern's orientation, sign and bit order are its.

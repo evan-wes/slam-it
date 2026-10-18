@@ -326,6 +326,7 @@ def homography_ransac(
 
 
 # --- decomposition (Malis and Vargas) -----------------------------------------------------
+# Decomposing H follows OpenCV's HomographyDecompInria (BSD-3-Clause; see THIRD_PARTY_NOTICES.md).
 
 
 def _opposite_of_minor(m: Matrix3, row: int, col: int) -> float:
