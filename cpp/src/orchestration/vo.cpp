@@ -63,6 +63,9 @@ constexpr std::string_view kRecordFeatures = "--record-features";
 /// @brief A flag without a value: run the steps in threads of their own.
 constexpr std::string_view kThreaded = "--threaded";
 
+/// @brief A flag without a value: with `kThreaded`, share the map by ORB-SLAM's locks.
+constexpr std::string_view kLocks = "--locks";
+
 /// @brief A stereo pair, rectified.
 struct StereoImages {
   /// @brief The left image.
@@ -1063,6 +1066,33 @@ Result<void> read_flag(Request& out, std::string_view flag, const std::string& v
   return {};
 }
 
+/// @brief The request's switch a flag without a value sets.
+/// @param out The request.
+/// @param flag The flag.
+/// @return The switch, or null for a flag with a value.
+bool* switched(Request& out, std::string_view flag) {
+  if (flag == kRecordFeatures) {
+    return &out.record_features;
+  }
+  if (flag == kThreaded) {
+    return &out.threaded;
+  }
+  if (flag == kLocks) {
+    return &out.locks;
+  }
+  return nullptr;
+}
+
+/// @brief How a request's steps run.
+/// @param request The request.
+/// @return Inline, or in threads of their own by our design or by ORB-SLAM's locks.
+edge::Threading threading_of(const Request& request) {
+  if (!request.threaded) {
+    return edge::Threading::kInline;
+  }
+  return request.locks ? edge::Threading::kLocks : edge::Threading::kView;
+}
+
 }  // namespace
 
 Result<Request> parse(std::span<const std::string> arguments) {
@@ -1074,9 +1104,9 @@ Result<Request> parse(std::span<const std::string> arguments) {
     if (flag != "--option" && std::ranges::find(seen, flag) != seen.end()) {
       return fail(ErrorKind::kInvalidInput, flag + ": given twice");
     }
-    if (flag == kRecordFeatures || flag == kThreaded) {
+    if (bool* const set = switched(out, flag)) {
       seen.emplace_back(flag);
-      (flag == kRecordFeatures ? out.record_features : out.threaded) = true;
+      *set = true;
       ++i;
       continue;
     }
@@ -1120,6 +1150,9 @@ Result<void> check(const Request& request) {
     return fail(ErrorKind::kInvalidInput,
                 "--vocabulary: given, but relocalization.enabled and loops.enabled are both off");
   }
+  if (request.locks && !request.threaded) {
+    return fail(ErrorKind::kInvalidInput, "--locks: needs --threaded");
+  }
   return edge::check_options(request.options);
 }
 
@@ -1143,7 +1176,7 @@ Result<eval::runs::Run> run(const Request& request) {
     record = read->header;
   }
   auto pipeline = edge::Pipeline::create(request.mode, source->camera, request.options,
-                                         std::move(words), request.threaded);
+                                         std::move(words), threading_of(request));
   if (!pipeline) {
     return std::unexpected(pipeline.error());
   }

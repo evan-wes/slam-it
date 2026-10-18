@@ -7,6 +7,9 @@
 /// Threaded, the published view is a copy of the map (`std::shared_ptr<const Map>`), made
 /// each time a writer publishes: tracking holds the copy it read for its whole frame, and the
 /// writers go on changing the map in place. Inline, the view is the map itself.
+///
+/// C++ also runs the threads by ORB-SLAM's own locking (`Threading::kLocks`), the baseline the
+/// design compares ours with (section 12, item 7).
 #pragma once
 
 #include <Eigen/Core>
@@ -316,8 +319,11 @@ class MapOwner {
   /// @param vocabulary The database's vocabulary; none when neither relocalising nor closing
   ///        loops, and there is no database.
   /// @param writer The handshake between the threads, not owned; null inline.
-  MapOwner(std::optional<foundations::vocabulary::Vocabulary> vocabulary, threads::Writer* writer)
-      : vocabulary_(std::move(vocabulary)), writer_(writer) {}
+  /// @param lock The map's lock, ORB-SLAM's `mMutexMapUpdate`, not owned: the baseline's
+  ///        (`Threading::kLocks`), which publishes no view; null otherwise.
+  MapOwner(std::optional<foundations::vocabulary::Vocabulary> vocabulary, threads::Writer* writer,
+           std::mutex* lock)
+      : vocabulary_(std::move(vocabulary)), writer_(writer), lock_(lock) {}
 
   /// @brief The map being tracked: none until one starts, and from a lost one to the next.
   ///        Threaded, read it only under the writer's hand-over.
@@ -325,9 +331,20 @@ class MapOwner {
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
   /// @brief The map as last published, what tracking reads: a copy, threaded; the map itself,
-  ///        inline (not owned, valid while the map is).
+  ///        inline and in the baseline (not owned, valid while the map is).
   /// @return The view, or null with no map.
   [[nodiscard]] std::shared_ptr<const Map> view() const;
+
+  /// @brief Whether the writers publish a view: threaded, our design.
+  /// @return Whether they do.
+  [[nodiscard]] bool publishing() const { return writer_ != nullptr && lock_ == nullptr; }
+
+  /// @brief Take the map's lock, the baseline's (tracking through its frame, mapping through
+  ///        its steps); nothing otherwise.
+  /// @return The lock, held, or none.
+  [[nodiscard]] std::unique_lock<std::mutex> locked() const {
+    return lock_ != nullptr ? std::unique_lock<std::mutex>(*lock_) : std::unique_lock<std::mutex>();
+  }
 
   /// @brief Its keyframe database: none when neither relocalising nor closing loops, or with no
   ///        map. Threaded, read it only under the writer's hand-over.
@@ -408,8 +425,9 @@ class MapOwner {
   /// @brief The handshake: run a change on the map held, mapping stopped and its local BA
   ///        aborted, then mapping released, as ORB-SLAM's loop closing does (`RequestStop`,
   ///        `Release`; a global BA running is superseded by the caller's new generation).
-  ///        Inline nothing runs beside the change, so there is nothing to stop. Loop
-  ///        corrections, global BAs' results and milestone 2B's B4's merges all enter here.
+  ///        Inline nothing runs beside the change, so there is nothing to stop. The baseline
+  ///        then takes the map's lock, as `CorrectLoop` does. Loop corrections, global BAs'
+  ///        results and milestone 2B's B4's merges all enter here.
   /// @tparam Step A callable taking the map, changed in place, and giving a `Result`.
   /// @param step The change.
   /// @return The change's result; `InvalidInput` with no map.
@@ -419,6 +437,7 @@ class MapOwner {
     if (writer_ != nullptr) {
       stop.emplace(*writer_);
     }
+    const std::unique_lock<std::mutex> held = locked();
     if (!map_) {
       return foundations::fail(foundations::ErrorKind::kInvalidInput, "stopped: no map");
     }
@@ -436,14 +455,15 @@ class MapOwner {
   void publish(const Map& m);
 
   /// @brief Run something with the map held whole, local mapping held off (a hold, threaded;
-  ///        nothing to hold inline).
+  ///        the map's lock, in the baseline; nothing to hold inline).
   /// @tparam Read A callable taking nothing.
   /// @param read What to run.
   /// @return What it gives.
   template <typename Read>
   auto reading(Read&& read) const -> std::invoke_result_t<Read> {
+    const std::unique_lock<std::mutex> held = locked();
     std::optional<threads::Writer::Held> hold;
-    if (writer_ != nullptr) {
+    if (writer_ != nullptr && lock_ == nullptr) {
       hold.emplace(*writer_);
     }
     return std::forward<Read>(read)();
@@ -469,6 +489,8 @@ class MapOwner {
   std::optional<foundations::vocabulary::Vocabulary> vocabulary_;
   /// @brief The handshake between the threads; null inline.
   threads::Writer* writer_;
+  /// @brief The map's lock, the baseline's; null otherwise.
+  std::mutex* lock_;
   /// @brief The map, once initialised.
   std::optional<Map> map_;
   /// @brief The map's keyframe database, when relocalising or closing loops and a map exists.
@@ -490,6 +512,23 @@ class MapOwner {
 ///        pipeline.
 class PipelineThreads;
 
+/// @brief How a pipeline's steps run and share the map (`Pipeline::create`).
+enum class Threading : std::uint8_t {
+  /// @brief In turn, in the caller's thread: a run repeats exactly.
+  kInline = 0,
+  /// @brief In threads of their own, our design: one writer at a time, and a view published for
+  ///        tracking.
+  kView = 1,
+  /// @brief In threads of their own, by ORB-SLAM's locks (the baseline, section 12, item 7),
+  ///        the map's lock taken where ORB-SLAM takes a keyframe's or a point's: tracking holds
+  ///        it through its frame, reading the map itself and counting its points there;
+  ///        mapping holds it through its steps but the local BA's solves (`Around`), letting
+  ///        it go once the keyframe's points are made; loop closing searches under it, then
+  ///        corrects with mapping stopped and under it, a loop whose keyframes went in between
+  ///        left; a global BA's result is carried under it, mapping stopped.
+  kLocks = 2,
+};
+
 /// @brief The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`): tracking, local
 ///        mapping and loop closing as steps over state of their own, called in turn, or each in
 ///        a thread of its own (threaded).
@@ -501,14 +540,15 @@ class Pipeline {
   /// @param options The settings.
   /// @param vocabulary The vocabulary of the keyframe database's words: required with
   ///        `relocalization.enabled` or `loops.enabled` on, refused with both off.
-  /// @param threaded Whether the steps run in threads of their own; inline, the default, a run
-  ///        repeats exactly.
+  /// @param threading How the steps run: inline, the default, a run repeating exactly, or in
+  ///        threads of their own.
   /// @return The pipeline; `InvalidInput` for an invalid camera or settings, a stereo or
   ///         RGB-D camera without a baseline, or a vocabulary missing while relocalising or
   ///         closing loops, or given while doing neither.
   [[nodiscard]] static foundations::Result<Pipeline> create(
       Mode mode, Camera camera, Options options,
-      std::optional<foundations::vocabulary::Vocabulary> vocabulary, bool threaded = false);
+      std::optional<foundations::vocabulary::Vocabulary> vocabulary,
+      Threading threading = Threading::kInline);
 
   /// @brief End the threads, if they still run.
   ~Pipeline();
@@ -617,11 +657,13 @@ class Pipeline {
     /// @brief Start what a pipeline shares.
     /// @param vocabulary The keyframe database's vocabulary, when relocalising.
     /// @param options The settings.
-    /// @param threaded Whether the steps run in threads of their own (a writer made).
+    /// @param threading How the steps run: a writer made for threads of their own, and the map's
+    ///        lock used by the baseline.
     Shared(std::optional<foundations::vocabulary::Vocabulary> vocabulary, const Options& options,
-           bool threaded)
-        : writer_(threaded ? std::make_unique<threads::Writer>() : nullptr),
-          owner_(std::move(vocabulary), writer_.get()),
+           Threading threading)
+        : writer_(threading != Threading::kInline ? std::make_unique<threads::Writer>() : nullptr),
+          owner_(std::move(vocabulary), writer_.get(),
+                 threading == Threading::kLocks ? &lock_ : nullptr),
           atlas_(options) {}
 
     /// @brief The handshake between the threads.
@@ -649,6 +691,8 @@ class Pipeline {
     [[nodiscard]] LoopState& closing() { return closing_; }
 
    private:
+    /// @brief The map's lock, the baseline's.
+    std::mutex lock_;
     /// @brief The handshake between the threads; null inline.
     std::unique_ptr<threads::Writer> writer_;
     /// @brief The map being tracked and its database.
@@ -664,9 +708,9 @@ class Pipeline {
   /// @param camera The camera.
   /// @param options The settings.
   /// @param vocabulary The keyframe database's vocabulary, when relocalising or closing loops.
-  /// @param threaded Whether the steps run in threads of their own.
+  /// @param threading How the steps run.
   Pipeline(Mode mode, Camera camera, Options options,
-           std::optional<foundations::vocabulary::Vocabulary> vocabulary, bool threaded);
+           std::optional<foundations::vocabulary::Vocabulary> vocabulary, Threading threading);
 
   /// @brief Try to start the map with a frame.
   /// @param frame The frame.

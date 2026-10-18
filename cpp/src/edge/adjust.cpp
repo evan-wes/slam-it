@@ -315,10 +315,49 @@ Solve solve_of(const foundations::nls::Summary& summary) {
           .termination = summary.termination};
 }
 
+namespace {
+
+/// @brief Holds a local BA outside the map's lock while it lives (`Around`): left on making,
+///        entered again before the result is written, or on the way out.
+class Outside {
+ public:
+  /// @brief Leave the map's lock.
+  /// @param around What to do around the solves; null for nothing.
+  explicit Outside(const Around* around) : around_(around) {
+    if (around_ != nullptr) {
+      around_->leave();
+    }
+  }
+
+  /// @brief Enter it again, if not yet.
+  ~Outside() { enter(); }
+
+  Outside(const Outside&) = delete;
+  Outside& operator=(const Outside&) = delete;
+  Outside(Outside&&) = delete;
+  Outside& operator=(Outside&&) = delete;
+
+  /// @brief Enter the map's lock again, before writing the result back.
+  void enter() {
+    if (around_ != nullptr && !entered_) {
+      entered_ = true;
+      around_->enter();
+    }
+  }
+
+ private:
+  /// @brief What to do around the solves.
+  const Around* around_;
+  /// @brief Whether the lock was entered again.
+  bool entered_{false};
+};
+
+}  // namespace
+
 Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
                                  std::span<const std::int64_t> keyframes,
                                  std::span<const std::uint8_t> fixed, const Options& options,
-                                 const std::atomic<bool>* abort) {
+                                 const std::atomic<bool>* abort, const Around* around) {
   if (auto ok = check(m, camera, keyframes, fixed, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -340,6 +379,7 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
   if (stopped()) {
     return Adjustment{.solves = {}, .outliers = 0, .free = 0, .fixed = 0, .aborted = true};
   }
+  Outside outside(around);
   ba::Options first_options = solver_options(options, options.adjustment.iterations);
   first_options.solver.stop = abort;
   auto first = ba::solve(problem, first_options);
@@ -357,6 +397,7 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
     ba::Solution kept = std::move(*first);
     kept.poses = problem.poses;
     kept.points = problem.points;
+    outside.enter();
     return written_back(
         m, *built, kept, points, *outlier, {solve_of(kept.summary.solve)},
         Adjustment{
@@ -378,6 +419,7 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
   const bool interrupted = std::ranges::any_of(solves, [](const Solve& solve) {
     return solve.termination == foundations::nls::Termination::kStopped;
   });
+  outside.enter();
   return written_back(m, *built, *second, points, *still, solves,
                       Adjustment{.solves = {},
                                  .outliers = 0,

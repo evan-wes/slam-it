@@ -1047,7 +1047,8 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
   Adjustment adjustment;
   if (quiet && std::cmp_greater_equal(keyframe_count(m), options.adjustment.min_keyframes)) {
     auto adjusted = bundle_adjust(m, camera, local_rows(m, options), first_fixed(m), options,
-                                  interrupts == nullptr ? nullptr : interrupts->abort);
+                                  interrupts == nullptr ? nullptr : interrupts->abort,
+                                  interrupts == nullptr ? nullptr : interrupts->around);
     if (!adjusted) {
       return std::unexpected(std::move(adjusted.error()));
     }

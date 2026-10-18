@@ -24,7 +24,7 @@ inline constexpr std::array<const char*, 2> kDatasets{"tum", "euroc"};
 inline constexpr const char* kUsage =
     "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode monocular|stereo|rgbd "
     "--out RUN_DIR [--first I] [--count N] [--vocabulary FOLDER] [--record-features] "
-    "[--threaded] [--option KEY=VALUE ...]";
+    "[--threaded [--locks]] [--option KEY=VALUE ...]";
 
 /// @brief The program's exit code for a command line it cannot read.
 inline constexpr int kExitUsage = 2;
@@ -72,10 +72,14 @@ struct Request {
   /// @brief Whether the steps run in threads of their own, the frames fed at their recorded
   ///        rate.
   bool threaded{false};
+  /// @brief Whether those threads share the map by ORB-SLAM's locks, the baseline
+  ///        (`edge::Threading::kLocks`; C++ alone).
+  bool locks{false};
 };
 
 /// @brief Read the command line: `kUsage`, flags in any order, each with its value but
-///        `--record-features` and `--threaded`, `--option` repeatable and naming a field of
+///        `--record-features`, `--threaded` and `--locks`, `--option` repeatable and naming a
+///        field of
 ///        `slam_it.edge.options.Options`.
 /// @param arguments The arguments after the program's name.
 /// @return The request; `InvalidInput` for an unknown, repeated or missing flag, a flag
@@ -86,7 +90,8 @@ struct Request {
 /// @param request The request.
 /// @return Nothing; `InvalidInput` for an unknown dataset, a mode it does not record (TUM has
 ///         no stereo pairs, EuRoC no depth maps), a negative `first` or `count`, settings
-///         out of range, or a vocabulary missing while relocalising or given while not.
+///         out of range, a vocabulary missing while relocalising or given while not, or
+///         `--locks` without `--threaded`.
 [[nodiscard]] foundations::Result<void> check(const Request& request);
 
 /// @brief Run a sequence through the pipeline: the run, not yet written, as Python's program

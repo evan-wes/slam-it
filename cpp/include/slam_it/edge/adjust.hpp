@@ -12,6 +12,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -59,6 +60,18 @@ struct Adjustment {
 /// @return Its costs, iterations and termination.
 [[nodiscard]] Solve solve_of(const foundations::nls::Summary& summary);
 
+/// @brief What a local BA does around its solves: ORB-SLAM's locking, C++'s baseline (the
+///        online-SLAM design's section 12, item 7), where `LocalBundleAdjustment` holds the
+///        map's update lock only to write its result. `leave` runs once the problem is built,
+///        before the first solve; `enter` before the result is written back, and before any
+///        error is returned after leaving.
+struct Around {
+  /// @brief Let the map's lock go.
+  std::function<void()> leave;
+  /// @brief Take it back.
+  std::function<void()> enter;
+};
+
 /// @brief Bundle-adjust keyframes and the points they observe
 ///        (`slam_it.edge.adjust.bundle_adjust`, ORB-SLAM's `LocalBundleAdjustment`).
 /// @param m The map, changed in place: the free keyframes' poses and the points adjusted, the
@@ -71,6 +84,8 @@ struct Adjustment {
 /// @param abort A flag local mapping's thread sets to stop it early: checked before its first
 ///        solve, between its iterations and before its refining solve (ORB-SLAM's
 ///        `pbStopFlag`); not owned, null for never.
+/// @param around What it does around its solves (the baseline's lock); not owned, null for
+///        nothing.
 /// @return The two solves (none, the map as it was, if no point was observed or no keyframe
 ///         was held fixed, as ORB-SLAM3 skips it, or if aborted before the first; one if
 ///         aborted before the second) and the outliers dropped; `InvalidInput` for a keyframe
@@ -79,6 +94,6 @@ struct Adjustment {
 [[nodiscard]] foundations::Result<Adjustment> bundle_adjust(
     Map& m, const Camera& camera, std::span<const std::int64_t> keyframes,
     std::span<const std::uint8_t> fixed, const Options& options,
-    const std::atomic<bool>* abort = nullptr);
+    const std::atomic<bool>* abort = nullptr, const Around* around = nullptr);
 
 }  // namespace slam_it::edge

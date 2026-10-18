@@ -239,15 +239,18 @@ class PipelineThreads {
     std::int64_t keyframe = 0;
     {
       const threads::Writer::Mapping turn(writer());
+      std::unique_lock<std::mutex> lock = owner_.locked();  // the baseline's, through the steps
       writer().resume();
       if (auto ok = owner_.apply_counts(); !ok) {
         return ok;
       }
       const auto start = Clock::now();
+      const Around around{.leave = [&lock] { lock.unlock(); }, .enter = [&lock] { lock.lock(); }};
       const Interrupts asked{.waiting = [this] { return mapping_.waiting() > 0; },
                              .stopping = [this] { return writer().stopping(); },
                              .abort = &writer().abort(),
-                             .publish = [this](const Map& m) { owner_.publish(m); }};
+                             .publish = [this, &lock](const Map& m) { publish(m, lock); },
+                             .around = lock.owns_lock() ? &around : nullptr};
       const std::vector<std::int64_t> holding = held(closing_);
       auto mapped = owner_.apply_mapping([&](Map& m) {
         return process(m, camera_, request.frame, still_mapped(request.tracked, m), mode_, options_,
@@ -288,9 +291,8 @@ class PipelineThreads {
       return {};
     }
     const auto start = Clock::now();
-    std::optional<Map> copy;
-    std::int64_t generation = 0;
-    std::shared_ptr<const std::atomic<bool>> superseded;
+    Started started;
+    std::optional<loops::Loop> later;  // the baseline corrects once its search lets the map go
     LoopSummary summary;
     auto searched = owner_.reading([&] -> Result<bool> {
       const std::optional<Map>& current = owner_.map();
@@ -308,24 +310,11 @@ class PipelineThreads {
       if (!found->loop) {
         return true;
       }
-      const loops::Loop& loop = *found->loop;
-      auto fixed = owner_.stopped([&](Map& m) -> Result<loops::CorrectionSummary> {
-        generation = generation_.next();
-        superseded = generation_.stop();
-        auto corrected = loops::correct(m, camera_, loop, name(mode_), without_global_ba_);
-        if (!corrected) {
-          return corrected;
-        }
-        if (auto ok = owner_.corrected(); !ok) {
-          return std::unexpected(std::move(ok.error()));
-        }
-        atlas_.record(&m);
-        owner_.clear_gone();
-        if (options_.loops.global_ba) {
-          copy = m;
-        }
-        return corrected;
-      });
+      if (!owner_.publishing()) {
+        later = std::move(found->loop);
+        return true;
+      }
+      auto fixed = correct_loop(*found->loop, started);
       if (!fixed) {
         return std::unexpected(std::move(fixed.error()));
       }
@@ -338,20 +327,80 @@ class PipelineThreads {
     if (!*searched) {
       return {};
     }
+    if (later) {
+      auto fixed = correct_loop(*later, started);
+      if (!fixed) {
+        return std::unexpected(std::move(fixed.error()));
+      }
+      summary.correction = std::move(*fixed);
+    }
     Completion done;
     done.frame = item.index;
     done.loop_seconds = Seconds(Clock::now() - start).count();
     done.loop = std::move(summary);
     complete(std::move(done));
-    if (copy) {
-      std::thread thread(
-          [this, solving = std::move(*copy), generation, stop = std::move(superseded)] mutable {
-            global_ba(std::move(solving), generation, stop.get());
-          });
+    if (started.copy) {
+      std::thread thread([this, solving = std::move(*started.copy), generation = started.generation,
+                          stop = std::move(started.superseded)] mutable {
+        global_ba(std::move(solving), generation, stop.get());
+      });
       const std::scoped_lock lock(mutex_);
       global_.push_back(std::move(thread));
     }
     return {};
+  }
+
+  /// @brief A global BA started by a loop's correction.
+  struct Started {
+    /// @brief The map as the correction left it, which global BA solves (`loops.global_ba`).
+    std::optional<Map> copy;
+    /// @brief Its generation.
+    std::int64_t generation{0};
+    /// @brief Its stop flag, set once a newer generation starts.
+    std::shared_ptr<const std::atomic<bool>> superseded;
+  };
+
+  /// @brief Correct a loop with mapping stopped, without global BA, and take the copy global BA
+  ///        solves.
+  /// @param loop The loop.
+  /// @param started The global BA it starts, set.
+  /// @return The correction, or none if one of the loop's keyframes went since it was found
+  ///         (the baseline, its search and its correction apart); a step's error.
+  Result<std::optional<loops::CorrectionSummary>> correct_loop(const loops::Loop& loop,
+                                                               Started& started) {
+    return owner_.stopped([&](Map& m) -> Result<std::optional<loops::CorrectionSummary>> {
+      if (keyframe_row(m, loop.current) < 0 || keyframe_row(m, loop.matched) < 0) {
+        return std::nullopt;
+      }
+      started.generation = generation_.next();
+      started.superseded = generation_.stop();
+      auto corrected = loops::correct(m, camera_, loop, name(mode_), without_global_ba_);
+      if (!corrected) {
+        return std::unexpected(std::move(corrected.error()));
+      }
+      if (auto ok = owner_.corrected(); !ok) {
+        return std::unexpected(std::move(ok.error()));
+      }
+      atlas_.record(&m);
+      owner_.clear_gone();
+      if (options_.loops.global_ba) {
+        started.copy = m;
+      }
+      return std::optional<loops::CorrectionSummary>(std::move(*corrected));
+    });
+  }
+
+  /// @brief Publish the map so far, mapping's keyframe's points made: a copy, our design; the
+  ///        baseline publishes none, and lets the map's lock go there, between its steps.
+  /// @param m The map so far.
+  /// @param lock The baseline's lock, held; none otherwise.
+  void publish(const Map& m, std::unique_lock<std::mutex>& lock) {
+    if (lock.owns_lock()) {
+      lock.unlock();
+      lock.lock();
+    } else {
+      owner_.publish(m);
+    }
   }
 
   /// @brief A global BA's thread: solve a copy, then carry the result onto the map as it has
@@ -590,13 +639,15 @@ Result<Placed> place(const TrackingState& state, const MapOwner& owner,
   }
   const auto asked = Clock::now();
   auto held = asked;
-  auto found = owner.reading([&] {
+  const auto search = [&] {
     held = Clock::now();
-    if (owner.writer() != nullptr) {
+    if (owner.publishing()) {
       view = owner.view();
     }
     return relocalize(*view, *owner.database(), *words, camera, frame, options);
-  });
+  };
+  // The baseline's tracking holds the map's lock already, through its frame.
+  auto found = owner.publishing() ? owner.reading(search) : search();
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
@@ -607,7 +658,7 @@ Result<Placed> place(const TrackingState& state, const MapOwner& owner,
   return Placed{.tracked = std::move(found->tracked),
                 .summary = std::move(summary),
                 .matched = std::move(found->matched),
-                .waited = owner.writer() != nullptr ? Seconds(held - asked).count() : 0.0};
+                .waited = owner.publishing() ? Seconds(held - asked).count() : 0.0};
 }
 
 /// @brief Track the local map from a placed frame, and count its points through the owner.
@@ -894,7 +945,7 @@ std::vector<std::int64_t> held(const LoopState& state) {
 }
 
 std::shared_ptr<const Map> MapOwner::view() const {
-  if (writer_ == nullptr) {  // the map itself, not owned
+  if (!publishing()) {  // the map itself, not owned
     return map_ ? std::shared_ptr<const Map>(std::shared_ptr<const Map>(), &*map_) : nullptr;
   }
   const std::scoped_lock lock(view_mutex_);
@@ -903,7 +954,7 @@ std::shared_ptr<const Map> MapOwner::view() const {
 
 Result<void> MapOwner::start(Map m) {
   map_ = std::move(m);
-  if (writer_ != nullptr) {
+  if (publishing()) {
     publish(*map_);
   }
   if (vocabulary_) {
@@ -915,7 +966,7 @@ Result<void> MapOwner::start(Map m) {
 
 Result<void> MapOwner::count(const std::vector<std::int64_t>& visible,
                              const std::vector<std::int64_t>& found) {
-  if (writer_ != nullptr) {
+  if (publishing()) {
     const std::scoped_lock lock(counts_mutex_);
     counts_.emplace_back(visible, found);
     return {};
@@ -980,7 +1031,7 @@ Result<void> MapOwner::changed() {
   if (auto ok = sync_database(); !ok) {
     return ok;
   }
-  if (writer_ != nullptr && map_) {
+  if (publishing() && map_) {
     publish(*map_);
   }
   return {};
@@ -1017,12 +1068,13 @@ Result<void> MapOwner::sync_database() {
 }
 
 Pipeline::Pipeline(Mode mode, Camera camera, Options options,
-                   std::optional<foundations::vocabulary::Vocabulary> vocabulary, bool threaded)
+                   std::optional<foundations::vocabulary::Vocabulary> vocabulary,
+                   Threading threading)
     : mode_(mode),
       camera_(std::move(camera)),
       options_(options),
-      shared_(std::make_unique<Shared>(std::move(vocabulary), options_, threaded)) {
-  if (threaded) {
+      shared_(std::make_unique<Shared>(std::move(vocabulary), options_, threading)) {
+  if (threading != Threading::kInline) {
     threads_ = std::make_unique<PipelineThreads>(shared_->owner(), shared_->atlas(),
                                                  shared_->closing(), mode_, camera_, options_);
   }
@@ -1034,7 +1086,7 @@ Pipeline::Pipeline(Pipeline&&) noexcept = default;
 
 Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
                                   std::optional<foundations::vocabulary::Vocabulary> vocabulary,
-                                  bool threaded) {
+                                  Threading threading) {
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -1051,7 +1103,7 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
     return fail(ErrorKind::kInvalidInput,
                 "vocabulary: given, but relocalization.enabled and loops.enabled are both off");
   }
-  return Pipeline(mode, std::move(camera), options, std::move(vocabulary), threaded);
+  return Pipeline(mode, std::move(camera), options, std::move(vocabulary), threading);
 }
 
 foundations::orb::Options Pipeline::extraction() const {
@@ -1276,6 +1328,7 @@ Result<void> Pipeline::hand_over(const Frame& frame, const Map& view, const Trac
 
 Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   MapOwner& owner = shared_->owner();
+  const std::unique_lock<std::mutex> lock = owner.locked();  // the baseline's, through the frame
   if (threads_) {
     if (const std::shared_ptr<const Map> view = owner.view()) {
       follow(tracking_, *view, owner.corrections());

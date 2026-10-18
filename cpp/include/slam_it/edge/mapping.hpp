@@ -84,8 +84,12 @@ struct Interrupts {
   std::function<bool()> stopping;
   /// @brief The flag that stops the local BA (`mbAbortBA`); not owned.
   const std::atomic<bool>* abort = nullptr;
-  /// @brief Publish the map so far for tracking, the keyframe's new points made.
+  /// @brief Publish the map so far for tracking, the keyframe's new points made (the
+  ///        baseline: let the map's lock go there, between steps).
   std::function<void(const Map&)> publish;
+  /// @brief What the local BA does around its solves (the baseline's lock); not owned, null
+  ///        for nothing.
+  const Around* around = nullptr;
 };
 
 /// @brief A keyframe mapped (`slam_it.edge.mapping.Mapped`, the map aside: it changes in
