@@ -89,6 +89,13 @@ and the bundle's 4: runs written by 0.3.11.0 no longer read.
 - **Offline CI compiles GTSAM's Python wrapper in a scope of its own, under 16 GB,** the rest
   under 8 GB; the GitHub workflow's timeout is 120 minutes. `compare_testsets.py summarize`
   reads each sequence's ground truth as its dataset.
+- **`THIRD_PARTY_NOTICES.md` covers B3's code:** GTSAM 4.3.0, built by the setup script, and
+  with it CCOLAMD, METIS and Spectra, among what you install; `cxx` among the Rust crates; and
+  in the ORB-SLAM credit, loop closing and the essential graph, and `slam_it.foundations.sim3`
+  and `slam_it.foundations.graphs` following `Sim3Solver` and `Optimizer`'s solves, on GTSAM.
+- **`loops.py`'s list of departures from ORB-SLAM** caps the links' links "as ORB-SLAM's
+  design intends; its source adds them all", where it said "as ORB-SLAM's code means to",
+  which read like a port the code does not bear out (the licence audit's D1).
 
 ### Tests
 
@@ -110,6 +117,8 @@ and the bundle's 4: runs written by 0.3.11.0 no longer read.
   (Python, the loop room); with loop closing alone, no failed frame relocalises, in each core.
 - `tests/test_build_copies.py` holds the worker image's GTSAM build to the setup script's, and
   rung 0's crate's lints to the workspace's.
+- The guard against local paths and personal details (`tests/test_no_local_paths.py`) also
+  reports a link to a Claude Code session, and its self-test has a case for it.
 
 ## [0.3.11.2] - 2026-10-18
 
