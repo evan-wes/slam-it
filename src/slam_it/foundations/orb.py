@@ -39,7 +39,7 @@ coordinates map to the full image by one float64 product, so the three languages
 identical features.
 
 :data:`PATTERN` is OpenCV's ``bit_pattern_31_``, under OpenCV's BSD licence (its notice is
-next to the table and in ``THIRD_PARTY_NOTICES``).
+next to the table and in ``THIRD_PARTY_NOTICES.md``).
 
 Where this differs from ORB-SLAM, deliberately: non-maximum suppression runs over the whole
 level rather than inside each cell, so a corner on a cell's edge yields to a stronger one

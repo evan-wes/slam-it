@@ -10,7 +10,7 @@ description = "A learning ladder for visual SLAM, in Python, C++ and Rust."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "PolyForm-Noncommercial-1.0.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*"]
 authors = [{ name = "evan-wes" }]
 # Pillow reads image files, in slam_it.eval.images alone (a contract below keeps it there).
 dependencies = ["numpy>=2.0", "pillow>=10.0"]

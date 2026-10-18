@@ -6,7 +6,7 @@
 use nalgebra::{Matrix3, Matrix4, Vector3};
 
 use crate::error::{ErrorKind, Result, fail};
-use crate::linalg::svd3;
+use crate::linalg::jacobi_svd3::svd3;
 use crate::se3;
 
 /// The cross-covariance's second singular value must exceed this fraction of its first;

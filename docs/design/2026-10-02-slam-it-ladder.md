@@ -864,8 +864,9 @@ Nothing is published before the repo goes public (see
 
 - The repo is **private**. It goes public together with reifyscene, as one decision, and only on
   the owner's explicit instruction.
-- Ported code (DROID-SLAM BSD-3, MegaSaM, and others) keeps its license and attribution in a
-  `THIRD_PARTY_NOTICES` file. Model weights are downloaded, never committed. Non-commercial
+- SLAM It! is under the PolyForm Noncommercial License 1.0.0 (`LICENSE`). Ported code
+  (DROID-SLAM BSD-3, MegaSaM, and others) keeps its license and attribution in a
+  `THIRD_PARTY_NOTICES.md` file. Model weights are downloaded, never committed. Non-commercial
   licenses (for example VGGT's weights) are acceptable for this hobby project.
 - **Renamed before going public (0.3.4.0, then 0.3.7.0).** The working name, slamlab, collided
   with SLAMLab, the University of Zaragoza group behind ORB-SLAM3, and with `slamlab` on PyPI,
@@ -1079,6 +1080,12 @@ shared with the owner's other projects.
     sequences and the test set, several runs each since it is threaded, and scored by our
     evaluation: the whole system's yardstick, and the bar's anchor where ORB-SLAM's papers
     publish no figure.
+- **Deferred from the readiness PR's review panel**
+  ([report](../reviews/2026-10-18-chore-public-readiness.md)):
+  - **The `slam-it-rs` wheel's licence files (readiness PR hygiene review, H7).** The wheel
+    compiles the MPL-2.0 file `rust/slam-it-foundations/src/linalg/jacobi_svd3.rs`, but its
+    metadata ships no `license-files`: no MPL text and no notices. Fix this before that wheel is
+    ever distributed (the crates are `publish = false` today).
 - **Deferred from milestone 2B's B2 review panel**
   ([report](../reviews/2026-10-16-feature-2b-b2-covisibility.md)):
   - **Every fixture states its oracle and tolerance (A4).** CLAUDE.md asks it of every parity

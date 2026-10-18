@@ -4,6 +4,68 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.11.2] - 2026-10-18
+
+SLAM It! is relicensed under the PolyForm Noncommercial License 1.0.0, to prepare for going
+public. Its history was rewritten and its GitHub repository recreated on 2026-10-18, so every
+commit carries the new licence. Code and data taken from other projects keep their own
+licences, listed in `THIRD_PARTY_NOTICES.md` with their texts in `LICENSES/`. Nothing computes
+differently: besides comments, the only change to the cores moves the Rust 3x3 SVD, unchanged,
+into a file of its own.
+
+### Added
+
+- **`docs/history/`:** the first repository's 22 pull requests, which GitHub no longer shows
+  (`pull-requests.md`: each one's title, branch, merge date, size, merge commit and
+  description), and `commit-map.txt`, which maps its 531 commit IDs to their IDs in this
+  history, so the IDs quoted in review reports, notes and commit messages resolve.
+- **`THIRD_PARTY_NOTICES.md`**, from a licence audit of the code and data: the code under other
+  licences (stb_image, MIT; OpenCV's ORB pattern and homography decomposition, and PoseLib's
+  P3P solvers, BSD 3-Clause; the Rust 3x3 SVD translated from Eigen, MPL 2.0), the methods
+  implemented from others' work (ORB-SLAM, DBoW2, OpenCV's EPnP, Ceres, PCG; no ORB-SLAM code
+  is included), the data in the repository with its sources' licences, and what the setup
+  installs. **`LICENSES/`** holds the 6 licence texts, and the `slam-it` wheel carries both
+  (`license-files`).
+- **A Licence section in the README:** the PolyForm licence, the notices and `LICENSES/`.
+
+### Changed
+
+- **The licence is the PolyForm Noncommercial License 1.0.0,** in place of the Apache License
+  2.0: the history rewrite put it in every commit's `LICENSE`, the manifests name it
+  (`PolyForm-Noncommercial-1.0.0`), and so does the ladder design doc.
+- **The history was rewritten and the GitHub repository recreated** on 2026-10-18. Commit IDs
+  changed (`docs/history/commit-map.txt`), and pull requests in the new repository start again
+  at 1.
+- **`THIRD_PARTY_NOTICES` is `THIRD_PARTY_NOTICES.md`,** and the design doc, the front-end
+  note, `orb.py` and stb's README name it so. Earlier entries here and the saved reviews keep
+  the old name.
+- **Eigen's 3x3 Jacobi SVD in Rust has a file of its own,**
+  `rust/slam-it-foundations/src/linalg/jacobi_svd3.rs`: it is translated from Eigen 5.0.1, so
+  it is under the Mozilla Public License 2.0, which applies file by file, and carries the
+  licence's notice and Eigen's copyright lines. It moved unchanged, and its callers name the
+  module (`linalg::jacobi_svd3::svd3`, `singular_values3`), as `ba::solve`'s do; both still give
+  Eigen's factors bit for bit.
+- **The native P3P files name PoseLib** (Viktor Larsson, BSD 3-Clause), whose solvers they
+  follow, in a header line, as `p3p.py`'s docstring does; **the homography files name OpenCV's
+  `HomographyDecompInria`** (BSD 3-Clause) the same way, in their headers and in
+  `homography.py`'s decomposition section.
+- **The ARKitScenes data is under Apple's ARKitScenes licence** in the phone-robust VO and
+  online-SLAM design docs, which gave CC BY-NC-SA 4.0, its licence until 2024-09-10.
+- **The online-SLAM design doc's B3, B3b and B4 sections** say their decisions follow
+  ORB-SLAM's papers and a reading of its source, where they said "from" its source files.
+- **The review panel cites paths relative to the repository root,** never absolute or
+  home-relative, since its reports are committed: the reviewer agents, the skill, its finding
+  format and its report template say so.
+
+### Tests
+
+- **A guard against local paths and personal details** (`tests/test_no_local_paths.py`): no
+  file git would commit names a home folder (Linux, macOS or Windows), a session's scratch
+  folder, the folders the project lived in, personal tools or notes, a gmail address, or the
+  owner's full name (held as digests, never written). Four more tests check the guard itself:
+  each pattern and the kind it reports, the name's digests, the allowed mentions (each exempt in
+  its own file alone), and the skipping of binary files.
+
 ## [0.3.11.1] - 2026-10-17
 
 A feature mask: a run can leave out the parts of its frames that never move with the scene,

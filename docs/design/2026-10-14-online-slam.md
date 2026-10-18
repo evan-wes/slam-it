@@ -250,7 +250,7 @@ Each gets its own section here before its PR, its forks put to the owner then.
   the validation fold alone. The training captures are drawn from the training fold's visits,
   skipping the one in both folds and the 8 captures with no visit. About 20 captures, every
   fourth frame, give about 10,000 images, about 15 GB of 640x480 frames (checked with its
-  download script first). CC BY-NC-SA 4.0.
+  download script first). Apple's ARKitScenes licence.
 
 **The rest** (decided with evan-wes on 2026-10-14):
 - **7-Scenes:** its four smallest scenes, heads, stairs, fire and chess, 7.8 GB (all seven are
@@ -399,10 +399,10 @@ to B3's design (section 4).
 
 ## 10. B3: loop closure (0.3.11.0 -> 0.3.12.0)
 
-Decided with evan-wes on 2026-10-17, from ORB-SLAM2's and ORB-SLAM3's `LoopClosing.cc`,
-`KeyFrameDatabase.cc`, `Sim3Solver.cc` and `Optimizer.cc`. Loop closing runs on each keyframe
-after local mapping, in the one worker, as everything has until now; B3b gives it a thread.
-Three decisions of that day reach beyond B3:
+Decided with evan-wes on 2026-10-17, following ORB-SLAM's papers and a reading of its source
+(ORB-SLAM2's and ORB-SLAM3's `LoopClosing.cc`, `KeyFrameDatabase.cc`, `Sim3Solver.cc` and
+`Optimizer.cc`). Loop closing runs on each keyframe after local mapping, in the one worker, as
+everything has until now; B3b gives it a thread. Three decisions of that day reach beyond B3:
 - **Well-tested libraries are welcome in the runtime,** the SLAM parts included: learning SLAM
   includes learning its standard tools. Here that is GTSAM, in all three languages.
 - **Each language is held to a bar of results on the same data,** not to the others'
@@ -540,13 +540,14 @@ alone, and runs on real data only when asked.
 
 ## 12. B3b: the threads (0.3.12.0 -> 0.3.13.0)
 
-Decided with evan-wes on 2026-10-17, from ORB-SLAM3's `Tracking.cc`, `LocalMapping.cc`,
-`LoopClosing.cc` and `Optimizer.cc`. Until now every step has run in the frame that needed it,
-so a run repeats exactly and mapping is judged by its load (the real-time note's rules of
-2026-10-07). B2 measured that load at 1.74 to 2.63 on the test set's five largest maps, and 3.16
-to 5.89 over their busiest 10 s (section 9): there, a mapping thread of its own falls behind.
-ORB-SLAM keeps up by refusing keyframes and cutting local BA short, so on the largest maps B3b
-is expected to lose some accuracy; section 13 measures how much.
+Decided with evan-wes on 2026-10-17, following ORB-SLAM's papers and a reading of its source
+(ORB-SLAM3's `Tracking.cc`, `LocalMapping.cc`, `LoopClosing.cc` and `Optimizer.cc`). Until now
+every step has run in the frame that needed it, so a run repeats exactly and mapping is judged
+by its load (the real-time note's rules of 2026-10-07). B2 measured that load at 1.74 to 2.63 on
+the test set's five largest maps, and 3.16 to 5.89 over their busiest 10 s (section 9): there, a
+mapping thread of its own falls behind. ORB-SLAM keeps up by refusing keyframes and cutting
+local BA short, so on the largest maps B3b is expected to lose some accuracy; section 13
+measures how much.
 
 1. **The seams first,** in commits that change no decision, every record the same:
    - the run's records (the trajectory's placements, the lives and the closed maps: `_date`,
@@ -657,9 +658,9 @@ Once, on the finished branch, C++ and Rust (section 11's rule).
 
 ## 14. B4: merging maps (0.3.13.0 -> 0.3.14.0)
 
-Decided with evan-wes on 2026-10-17, from ORB-SLAM3's paper (its section VI) and its `Atlas.cc`,
-`LoopClosing.cc` (`MergeLocal`), `KeyFrameDatabase.cc` and `Optimizer.cc`. Where the paper and
-the source differ, each item says which it follows.
+Decided with evan-wes on 2026-10-17, following ORB-SLAM3's paper (its section VI) and a reading
+of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc` and
+`Optimizer.cc`). Where the paper and the source differ, each item says which it follows.
 
 1. **The atlas** (`slam_it.edge.atlas`, from B3b's seams) keeps the active map and every map
    kept, whole: keyframes with their keypoints and descriptors, points, observations, the

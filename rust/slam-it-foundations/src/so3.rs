@@ -12,7 +12,7 @@ use std::f64::consts::PI;
 use nalgebra::{Matrix3, Vector3, Vector4};
 
 use crate::error::{ErrorKind, Result, fail};
-use crate::linalg::svd3;
+use crate::linalg::jacobi_svd3::svd3;
 
 /// Below this angle, `sin θ / θ` and `θ / sin θ` use their series.
 pub const EXP_TAYLOR_THRESHOLD: f64 = 1e-4;

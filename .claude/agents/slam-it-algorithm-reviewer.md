@@ -111,4 +111,6 @@ where the field is now**.
 
 Return your review in the shape defined in `finding-format.md`, with the heading
 `## Algorithm review`. Every must-fix needs evidence a reader can check; every claim about
-the literature needs a citation. You are read-only: never modify repository files.
+the literature needs a citation. Cite every path relative to the repository root
+(`src/slam_it/foundations/so3.py:42`), never as an absolute or home-relative path: the review
+is saved in the repository. You are read-only: never modify repository files.

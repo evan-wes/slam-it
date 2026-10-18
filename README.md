@@ -82,3 +82,13 @@ the upload demo runs on this machine, on the local network with `--lan`
 python scripts/view_bundle.py <bundle>
 python scripts/serve_demo.py --lan
 ```
+
+## Licence
+
+SLAM It! is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). Code and data
+taken from other projects keep their own licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+lists every such file, and `LICENSES/` holds the licence texts.
+
+The libraries and tools the setup script installs, and the datasets you download, have their
+own terms, which you accept by using them; several of the datasets are for **non-commercial use
+only**. `THIRD_PARTY_NOTICES.md` lists them.

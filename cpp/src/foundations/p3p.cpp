@@ -1,3 +1,4 @@
+// The P3P solvers follow PoseLib's (Viktor Larsson, BSD-3-Clause; see THIRD_PARTY_NOTICES.md).
 /// @file
 /// @brief P3P: Lambda Twist and Ding et al.'s solver (see `slam_it/foundations/p3p.hpp`).
 #include "slam_it/foundations/p3p.hpp"

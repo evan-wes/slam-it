@@ -1,3 +1,5 @@
+// Decomposing H follows OpenCV's HomographyDecompInria (BSD-3-Clause; see THIRD_PARTY_NOTICES.md).
+
 //! Homographies: the Rust core's normalised DLT, its Sampson error, the decomposition of a
 //! calibrated H, and its RANSAC estimator.
 //!
@@ -11,7 +13,7 @@ use crate::correspondences::{
     RANK_TOLERANCE, check_point_pairs, fit_sample, hartley_normalisation, null_vector,
 };
 use crate::error::{ErrorKind, Result, fail};
-use crate::linalg::singular_values3;
+use crate::linalg::jacobi_svd3::singular_values3;
 use crate::ransac::{self, Estimator, Options};
 use crate::{se3, so3};
 

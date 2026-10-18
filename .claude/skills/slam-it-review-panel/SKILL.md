@@ -64,7 +64,8 @@ Spawn the selected reviewers **in a single message**, so they run concurrently:
 
 Give each the same brief: `REPO` (the SLAM It! repository root), `BASE_SHA` and `HEAD_SHA`, the branch name,
 the `--stat` summary, and the instruction to return its review in the format of
-`.claude/skills/slam-it-review-panel/finding-format.md`.
+`.claude/skills/slam-it-review-panel/finding-format.md`, citing every path relative to the
+repository root, never as an absolute or home-relative path.
 
 If an agent type is not registered (the symlinks in reifyscene's `.claude/` are missing, or
 the session started somewhere else), spawn a `general-purpose` agent whose prompt tells it to
@@ -80,6 +81,9 @@ Write `docs/reviews/YYYY-MM-DD-<branch-name-with-slashes-as-dashes>.md` from
 - a findings table, one row per finding, numbered `H1, H2, …` (hygiene), `A1, …`
   (architecture) and `L1, …` (algorithm). Resolution is `pending` for every finding;
 - each reviewer's full review, verbatim, under its own heading.
+
+Every path in the report is relative to the repository root, never absolute or home-relative:
+the report is committed with the PR.
 
 If a report for the same branch exists from an earlier run, append a new dated `## Run N`
 section rather than overwriting it. The history of runs is part of the record.
