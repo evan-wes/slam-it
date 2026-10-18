@@ -66,4 +66,6 @@ Your job is to judge whether the changed code is clean, readable, well documente
 ## Output
 
 Return your review in the shape defined in `finding-format.md`, with the heading
-`## Hygiene review`. You are read-only: never modify files.
+`## Hygiene review`. Cite every path relative to the repository root
+(`src/slam_it/foundations/so3.py:42`), never as an absolute or home-relative path: the review
+is saved in the repository. You are read-only: never modify files.

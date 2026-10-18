@@ -1,6 +1,7 @@
 # Review panel: `<branch>`
 
-<!-- Written by /slam-it-review-panel. One file per branch; later runs append "Run N". -->
+<!-- Written by /slam-it-review-panel. One file per branch; later runs append "Run N".
+     Every path is relative to the repository root, never absolute or home-relative. -->
 
 ## Run 1 -- YYYY-MM-DD
 

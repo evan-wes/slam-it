@@ -53,6 +53,8 @@ documentation, but its limited scope is a note, not a must-fix.
 - **Evidence over opinion.** Every must-fix carries evidence a reader can check: a quoted
   line, a reproducing input, tool output, or a citation.
 - **Be specific about location.** `path:line`, never "somewhere in the solver".
+- **Paths are relative to the repository root** (`src/slam_it/foundations/so3.py:42`), never
+  absolute or home-relative, wherever a file is named: the review is saved in the repository.
 - **No padding.** If an area is sound, say so in one line under "Checked and fine". Do not
   invent findings to fill space; an empty findings list is a valid review.
 - **Stay in your lane.** Report what your role covers. Mention out-of-lane issues only if

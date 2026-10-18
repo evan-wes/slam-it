@@ -7,8 +7,9 @@ structure.
 
 ## Where sessions run
 
-Work on SLAM It! happens from sessions started in the **reifyscene** repository, so the two projects progress together. Never
-suggest starting a session inside the SLAM It! repository. Consequences:
+Work on SLAM It! happens from sessions started in the **reifyscene** repository, so the two
+projects progress together. Never suggest starting a session inside the SLAM It! repository.
+Consequences:
 - This file does not load automatically: a reifyscene memory entry points here, and it must
   be read before SLAM It! work.
 - Address SLAM It! explicitly: `git -C $REPO ...`, and run
@@ -198,10 +199,10 @@ rooms, in layer 1, and runs on real data only when asked. No long runs at interm
   is never permission. Then verify that the commits landed on `develop`, check the tag, and
   ask before deleting the branch.
   This is a deliberate exception the owner granted on 2026-10-02 to their global "never
-  merge a PR" rule. It is written into that rule in the owner's global Claude Code instructions ("The one
-  exception: SLAM It!"), and a PreToolUse hook (the owner's merge-guard hook) blocks
-  every merge except this exact form. The hook matches the phrase anywhere in a shell
-  command, so edit text that contains it with the file editor, not a shell heredoc.
+  merge a PR" rule. It is written into that rule in the owner's global Claude Code
+  instructions ("The one exception: SLAM It!"), and a PreToolUse hook (the owner's merge-guard
+  hook) blocks every merge except this exact form. The hook matches the phrase anywhere in a
+  shell command, so edit text that contains it with the file editor, not a shell heredoc.
 
 ## Privacy
 
