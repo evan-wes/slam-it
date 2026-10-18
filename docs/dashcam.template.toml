@@ -18,7 +18,7 @@ folder = "work"
 [rig]
 # The distance from the front camera to the rear, in metres, measured with a tape: the prior
 # the calibration's translation starts from (the rear camera that far behind the front).
-baseline = 1.8
+baseline = 1.5   # a placeholder: measure your own
 
 [front]
 # The static mask: written by the `mask` step, read by `calibrate` and `import`.

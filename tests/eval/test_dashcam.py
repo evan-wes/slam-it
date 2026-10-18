@@ -247,7 +247,7 @@ root = "card"
 [work]
 folder = "work"
 [rig]
-baseline = 1.83
+baseline = 1.9
 [front]
 mask = "masks/front.png"
 bottom = 0.95

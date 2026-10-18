@@ -108,7 +108,7 @@ def test_the_rig_translation_and_the_rear_scale_are_found_with_the_baseline_prio
         pairs,
         R_X,
         front_scale=FRONT_SCALE,
-        prior=np.array([0.0, 0.0, -1.83]),
+        prior=np.array([0.0, 0.0, -1.9]),  # off by 10 cm: the motions correct it
         prior_sigma=np.array(calibrate.PRIOR_SIGMA),
     )
     assert np.abs(found.t - T_X).max() < 0.03
@@ -125,7 +125,7 @@ def test_solve_reports_each_stage(maps: tuple[calibrate.Poses, calibrate.Poses])
     lens = calibrate.Lens(
         800.0, 801.0, 800.0, 450.0, (0.1, 0.0, 0.0, 0.0), 1600, 900, 0.5, 480, 470
     )
-    report = calibrate.solve(*maps, (lens, lens), track, baseline=1.83)
+    report = calibrate.solve(*maps, (lens, lens), track, baseline=1.9)
     out = report.as_dict((3840, 2160), (2560, 1440))
     assert out["rear_clock_offset_s"] == pytest.approx(OFFSET, abs=calibrate.OFFSET_STEP)
     assert out["baseline_m"] == pytest.approx(float(np.linalg.norm(T_X)), abs=0.03)

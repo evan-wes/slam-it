@@ -1,6 +1,6 @@
 """The Terunsoul D016 dashcam's formats: its files, its burned-in overlay, its GPS records.
 
-A product's formats, read from its recordings (2026-10-17), not anyone's data:
+A product's formats, as its recordings show them, not anyone's data:
 
 - **Files.** Each camera records a drive as short MPEG-TS segments (1 or 5 minutes, as set),
   ``video/F/YYYYMMDD_HHMMSSF.ts`` for the front camera and ``video/R/...R.ts`` for the rear,
@@ -12,9 +12,9 @@ A product's formats, read from its recordings (2026-10-17), not anyone's data:
       N:12.34567 W:123.45678 12mph
       2026/01/02 03:04:05
 
-  the fix, its speed in mph, and the camera's local clock. Each camera burns in its own clock:
-  the two channels' differ by a second or more, which :mod:`slam_it.eval.dashcam.overlay`
-  measures against each segment's video time.
+  the fix, its speed in mph, and the camera's local clock. Each camera burns in its own clock,
+  and the two channels' differ, so :mod:`slam_it.eval.dashcam.overlay` measures each against
+  its segments' video time.
 - **The GPS records**, a data stream in each segment (stream 2, ``bin_data``), one 160-byte
   record about each second (:func:`decode_record`): the receiver's UTC time, a fix flag, the
   speed in knots and the course over ground. Its latitude and longitude are scrambled (they move
@@ -40,8 +40,8 @@ FOLDERS = {"F": ("video", "F"), "R": ("video", "R")}
 
 OVERLAY_BOXES = {(3840, 2160): (40, 1840, 1040, 150), (2560, 1440): (30, 1190, 960, 150)}
 """The overlay's box ``(x, y, w, h)``, in pixels, per frame size ``(width, height)``: placed
-by eye on a frame of each size (2026-10-17). Its font is a fixed pixel size, so a size not
-listed needs its own box."""
+by eye on a frame of each size. Its font is a fixed pixel size, so a size not listed needs its
+own box."""
 
 OVERLAY_CHARACTERS = "0123456789.:/NSEWmph"
 """Every character the overlay prints but the space: the OCR's whitelist."""
@@ -56,8 +56,7 @@ RECORD_SIZE = 160
 """A GPS record's bytes."""
 
 KNOT = 1852.0 / 3600.0
-"""A knot, in metres per second: the records' speed unit (their speed over the overlay's mph,
-1.125 by median over 785 seconds, is about the 1.151 a knot is to a mile an hour)."""
+"""A knot, in metres per second: the records' speed unit (1 knot = 1.15078 mph)."""
 
 MPH = 0.44704
 """A mile an hour, in metres per second: the overlay's speed unit."""

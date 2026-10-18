@@ -24,8 +24,8 @@ What the recordings showed, which the code is shaped by:
   read sensibly, but its float64 latitude and longitude move where the true fix does not. So
   the fix comes from the overlay, which prints it, and the records are a second source of
   speed and course (`dashcam.stream`).
-- **The overlay clocks differ between channels.** Each camera burns in its own clock, a second
-  or more apart, and neither is its segments' names' clock: each camera's lag is measured from
+- **The overlay clocks differ between channels.** Each camera burns in its own clock, the two
+  not in step, and neither is its segments' names' clock: each camera's lag is measured from
   its own overlay, and the rear's offset from the front's from the two cameras' motion.
 - **The rear camera has a different lens** from the front's, so each is calibrated alone.
 
