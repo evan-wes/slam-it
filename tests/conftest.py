@@ -28,6 +28,29 @@ built, or fails to load, fails the run instead of skipping its parity tests.
 """
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Collect the paths given on the command line in path order, each directory's together.
+
+    pytest 9.1 loses a sub-directory's conftest fixtures for its files collected after a file
+    of the directory above it: ``pytest tests/edge/test_a.py tests/test_b.py
+    tests/edge/test_c.py`` finds none of ``tests/edge/conftest.py``'s fixtures for
+    ``test_c.py`` ("fixture 'truth' not found"): it collects ``tests/edge`` twice. Sorting the
+    arguments by path keeps each directory's files together, so a run naming files in any order
+    collects as one naming them in order does. The top-level paths keep the order they were
+    given in, so a run of whole directories (``testpaths``) is unchanged.
+
+    Parameters
+    ----------
+    config : pytest.Config
+        The run's configuration, its positional arguments reordered in place.
+    """
+    parts = {arg: Path(arg.split("::")[0]).parts for arg in config.args}
+    tops: dict[tuple[str, ...], int] = {}
+    for path in parts.values():
+        tops.setdefault(path[:1], len(tops))
+    config.args[:] = sorted(config.args, key=lambda arg: (tops[parts[arg][:1]], parts[arg]))
+
+
 def require_backend(name: str) -> str:
     """Return `name` if the backend is usable; otherwise skip, or fail if it is required.
 
