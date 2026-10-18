@@ -162,9 +162,13 @@ sys.exit(0 if any(p["name"] == "gtsam" and p.get("channel") != "pypi" for p in j
     -DCMAKE_CXX_COMPILER="${ENV_PREFIX}/bin/${HOST_TRIPLE}-c++" \
     -DPython3_EXECUTABLE="${ENV_PREFIX}/bin/python" "${GTSAM_OPTIONS[@]}"
   # The library and METIS with four jobs, the wrapper one file at a time; installing copies
-  # what they built, never building GTSAM's other targets (its timing tools).
+  # what they built, never building GTSAM's other targets (its timing tools). A caller that
+  # caps this script's memory below the wrapper's largest file (scripts/offline_ci.sh, at 8 GB)
+  # names in SLAM_IT_GTSAM_PYTHON_CAP a command prefix that runs that one step in a scope of
+  # its own, with a cap of its own (16 GB there).
+  read -r -a PYTHON_CAP <<< "${SLAM_IT_GTSAM_PYTHON_CAP:-}"
   run ninja -C "${GTSAM_DIR}/build" -j4 gtsam metis-gtsam
-  run ninja -C "${GTSAM_DIR}/build" -j1 gtsam_py
+  run "${PYTHON_CAP[@]}" ninja -C "${GTSAM_DIR}/build" -j1 gtsam_py
   run cmake --install "${GTSAM_DIR}/build"
   (cd "${GTSAM_DIR}/build/python" && run python -m pip install . --no-deps --no-build-isolation)
   mkdir -p "$(dirname "${GTSAM_MARKER}")"

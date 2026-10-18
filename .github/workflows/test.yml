@@ -16,7 +16,11 @@ jobs:
   layer1:
     name: Layer-1 checks (Python, C++, Rust)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Since B3 a fresh env builds GTSAM and its Python wrapper from source, the wrapper one file
+    # at a time: about 14 min on the owner's machine (the library with 4 jobs, the wrapper with
+    # 1), more on a runner, on top of the 30-40 min offline CI estimates for a fresh env before
+    # it (B3's review panel, A4).
+    timeout-minutes: 120
     env:
       MINIFORGE_VERSION: "26.7.2-0"
       MINIFORGE_SHA256: "281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05"
