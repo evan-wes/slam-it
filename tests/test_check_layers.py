@@ -511,7 +511,12 @@ def test_gtsam_is_confined_to_rung_0s_graphs() -> None:
     ("path", "text", "reported"),
     [
         ("cpp/src/foundations/graphs.cpp", "#include <gtsam/geometry/Pose3.h>\n", False),
-        ("cpp/include/slam_it/foundations/graphs.hpp", "#include <gtsam/inference/Key.h>\n", False),
+        ("cpp/include/slam_it/foundations/graphs.hpp", "#include <gtsam/inference/Key.h>\n", True),
+        (
+            "rust/slam-it-foundations/cxx/graphs_bridge.hpp",
+            "#include <gtsam/inference/Key.h>\n",
+            True,
+        ),
         (
             "rust/slam-it-foundations/cxx/graphs_bridge.cpp",
             "#include <gtsam/nonlinear/Values.h>\n",
@@ -527,13 +532,14 @@ def test_gtsam_is_confined_to_rung_0s_graphs() -> None:
 def test_only_graphs_includes_gtsam_natively(
     fake_repo: Path, path: str, text: str, reported: bool
 ) -> None:
-    """A GTSAM header outside graphs' C++ files and the Rust crate's graphs bridge is reported."""
+    """A GTSAM header outside graphs.cpp and the Rust crate's graphs bridge source is reported.
+
+    Headers included: rung 0's public header and the bridge's own (B3's review panel, run 2, A17).
+    """
     _write(fake_repo, path, text)
-    if path != "cpp/include/slam_it/foundations/graphs.hpp":
-        _write(fake_repo, "cpp/include/slam_it/foundations/graphs.hpp", "")
     pyproject = tomllib.loads((fake_repo / "pyproject.toml").read_text())
     found = list(check_layers.check_confined(fake_repo, check_layers.confined_libraries(pyproject)))
     assert bool(found) == reported
     if reported:
         assert found[0].location == f"{path}:1"
-        assert found[0].message == "gtsam is included only by foundations.graphs"
+        assert found[0].message == "gtsam is included only by the sources of foundations.graphs"

@@ -15,8 +15,8 @@ the other two languages, reading the same contracts, so the three can never disa
   ``std::fs`` in Rust outside their tests (:func:`check_file_io`).
 - Confined libraries: a library a forbidden contract keeps from all of ``slam_it`` but the
   modules whose imports it ignores (GTSAM, behind ``foundations.graphs``) has its C++ headers
-  included only by those modules' files and their Rust crates' C++ bridges
-  (:func:`check_confined`).
+  included only by those modules' C++ sources and their Rust crates' C++ bridge sources, never
+  by a header (:func:`check_confined`).
 - Rust: every crate under ``rust/`` except the ``slam-it-py`` bindings crate -- listed
   workspace members and the implicit ones Cargo adds for path dependencies alike -- is a
   rung crate named ``slam-it-<rung>``. It may only depend on the crates of the rungs it may
@@ -96,6 +96,7 @@ _CPP_RUNG_ROOTS = (
     "cpp/bindings",
 )
 _CPP_SUFFIXES = frozenset({".hpp", ".cpp", ".h", ".cc"})
+_CPP_SOURCE_SUFFIXES = frozenset({".cpp", ".cc"})
 _CPP_ROOT_FILES_ALLOWED = frozenset({"cpp/bindings"})
 """Rung roots whose top level may hold files: the bindings' root only wires the rungs."""
 _DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -953,12 +954,14 @@ def confined_libraries(pyproject: dict[str, Any]) -> dict[str, frozenset[tuple[s
 def check_confined(
     root: Path, confined: dict[str, frozenset[tuple[str, ...]]]
 ) -> Iterator[Violation]:
-    """Check that a confined library's C++ headers are included only by its modules' files.
+    """Check that a confined library's C++ headers are included only by its modules' sources.
 
-    A module's files are its C++ header and source (``cpp/include/slam_it/<rung>/<module>.hpp``,
-    ``cpp/src/<rung>/<module>.cpp``) and its crate's C++ bridge
-    (``rust/slam-it-<rung>/cxx/<module>_bridge.{hpp,cpp}``); every other C++ file in the
-    repository, tests included, includes none of the library's headers.
+    A module's sources are its C++ source (``cpp/src/<rung>/<module>.cpp``) and its crate's C++
+    bridge source (``rust/slam-it-<rung>/cxx/<module>_bridge.cpp``); every other C++ file in the
+    repository, headers and tests included, includes none of the library's headers. No header:
+    the env's compiler finds the library's headers in the env's prefix whatever a target links,
+    so a header including one would carry its types into every file that includes it (B3's
+    review panel, run 2, A17).
 
     Parameters
     ----------
@@ -970,7 +973,7 @@ def check_confined(
     Yields
     ------
     Violation
-        Each include of a confined library's header outside its modules' files.
+        Each include of a confined library's header outside its modules' sources.
     """
     sources = [p for p in sorted((root / "cpp").rglob("*")) if p.suffix in _CPP_SUFFIXES]
     for cxx in sorted((root / "rust").glob("slam-it-*/cxx")):
@@ -987,19 +990,26 @@ def check_confined(
                 if _native_module(relative) not in modules:
                     line = text.count("\n", 0, match.start()) + 1
                     names = ", ".join(sorted(".".join(m) for m in modules))
-                    yield Violation(f"{relative}:{line}", f"{library} is included only by {names}")
+                    yield Violation(
+                        f"{relative}:{line}",
+                        f"{library} is included only by the sources of {names}",
+                    )
 
 
 def _native_module(relative: Path) -> tuple[str, ...] | None:
-    """Return the module a C++ file or Rust C++ bridge is part of, or None for any other file."""
+    """Return the module a C++ source or Rust C++ bridge source implements, or None otherwise.
+
+    Headers are no module's here: :func:`check_confined` holds a confined library to sources.
+    """
+    if relative.suffix not in _CPP_SOURCE_SUFFIXES:
+        return None
     parts = relative.parts
     if parts[0] == "rust" and len(parts) == 4 and parts[2] == "cxx":
         rung = parts[1].removeprefix("slam-it-").replace("-", "_")
         stem = Path(parts[3]).stem
         return (rung, stem.removesuffix("_bridge")) if stem.endswith("_bridge") else None
-    for module_root in _CPP_MODULE_ROOTS:
-        if relative.is_relative_to(module_root):
-            return _module_path(relative.relative_to(module_root))
+    if relative.is_relative_to("cpp/src"):
+        return _module_path(relative.relative_to("cpp/src"))
     return None
 
 
