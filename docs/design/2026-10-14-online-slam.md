@@ -432,14 +432,29 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
      `CustomFactor` calls back into Python. *Revised with evan-wes on 2026-10-17,* while building:
      the design first had them written once in C++ and compiled into the Rust crate, which would
      make Rust's build a second, hand-kept build of part of the C++ core, and leave Rust none of
-     the maths.
+     the maths. *As built (decided with evan-wes on 2026-10-17):* Python's bundle adjustment
+     takes GTSAM's own factors through a pinhole camera (`GenericProjectionFactorCal3_S2`, and
+     `GenericStereoFactor3D` with a right column), which model it exactly: GTSAM's Python wrapper
+     copies a problem's values on every call into a `CustomFactor`, and global BA on the loop
+     room's map took 274 s through them, 0.73 s through GTSAM's. *As built:* every language's
+     BA factor gives a point behind its camera GTSAM's own factors' constant error, twice the
+     focal length a row, with no gradient; with none, global BA (no robust loss) collapsed a
+     monocular map, its points moved behind their cameras until nothing was left to cost (the
+     loop room in C++: final error 0.0, final ATE 50 cm against 15 cm as tracked).
    - A monocular map optimises Sim(3) (`Similarity3`); a stereo or RGB-D map fixes the scale
      and optimises SE(3) (`Pose3`), as ORB-SLAM's `mbFixScale` does.
    - GTSAM joins the runtime dependencies. The import-linter contract that kept the test oracles
      out of the library drops scipy, and a test that used one as an oracle keeps it wherever the
      library does not call the same routine.
 2. **Detection, ORB-SLAM3's** (`NewDetectCommonRegions`), on the active map's keyframe database.
-   A map of fewer than `loop.min_keyframes` (12) keyframes is not searched.
+   A map of fewer than `loop.min_keyframes` (12) keyframes is not searched. *As built:* the
+   settings' group is `loops` (`loops.min_keyframes`, and so on), `loop` being a keyword in
+   Rust. Where ORB-SLAM3's source does not do what its design means (the matches by word
+   merged last-wins, `Sim3Solver`'s inverted test of which keyframe a match is in,
+   `OptimizeSim3` passed the candidate rather than the keyframe that matched most, a later
+   keyframe's last search through the unrefined similarity with its scale set to 1, the
+   group's widening past the new keyframe's links), the build does what the design means:
+   `slam_it.edge.loops`'s docstring lists each.
    - **Candidates** (`DetectNBestCandidates`): the keyframes sharing a word with the new one and
      not linked to it; those sharing more than 80% of the most words any shares are scored; each
      score accumulated over the keyframe's 10 best neighbours that were scored, the best-scored
@@ -461,13 +476,15 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
    RGB-D. A match is an inlier when it reprojects within the 99% chi-square bound (9.21 σ²) in
    both keyframes. The result is refined as `OptimizeSim3` refines it, on GTSAM: each match
    reprojected both ways, a Huber loss at √10, 5 iterations, the matches past 10 dropped, then
-   10 more (5 if none was dropped).
+   10 more (5 if none was dropped), with no robust loss, as `OptimizeSim3`'s second round
+   removes its kernels.
 4. **The correction, ORB-SLAM's `CorrectLoop`:**
    - the new keyframe and its links moved by the loop's Sim(3), their points with them;
    - each matched point replacing the new keyframe's (`Replace`), or joining it where it had
      none;
    - the loop's group's points fused into the new keyframe and its links (a 4-pixel window, a
-     ratio of 0.8);
+     ratio of 0.8); *as built,* with no ratio: ORB-SLAM's loop `Fuse` is passed the 0.8 but
+     never reads it, the nearest keypoint within `TH_LOW` taking the point;
    - the links new across the loop collected, then the essential graph (item 5);
    - the loop edge added to both keyframes.
 5. **The essential graph,** ORB-SLAM's `OptimizeEssentialGraph`, on GTSAM:
@@ -475,8 +492,10 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
    - an edge between two keyframes for each of: the spanning tree, the loop edges, links
      sharing at least `loop.essential_points` (100) points, and the loop's new links of that
      strength, the new keyframe's link to the matched one whatever its strength. Each edge holds
-     the two keyframes' relative pose from before the correction;
-   - unit information, the matched keyframe fixed, Levenberg–Marquardt for 20 iterations;
+     the two keyframes' relative pose from before the correction; *as built,* but the loop's
+     new links, which hold theirs between the corrected poses, as ORB-SLAM's code measures them;
+   - unit information, the matched keyframe fixed, Levenberg–Marquardt for 20 iterations (as
+     ORB-SLAM2 fixes it; ORB-SLAM3 fixes the map's first keyframe);
    - each point then moved with its reference keyframe, or with the keyframe that moved it in
      step 4.
 6. **Global BA after each loop,** as visual-only ORB-SLAM3 always runs it, on GTSAM:
@@ -497,7 +516,9 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
      (`mTcp`);
    - when a map closes or the run ends, each of its frames is placed by its reference keyframe's
      final pose, through the keyframe's culled ancestors where it was culled;
-   - the poses as tracked are kept beside it.
+   - the poses as tracked are kept beside it;
+   - *as built,* after a correction the last frame, the new keyframe's own, moves with it, as
+     ORB-SLAM's `UpdateLastFrame` places the last frame by its reference keyframe.
 9. **The run format, version 7, and the bundle's, version 4,** clean breaks:
    - `trajectory.txt` holds the final trajectory, and `trajectory_tracked.txt` the poses as
      tracked;
@@ -505,23 +526,40 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
    - per keyframe, the diagnostics record how detection went (the candidates, their matches and
      inliers, the confirmations, the outcome), and, on a loop, its correction (the matched
      keyframe, the Sim(3), the points fused, the graph's edges, iterations and cost, and global
-     BA's), with their times;
+     BA's), with their times; *as built,* the time is the frame's `loop_seconds`, one of the
+     run's steps, not part of the stage's summary, which runs compare and the records hold;
    - the viewer draws the loop edges.
 10. **Tests: a record per language, and a bar for all three:**
     - the golden record becomes one per language (`room_runs_{python,cpp,rust}.json`), each its
       own language's regression check, regenerated deliberately as now;
     - the stage comparisons with Python's reference stay, at their tolerances;
     - a new room whose camera comes back to where it started, so a loop closes, in every mode;
+      *as built,* a circle of 0.6 m looking outward and 0.25 rad up, turning 420° in 280
+      frames (`tests/edge/room.py`'s `loop_path`): looking level at a wall 2.4 m off, RGB-D's
+      tracking jumped by up to 3°, a turn and a step sideways alike at one depth;
     - the bar on the rooms, in layer 1, for all three languages: the frames tracked, the maps,
       the loops closed, no loop at a wrong place, and the error of the final trajectory against
       the room's truth and of the points against its walls, each threshold set from B3's first
-      runs;
+      runs; *as built* (`tests/orchestration/test_loop_room.py`), about half again those runs'
+      (the same in the three languages but monocular's floats): every mode closes a loop, in one
+      map, 276 of 280 frames tracked in monocular and all otherwise (at least 95% needed); the
+      final ATE 4.67 cm in RGB-D, 3.64 cm in stereo and 1.14 to 1.34 cm in monocular (7, 5.5
+      and 2 cm the bounds), each below the poses' as tracked; the points' median distance to
+      the walls 7.3, 7.1 and 3.9 to 4.3 cm (11, 11 and 6.5 cm the bounds); the loops' keyframes
+      0.14 to 0.34 m apart and turned 12° to 33° by the truth;
+    - *as built,* the whole runs are no longer compared across languages; their records, made
+      from the same code on the same rooms, decide alike in all 27 cases today, and a native's
+      reading of its settings (H21) is held in its own language, its decisions changing with
+      them;
     - the bar on real data, C++ and Rust's, is section 11's;
     - a loop is judged against the ground truth twice (decided with evan-wes on 2026-10-17):
       - **a wrong place,** which fails the bar: by the ground truth, the loop's two keyframes
         were more than 3 m apart or looked more than 60° apart, so they could not have seen the
         same place (place recognition's convention; starting values, revisited with the first
-        runs);
+        runs); *as built,* the angle between their viewing directions: the whole turn between
+        them first counted a roll about the view, and flagged a loop on TUM's
+        fr2_360_hemisphere whose keyframes turned 88° but looked 18° apart, its corrected
+        relative pose within 0.09 m and 2.3° of the truth;
       - **a poor pose,** which is reported: with the map aligned to the ground truth as the ATE
         aligns it, the two keyframes' relative pose after the correction misses the truth by
         more than five times the map's median error, or by more than 5°.
@@ -553,6 +591,21 @@ alone, and runs on real data only when asked.
   format 6, so their per-batch summaries are written before the break (A9).
 - **Not measured:** latency. Loop correction and global BA run inside their frame here, so the
   frames they make late are counted from the diagnostics, and judged from B3b on.
+- **As measured** (2026-10-17; [the test-set note](../notes/test-set.md#b3-loop-closure)):
+  - on the loop sequences, 16 of the 22 runs meet the bar, in C++ and Rust alike and with
+    global BA on or off. fr3_long_office RGB-D misses its ATE bound (1.9 cm against 1.5; 5.9 cm
+    as tracked); five track under 95% of their frames: fr1_desk monocular (89.9%), MH_05
+    monocular (94.6%), V1_02 monocular (94.7%) and stereo (94.2%), and V1_03 monocular
+    (91.9%). 10 loops close, none at a wrong place;
+  - global BA after a loop lowers the final ATE on 4 of the loop sequences and raises it on 4,
+    by at most 8.4 mm (V1_03 stereo, 3.3 to 4.1 cm); it stays on (`loops.global_ba`), as
+    ORB-SLAM3's is;
+  - on the test set, 18 loops close in 14 runs, in each language. One is at a wrong place:
+    advio-13's, monocular, between keyframes 13.3 m apart that looked 7.7° apart, most likely
+    a place that repeats; it passed every check, its second projection at 80, the least that
+    passes. Frames tracked: 209,148 in C++ and 209,019 in Rust, against B2's 208,906;
+  - the languages decide alike on all 22 loop sequences and on 59 of the test set's 77 runs;
+    17 of the other 18 are monocular, which the bar allows (section 10).
 
 ## 12. B3b: the threads (0.3.12.0 -> 0.3.13.0)
 
