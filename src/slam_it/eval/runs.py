@@ -86,6 +86,9 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   the map itself, published by reference, and lists none). Inline, nothing waits, nothing is
   refused, global BA runs in a loop's correction, and no view is published. A threaded run's
   mapping and loop closing are its keyframe's frame's, though they ended later.
+  A run of several sequences, each a session, marks the first frame of each session after the
+  first with ``session``: its index, sequence, time offset and the map it closed
+  (:mod:`slam_it.orchestration.vo`).
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;

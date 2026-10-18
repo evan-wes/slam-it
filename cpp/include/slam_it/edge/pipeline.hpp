@@ -105,15 +105,16 @@ struct Fates {
   std::vector<std::int64_t> point;
 };
 
-/// @brief The map a lost track closed, as a run records it on the frame it was lost on
-///        (`slam_it.edge.pipeline.LostSummary`).
+/// @brief A map closed, as a run records it (`slam_it.edge.pipeline.LostSummary`): on the frame
+///        a track was lost on, the frame that took up a kept map, or a session's first frame.
 struct LostSummary {
   /// @brief The map's keyframes then.
   std::int64_t keyframes{0};
   /// @brief Its points.
   std::int64_t points{0};
-  /// @brief Whether it was reset, having `loss.reset_keyframes` keyframes or fewer, rather than
-  ///        kept.
+  /// @brief Whether it was reset rather than kept, having too few keyframes:
+  ///        `loss.reset_keyframes` or fewer, or fewer than `loss.session_keyframes` as a session
+  ///        ended.
   bool reset{false};
 };
 
@@ -744,6 +745,15 @@ class Pipeline {
   /// @return The frames tracked, but a reset map's.
   [[nodiscard]] Trajectory trajectory() const;
 
+  /// @brief Start the next of a run's sequences (`slam_it.edge.pipeline.Pipeline.start_session`,
+  ///        ORB-SLAM3's `ChangeDataset`): the map being tracked is reset if it holds fewer than
+  ///        `loss.session_keyframes` keyframes and kept whole otherwise, and tracking and loop
+  ///        closing start again, so the sequence's first frames start a new map.
+  ///        Threaded, the map waits for the threads first, as a lost map does.
+  /// @return How the map was closed; none if none was being tracked; the error a thread failed
+  ///         with.
+  foundations::Result<std::optional<LostSummary>> start_session();
+
  private:
   /// @brief A frame handled, as `initialize` and `track_frame` give it.
   struct Step {
@@ -891,13 +901,14 @@ class Pipeline {
   foundations::Result<Keyframed> make_keyframe(const Map& m, const Frame& frame,
                                                const Tracked& tracked, FrameSummary& summary);
 
-  /// @brief Close the map being tracked: keep it whole, or reset it if it has
-  ///        `loss.reset_keyframes` keyframes or fewer (`Atlas::close`). Loop closing's state
-  ///        goes with it; threaded, the threads have settled first.
+  /// @brief Close the map being tracked: keep it whole, or reset it if it has fewer than
+  ///        `small` keyframes (`Atlas::close`). Loop closing's state goes with it; threaded,
+  ///        the threads have settled first.
   /// @param dated Whether this frame is dated already: a map lost on a frame is closed after
   ///        it, one left for another kept map while tracking it.
+  /// @param small The keyframes a map must hold to be kept.
   /// @return The closed map's summary.
-  LostSummary leave(bool dated);
+  LostSummary leave(bool dated, std::int64_t small);
 
   /// @brief Take up kept map `number`, where relocalisation found this frame, leaving the map
   ///        tracked, kept or reset as a lost map is; tracking goes on in the map found

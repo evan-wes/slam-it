@@ -30,9 +30,10 @@ use slam_it_foundations::{orb, ransac, se3, stereo};
 pub const DATASETS: [&str; 2] = ["tum", "euroc"];
 
 /// The program's command line.
-pub const USAGE: &str = "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode \
-                         monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] \
-                         [--vocabulary FOLDER] [--record-features] [--threaded | --views] \
+pub const USAGE: &str = "usage: slam_it_vo --dataset tum|euroc --sequence PATH \
+                         [--sequence PATH ...] --mode monocular|stereo|rgbd --out RUN_DIR \
+                         [--first I] [--count N] [--vocabulary FOLDER] [--record-features] \
+                         [--threaded | --views] \
                          [--option KEY=VALUE ...]";
 
 /// A flag without a value: record each frame's keypoints, with their fates.
@@ -55,8 +56,9 @@ pub const EXIT_FAILED: u8 = 3;
 pub struct Request {
     /// One of [`DATASETS`].
     pub dataset: String,
-    /// The sequence's folder.
-    pub sequence: PathBuf,
+    /// The sequences' folders, run in turn, each its own session
+    /// (`slam_it.orchestration.vo`'s docstring): one or more.
+    pub sequences: Vec<PathBuf>,
     /// The sensor mode.
     pub mode: Mode,
     /// The run's folder, written.
@@ -86,7 +88,7 @@ impl Request {
     /// # Arguments
     ///
     /// * `dataset` - One of [`DATASETS`].
-    /// * `sequence` - The sequence's folder.
+    /// * `sequences` - The sequences' folders.
     /// * `mode` - The sensor mode.
     /// * `out` - The run's folder.
     ///
@@ -94,10 +96,10 @@ impl Request {
     ///
     /// The request.
     #[must_use]
-    pub fn new(dataset: &str, sequence: &Path, mode: Mode, out: &Path) -> Self {
+    pub fn new(dataset: &str, sequences: &[PathBuf], mode: Mode, out: &Path) -> Self {
         Self {
             dataset: dataset.to_owned(),
-            sequence: sequence.to_path_buf(),
+            sequences: sequences.to_vec(),
             mode,
             out: out.to_path_buf(),
             first: 0,
@@ -157,8 +159,8 @@ type Reader = Box<dyn Fn(usize) -> Result<Option<Delivered>>>;
 struct Source {
     /// The camera the pipeline runs with.
     camera: Camera,
-    /// The sequence's frames.
-    frames: usize,
+    /// Each frame's time, in seconds, in the sequence's order.
+    times: Vec<f64>,
     /// Reads one.
     read: Reader,
     /// The features every frame drops, those on a 0 (a TUM-format folder's `mask.png`); none
@@ -241,7 +243,7 @@ fn tum_source(root: &Path, mode: Mode) -> Result<Source> {
         height: sensor.height,
         baseline,
     };
-    let count = read.images.len();
+    let times = read.timestamps.clone();
     let deliver: Reader = Box::new(move |i| {
         let image = png::read_gray(&read.images[i])?;
         let timestamp = read.timestamps[i];
@@ -267,7 +269,7 @@ fn tum_source(root: &Path, mode: Mode) -> Result<Source> {
     });
     Ok(Source {
         camera,
-        frames: count,
+        times,
         read: deliver,
         mask,
     })
@@ -353,7 +355,7 @@ fn stereo_source(read: euroc::Frames) -> Result<Source> {
         height: left.rows,
         baseline: rectification.baseline,
     };
-    let count = read.left.len();
+    let times = read.timestamps.clone();
     let rectifying = camera.clone();
     let deliver: Reader = Box::new(move |i| {
         let image_left = rectified(&read.left[i], &maps[0], &rectifying)?;
@@ -365,7 +367,7 @@ fn stereo_source(read: euroc::Frames) -> Result<Source> {
     });
     Ok(Source {
         camera,
-        frames: count,
+        times,
         read: deliver,
         mask: None,
     })
@@ -398,7 +400,7 @@ fn euroc_source(root: &Path, mode: Mode) -> Result<Source> {
         height: left.rows,
         baseline: 0.0,
     };
-    let count = read.left.len();
+    let times = read.timestamps.clone();
     let deliver: Reader = Box::new(move |i| {
         Ok(Some(Delivered {
             timestamp: read.timestamps[i],
@@ -407,7 +409,7 @@ fn euroc_source(root: &Path, mode: Mode) -> Result<Source> {
     });
     Ok(Source {
         camera,
-        frames: count,
+        times,
         read: deliver,
         mask: None,
     })
@@ -863,15 +865,8 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
         .loop_closing
         .as_ref()
         .map_or(JsonValue::Null, loop_json);
-    let closed = |s: LostSummary| {
-        object([
-            ("keyframes", count(s.keyframes)),
-            ("points", count(s.points)),
-            ("reset", JsonValue::Bool(s.reset)),
-        ])
-    };
-    let lost = summary.lost.map_or(JsonValue::Null, closed);
-    let left = summary.left.map_or(JsonValue::Null, closed);
+    let lost = summary.lost.map_or(JsonValue::Null, closed_json);
+    let left = summary.left.map_or(JsonValue::Null, closed_json);
     [
         ("placed_by", placed_by),
         ("init", init),
@@ -887,6 +882,50 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
     .into_iter()
     .map(|(key, value)| (key.to_owned(), value))
     .collect()
+}
+
+/// How a map was closed as JSON (`slam_it.edge.pipeline.LostSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its object.
+fn closed_json(s: LostSummary) -> JsonValue {
+    object([
+        ("keyframes", count(s.keyframes)),
+        ("points", count(s.points)),
+        ("reset", JsonValue::Bool(s.reset)),
+    ])
+}
+
+/// A session's start as JSON (`slam_it.orchestration.vo`'s docstring): its index, its
+/// sequence's name, its time offset, and how the map tracked before it was closed.
+///
+/// # Arguments
+///
+/// * `index` - The session's index.
+/// * `sequence` - Its folder.
+/// * `offset` - Its time offset, in seconds.
+/// * `closed` - How the map tracked was closed; `None` if none was.
+///
+/// # Returns
+///
+/// Its object.
+fn session_json(
+    index: usize,
+    sequence: &Path,
+    offset: f64,
+    closed: Option<LostSummary>,
+) -> JsonValue {
+    object([
+        ("index", count(index)),
+        ("sequence", JsonValue::Text(sequence_name(sequence))),
+        ("offset", JsonValue::Number(offset)),
+        ("closed", closed.map_or(JsonValue::Null, closed_json)),
+    ])
 }
 
 /// Records a frame's result: its diagnostics.
@@ -1044,12 +1083,15 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
     Ok(())
 }
 
-/// Tracks a sequence's frames, from the first asked for, to the end: a lost track closes its
-/// map, and the next frame starts a new one.
+/// Tracks the sequences' frames in turn, from the first asked for, to the end: a lost track
+/// closes its map, and the next frame starts a new one; so does each sequence after the first
+/// ([`Pipeline::start_session`]), its first frame run recording the session ([`session_json`]).
+/// Threaded, the frames come at their recorded rate, each session's first at once (as
+/// ORB-SLAM3's examples sleep only within a sequence), and the run's end waits for the threads.
 ///
 /// # Arguments
 ///
-/// * `source` - The sequence.
+/// * `sources` - The sequences.
 /// * `pipeline` - The pipeline.
 /// * `request` - The request (checked).
 /// * `out` - The run, each frame recorded.
@@ -1059,42 +1101,59 @@ fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
 ///
 /// A reader's, a frame builder's, the pipeline's or the feature writer's.
 fn track(
-    source: &Source,
+    sources: &[Source],
     pipeline: &mut Pipeline,
     request: &Request,
     out: &mut Run,
     mut features: Option<&mut FeatureWriter>,
 ) -> Result<()> {
+    let times: Vec<Vec<f64>> = sources.iter().map(|s| s.times.clone()).collect();
+    let offsets = session_offsets(&times);
+    let order: Vec<(usize, usize)> = (0..sources.len())
+        .flat_map(|k| (0..sources[k].times.len()).map(move |i| (k, i)))
+        .collect();
     let first = usize::try_from(request.first).unwrap_or(usize::MAX);
-    let end = request.count.map_or(source.frames, |count| {
-        source
-            .frames
+    let end = request.count.map_or(order.len(), |count| {
+        order
+            .len()
             .min(first.saturating_add(usize::try_from(count).unwrap_or(0)))
     });
     let matching = request.options.stereo_matching();
     let mut pacer = Pacer::default();
     let mut held: Vec<Keypoints> = Vec::new(); // threaded: written once their keyframes are mapped
-    for i in first..end {
+    let mut current = None;
+    let mut session = None; // a session started, for its first frame run
+    for &(k, i) in order.get(first..end).unwrap_or_default() {
         let start = Instant::now();
-        let delivered = (source.read)(i)?;
+        let delivered = (sources[k].read)(i)?;
         let read = start.elapsed().as_secs_f64();
-        let Some(delivered) = delivered else {
+        let Some(mut delivered) = delivered else {
             continue;
         };
+        if current.is_some_and(|c| c != k) {
+            let closed = pipeline.start_session()?;
+            session = Some(session_json(k, &request.sequences[k], offsets[k], closed));
+            pacer = Pacer::default(); // a session's first frame comes at once
+        }
+        current = Some(k);
+        delivered.timestamp += offsets[k];
         if request.threaded {
             pacer.wait(delivered.timestamp);
         }
         let given = Instant::now();
         let frame = build(
             &delivered,
-            &source.camera,
+            &sources[k].camera,
             &pipeline.extraction(),
             &matching,
-            source.mask.as_ref(),
+            sources[k].mask.as_ref(),
         )?;
         let built = given.elapsed().as_secs_f64();
         let result = pipeline.track(&frame)?;
         record(out, &result, read, built);
+        if let (Some(started), Some(line)) = (session.take(), out.diagnostics.last_mut()) {
+            line.push(("session".to_owned(), started));
+        }
         if let Some(writer) = features.as_deref_mut() {
             let keypoints = Keypoints::of(&frame, result.fates);
             if request.threaded {
@@ -1416,7 +1475,7 @@ fn read_option(text: &str, options: &mut Options) -> Result<()> {
 fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
     match flag {
         "--dataset" => value.clone_into(&mut out.dataset),
-        "--sequence" => out.sequence = PathBuf::from(value),
+        "--sequence" => out.sequences.push(PathBuf::from(value)),
         "--out" => out.out = PathBuf::from(value),
         "--mode" => out.mode = mode_named(value)?,
         "--first" => out.first = integer_of(flag, value)?,
@@ -1429,8 +1488,8 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
 }
 
 /// Reads the command line: [`USAGE`], flags in any order, each with its value but
-/// `--record-features`, `--threaded` and `--views`, `--option` repeatable and naming a field of
-/// `slam_it.edge.options.Options`.
+/// `--record-features`, `--threaded` and `--views`; `--sequence` repeatable, each a session in
+/// turn; `--option` repeatable and naming a field of `slam_it.edge.options.Options`.
 ///
 /// # Arguments
 ///
@@ -1445,12 +1504,12 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
 /// `InvalidInput` for an unknown, repeated or missing flag, a flag without its value, an
 /// unknown mode or setting, or a value that is not a number.
 pub fn parse(arguments: &[String]) -> Result<Request> {
-    let mut out = Request::new("", Path::new(""), Mode::Monocular, Path::new(""));
+    let mut out = Request::new("", &[], Mode::Monocular, Path::new(""));
     let mut seen: Vec<&str> = Vec::new();
     let mut rest = arguments;
     while let Some((flag, after)) = rest.split_first() {
         let flag = flag.as_str();
-        if flag != "--option" && seen.contains(&flag) {
+        if !["--option", "--sequence"].contains(&flag) && seen.contains(&flag) {
             return invalid(format!("{flag}: given twice"));
         }
         seen.push(flag);
@@ -1500,10 +1559,13 @@ fn switch<'a>(request: &'a mut Request, flag: &str) -> Option<&'a mut bool> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for an unknown dataset, a mode it does not record (TUM has no stereo pairs,
-/// EuRoC no depth maps), a negative `first` or `count`, `views` with `threaded`, or settings
-/// out of range.
+/// `InvalidInput` for no sequence, an unknown dataset, a mode it does not record (TUM has no
+/// stereo pairs, EuRoC no depth maps), a negative `first` or `count`, `views` with `threaded`,
+/// settings out of range, or a vocabulary missing while relocalising or given while not.
 pub fn check(request: &Request) -> Result<()> {
+    if request.sequences.is_empty() {
+        return invalid("--sequence: missing".to_owned());
+    }
     if !DATASETS.contains(&request.dataset.as_str()) {
         return invalid(format!(
             "dataset: expected tum or euroc, got '{}'",
@@ -1537,6 +1599,63 @@ pub fn check(request: &Request) -> Result<()> {
     check_options(&request.options)
 }
 
+/// A session's median frame interval, as numpy's `median` of its times' differences.
+///
+/// # Arguments
+///
+/// * `times` - Its frames' times, at least two, ascending.
+///
+/// # Returns
+///
+/// The median interval, in seconds.
+fn median_interval(times: &[f64]) -> f64 {
+    let mut intervals: Vec<f64> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    intervals.sort_by(f64::total_cmp);
+    let half = intervals.len() / 2;
+    if intervals.len() % 2 == 1 {
+        intervals[half]
+    } else {
+        f64::midpoint(intervals[half - 1], intervals[half])
+    }
+}
+
+/// Each session's time offset, in seconds (`slam_it.orchestration.vo.session_offsets`): 0
+/// while its times come after those before; otherwise its first frame is moved on to one frame
+/// period after the last time before (moved by its own offset), the period the session
+/// before's median frame interval (1 s for one of fewer than two frames).
+///
+/// # Arguments
+///
+/// * `times` - Each session's frames' times, in seconds, ascending.
+///
+/// # Returns
+///
+/// Each session's offset, the first's 0.
+#[must_use]
+pub fn session_offsets(times: &[Vec<f64>]) -> Vec<f64> {
+    let mut offsets = Vec::with_capacity(times.len());
+    let mut end: Option<f64> = None;
+    let mut period = 1.0;
+    for session in times {
+        let mut offset = 0.0;
+        if let (Some(last), Some(&start)) = (end, session.first())
+            && start <= last
+        {
+            offset = last + period - start;
+        }
+        offsets.push(offset);
+        if let Some(&finish) = session.last() {
+            end = Some(finish + offset);
+            period = if session.len() >= 2 {
+                median_interval(session)
+            } else {
+                1.0
+            };
+        }
+    }
+    offsets
+}
+
 /// Runs a sequence through the pipeline: the run, not yet written, as Python's program builds
 /// it before writing (`slam_it.orchestration.vo.main`). The program records its own process in
 /// it (`slam_it_eval::budgets`) and writes it to `request.out`.
@@ -1554,11 +1673,21 @@ pub fn check(request: &Request) -> Result<()> {
 /// The check's, a reader's or the pipeline's.
 pub fn run(request: &Request) -> Result<Run> {
     check(request)?;
-    let source = if request.dataset == "tum" {
-        tum_source(&request.sequence, request.mode)?
-    } else {
-        euroc_source(&request.sequence, request.mode)?
-    };
+    let mut sources: Vec<Source> = Vec::with_capacity(request.sequences.len());
+    for sequence in &request.sequences {
+        let source = if request.dataset == "tum" {
+            tum_source(sequence, request.mode)?
+        } else {
+            euroc_source(sequence, request.mode)?
+        };
+        if sources
+            .first()
+            .is_some_and(|first| first.camera != source.camera)
+        {
+            return invalid("--sequence: the sequences' cameras differ".to_owned());
+        }
+        sources.push(source);
+    }
     let (words, record) = match &request.vocabulary {
         Some(folder) => {
             let read = vocabularies::read(folder)?;
@@ -1566,9 +1695,10 @@ pub fn run(request: &Request) -> Result<Run> {
         }
         None => (None, None),
     };
+    let camera = sources[0].camera.clone();
     let mut pipeline = Pipeline::new(
         request.mode,
-        source.camera.clone(),
+        camera,
         request.options,
         words,
         if request.threaded {
@@ -1581,7 +1711,12 @@ pub fn run(request: &Request) -> Result<Run> {
     )?;
     let mut out = Run {
         dataset: request.dataset.clone(),
-        sequence: sequence_name(&request.sequence),
+        sequence: request
+            .sequences
+            .iter()
+            .map(|sequence| sequence_name(sequence))
+            .collect::<Vec<_>>()
+            .join("+"),
         mode: request.mode.name().to_owned(),
         backend: "rust".to_owned(),
         settings: settings(&request.options),
@@ -1595,7 +1730,13 @@ pub fn run(request: &Request) -> Result<Run> {
     } else {
         None
     };
-    track(&source, &mut pipeline, request, &mut out, features.as_mut())?;
+    track(
+        &sources,
+        &mut pipeline,
+        request,
+        &mut out,
+        features.as_mut(),
+    )?;
     record_trajectory(&mut out, pipeline.trajectory())?;
     record_lives(&mut out, pipeline.lifetimes())?;
     Ok(out)
@@ -1603,9 +1744,9 @@ pub fn run(request: &Request) -> Result<Run> {
 
 #[cfg(test)]
 mod tests {
-    //! Native tests of reading the command line, the request's checks, and a run of no frames
-    //! on a fixture folder (the fixtures list images without holding them). The whole room is
-    //! run, through every backend, by `tests/orchestration`.
+    //! Native tests of reading the command line, the request's checks, the sessions' time
+    //! offsets, and runs of no frames on fixture folders (the fixtures list images without
+    //! holding them). The whole room is run, through every backend, by `tests/orchestration`.
 
     use super::*;
     use slam_it_edge::options::CovisibilityOptions;
@@ -1694,6 +1835,13 @@ mod tests {
             (plain.first, plain.count, plain.record_features),
             (0, None, false)
         );
+        assert_eq!(plain.sequences, [folder("tum_camera")]);
+        let sessions = parse(&command(&["--sequence", "second", "--sequence", "third"])).unwrap();
+        assert_eq!(
+            sessions.sequences,
+            [folder("tum_camera"), "second".into(), "third".into()],
+            "--sequence repeats, each a session in turn"
+        );
     }
 
     /// A bad flag, value or setting, a repeated flag, or a missing one is refused.
@@ -1722,13 +1870,13 @@ mod tests {
         assert_eq!(parse(&short).unwrap_err().kind, ErrorKind::InvalidInput);
     }
 
-    /// Unknown datasets, modes a dataset does not record, negative counts and settings out of
-    /// range are refused.
+    /// Unknown datasets, modes a dataset does not record, negative counts, settings out of range
+    /// and no sequence are refused.
     #[test]
     fn checks_requests() {
         let mut good = Request::new(
             "tum",
-            &folder("tum_camera"),
+            &[folder("tum_camera")],
             Mode::Monocular,
             Path::new("run"),
         );
@@ -1744,9 +1892,13 @@ mod tests {
                 mode: Mode::Stereo,
                 ..good.clone()
             },
-            Request::new("euroc", &folder("euroc"), Mode::Rgbd, Path::new("run")),
+            Request::new("euroc", &[folder("euroc")], Mode::Rgbd, Path::new("run")),
             Request {
                 count: Some(-1),
+                ..good.clone()
+            },
+            Request {
+                sequences: Vec::new(),
                 ..good.clone()
             },
         ];
@@ -1772,7 +1924,7 @@ mod tests {
         let out = std::env::temp_dir().join(format!("slam_it_test_vo_rust_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         let _guard = Scratch(out.clone());
-        let mut request = Request::new("tum", &folder("tum_camera"), Mode::Rgbd, &out);
+        let mut request = Request::new("tum", &[folder("tum_camera")], Mode::Rgbd, &out);
         request.options.relocalization.enabled = false;
         request.options.loops.enabled = false;
         request.count = Some(0);
@@ -1801,12 +1953,50 @@ mod tests {
         assert!(text.contains("\"mapping\": {") && out.join("trajectory.txt").exists());
         request.count = Some(1);
         assert_eq!(run(&request).unwrap_err().kind, ErrorKind::InvalidInput);
-        let mut stereo = Request::new("euroc", &folder("euroc"), Mode::Stereo, &out);
+        let mut stereo = Request::new("euroc", &[folder("euroc")], Mode::Stereo, &out);
         stereo.options.relocalization.enabled = false;
         stereo.options.loops.enabled = false;
         stereo.count = Some(1);
         assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
-        stereo.sequence = folder("no_such_sequence");
+        stereo.sequences = vec![folder("no_such_sequence")];
         assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+
+    /// A session after the ones before keeps its clock; one that starts again comes a frame
+    /// period after the last time before, the period the session before's median interval, 1 s
+    /// for one frame (`slam_it.orchestration.vo.session_offsets`'s examples, and more).
+    #[test]
+    fn offsets_the_sessions_times() {
+        assert_eq!(
+            session_offsets(&[vec![0.0, 0.5, 1.0], vec![2.0, 2.5]]),
+            [0.0, 0.0]
+        );
+        assert_eq!(
+            session_offsets(&[vec![0.0, 0.5, 1.0], vec![0.0, 0.5]]),
+            [0.0, 1.5]
+        );
+        assert_eq!(
+            session_offsets(&[vec![0.0, 0.1, 0.2, 0.6], vec![], vec![1.0], vec![0.0]]),
+            [0.0, 0.0, 0.0, 2.0]
+        );
+    }
+
+    /// A run of two sequences is named for both; sequences of different cameras are refused.
+    #[test]
+    fn runs_several_sequences() {
+        let out = std::env::temp_dir().join(format!(
+            "slam_it_test_vo_rust_sessions_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
+        let both = [folder("tum_camera"), folder("tum_no_depth")];
+        let mut request = Request::new("tum", &both, Mode::Monocular, &out);
+        request.options.relocalization.enabled = false; // no vocabulary: no keyframe database
+        request.options.loops.enabled = false;
+        request.count = Some(0);
+        assert_eq!(run(&request).unwrap().sequence, "tum_camera+tum_no_depth");
+        request.sequences[1] = folder("rgbd_dataset_freiburg1_fixture");
+        assert_eq!(run(&request).unwrap_err().kind, ErrorKind::InvalidInput);
     }
 }

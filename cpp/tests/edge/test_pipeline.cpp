@@ -2,11 +2,12 @@
 /// @brief Native tests for the pipeline (slam_it/edge/pipeline.hpp) on the exact scene seen
 ///        along a sideways path: RGB-D and stereo track every frame exactly, monocular starts
 ///        its map and keeps the path's direction, and empty frames lose the track, the next
-///        frame starting a new map; relocalising, a kept map is lost in time and a small one in
-///        frames, and a frame the fallback cannot reach is relocalised. Tracking on the view a
-///        writer would publish decides as on the map, and threaded, the views published are a
-///        part of the map, their sizes kept; after a correction the next frame follows its
-///        keyframe, and a keyframe queued across it is placed by its reference.
+///        frame starting a new map, as a new session does; relocalising, a kept map is lost in
+///        time and a small one in frames, and a frame the fallback cannot reach is relocalised.
+///        Tracking on the view a writer would publish decides as on the map, and threaded, the
+///        views published are a part of the map, their sizes kept; after a correction the next
+///        frame follows its keyframe, and a keyframe queued across it is placed by its
+///        reference.
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
@@ -214,6 +215,21 @@ bool lived(const edge::Lifetimes& lives, std::int64_t first, bool reset, std::in
   return true;
 }
 
+/// @brief An RGB-D pipeline at some settings, its map started on the path's first frame.
+/// @param options The settings.
+/// @param failures Running failure count, one more if the pipeline did not start map 0.
+/// @return The pipeline and its first frame's result; none if it did not start map 0.
+std::optional<std::pair<edge::Pipeline, edge::FrameResult>> started_rgbd(
+    const edge::Options& options, int& failures) {
+  auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt);
+  const auto started = start(pipeline);
+  if (!started || started->map != 0) {
+    expect(false, "the pipeline starts map 0", failures);
+    return std::nullopt;
+  }
+  return std::pair{*std::move(pipeline), *started};
+}
+
 /// @brief Check losing the track: the map of one keyframe is reset with `loss.reset_keyframes` 1,
 ///        the rule's boundary, or kept with 0, and the next frame starts map 1, its ids following
 ///        map 0's.
@@ -222,38 +238,67 @@ void check_lost(int& failures) {
   for (const std::int64_t reset_keyframes : {std::int64_t{1}, std::int64_t{0}}) {
     edge::Options options = small_scene();
     options.loss.reset_keyframes = reset_keyframes;
-    auto pipeline =
-        edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt);
-    const auto started = start(pipeline);
-    if (!started || started->map != 0) {
-      expect(false, "the pipeline starts map 0", failures);
+    auto run = started_rgbd(options, failures);
+    if (!run) {
       return;
     }
+    auto& [pipeline, started] = *run;
     std::optional<edge::FrameResult> lost;
     for (std::int64_t i = 0; i < options.loss.lost_frames; ++i) {
-      lost = pipeline->track(empty_frame()).value();
+      lost = pipeline.track(empty_frame()).value();
     }
     const bool reset = reset_keyframes > 0;
     expect(lost && lost->state == edge::State::kLost && !lost->pose && lost->map == 0 &&
                lost->summary.lost && lost->summary.lost->reset == reset &&
                lost->summary.lost->keyframes == 1 &&
-               pipeline->state() == edge::State::kNotInitialized && !pipeline->map(),
+               pipeline.state() == edge::State::kNotInitialized && !pipeline.map(),
            "loss.lost_frames frames in a row untracked lose the track and close the map", failures);
-    const auto restarted = pipeline->track(scene::frame_at(along(1), true));
+    const auto restarted = pipeline.track(scene::frame_at(along(1), true));
     bool made_after = restarted.has_value() && restarted->map == 1 && restarted->keyframe;
     for (std::size_t j = 0; made_after && j < restarted->fates.point.size(); ++j) {
       made_after = restarted->fates.fate[j] != edge::Fate::kMade ||
-                   restarted->fates.point[j] >= started->tracked;
+                   restarted->fates.point[j] >= started.tracked;
     }
-    expect(made_after &&
-               lived(pipeline->lifetimes(), started->tracked, reset, options.loss.lost_frames),
-           "the next frame starts map 1, the run's ids following map 0's", failures);
+    expect(
+        made_after && lived(pipeline.lifetimes(), started.tracked, reset, options.loss.lost_frames),
+        "the next frame starts map 1, the run's ids following map 0's", failures);
   }
   edge::Camera monocular = scene::camera();
   monocular.baseline = 0.0;
   expect(is_invalid_input(
              edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{}, std::nullopt)),
          "RGB-D without a baseline is refused", failures);
+}
+
+/// @brief Check starting a session: the map of one keyframe is reset with
+///        `loss.session_keyframes` 2 (fewer than 2) or kept with 1, nothing is closed with no
+///        map tracked, and the session's first frame starts map 1, a reset map's lives ending
+///        on it and its frames leaving the trajectory.
+/// @param failures Running failure count.
+void check_sessions(int& failures) {
+  for (const std::int64_t session_keyframes : {std::int64_t{2}, std::int64_t{1}}) {
+    edge::Options options = small_scene();
+    options.loss.session_keyframes = session_keyframes;
+    auto run = started_rgbd(options, failures);
+    if (!run) {
+      return;
+    }
+    auto& [pipeline, started] = *run;
+    const bool reset = session_keyframes > 1;
+    const auto closed = pipeline.start_session();
+    const auto again = pipeline.start_session();
+    expect(closed && *closed && (*closed)->keyframes == 1 && (*closed)->points == started.tracked &&
+               (*closed)->reset == reset && pipeline.state() == edge::State::kNotInitialized &&
+               !pipeline.map() && again && !*again,
+           "a session started closes the map tracked, and nothing with none", failures);
+    const auto restarted = pipeline.track(scene::frame_at(along(1), true));
+    const std::vector<std::int64_t> maps =
+        reset ? std::vector<std::int64_t>{1} : std::vector<std::int64_t>{0, 1};
+    expect(restarted && restarted->map == 1 && restarted->keyframe &&
+               pipeline.trajectory().maps == maps &&
+               lived(pipeline.lifetimes(), started.tracked, reset, 1),
+           "the session's first frame starts map 1", failures);
+  }
 }
 
 /// @brief The settings relocalising, a map above `loss.reset_keyframes` kept: the scene's, with
@@ -695,6 +740,7 @@ int run_tests() {
   check_depth_modes(failures);
   check_monocular(failures);
   check_lost(failures);
+  check_sessions(failures);
   check_lost_relocalizing(failures);
   check_closing_loops_alone(failures);
   check_relocalized(failures);

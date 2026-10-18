@@ -1,7 +1,7 @@
 //! Integration tests of the pipeline (`slam_it_edge::pipeline`) on the exact scene seen along
 //! a sideways path: RGB-D and stereo track every frame exactly, monocular starts its map and
 //! keeps the path's direction, and empty frames lose the track, the next frame starting a new
-//! map; relocalising, a kept map is lost in time and a small one in frames, and a frame the
+//! map, as a new session does; relocalising, a kept map is lost in time and a small one in frames, and a frame the
 //! fallback cannot reach is relocalised; the final trajectory follows the keyframes, and a reset
 //! map's frames leave it. Tracking on the view a writer would publish decides as on the map, and
 //! threaded, the views published are a part of the map, their sizes kept; after a correction the
@@ -160,16 +160,30 @@ fn monocular_tracks_the_path_direction() {
     }
 }
 
+/// A pipeline in turn, with no vocabulary, its map started in map 0 on the path's first frame.
+///
+/// # Arguments
+///
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The pipeline, and the first frame's result.
+fn start_on_the_path(options: &Options) -> (Pipeline, FrameResult) {
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), *options, None, Threading::Inline).unwrap();
+    let first = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
+    assert_eq!(first.map, Some(0));
+    (pipeline, first)
+}
+
 #[test]
 fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     // The map has one keyframe: 1, the rule's boundary, resets it; 0 keeps it.
     for reset_keyframes in [1, 0] {
         let mut options = small_scene();
         options.loss.reset_keyframes = reset_keyframes;
-        let mut pipeline =
-            Pipeline::new(Mode::Rgbd, camera(), options, None, Threading::Inline).unwrap();
-        let started = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
-        assert_eq!(started.map, Some(0));
+        let (mut pipeline, started) = start_on_the_path(&options);
         let empty = empty_frame(1.0);
         let results: Vec<FrameResult> = (0..options.loss.lost_frames)
             .map(|_| pipeline.track(&empty).unwrap())
@@ -227,6 +241,43 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     )
     .unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// A session started closes the map tracked: the map of one keyframe is reset with
+/// `loss.session_keyframes` 2 (fewer than 2) or kept with 1, nothing is closed with no map
+/// tracked, and the session's first frame starts map 1, a reset map's lives ending on it and
+/// its frames leaving the trajectory.
+#[test]
+fn a_new_session_closes_the_map_and_starts_another() {
+    for session_keyframes in [2, 1] {
+        let mut options = small_scene();
+        options.loss.session_keyframes = session_keyframes;
+        let (mut pipeline, started) = start_on_the_path(&options);
+        let reset = session_keyframes > 1;
+        assert_eq!(
+            pipeline.start_session().unwrap(),
+            Some(LostSummary {
+                keyframes: 1,
+                points: started.tracked,
+                reset
+            })
+        );
+        assert_eq!(pipeline.state(), State::NotInitialized);
+        assert!(pipeline.map().is_none());
+        assert_eq!(pipeline.start_session().unwrap(), None);
+        let restarted = pipeline.track(&frame_at(&along(1), true, 0)).unwrap();
+        assert_eq!((restarted.map, restarted.keyframe), (Some(1), true));
+        assert_eq!(
+            pipeline.trajectory().maps,
+            if reset { vec![1] } else { vec![0, 1] }
+        );
+        let ended = if reset {
+            [1, Removal::Reset.code()]
+        } else {
+            [-1, -1]
+        };
+        assert_eq!(pipeline.lifetimes().keyframe_lives[0][1..], ended);
+    }
 }
 
 /// The settings relocalising: the scene's, with `relocalization.enabled` and `loops.enabled` on

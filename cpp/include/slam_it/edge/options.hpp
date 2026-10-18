@@ -367,6 +367,10 @@ struct LossOptions {
   std::int64_t lost_frames{5};
   /// @brief A map lost with this many keyframes or fewer is reset rather than kept.
   std::int64_t reset_keyframes{10};
+  /// @brief A map a session ends with fewer keyframes than this is reset rather than kept, when
+  ///        a run of several sequences starts the next (ORB-SLAM3's `ChangeDataset`, 12). 0
+  ///        keeps every map.
+  std::int64_t session_keyframes{12};
 };
 
 /// @brief The edge pipeline's settings (`slam_it.edge.options.Options`), grouped by the stage
@@ -558,6 +562,7 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("loss.relocalize_seconds", options.loss.relocalize_seconds);
   visit("loss.lost_frames", options.loss.lost_frames);
   visit("loss.reset_keyframes", options.loss.reset_keyframes);
+  visit("loss.session_keyframes", options.loss.session_keyframes);
   visit("seed", options.seed);
 }
 

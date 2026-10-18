@@ -589,6 +589,9 @@ pub struct LossOptions {
     pub lost_frames: usize,
     /// A map lost with this many keyframes or fewer is reset rather than kept.
     pub reset_keyframes: usize,
+    /// A map a session ends with fewer keyframes than this is reset rather than kept, when a run
+    /// of several sequences starts the next (ORB-SLAM3's `ChangeDataset`, 12). 0 keeps every map.
+    pub session_keyframes: usize,
 }
 
 impl Default for LossOptions {
@@ -597,6 +600,7 @@ impl Default for LossOptions {
             relocalize_seconds: 3.0,
             lost_frames: 5,
             reset_keyframes: 10,
+            session_keyframes: 12,
         }
     }
 }
@@ -810,7 +814,7 @@ named_settings!(
     },
     relocalization: RelocalizationOptions { enabled: Flag, ratio: Real, common_words: Real, neighbours: Integer, group_score: Real, min_matches: Integer, inlier_ratio: Real, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, window: Real, narrow_inliers: Integer, narrow_window: Real, narrow_distance: Integer },
     loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer, weld_neighbours: Integer, weld_widen: Integer, weld_rounds: Integer },
-    loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer },
+    loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer, session_keyframes: Integer },
 );
 
 /// Checks the descriptor distances and the stereo matching's settings, named as `Options`' fields.
@@ -862,6 +866,7 @@ pub fn check_options(options: &Options) -> Result<()> {
             options.initialization.min_features_depth,
         ),
         ("loss.reset_keyframes", options.loss.reset_keyframes),
+        ("loss.session_keyframes", options.loss.session_keyframes),
         ("loops.weld_rounds", options.loops.weld_rounds),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
@@ -1197,7 +1202,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 137);
+        assert_eq!(settings.len(), 138);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
         options

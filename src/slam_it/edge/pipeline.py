@@ -238,7 +238,10 @@ def _record(summary: _Summary | None) -> dict[str, Any] | None:
 
 @dataclass(frozen=True)
 class LostSummary:
-    """The map a lost track closed, as a run records it on the frame it was lost on.
+    """A map closed, as a run records it.
+
+    On the frame a track was lost on (``lost``), the frame that took up a kept map (``left``),
+    or a session's first frame (``session``'s ``closed``).
 
     Attributes
     ----------
@@ -247,7 +250,8 @@ class LostSummary:
     points : int
         Its points.
     reset : bool
-        Whether it was reset, having ``loss.reset_keyframes`` keyframes or fewer, rather than kept.
+        Whether it was reset rather than kept, having too few keyframes: ``loss.reset_keyframes``
+        or fewer, or fewer than ``loss.session_keyframes`` as a session ended.
     """
 
     keyframes: int
@@ -1868,19 +1872,20 @@ class Pipeline:
 
         The tracking and loop-closing state go with the map, so the next frame starts a new one.
         """
-        left = self._leave(dated=True)
+        left = self._leave(dated=True, small=self.options.loss.reset_keyframes + 1)
         self.tracking = TrackingState()
         self.state = State.NOT_INITIALIZED
         return left
 
-    def _leave(self, *, dated: bool) -> LostSummary:
+    def _leave(self, *, dated: bool, small: int) -> LostSummary:
         """Close the map being tracked: keep it whole, or reset it if it is small.
 
-        Its loop-closing state goes with it. `dated` says whether this frame is dated already.
-        Threaded, the threads have settled first.
+        It is reset with fewer than `small` keyframes. Its loop-closing state goes with it.
+        `dated` says whether this frame is dated already. Threaded, the threads have settled
+        first.
         """
         m, db = self.owner.close()
-        reset = m.keyframes <= self.options.loss.reset_keyframes
+        reset = m.keyframes < small
         self.atlas.close(m, db, reset=reset, dated=dated)
         # Loop closing's thread shares the state: cleared in place, the threads settled by now.
         self.closing.pending, self.closing.merging = None, None
@@ -1899,11 +1904,40 @@ class Pipeline:
             settling = time.perf_counter()
             self._threads.settle(apply=False)
             waited = time.perf_counter() - settling
-        left = self._leave(dated=False)
+        left = self._leave(dated=False, small=self.options.loss.reset_keyframes + 1)
         kept = self.atlas.resume(number)
         self.owner.resume(kept.map, kept.database)
         self.tracking.change_map()
         return left, waited
+
+    def start_session(self) -> LostSummary | None:
+        """Start the next of a run's sequences: the map being tracked closed, a new one to come.
+
+        ORB-SLAM3's ``ChangeDataset``: the map is reset if it holds fewer than
+        ``loss.session_keyframes`` keyframes, kept whole otherwise, and tracking and loop closing
+        start again, so the sequence's first frames start a new map (a monocular reference
+        waiting for its second view dropped too).
+
+        Threaded, the map waits for the threads first, as a lost map does.
+
+        Returns
+        -------
+        LostSummary or None
+            How the map was closed; None if none was being tracked.
+
+        Raises
+        ------
+        BaseException
+            Threaded, the error a thread failed with, if one did.
+        """
+        closed = None
+        if self.owner.map is not None:
+            if self._threads is not None:
+                self._threads.settle(apply=False)
+            closed = self._leave(dated=False, small=self.options.loss.session_keyframes)
+        self.tracking = TrackingState()
+        self.state = State.NOT_INITIALIZED
+        return closed
 
     def _initialize(self, frame: Frame) -> _Step:
         """Try to start the map with this frame."""

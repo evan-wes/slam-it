@@ -648,11 +648,16 @@ class LossOptions:
         A map lost with this many keyframes or fewer is reset rather than kept: its keyframes
         and points removed, its frames' poses dropped (ORB-SLAM3's ``ResetActiveMap``, for a
         map of up to 10 keyframes). 0 keeps every map.
+    session_keyframes : int
+        A map a session ends with fewer keyframes than this is reset rather than kept, when a
+        run of several sequences starts the next (ORB-SLAM3's ``ChangeDataset``, 12). 0 keeps
+        every map.
     """
 
     relocalize_seconds: float = 3.0
     lost_frames: int = 5
     reset_keyframes: int = 10
+    session_keyframes: int = 12
 
 
 @dataclass(frozen=True)
@@ -891,6 +896,7 @@ _MAY_BE_ZERO = frozenset(
         "initialization.min_features",
         "initialization.min_features_depth",
         "loss.reset_keyframes",
+        "loss.session_keyframes",
         "loops.weld_rounds",
     }
 )

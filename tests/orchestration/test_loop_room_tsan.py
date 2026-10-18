@@ -42,7 +42,7 @@ def test_the_loop_room_closes_its_loop_under_thread_sanitizer(
     if not program:
         pytest.fail(f"{TSAN_PROGRAM}: set it to a ThreadSanitizer build's slam_it_vo")
     request = vo.Request(
-        "tum", loop_folders.tum, "rgbd", tmp_path / "run", options=OPTIONS,
+        "tum", (loop_folders.tum,), "rgbd", tmp_path / "run", options=OPTIONS,
         vocabulary=vocabularies.DEFAULT, threaded=True, locks=locks,
     )  # fmt: skip
     vo.check(request)

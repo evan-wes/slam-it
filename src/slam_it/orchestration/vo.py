@@ -17,6 +17,19 @@ builds each frame for the mode (:mod:`slam_it.edge.frames`), tracks it
   pairs and EuRoC no depth maps (:func:`check`).
 - **The frames.** ``count`` of them from ``first`` (all by default), in the sequence's order.
   An RGB-D frame without a depth map within the reader's tolerance is skipped.
+- **Sessions** (the online-SLAM design's section 14, item 5): a run may take several sequences,
+  run in turn, each a session, as ORB-SLAM3's ``ChangeDataset`` runs them. Before the first
+  frame run of each session after the run's first is tracked, the map being tracked is closed:
+  reset if it holds fewer than ``loss.session_keyframes`` keyframes (its lives ending on that
+  frame), kept otherwise; the session's frames start a new map
+  (:meth:`slam_it.edge.pipeline.Pipeline.start_session`). That frame's diagnostics line records
+  the boundary, as ``session``: the session's ``index``, its ``sequence`` (the folder's name),
+  its ``offset`` in seconds, and how the map tracked was closed (``closed``: its
+  ``keyframes``, ``points`` and whether it was ``reset``; null if none was). The sequences
+  share one camera; ``first`` and ``count`` count the frames of all of them, in turn. Each
+  keeps its own clock while its times come after the sessions' before; otherwise its times are
+  moved on by an offset, so its first frame comes one frame period after the last one before
+  (:func:`session_offsets`). The run's ``sequence`` is its folders' names, joined by ``+``.
 - **Each frame** gives one diagnostics line (``timestamp``, ``state``, ``map``, ``tracked``,
   ``keyframe``, the time each step took, in seconds: the run format's
   :data:`slam_it.eval.runs.STEPS`; then how its stages went:
@@ -104,9 +117,10 @@ MODULE = "slam_it.orchestration.vo"
 """This module, which Python's program runs (``python -m``)."""
 
 USAGE = (
-    f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH --mode "
-    "monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] [--vocabulary FOLDER] "
-    "[--record-features] [--threaded [--locks] | --views] [--option KEY=VALUE ...]"
+    f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH [--sequence PATH ...] "
+    "--mode monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] "
+    "[--vocabulary FOLDER] [--record-features] [--threaded [--locks] | --views] "
+    "[--option KEY=VALUE ...]"
 )
 """Python's program's command line: the native programs' (their ``kUsage``/``USAGE``)."""
 
@@ -150,8 +164,9 @@ class Request:
     ----------
     dataset : str
         One of :data:`slam_it.eval.runs.DATASETS`.
-    sequence : pathlib.Path
-        The sequence's folder.
+    sequences : tuple of pathlib.Path
+        The sequences' folders, run in turn, each its own session (the module docstring): one
+        or more.
     mode : str
         One of :data:`slam_it.edge.options.MODES`.
     out : pathlib.Path
@@ -177,7 +192,7 @@ class Request:
     """
 
     dataset: str
-    sequence: Path
+    sequences: tuple[Path, ...]
     mode: str
     out: Path
     first: int = 0
@@ -195,17 +210,16 @@ class Request:
         Returns
         -------
         list of str
-            The arguments after the program's name: every flag (``--vocabulary`` if given,
-            ``--record-features``, ``--threaded``, ``--locks`` and ``--views`` if asked), and
-            ``--option KEY=VALUE`` for
-            each setting that differs from its default (flags as ``true`` or ``false``, integers
-            as integers, reals round-tripping).
+            The arguments after the program's name: every flag (``--sequence`` once per
+            sequence, in turn; ``--vocabulary`` if given; ``--record-features``,
+            ``--threaded``, ``--locks`` and ``--views`` if asked), and ``--option KEY=VALUE``
+            for each setting that differs from its default (flags as ``true`` or ``false``,
+            integers as integers, reals round-tripping).
         """
         out = [
             "--dataset",
             self.dataset,
-            "--sequence",
-            str(self.sequence),
+            *(item for path in self.sequences for item in ("--sequence", str(path))),
             "--mode",
             self.mode,
             "--out",
@@ -250,12 +264,14 @@ def check(request: Request) -> None:
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        For an unknown dataset or mode, a mode the dataset does not record (TUM has no stereo
-        pairs, EuRoC no depth maps), a negative `first` or `count`, a vocabulary missing
-        while relocalising or closing loops, or given while doing neither, ``locks`` without
-        ``threaded``, or ``views`` with it. (The options checked themselves when they were
-        made; the vocabulary's folder is checked when it is read.)
+        For no sequence, an unknown dataset or mode, a mode the dataset does not record (TUM
+        has no stereo pairs, EuRoC no depth maps), a negative `first` or `count`, a vocabulary
+        missing while relocalising or closing loops, or given while doing neither, ``locks``
+        without ``threaded``, or ``views`` with it. (The options checked themselves when they
+        were made; the vocabulary's folder is checked when it is read.)
     """
+    if not request.sequences:
+        raise InvalidInputError("--sequence: missing")
     if request.dataset not in runs.DATASETS:
         wanted = " or ".join(runs.DATASETS)
         raise InvalidInputError(f"dataset: expected {wanted}, got {request.dataset!r}")
@@ -335,7 +351,7 @@ def parse(arguments: Sequence[str]) -> Request:
     """Read a program's command line (:data:`USAGE`), as the native programs read theirs.
 
     Flags come in any order, each with its value but ``--record-features``, ``--threaded``,
-    ``--locks`` and ``--views``;
+    ``--locks`` and ``--views``; ``--sequence`` is repeatable, each a session in turn;
     ``--option KEY=VALUE`` is repeatable and names a setting of
     :class:`~slam_it.edge.options.Options` by its group and field.
 
@@ -358,6 +374,7 @@ def parse(arguments: Sequence[str]) -> Request:
         setting, or a value that is not a number.
     """
     values: dict[str, str] = {}
+    sequences: list[Path] = []
     numbers: dict[str, int] = {}
     changes: dict[str, Any] = {}  # each of its setting's type (parse_setting)
     i = 0
@@ -377,6 +394,10 @@ def parse(arguments: Sequence[str]) -> Request:
             key, setting = parse_setting(value)
             changes[key] = setting
             continue
+        if flag == "--sequence":
+            sequences.append(Path(value))
+            values[flag] = value
+            continue
         if flag in values:
             raise UsageError(f"{flag}: given twice")
         if flag not in (*_REQUIRED, "--first", "--count", "--vocabulary"):
@@ -391,7 +412,7 @@ def parse(arguments: Sequence[str]) -> Request:
             raise UsageError(f"{required}: missing")
     return Request(
         values["--dataset"],
-        Path(values["--sequence"]),
+        tuple(sequences),
         values["--mode"],
         Path(values["--out"]),
         first=numbers.get("--first", 0),
@@ -459,7 +480,7 @@ def options_for(width: int, height: int) -> Options:
 
 def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest keyword-only
     dataset: str,
-    sequence: str | Path,
+    sequence: str | Path | Sequence[str | Path],
     mode: str,
     out: str | Path,
     *,
@@ -480,8 +501,9 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     ----------
     dataset : {"tum", "euroc"}
         The dataset the sequence comes from.
-    sequence : str or pathlib.Path
-        The sequence's folder: a TUM-format folder, or a EuRoC sequence (holding ``mav0``).
+    sequence : str or pathlib.Path, or a sequence of them
+        The sequence's folder: a TUM-format folder, or a EuRoC sequence (holding ``mav0``); or
+        several, run in turn, each a session (the module docstring).
     mode : {"monocular", "stereo", "rgbd"}
         The sensor mode.
     out : str or pathlib.Path
@@ -537,9 +559,10 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     RuntimeError
         If a program dies otherwise: killed, for one, past a budget's memory.
     """
+    folders = (sequence,) if isinstance(sequence, str | Path) else tuple(sequence)
     request = Request(
         dataset,
-        Path(sequence),
+        tuple(Path(folder) for folder in folders),
         mode,
         Path(out),
         first=first,
@@ -742,6 +765,55 @@ def open_source(dataset: str, sequence: str | Path, mode: str) -> Source:
     raise InvalidInputError(f"dataset: expected one of {runs.DATASETS}, got {dataset!r}")
 
 
+def session_offsets(times: Sequence[NDArray[np.float64]]) -> list[float]:
+    """Return each session's time offset, in seconds: 0 while its times come after those before.
+
+    A session whose first time is not after the last time of the sessions before it (moved on
+    by their offsets) is moved on so that its first frame comes one frame period after that
+    last one: the period is the session before's median frame interval (1 s for a session of
+    fewer than two frames).
+
+    Parameters
+    ----------
+    times : sequence of ndarray of float64, shape (F,)
+        Each session's frames' times, in seconds, ascending.
+
+    Returns
+    -------
+    list of float
+        Each session's offset, the first's 0.
+
+    Examples
+    --------
+    >>> session_offsets([np.array([0.0, 0.5, 1.0]), np.array([2.0, 2.5])])
+    [0.0, 0.0]
+    >>> session_offsets([np.array([0.0, 0.5, 1.0]), np.array([0.0, 0.5])])
+    [0.0, 1.5]
+    """
+    offsets: list[float] = []
+    end: float | None = None
+    period = 1.0
+    for session in times:
+        offset = 0.0
+        if end is not None and len(session) and session[0] <= end:
+            offset = end + period - float(session[0])
+        offsets.append(offset)
+        if len(session):
+            end = float(session[-1]) + offset
+            period = float(np.median(np.diff(session))) if len(session) >= 2 else 1.0
+    return offsets
+
+
+def _same_camera(first: frames.Camera, other: frames.Camera) -> bool:
+    """Return whether two sequences' cameras are the same: model, intrinsics, size, baseline."""
+    return (
+        first.model == other.model
+        and np.array_equal(first.intrinsics, other.intrinsics)
+        and (first.width, first.height, first.baseline)
+        == (other.width, other.height, other.baseline)
+    )
+
+
 def _read_vocabulary(request: Request) -> Vocabulary | None:
     """Read the request's vocabulary, if it names one (:func:`slam_it.eval.vocabularies.read`)."""
     return None if request.vocabulary is None else vocabularies.read(request.vocabulary)
@@ -752,42 +824,84 @@ def _world_cam(poses: NDArray[np.float64]) -> NDArray[np.float64]:
     return se3.inverse(poses) if len(poses) else np.zeros((0, 4, 4))
 
 
+_Turns = tuple[list[Source], list[float], list[tuple[int, int]]]
+"""A run's sequences in turn: their sources, the sessions' offsets, and the frames in order."""
+
+
+def _in_turn(request: Request) -> _Turns:
+    """Open the request's sequences: their sources, the sessions' offsets, the frames in turn.
+
+    The frames are ``(session, frame)`` pairs, in the order run. Raises
+    :class:`~slam_it.foundations.errors.InvalidInputError` if the sequences' cameras differ.
+    """
+    sources = [open_source(request.dataset, path, request.mode) for path in request.sequences]
+    if not all(_same_camera(sources[0].camera, other.camera) for other in sources[1:]):
+        raise InvalidInputError("--sequence: the sequences' cameras differ")
+    offsets = session_offsets([s.times for s in sources])
+    order = [(k, i) for k, s in enumerate(sources) for i in range(len(s.times))]
+    return sources, offsets, order
+
+
+def _start_session(
+    tracker: Pipeline, request: Request, index: int, offset: float
+) -> dict[str, object]:
+    """Start session `index`: close the map tracked, and say so as its first frame records it."""
+    closed = tracker.start_session()
+    return {
+        "index": index,
+        "sequence": request.sequences[index].resolve().name,
+        "offset": offset,
+        "closed": None if closed is None else closed.as_dict(),
+    }
+
+
 def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
     """Run the request with the Python pipeline, in-process, with its vocabulary as read.
 
     A run that fails ends its threads (:meth:`slam_it.edge.pipeline.Pipeline.close`).
     """
-    source = open_source(request.dataset, request.sequence, request.mode)
+    turns = _in_turn(request)
     matching = request.options.stereo_matching()
     tracker = Pipeline(
-        request.mode, source.camera, request.options, words, threaded=request.threaded
+        request.mode, turns[0][0].camera, request.options, words, threaded=request.threaded
     )
     try:
-        return _track_here(request, source, matching, tracker)
+        return _track_here(request, turns, matching, tracker)
     finally:  # after finish(), nothing to do (B3b's review panel, H5)
         tracker.close()
 
 
 def _track_here(
-    request: Request, source: Source, matching: stereo.Options, tracker: Pipeline
+    request: Request, turns: _Turns, matching: stereo.Options, tracker: Pipeline
 ) -> runs.Run:
-    """Track the request's frames with `tracker`, then finish it, and give the run."""
-    end = len(source.times)
+    """Track the request's frames in turn with `tracker`, then finish it, and give the run."""
+    sources, offsets, order = turns
+    source = sources[0]
+    end = len(order)
     if request.count is not None:
         end = min(end, request.first + request.count)
     diagnostics: list[dict[str, object]] = []
     held: list[_Keypoints] = []  # threaded: written once their keyframes are mapped
+    session: dict[str, object] | None = None
+    current: int | None = None
     recording: contextlib.AbstractContextManager[runs.FeatureWriter | None] = (
         runs.FeatureWriter(request.out) if request.record_features else contextlib.nullcontext()
     )
     with recording as features:
-        for i in range(request.first, end):
+        for k, i in order[request.first : end]:
             start = time.perf_counter()
-            delivered = source.read(i)
+            delivered = sources[k].read(i)
             after_read = time.perf_counter()
             if delivered is None:
                 continue
-            frame = _build(delivered, source.camera, tracker.extraction(), matching, source.mask)
+            if current is not None and k != current:
+                session = _start_session(tracker, request, k, offsets[k])
+            current = k
+            if offsets[k]:
+                delivered = replace(delivered, timestamp=delivered.timestamp + offsets[k])
+            frame = _build(
+                delivered, source.camera, tracker.extraction(), matching, sources[k].mask
+            )
             after_build = time.perf_counter()
             result = tracker.track(frame)
             diagnostics.append(
@@ -811,8 +925,10 @@ def _track_here(
                     "global_ba": [],
                     "global_ba_seconds": 0.0,
                     "views": [],  # Python's view is the map itself, published by reference
+                    **({} if session is None else {"session": session}),
                 }
             )
+            session = None
             if features is not None:
                 keypoints = frame.features.keypoints
                 kept = _Keypoints(keypoints.xy, keypoints.level, result.fates)
@@ -834,7 +950,7 @@ def _track_here(
     keyframes = lives.keyframe_poses
     return runs.Run(
         dataset=request.dataset,
-        sequence=request.sequence.resolve().name,
+        sequence="+".join(path.resolve().name for path in request.sequences),
         mode=request.mode,
         backend="python",
         timestamps=trajectory.timestamps,

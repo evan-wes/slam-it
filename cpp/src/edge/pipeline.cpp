@@ -1482,7 +1482,7 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
   }
   mark(fates, Fate::kMade, step.made, atlas);
   if (step.lost && owner.map()) {  // a lost frame was tracking a map
-    step.summary.lost = leave(true);
+    step.summary.lost = leave(true, options_.loss.reset_keyframes + 1);
     tracking_ = TrackingState{};
     state_ = State::kNotInitialized;
   }
@@ -1535,17 +1535,32 @@ Trajectory Pipeline::trajectory() const {
       [&] { return shared_->atlas().trajectory(owner.map() ? &*owner.map() : nullptr); });
 }
 
-LostSummary Pipeline::leave(bool dated) {
+LostSummary Pipeline::leave(bool dated, std::int64_t small) {
   auto [m, database] = shared_->owner().close();
   const std::size_t keyframes = m ? keyframe_count(*m) : 0;
   const LostSummary out{.keyframes = static_cast<std::int64_t>(keyframes),
                         .points = m ? static_cast<std::int64_t>(point_count(*m)) : 0,
-                        .reset = std::cmp_less_equal(keyframes, options_.loss.reset_keyframes)};
+                        .reset = std::cmp_less(keyframes, small)};
   if (m) {
     shared_->atlas().close(std::move(*m), std::move(database), out.reset, dated);
   }
   shared_->closing() = LoopState{};  // shared with loop closing's thread, settled by now
   return out;
+}
+
+Result<std::optional<LostSummary>> Pipeline::start_session() {
+  std::optional<LostSummary> closed;
+  if (shared_->owner().map()) {
+    if (threads_) {  // the threads end the map's work first, as for a map lost
+      if (auto ok = threads_->settle(false); !ok) {
+        return std::unexpected(std::move(ok.error()));
+      }
+    }
+    closed = leave(false, options_.loss.session_keyframes);
+  }
+  tracking_ = TrackingState{};
+  state_ = State::kNotInitialized;
+  return closed;
 }
 
 Result<std::pair<LostSummary, double>> Pipeline::switch_map(std::int64_t number,
@@ -1566,7 +1581,7 @@ Result<std::pair<LostSummary, double>> Pipeline::switch_map(std::int64_t number,
     }
     waited = Seconds(Clock::now() - settling).count();
   }
-  const LostSummary left = leave(false);
+  const LostSummary left = leave(false, options_.loss.reset_keyframes + 1);
   Indexed kept = shared_->atlas().resume(number);
   shared_->owner().resume(std::move(kept.map), std::move(kept.database));
   change_map(tracking_);

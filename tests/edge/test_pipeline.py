@@ -254,6 +254,31 @@ def test_a_lost_map_above_reset_keyframes_is_kept(rendered: list[room.Frame]) ->
     assert run.tracking.failures == 0
 
 
+@pytest.mark.parametrize(("session_keyframes", "reset"), [(2, True), (1, False)])
+def test_a_new_session_closes_the_map_and_starts_another(
+    rendered: list[room.Frame], session_keyframes: int, reset: bool
+) -> None:
+    """A session started closes the map tracked; the session's first frame starts map 1.
+
+    The map has one keyframe: loss.session_keyframes 2 resets it (fewer than 2), 1 keeps it, as
+    ORB-SLAM3's ChangeDataset does. A reset map's frames leave the trajectory and its lives end
+    on the session's first frame; with no map tracked, there is nothing to close.
+    """
+    options = OPTIONS.with_settings({"loss.session_keyframes": session_keyframes})
+    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
+    first, second = rendered[0], rendered[1]
+    started = run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction()))
+    closed = run.start_session()
+    assert closed == pipeline.LostSummary(keyframes=1, points=started.tracked, reset=reset)
+    assert (run.map, run.state) == (None, pipeline.State.NOT_INITIALIZED)
+    assert run.start_session() is None
+    restarted = run.track(frames.rgbd(second.gray, second.depth, 1.0, CAMERA, run.extraction()))
+    assert (restarted.map, restarted.keyframe) == (1, True)
+    np.testing.assert_array_equal(run.trajectory().maps, [1] if reset else [0, 1])
+    ended = [1, int(Removal.RESET)] if reset else [-1, -1]
+    np.testing.assert_array_equal(run.lifetimes().keyframe_lives[0, 1:], ended)
+
+
 @pytest.mark.parametrize(
     ("reset_keyframes", "step", "lost_on"),
     [

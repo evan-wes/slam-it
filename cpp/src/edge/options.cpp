@@ -86,11 +86,12 @@ foundations::Result<void> check_options(const Options& options) {
     }
   }
   // Settings that may be 0, then those that must be at least 1.
-  const std::array<IntSetting, 5> may_be_zero{
+  const std::array<IntSetting, 6> may_be_zero{
       {{"seed", options.seed},
        {"initialization.min_features", options.initialization.min_features},
        {"initialization.min_features_depth", options.initialization.min_features_depth},
        {"loss.reset_keyframes", options.loss.reset_keyframes},
+       {"loss.session_keyframes", options.loss.session_keyframes},
        {"loops.weld_rounds", options.loops.weld_rounds}}};
   for (const auto& [setting, value] : may_be_zero) {
     if (auto ok = foundations::check_range(setting, value, 0, kMaxSetting); !ok) {
