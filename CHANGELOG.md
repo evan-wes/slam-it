@@ -69,6 +69,26 @@ and the bundle's 4: runs written by 0.3.11.0 no longer read.
   map.
 - **Python's global BA takes GTSAM's own factors through a pinhole camera,** which model it
   exactly; GTSAM's Python wrapper copies the problem's values on every call into a custom factor.
+- **The keyframe database is kept whenever relocalisation or loop closing is on**
+  (`Options.keeps_keyframe_database`, with C++ and Rust twins), as ORB-SLAM always keeps its
+  `KeyFrameDatabase`: before, `loops.enabled` without relocalisation closed no loop, silently.
+  A run with `loops.enabled` alone now needs a vocabulary and records it (`vo.run` gives the
+  committed one), so `--option relocalization.enabled=false` no longer turns loop closing off;
+  add `loops.enabled=false` for neither. `vo.check` and both native programs refuse with
+  "relocalization.enabled or loops.enabled needs one" and "given, but relocalization.enabled and
+  loops.enabled are both off".
+- **The loops' judge is `slam_it.eval.loops`,** moved out of `scripts/measure_testset.py`: the
+  test-set measure and the loop room judge a loop alike.
+- **The graphs refuse what they took:** `refine_similarity` a `pixels2` row neither finite nor
+  wholly NaN, in the three languages; Python's graphs raise `NotConvergedError` where GTSAM
+  fails, as C++ and Rust return `NotConverged`; loop closing's `search_by_similarity` checks its
+  window and distance, and `essential_graph` its inputs.
+- **GTSAM stays behind `foundations.graphs`:** an import-linter contract and `check_layers.py`
+  hold it there, its C++ headers included by `graphs.cpp` and the Rust bridge's source alone;
+  `_cpp` exports none of its symbols.
+- **Offline CI compiles GTSAM's Python wrapper in a scope of its own, under 16 GB,** the rest
+  under 8 GB; the GitHub workflow's timeout is 120 minutes. `compare_testsets.py summarize`
+  reads each sequence's ground truth as its dataset.
 
 ### Tests
 
@@ -80,6 +100,16 @@ and the bundle's 4: runs written by 0.3.11.0 no longer read.
   languages, each refusing a loop edge between two maps.
 - The measure: EuRoC read, the three trajectories scored, a loop judged at a wrong place and
   with a poor pose, and a keyframe rolled about its view judged in the right place.
+- A parity fixture for rung 0's factor graphs (`tests/fixtures/foundations/graphs.json`): pose
+  graphs, both rounds of the Sim(3) refinement and two BAs, from the Python reference; every
+  backend held to it, its summaries included, each field under its own policy.
+- Every program's diagnostics hold Python's key paths and value types, on the lost, found and
+  loop rooms.
+- The refusals: Python's loop-closing functions each refuse a bad argument by its name, and
+  each core a `pixels2` row neither finite nor wholly NaN. A loop closes with relocalisation off
+  (Python, the loop room); with loop closing alone, no failed frame relocalises, in each core.
+- `tests/test_build_copies.py` holds the worker image's GTSAM build to the setup script's, and
+  rung 0's crate's lints to the workspace's.
 
 ## [0.3.11.2] - 2026-10-18
 
