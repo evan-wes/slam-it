@@ -449,7 +449,7 @@ def test_the_essential_graph_keeps_a_consistent_map(loop_rigid: Loop) -> None:
     m = loop_rigid.truth
     poses = list(m.kf_pose)
     optimised, edges, summary = loops.essential_graph(
-        m, poses, poses, {}, (m.keyframes - 1, 0), fixed_scale=True, options=OPTIONS
+        m, poses, poses, {}, (m.keyframes - 1, 0), fixed=[0], fixed_scale=True, options=OPTIONS
     )
     assert edges >= m.keyframes - 1  # the spanning tree at least
     assert summary.final_error < 1e-20
@@ -591,21 +591,21 @@ BAD_CALLS: dict[str, tuple[str, Callable[[Map, Database], object]]] = {
         "start",
         lambda m, db: loops.essential_graph(
             m, [np.eye(4)] * (m.keyframes - 1), [np.eye(4)] * m.keyframes, {}, (0, 1),
-            fixed_scale=True, options=OPTIONS,
+            fixed=[1], fixed_scale=True, options=OPTIONS,
         ),
     ),
     "a graph's link not a keyframe's row": (
         "loop_links",
         lambda m, db: loops.essential_graph(
             m, [np.eye(4)] * m.keyframes, [np.eye(4)] * m.keyframes, {0: {m.keyframes}}, (0, 1),
-            fixed_scale=True, options=OPTIONS,
+            fixed=[1], fixed_scale=True, options=OPTIONS,
         ),
     ),
     "a graph whose two ends are one keyframe": (
         "ends",
         lambda m, db: loops.essential_graph(
             m, [np.eye(4)] * m.keyframes, [np.eye(4)] * m.keyframes, {}, (1, 1),
-            fixed_scale=True, options=OPTIONS,
+            fixed=[1], fixed_scale=True, options=OPTIONS,
         ),
     ),
     "a global BA's map without its first keyframe": (
