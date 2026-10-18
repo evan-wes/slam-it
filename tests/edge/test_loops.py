@@ -8,6 +8,7 @@ points where its start's are, out of place by the drift, as a tracked map's woul
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import replace
 
 import numpy as np
@@ -487,7 +488,7 @@ def _stray_loop(m: Map, **changes: object) -> loops.Loop:
     return loops.Loop(**fields)  # type: ignore[arg-type]
 
 
-BAD_CALLS = {
+BAD_CALLS: dict[str, tuple[str, Callable[[Map, Database], object]]] = {
     "a similarity that is not one": (
         "similarity",
         lambda m, db: loops.search_by_similarity(
