@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -214,6 +215,61 @@ def test_every_backend_matches_its_golden_record(
         recorded = np.reshape(expected[key], (-1, 16))  # a run whose every map was reset has none
         assert_matches_fixture(poses.reshape(-1, 16), recorded, golden["tolerance"])
     assert_records_match(summaries(run), expected["summaries"], SOLVER_TOLERANCE)
+
+
+def _shapes(records: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Return every key path in the records, with the types of the values found at it.
+
+    A list's items share one path (``[]``); null is no type, so a value null on one frame and an
+    object on another reads as the object.
+    """
+    shapes: dict[str, set[str]] = {}
+
+    def visit(value: Any, path: str) -> None:  # noqa: ANN401 -- any JSON value
+        kinds = shapes.setdefault(path, set())
+        if isinstance(value, dict):
+            kinds.add("object")
+            for key, item in value.items():
+                visit(item, f"{path}.{key}")
+        elif isinstance(value, list):
+            kinds.add("array")
+            for item in value:
+                visit(item, f"{path}[]")
+        elif value is not None:
+            kinds.add(type(value).__name__)
+
+    for frame in records:
+        visit(frame, "")
+    return shapes
+
+
+SHAPED = [
+    *(("lost", dataset, mode) for dataset, mode in CASES),
+    *(("found", dataset, mode) for dataset, mode in CASES),
+    *(("loop", dataset, mode) for dataset, mode in LOOP_CASES),
+]
+"""The runs whose diagnostics each program's are held to Python's shape: the lost room's (the
+PnP fallback, relocalisation tried, maps lost), the found room's (relocalised) and the loop
+room's (loops detected and corrected), so that every stage's record is non-null in some case
+(B3's review panel, run 2, A18). The golden-record tests make the same runs."""
+
+
+@pytest.mark.parametrize("backend", [b for b in backends.BACKENDS if b != "python"])
+@pytest.mark.parametrize(("name", "dataset", "mode"), SHAPED)
+def test_every_program_writes_pythons_diagnostics(
+    name: str, dataset: str, mode: str, backend: str, request: pytest.FixtureRequest
+) -> None:
+    """Each frame's diagnostics have Python's key paths, with its value types.
+
+    Shapes, not decisions (B3's review panel, A8): the languages may decide differently, but the
+    viewer and the measures read the stages' records by name, so a key a program's writer
+    misses, misspells or writes as another type fails here, where each language's golden record
+    alone would take it in. A key path seen only where a decision occurs (a lost frame's
+    record) would differ if one language came to decide otherwise: the record shows it then.
+    """
+    runs_of: RoomRun = request.getfixturevalue(f"{name}_runs")
+    expected = _shapes(runs_of(dataset, mode, "python").diagnostics)
+    assert _shapes(runs_of(dataset, mode, backend).diagnostics) == expected
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
