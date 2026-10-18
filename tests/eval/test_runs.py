@@ -68,6 +68,8 @@ def _run(n: int = 12) -> runs.Run:
         pose_maps=np.repeat([0, 1], [n // 2, n - n // 2]).astype(np.int64),
         keyframe_maps=np.array([0, 0, 1], dtype=np.int64),
         point_maps=np.repeat([0, 1], 15).astype(np.int64),
+        tracked_maps=np.repeat([0, 1], [n // 2, n - n // 2]).astype(np.int64),
+        keyframe_merges=np.array([[0, 1]], dtype=np.int64),
     )
 
 
@@ -98,7 +100,7 @@ def test_round_trip(tmp_path: Path) -> None:
     np.testing.assert_array_equal(back.keyframe_lives, run.keyframe_lives)
     for name in (
         "pose_maps", "keyframe_maps", "point_maps", "keyframe_parents", "keyframe_links",
-        "keyframe_loops",
+        "keyframe_loops", "tracked_maps", "keyframe_merges",
     ):  # fmt: skip
         np.testing.assert_array_equal(getattr(back, name), getattr(run, name))
     assert back.settings == run.settings
@@ -486,7 +488,7 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
         ),
         (
             {"keyframe_loops": np.array([[0, 1], [0, 1]], dtype=np.int64)},
-            "keyframe_loops: a loop must close once",
+            "keyframe_loops: a loop must be made once",
         ),
         ({"settings": {"seed": np.int64(3)}}, "settings: not JSON"),
         ({"diagnostics": [{"tracked": 3}]}, r"diagnostics\[0\]: expected an object"),
@@ -526,12 +528,21 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
         ({"pose_maps": np.zeros(11, dtype=np.int64)}, r"pose_maps: expected int64 \(12,\)"),
         ({"pose_maps": np.zeros(12)}, r"pose_maps: expected int64 \(12,\)"),
         (
-            {"keyframe_maps": np.array([0, 1, 0], dtype=np.int64)},
-            "keyframe_maps: maps must be numbers from 0, never descending; row 2 is 0, after 1",
+            {"keyframe_maps": np.array([0, -1, 0], dtype=np.int64)},
+            "keyframe_maps: maps must be numbers from 0; row 1 is -1",
         ),
         (
             {"point_maps": np.full(30, -1, dtype=np.int64)},
-            "point_maps: maps must be numbers from 0, never descending",
+            "point_maps: maps must be numbers from 0",
+        ),
+        ({"tracked_maps": np.zeros(11, dtype=np.int64)}, r"tracked_maps: expected int64 \(12,\)"),
+        (
+            {"keyframe_merges": np.array([[1, 2]], dtype=np.int64)},
+            "keyframe_merges: a merge's keyframes must be in one map",
+        ),
+        (
+            {"keyframe_merges": np.array([[1, 0]], dtype=np.int64)},
+            "keyframe_merges: a merge must join two keyframes, the lower first",
         ),
         (
             {"keyframe_parents": np.array([-1, 0], dtype=np.int64)},
@@ -575,7 +586,6 @@ def test_evaluate_rejects_a_run_whose_times_do_not_ascend() -> None:
             r"diagnostics\[6\]: map: expected a map number or null, got -1",
         ),
         ({"diagnostics": _named([0] * 6 + [True] * 6)}, "expected a map number or null"),
-        ({"diagnostics": _named([0] * 6 + [1, 0] + [1] * 4)}, "map 0 after map 1"),
         ({"diagnostics": _named([0] * 6 + [None] * 6)}, "no frame names map 1"),
     ],
 )
@@ -620,6 +630,7 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
         "keyframe_lives.npy",
         "keyframe_loops.npy",
         "keyframe_maps.npy",
+        "keyframe_merges.npy",
         "keyframe_parents.npy",
         "keyframe_poses.npy",
         "keyframes.npy",
@@ -628,6 +639,7 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
         "points.npy",
         "pose_maps.npy",
         "run.json",
+        "tracked_maps.npy",
         "trajectory.txt",
         "trajectory_tracked.txt",
     ]
@@ -636,7 +648,7 @@ def test_write_run_replaces_files_whole(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("edit", "message"),
     [
-        (lambda info: info.update(version=7), "version 8, got 'slam-it-run' version 7"),
+        (lambda info: info.update(version=7), "version 9, got 'slam-it-run' version 7"),
         (lambda info: info.update(format="other"), "format"),
         (lambda info: info.update(mode="lidar"), "mode"),
         (lambda info: info.update(backend="java"), "backend"),
@@ -722,14 +734,17 @@ def test_read_run_checks_the_lives(tmp_path: Path) -> None:
 
 
 def test_read_run_checks_the_maps(tmp_path: Path) -> None:
-    """Maps of another dtype, or descending, are refused."""
+    """Maps of another dtype, or below 0, are refused; maps that descend are read."""
     runs.write_run(tmp_path, _run())
     np.save(tmp_path / "pose_maps.npy", np.zeros(12))
     with pytest.raises(InvalidInputError, match=r"expected int64 \(N\)"):
         runs.read_run(tmp_path)
-    np.save(tmp_path / "pose_maps.npy", np.arange(12, dtype=np.int64)[::-1].copy())
-    with pytest.raises(InvalidInputError, match="maps must be numbers from 0, never descending"):
+    np.save(tmp_path / "tracked_maps.npy", np.full(12, -1, dtype=np.int64))
+    np.save(tmp_path / "pose_maps.npy", np.zeros(12, dtype=np.int64))
+    with pytest.raises(InvalidInputError, match=r"tracked_maps.*maps must be numbers from 0"):
         runs.read_run(tmp_path)
+    np.save(tmp_path / "tracked_maps.npy", np.arange(12, dtype=np.int64)[::-1] % 2)
+    assert runs.read_run(tmp_path).tracked_maps.tolist() == [1, 0] * 6
 
 
 def test_read_run_checks_the_parents_and_links(tmp_path: Path) -> None:
@@ -757,6 +772,10 @@ def test_read_run_checks_the_tracked_trajectory_and_the_loops(tmp_path: Path) ->
     np.save(tmp_path / "keyframe_loops.npy", np.array([[1, 2]], dtype=np.int64))
     with pytest.raises(InvalidInputError, match="a loop's keyframes must be in one map"):
         runs.read_run(tmp_path)
+    runs.write_run(tmp_path, run)
+    np.save(tmp_path / "keyframe_merges.npy", np.array([[1, 2]], dtype=np.int64))
+    with pytest.raises(InvalidInputError, match="a merge's keyframes must be in one map"):
+        runs.read_run(tmp_path)
 
 
 def test_evaluate_scores_the_final_trajectory_or_the_one_tracked() -> None:
@@ -768,7 +787,7 @@ def test_evaluate_scores_the_final_trajectory_or_the_one_tracked() -> None:
     off[::2, 0, 3] += 0.05
     run = runs.Run(
         "synthetic", "both", "rgbd", "python", times, truth, off,
-        pose_maps=np.zeros(20, dtype=np.int64),
+        pose_maps=np.zeros(20, dtype=np.int64), tracked_maps=np.zeros(20, dtype=np.int64),
     )  # fmt: skip
     for evaluate in (runs.evaluate, runs.evaluate_absolute):
         assert evaluate(run, times, truth).ate_rmse < 1e-12

@@ -2266,6 +2266,34 @@ def _weld(
     return out, summary
 
 
+def merge_transform(active: Map, found: Merge) -> Array:
+    """Return ``G``, the similarity carrying a merge's active map into the matched map's world.
+
+    ``G = S⁻¹ T``: `found`'s similarity places the current keyframe in the matched map's world,
+    ``T`` is its pose in the active map's; a point ``p`` of the active map goes to ``G p``.
+
+    Parameters
+    ----------
+    active : slam_it.edge.map.Map
+        The active map, holding the merge's current keyframe.
+    found : Merge
+        The merge.
+
+    Returns
+    -------
+    ndarray of float64, shape (4, 4)
+        ``G``.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the active map does not hold the current keyframe.
+    """
+    region = found.loop
+    placed = active.kf_pose[maps.keyframe_row(active, region.current)]
+    return np.asarray(sim3.inverse(region.similarity) @ placed, dtype=np.float64)
+
+
 def _merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
     active: Map, matched: Map, camera: Camera, found: Merge, *, mode: str, options: Options
 ) -> Merged:
@@ -2273,8 +2301,7 @@ def _merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the setting
     region = found.loop
     fixed_scale = mode != "monocular"
     scale = 1.0 if fixed_scale else scale_of(region.similarity)
-    placed = active.kf_pose[maps.keyframe_row(active, region.current)]
-    to_matched = sim3.inverse(region.similarity) @ placed
+    to_matched = merge_transform(active, found)
     keyframe_offset, point_offset = matched.next_kf_id, matched.next_pt_id
     m = _absorb(matched, _moved_into(active, to_matched), keyframe_offset, point_offset)
     current = region.current + keyframe_offset

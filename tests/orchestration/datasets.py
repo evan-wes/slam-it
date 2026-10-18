@@ -13,6 +13,7 @@ records' generator (``tests/fixtures/edge/generate_room_runs.py``) both write th
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,46 @@ class Room:
     euroc: Path
     timestamps: NDArray[np.float64]
     poses: NDArray[np.float64]
+
+
+WRONG_DISTANCE = 3.0
+"""Two keyframes farther apart than this, in metres, by the truth, are at different places."""
+
+WRONG_ANGLE = math.radians(60.0)
+"""Two keyframes looking further apart than this, by the truth, are at different places."""
+
+
+def wrong_places(folders: Room, times: NDArray[np.float64], pairs: NDArray[np.int64]) -> list[int]:
+    """Return the pairs of keyframes that, by the truth, were at different places.
+
+    Each keyframe's true pose is the rendered frame's nearest its time; two keyframes are at
+    different places when more than :data:`WRONG_DISTANCE` apart or looking more than
+    :data:`WRONG_ANGLE` apart, so they could not have seen the same place.
+
+    Parameters
+    ----------
+    folders : Room
+        The room, with its truth.
+    times : ndarray of float64, shape (K,)
+        Every keyframe's time, by id.
+    pairs : ndarray of int64, shape (E, 2)
+        Pairs of keyframe ids: a run's loops or merges.
+
+    Returns
+    -------
+    list of int
+        The rows of `pairs` whose keyframes were at different places.
+    """
+    rows = np.abs(folders.timestamps[None, :] - np.asarray(times)[:, None]).argmin(axis=1)
+    truth = np.asarray(folders.poses[rows], dtype=np.float64)
+    wrong = []
+    for row, (first, second) in enumerate(np.asarray(pairs).tolist()):
+        a, b = truth[first], truth[second]
+        turn = a[:3, :3].T @ b[:3, :3]
+        angle = math.acos(float(np.clip((np.trace(turn) - 1.0) / 2.0, -1.0, 1.0)))
+        if np.linalg.norm(a[:3, 3] - b[:3, 3]) >= WRONG_DISTANCE or angle >= WRONG_ANGLE:
+            wrong.append(row)
+    return wrong
 
 
 def png(path: Path, values: NDArray[np.uint8] | NDArray[np.uint16]) -> None:
@@ -403,10 +444,17 @@ round (90 degrees of its turn)."""
 
 MERGE_BLANKS = 96
 """The merge room's black frames: 3.2 s at the room's 30 Hz, longer than the 3 s
-``loss.relocalize_seconds`` relocalises a lost map for, meant to lose the track and start a new
-map on the frames after, which begin about 235 degrees round; the camera comes back over the
-first map's start at 360 degrees. Its bar, with merging in the pipeline, is milestone 2B's B4's
-second phase, which shows whether a run does so."""
+``loss.relocalize_seconds`` relocalises a lost map for, so the track is lost and a new map
+starts on the frames after, which begin about 235 degrees round; the camera comes back over the
+first map's start at 360 degrees, where the two maps merge (``tests/orchestration/
+test_merge_room.py``)."""
+
+MERGE_OPTIONS = OPTIONS.with_settings({"loss.reset_keyframes": 0, "loops.min_keyframes": 6})
+"""The merge room's settings, scaled to its size as the kept room's are: its first map, of 6
+keyframes or so when the black frames begin, is kept rather than reset (ORB-SLAM3 resets a map
+lost with 10 keyframes or fewer); and the second searches for a merge from 6 keyframes, where
+ORB-SLAM3 waits for 12, which the second map would not reach before the camera has passed the
+first map's start."""
 
 
 def merge_frames(rendered: list[room.Frame]) -> list[room.Frame]:

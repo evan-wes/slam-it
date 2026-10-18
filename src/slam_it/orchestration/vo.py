@@ -856,6 +856,8 @@ def _track_here(
         pose_maps=trajectory.maps,
         keyframe_maps=lives.keyframe_maps,
         point_maps=lives.point_maps,
+        tracked_maps=trajectory.tracked_maps,
+        keyframe_merges=lives.keyframe_merges,
     )
 
 

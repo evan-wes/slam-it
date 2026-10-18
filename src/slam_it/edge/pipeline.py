@@ -96,7 +96,12 @@ global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
   dropped; one that finishes is carried onto the map as it has become
   (:func:`slam_it.edge.loops.propagate_global_ba`), mapping stopped.
 - **A map lost** waits for local mapping and loop closing to finish the keyframes given, and
-  supersedes a global BA running, before it closes.
+  supersedes a global BA running, before it closes; so does a map left for a kept one that
+  relocalisation found the frame in.
+- *A placeholder until merging in threads is designed* (milestone 2B's B4): threaded, loop
+  closing searches each keyframe for a loop alone, never for a merge. A merge moves the active
+  map's keyframe and point ids on (:class:`slam_it.edge.loops.Merged`), and tracking's state,
+  the keyframes queued for mapping and a frame being tracked still hold the old ones.
 
 A frame's result is then what tracking made of it; what the threads finish later comes as
 :class:`Completion` records (:meth:`Pipeline.completed`), each naming its frame, and
@@ -118,7 +123,7 @@ import enum
 import threading
 import time
 import weakref
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
@@ -129,17 +134,24 @@ from numpy.typing import ArrayLike, NDArray
 from slam_it.edge import initialization, loops, mapping, relocalization, tracking
 from slam_it.edge import map as maps
 from slam_it.edge.atlas import Atlas, Lifetimes, Trajectory
-from slam_it.edge.database import Database
+from slam_it.edge.database import Database, Indexed
 from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.initialization import Initialization, InitSummary, Outcome
-from slam_it.edge.loops import CorrectionSummary, DetectionSummary, Pending
+from slam_it.edge.loops import (
+    CorrectionSummary,
+    DetectionSummary,
+    Merge,
+    MergeSummary,
+    Merging,
+    Pending,
+)
 from slam_it.edge.map import Map
 from slam_it.edge.mapping import Mapped, MappingSummary, Schedule
 from slam_it.edge.options import MODES, Options
 from slam_it.edge.relocalization import RelocalizationSummary
 from slam_it.edge.threads import Generation, Worker, Writer
 from slam_it.edge.tracking import LocalMapSummary, MotionSummary, PnpSummary
-from slam_it.foundations import orb, se3
+from slam_it.foundations import orb, se3, sim3
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.foundations.vocabulary import Vocabulary
 
@@ -262,13 +274,19 @@ class LoopSummary:
     Attributes
     ----------
     detection : slam_it.edge.loops.DetectionSummary
-        The search.
+        The search for a loop.
     correction : slam_it.edge.loops.CorrectionSummary or None
         The correction, when a loop closed.
+    merging : slam_it.edge.loops.DetectionSummary or None
+        The search for a merge, when other maps are kept (:func:`slam_it.edge.loops.detect_merge`).
+    merge : slam_it.edge.loops.MergeSummary or None
+        The merge, when one was found.
     """
 
     detection: DetectionSummary
     correction: CorrectionSummary | None
+    merging: DetectionSummary | None = None
+    merge: MergeSummary | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the summary as JSON values.
@@ -276,9 +294,15 @@ class LoopSummary:
         Returns
         -------
         dict
-            ``detection``, and ``correction`` (or None).
+            ``detection``, ``correction``, ``merging`` and ``merge``, each but the first an
+            object or None.
         """
-        return {"detection": self.detection.as_dict(), "correction": _record(self.correction)}
+        return {
+            "detection": self.detection.as_dict(),
+            "correction": _record(self.correction),
+            "merging": _record(self.merging),
+            "merge": _record(self.merge),
+        }
 
 
 @dataclass(frozen=True)
@@ -306,6 +330,9 @@ class FrameSummary:
         Loop closing, on a keyframe after the first while it is on.
     lost : LostSummary or None
         The map closed, on the frame the track was lost on.
+    left : LostSummary or None
+        The map closed on a frame relocalisation found in another kept map, which tracking goes
+        on in.
     """
 
     placed_by: Placement | None = None
@@ -317,6 +344,7 @@ class FrameSummary:
     mapping: MappingSummary | None = None
     loop: LoopSummary | None = None
     lost: LostSummary | None = None
+    left: LostSummary | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the summary as JSON values, the keys a run's diagnostics add.
@@ -325,7 +353,8 @@ class FrameSummary:
         -------
         dict
             ``placed_by`` (by name), ``init``, ``motion``, ``pnp``, ``relocalization``,
-            ``local_map``, ``mapping``, ``loop`` and ``lost``, each an object or None.
+            ``local_map``, ``mapping``, ``loop``, ``lost`` and ``left``, each an object or
+            None.
         """
         return {
             "placed_by": None if self.placed_by is None else self.placed_by.value,
@@ -337,6 +366,7 @@ class FrameSummary:
             "mapping": _record(self.mapping),
             "loop": _record(self.loop),
             "lost": _record(self.lost),
+            "left": _record(self.left),
         }
 
 
@@ -539,6 +569,18 @@ class TrackingState:
         assert self.last_tracked is not None
         self.last_tracked = replace(self.last_tracked, pose=pose.copy())
 
+    def change_map(self) -> None:
+        """Leave the last frame's map for another: its points and its motion hold there no more.
+
+        The frame placed in the other map follows with no velocity, and the loss's time starts
+        again from it.
+        """
+        assert self.last_tracked is not None
+        points = np.full(len(self.last_tracked.points), -1, dtype=np.int64)
+        self.last_tracked = replace(self.last_tracked, points=points)
+        self.velocity, self.lost_since = None, None
+        self.failures = max(self.failures, 1)
+
     def anchor_to(self, view: Map, row: int, corrections: int) -> None:
         """Keep the last frame's pose relative to the keyframe it was tracked against (threaded).
 
@@ -590,19 +632,26 @@ class LoopState:
     ----------
     pending : slam_it.edge.loops.Pending or None
         The loop being confirmed in the map, if any.
+    merging : slam_it.edge.loops.Merging or None
+        The merge being confirmed with another map, if any.
     """
 
     pending: Pending | None = None
+    merging: Merging | None = None
 
     def held(self) -> ArrayLike:
-        """Return the keyframes the loop being confirmed holds, which mapping's culling spares.
+        """Return the map's keyframes a loop or merge being confirmed holds, which culling spares.
 
         Returns
         -------
         array_like of int
-            Their ids in the map; none when no loop is being confirmed.
+            Their ids in the map: the loop's two, and the merge's last; none when neither is
+            being confirmed.
         """
-        return () if self.pending is None else self.pending.held
+        held = [] if self.pending is None else self.pending.held.tolist()
+        if self.merging is not None:
+            held.append(self.merging.pending.last)
+        return sorted(set(held))
 
 
 def _counted(m: Map, visible: IntArray, found: IntArray) -> Map:
@@ -767,22 +816,57 @@ class MapOwner:
         if m is not None and (len(m.gone_pt_id) or len(m.gone_kf_id)):
             self._set(maps.clear_gone(m))
 
-    def close(self) -> Map:
-        """Give up the map, lost: the database, the view and the counts waiting go with it.
+    def resume(self, m: Map, database: Database | None) -> None:
+        """Take a kept map up again, with its database, as the map being tracked.
+
+        Counted as a correction first, so the view published carries a new count and nothing
+        stamped with the map left's (a keyframe request, tracking's last frame) is taken as the
+        new map's.
+
+        Parameters
+        ----------
+        m : Map
+            The map.
+        database : slam_it.edge.database.Database or None
+            Its keyframe database.
+        """
+        self.corrections += 1
+        self._map, self._view, self._database = m, View(m, self.corrections), database
+
+    def apply_merge(self, m: Map, database: Database | None) -> None:
+        """Take a merge's map, bring the matched map's database to its keyframes, and publish it.
+
+        The merge moved the map's ids and world, so it is counted as a correction first, and the
+        view published carries the new count.
+
+        Parameters
+        ----------
+        m : Map
+            The merged map.
+        database : slam_it.edge.database.Database or None
+            The matched map's database, which becomes the merged map's.
+        """
+        self._map, self._database = m, database
+        self._sync_database()
+        self.corrections += 1
+        self._view = View(m, self.corrections)
+
+    def close(self) -> tuple[Map, Database | None]:
+        """Give up the map, to be kept or reset, with its database; its view and counts waiting go.
 
         The next map numbers its points from 0 again, so tracking's counts for this one must
         not reach it.
 
         Returns
         -------
-        Map
-            The map.
+        tuple
+            The map, and its database (None when not relocalising).
         """
-        m = self.read()
+        m, db = self.read(), self._database
         self._map, self._view, self._database = None, None, None
         with self._counting:
             self._counts = []
-        return m
+        return m, db
 
     def reading(self) -> AbstractContextManager[None]:
         """Hold the map whole, with local mapping held off: nothing to hold inline.
@@ -813,12 +897,13 @@ class MapOwner:
         nothing runs beside the correction, so there is nothing to stop or abort. Threaded, the
         writer stops mapping (:meth:`slam_it.edge.threads.Writer.stopped`); a global BA running
         is superseded by the caller's new generation. Loop corrections, global BAs' results and
-        milestone 2B's B4's merges all enter here.
+        merges all enter here.
 
         Yields
         ------
         Map
-            The map, to be corrected and given back through :meth:`apply_correction`.
+            The map, to be corrected and given back through :meth:`apply_correction` (or
+            :meth:`apply_merge`).
         """
         with nullcontext() if self.writer is None else self.writer.stopped():
             yield self.read()
@@ -847,8 +932,9 @@ class _Step:
     """A frame handled: the frame, if tracked, and what came of it.
 
     ``matched`` holds the last tracking stage's matches before refinement and ``made`` the
-    points made of each keypoint, each None where no stage gave them; ``lost`` says the frame
-    lost the track.
+    points made of each keypoint, each None where no stage gave them, by the map's ids after
+    the step; ``lost`` says the frame lost the track; ``merged_from`` is the map the frame was
+    tracked in when a merge took that map into another on it.
     """
 
     tracked: Tracked | None
@@ -864,11 +950,12 @@ class _Step:
     refused: bool = False
     queue: int = 0
     schedule: Schedule | None = None
+    merged_from: int | None = None
 
-    def fates(self, size: int, base: int) -> Fates:
+    def fates(self, size: int, run_ids: Callable[[IntArray], IntArray]) -> Fates:
         """Return what became of each of the frame's `size` keypoints (:class:`Fate`).
 
-        `base` is the run's id of the map's point 0.
+        `run_ids` gives the run's ids of the map's point ids.
         """
         fate = np.full(size, int(Fate.UNMATCHED), dtype=np.int64)
         point = np.full(size, -1, dtype=np.int64)
@@ -880,7 +967,7 @@ class _Step:
         ):
             if ids is not None:
                 fate[ids >= 0] = int(kind)
-                point[ids >= 0] = base + ids[ids >= 0]
+                point[ids >= 0] = run_ids(ids[ids >= 0])
         return Fates(fate=fate, point=point)
 
 
@@ -978,15 +1065,19 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the 
     camera: Camera,
     frame: Frame,
     *,
+    others: list[Indexed],
+    number: int,
     mode: str,
     options: Options,
-) -> tuple[Tracked | None, FrameSummary, IntArray, float, View]:
+) -> tuple[Tracked | None, FrameSummary, IntArray, float, View, int | None]:
     """Track the last frame against `view`, the frame's view, or recover by PnP, or relocalise.
 
-    Relocalisation reads the database with mapping held off, against the view published last,
-    which the database matches. Return the frame, how it was placed, the last stage's matches
-    before refinement, the time spent waiting for the map (0 inline), and the view the frame
-    goes on with.
+    Relocalisation searches every kept map as well, with mapping held off, against the view
+    published last, which the database matches. `number` is the map's, `others` the maps kept
+    with their databases. Return the frame, how it was placed, the last stage's matches before
+    refinement, the time spent waiting for the map (0 inline), the view the frame goes on with,
+    and the number of the kept map relocalisation found it in, None if it was found in this one
+    or not at all.
     """
     assert state.last_frame is not None
     assert state.last_tracked is not None
@@ -1002,15 +1093,18 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the 
     summary = FrameSummary(motion=motion.summary)
     if motion.tracked is not None:
         placed_by = Placement.MOTION
-        return motion.tracked, replace(summary, placed_by=placed_by), motion.matched, 0.0, view
+        placed = motion.tracked
+        return placed, replace(summary, placed_by=placed_by), motion.matched, 0.0, view, None
     last = state.last_tracked.points
     recovery = tracking.relocalize_locally(m, camera, frame, last, options)
     summary = replace(summary, pnp=recovery.summary)
     if recovery.tracked is not None:
         placed_by = Placement.LOCAL_PNP
-        return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched, 0.0, view
+        placed = recovery.tracked
+        return placed, replace(summary, placed_by=placed_by), recovery.matched, 0.0, view, None
     if owner.database is None or not options.relocalization.enabled:
-        return None, summary, recovery.matched, 0.0, view
+        return None, summary, recovery.matched, 0.0, view, None
+    moved: int | None = None
     asked = time.perf_counter()
     with owner.reading():
         held = time.perf_counter()
@@ -1018,37 +1112,83 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the 
         assert db is not None
         assert latest is not None
         view = latest
-        found = relocalization.relocalize(view.map, db, camera, frame, options)
+        if others:  # the design's section 14, item 2: in every map
+            searched = [Indexed(number=number, map=view.map, database=db), *others]
+            across = relocalization.relocalize_across(searched, camera, frame, options)
+            found = across.relocalized
+            moved = None if across.map == number else across.map
+            if found.tracked is None and across.maps and across.maps[-1] != number:
+                # The last candidate's matches are points of another map, not this one's.
+                found = replace(found, matched=np.full_like(found.matched, -1))
+        else:
+            found = relocalization.relocalize(view.map, db, camera, frame, options)
     waited = 0.0 if owner.writer is None else held - asked
     summary = replace(summary, relocalization=found.summary)
     if found.tracked is None:
-        return None, summary, found.matched, waited, view
+        return None, summary, found.matched, waited, view, None
     placed_by = Placement.RELOCALIZATION
-    return found.tracked, replace(summary, placed_by=placed_by), found.matched, waited, view
+    return found.tracked, replace(summary, placed_by=placed_by), found.matched, waited, view, moved
 
 
-def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner and view, the frame, the settings
+def _locate(  # noqa: PLR0913 -- tracking's state, the map's owner, view and atlas, the frame
     state: TrackingState,
     owner: MapOwner,
     view: View,
     camera: Camera,
     frame: Frame,
     *,
+    atlas: Atlas,
     mode: str,
     options: Options,
-    keyframe_base: int,
+    switch: Callable[[int], tuple[LostSummary, float]],
+) -> tuple[Tracked | None, FrameSummary, IntArray, float, View]:
+    """Place a frame against its view (:func:`_place`), in the kept map it was found in.
+
+    A frame relocalisation found in a kept map is tracked on in it: `switch` takes it up,
+    leaving the map being tracked, and says how it left it and how long it waited for the
+    threads. Return :func:`_place`'s frame, summary, matches, wait (the switch's added) and the
+    view the frame goes on with: the map taken up's, after a switch.
+    """
+    number = atlas.map_id
+    assert number is not None
+    placed, summary, matched, waited, view, moved = _place(
+        state, view, owner, camera, frame, others=atlas.indexed(), number=number, mode=mode,
+        options=options,
+    )  # fmt: skip
+    if moved is not None:
+        left, settled = switch(moved)
+        summary, waited = replace(summary, left=left), waited + settled
+        resumed = owner.view
+        assert resumed is not None
+        view = resumed
+    if owner.writer is not None:  # the view may hold what the threads have not recorded yet
+        atlas.extend(view.map)
+    return placed, summary, matched, waited, view
+
+
+def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, view and atlas, the frame
+    state: TrackingState,
+    owner: MapOwner,
+    view: View,
+    camera: Camera,
+    frame: Frame,
+    *,
+    atlas: Atlas,
+    mode: str,
+    options: Options,
     mapper: _Mapping,
+    switch: Callable[[int], tuple[LostSummary, float]],
 ) -> _Tracking:
     """Tracking's step: place a frame against its view, track the local map, ask a keyframe.
 
     `view` is the map's view, read once for the frame. The frame's counts go to the map through
-    `owner`; a frame not tracked is counted as a failure. `keyframe_base` is the run's id of the
-    map's keyframe 0, for the summary; `mapper` says whether local mapping takes a keyframe (the
-    module docstring).
+    `owner`; a frame not tracked is counted as a failure. `mapper` says whether local mapping
+    takes a keyframe (the module docstring); a frame found in a kept map goes on in it
+    (:func:`_locate`, `switch`).
     """
     state.since_keyframe += 1
-    placed, summary, matched, waited, view = _place(
-        state, view, owner, camera, frame, mode=mode, options=options
+    placed, summary, matched, waited, view = _locate(
+        state, owner, view, camera, frame, atlas=atlas, mode=mode, options=options, switch=switch
     )
     m = view.map
     if summary.placed_by in (Placement.LOCAL_PNP, Placement.RELOCALIZATION):
@@ -1064,7 +1204,11 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner and view
         local = tracking.track_local_map(
             m, camera, frame, placed, mode=mode, options=options, recovering=wide
         )
-        summary = replace(summary, local_map=local.summary(keyframe_base))
+        looked = local.summary()
+        if looked.reference >= 0:  # by the run's id
+            run_id = int(atlas.run_ids(np.array([looked.reference], dtype=np.int64))[0])
+            looked = replace(looked, reference=run_id)
+        summary = replace(summary, local_map=looked)
         matched = local.matched
         owner.count(local.visible, local.found)
         needed = options.tracking.recovery_tracked if recent else options.tracking.min_tracked
@@ -1121,28 +1265,108 @@ def _map_keyframe(  # noqa: PLR0913 -- the map's owner, the keyframe, the settin
     return mapped
 
 
-def _close_loops(
-    state: LoopState, owner: MapOwner, camera: Camera, *, mode: str, options: Options
-) -> tuple[LoopSummary | None, bool]:
-    """Loop closing's step: search the newest keyframe for a loop, and correct one that closes.
+@dataclass(frozen=True)
+class _Joined:
+    """A merge made on a keyframe: how the active map's point ids moved, and ``G``."""
 
-    Return how it went (None when loop closing is off, there is no database, or the keyframe
-    is the map's first), and whether a loop was corrected.
+    point_offset: int
+    to_world: Array
+
+
+def _offset(ids: IntArray, offset: int) -> IntArray:
+    """Return ids moved on by an offset, -1 (none) kept."""
+    return np.where(ids >= 0, ids + offset, ids).astype(np.int64)
+
+
+def _carried(pending: Pending, merged: loops.Merged, to_world: Array) -> Pending:
+    """Return a loop being confirmed in the active map, as it stands in the merged map.
+
+    Its ids move on by the merge's offsets, and its similarity is carried into the matched
+    map's world: ``S G⁻¹``.
+    """
+    kf, pt = merged.keyframe_offset, merged.point_offset
+    return replace(
+        pending,
+        matched=pending.matched + kf,
+        last=pending.last + kf,
+        similarity=pending.similarity @ sim3.inverse(to_world),
+        points=_offset(pending.points, pt),
+        matched_points=_offset(pending.matched_points, pt),
+    )
+
+
+def _merge_maps(  # noqa: PLR0913 -- loop closing's state, the maps, the merge, the settings
+    state: LoopState,
+    owner: MapOwner,
+    atlas: Atlas,
+    camera: Camera,
+    found: Merge,
+    *,
+    mode: str,
+    options: Options,
+) -> tuple[MergeSummary, _Joined]:
+    """Merge the map being tracked into the kept map a merge found.
+
+    By :func:`slam_it.edge.loops.merge`. The merged map is tracked on, with the matched map's
+    number and the matched map's database brought to its keyframes; the loop being confirmed
+    is carried into it.
+    """
+    matched = next(k for k in atlas.kept() if k.number == found.map)
+    with owner.stopped() as held:
+        to_world = loops.merge_transform(held, found)
+        merged = loops.merge(held, matched.map, camera, found, mode=mode, options=options)
+        atlas.merge(found.map, merged, to_world)
+        owner.apply_merge(merged.map, matched.database)
+    if state.pending is not None:
+        state.pending = _carried(state.pending, merged, to_world)
+    return merged.summary, _Joined(point_offset=merged.point_offset, to_world=to_world)
+
+
+def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settings
+    state: LoopState,
+    owner: MapOwner,
+    atlas: Atlas,
+    camera: Camera,
+    *,
+    mode: str,
+    options: Options,
+) -> tuple[LoopSummary | None, bool, _Joined | None]:
+    """Loop closing's step: search the newest keyframe for a loop and for a merge, and make one.
+
+    A merge with a kept map is searched for beside the loop, and given priority over a loop
+    closed on the same keyframe (:func:`slam_it.edge.loops.merge_first`). Return how it went
+    (None when loop closing is off, there is no database, or the keyframe is the map's first),
+    whether a loop was corrected, and the merge made, if one was.
     """
     m, db = owner.read(), owner.database
     keyframe = int(m.kf_id[-1])
     if db is None or not options.loops.enabled or keyframe == 0:
-        return None, False
+        return None, False, None
     found = loops.detect(m, db, camera, keyframe, state.pending, mode=mode, options=options)
+    others = atlas.indexed()
+    merging = None
+    if others:
+        merging = loops.detect_merge(
+            m, db, camera, keyframe, others=others, pending=state.merging, mode=mode,
+            options=options,
+        )  # fmt: skip
+        state.merging = merging.pending
+        found = loops.merge_first(found, merging)
     state.pending = found.pending
+    searched = None if merging is None else merging.summary
+    if merging is not None and merging.merge is not None:
+        made, joined = _merge_maps(
+            state, owner, atlas, camera, merging.merge, mode=mode, options=options
+        )
+        return LoopSummary(found.summary, None, merging=searched, merge=made), False, joined
     correction = None
     if found.loop is not None:
         with owner.stopped() as held:
             fixed = loops.correct(held, camera, found.loop, mode=mode, options=options)
             owner.apply_correction(fixed.map)
         correction = fixed.summary
-    summary = LoopSummary(detection=found.summary, correction=correction)
-    return summary, correction is not None
+    summary = LoopSummary(detection=found.summary, correction=correction, merging=searched)
+    return summary, correction is not None, None
 
 
 @dataclass(frozen=True)
@@ -1332,13 +1556,12 @@ class _Threads:
             self.atlas.resolve(request.index, m)
             self.atlas.record(m)
             self.owner.clear_gone()
-            keyframe, base = int(m.kf_id[-1]), self.atlas.point_base
+            keyframe, made = int(m.kf_id[-1]), self.atlas.point_run_ids(mapped.made)
         entries = {
             "map_seconds": seconds,
             "mapping": mapped.summary.as_dict(),
             "schedule": mapped.schedule.as_dict(),
         }
-        made = np.where(mapped.made >= 0, base + mapped.made, -1)
         self._complete(Completion(request.index, entries, made=made))
         self.loop_closing.queue.put((request.index, keyframe))
 
@@ -1540,8 +1763,9 @@ class Pipeline:
                 waited += time.perf_counter() - settling
             self.atlas.tick()
         state = State.LOST if step.lost else self.state
-        map_id, summary = self.atlas.map_id, step.summary
-        fates = step.fates(frame.size, self.atlas.point_base)
+        map_id = self.atlas.map_id if step.merged_from is None else step.merged_from
+        summary = step.summary
+        fates = step.fates(frame.size, self.atlas.point_run_ids)
         if step.lost and self.owner.map is not None:  # a lost frame was tracking a map
             summary = replace(summary, lost=self._close())
         track_seconds = time.perf_counter() - start - step.map_seconds - step.loop_seconds
@@ -1644,13 +1868,42 @@ class Pipeline:
 
         The tracking and loop-closing state go with the map, so the next frame starts a new one.
         """
-        m = self.owner.close()
-        reset = m.keyframes <= self.options.loss.reset_keyframes
-        self.atlas.close(m, reset=reset)
+        left = self._leave(dated=True)
         self.tracking = TrackingState()
-        self.closing.pending = None  # shared with loop closing's thread, settled by now
         self.state = State.NOT_INITIALIZED
+        return left
+
+    def _leave(self, *, dated: bool) -> LostSummary:
+        """Close the map being tracked: keep it whole, or reset it if it is small.
+
+        Its loop-closing state goes with it. `dated` says whether this frame is dated already.
+        Threaded, the threads have settled first.
+        """
+        m, db = self.owner.close()
+        reset = m.keyframes <= self.options.loss.reset_keyframes
+        self.atlas.close(m, db, reset=reset, dated=dated)
+        # Loop closing's thread shares the state: cleared in place, the threads settled by now.
+        self.closing.pending, self.closing.merging = None, None
         return LostSummary(keyframes=m.keyframes, points=m.points, reset=reset)
+
+    def _switch(self, number: int) -> tuple[LostSummary, float]:
+        """Take up kept map `number`, where relocalisation found this frame, leaving the map.
+
+        The map left is kept or reset as a lost map is; tracking goes on in the map found, its
+        last frame's points and motion left behind (:meth:`TrackingState.change_map`). Threaded,
+        the map left waits for the threads first, as a lost map does. Return how it was left,
+        and the time spent waiting for the threads (0 inline).
+        """
+        waited = 0.0
+        if self._threads is not None:
+            settling = time.perf_counter()
+            self._threads.settle(apply=False)
+            waited = time.perf_counter() - settling
+        left = self._leave(dated=False)
+        kept = self.atlas.resume(number)
+        self.owner.resume(kept.map, kept.database)
+        self.tracking.change_map()
+        return left, waited
 
     def _initialize(self, frame: Frame) -> _Step:
         """Try to start the map with this frame."""
@@ -1686,9 +1939,9 @@ class Pipeline:
         if threads is not None:
             self.tracking.follow(view.map, view.corrections)
         found = _track_frame(
-            self.tracking, self.owner, view, self.camera, frame, mode=self.mode,
-            options=self.options, keyframe_base=self.atlas.keyframe_base,
-            mapper=_Inline() if threads is None else threads,
+            self.tracking, self.owner, view, self.camera, frame, atlas=self.atlas,
+            mode=self.mode, options=self.options,
+            mapper=_Inline() if threads is None else threads, switch=self._switch,
         )  # fmt: skip
         if found.tracked is None:
             return _Step(
@@ -1699,9 +1952,8 @@ class Pipeline:
             return self._hand_over(threads, frame, found)
         tracked, summary = found.tracked, found.summary
         map_seconds = loop_seconds = 0.0
-        made = None
-        schedule = None
-        corrected = False
+        made, matched, schedule = None, found.matched, None
+        corrected, joined, merged_from = False, None, None
         if found.keyframe:
             start = time.perf_counter()
             mapped = _map_keyframe(
@@ -1714,21 +1966,29 @@ class Pipeline:
             # The frame's reference is its own keyframe, placed where the frame was.
             self.atlas.place_keyframe(self.owner.read(), frame.timestamp, tracked.pose)
             searching = time.perf_counter()
-            looped, corrected = _close_loops(
-                self.closing, self.owner, self.camera, mode=self.mode, options=self.options
-            )
+            before = self.atlas.map_id
+            looped, corrected, joined = _close_loops(
+                self.closing, self.owner, self.atlas, self.camera, mode=self.mode,
+                options=self.options,
+            )  # fmt: skip
             if looped is not None:
                 summary = replace(summary, loop=looped)
                 loop_seconds = time.perf_counter() - searching
+            if joined is not None:  # the frame's ids are the merged map's now
+                merged_from = before
+                tracked = replace(tracked, points=_offset(tracked.points, joined.point_offset))
+                matched = _offset(matched, joined.point_offset)
+                made = None if made is None else _offset(made, joined.point_offset)
         else:
             m = self.owner.read()
             self.atlas.place_frame(m, frame.timestamp, int(m.kf_id[found.reference]), tracked.pose)
         self.tracking.accept(frame, tracked)
-        if corrected:  # the last frame, the new keyframe's own, moved with it
+        if corrected or joined is not None:  # the last frame, the new keyframe's own, moved
             self.tracking.move_last(self.owner.read().kf_pose[-1])
         return _Step(
-            tracked, found.keyframe, map_seconds, summary, matched=found.matched, made=made,
+            tracked, found.keyframe, map_seconds, summary, matched=matched, made=made,
             loop_seconds=loop_seconds, asked=found.asked, schedule=schedule,
+            merged_from=merged_from,
         )  # fmt: skip
 
     def _hand_over(self, threads: _Threads, frame: Frame, found: _Tracking) -> _Step:

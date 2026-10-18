@@ -2,9 +2,10 @@
 
 The room is rendered once per session and written whole, with its gap, lost (frames blanked
 to lose the track), found (blanked, then back at the start) and the window room (found, then
-lost by the time); the loop room is rendered apart (:func:`loop_folders`). :func:`room_runs`,
-:func:`gap_runs`, :func:`lost_runs`, :func:`kept_runs`, :func:`found_runs`, :func:`window_runs`
-and :func:`loop_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
+lost by the time); the loop room is rendered apart, once, and written whole and blinded as the
+merge room (:func:`loop_folders`, :func:`merge_folders`). :func:`room_runs`, :func:`gap_runs`,
+:func:`lost_runs`, :func:`kept_runs`, :func:`found_runs`, :func:`window_runs`, :func:`loop_runs`
+and :func:`merge_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
 recording their features, and each again on views when asked (:meth:`RoomRun.viewed`);
 :func:`loop_threaded_runs` runs the loop room threaded.
 """
@@ -26,6 +27,7 @@ from tests.orchestration.datasets import (
     FOUND_OPTIONS,
     GAP_OPTIONS,
     KEPT_OPTIONS,
+    MERGE_OPTIONS,
     MOVED_OPTIONS,
     WINDOW_OPTIONS,
     Room,
@@ -33,6 +35,7 @@ from tests.orchestration.datasets import (
     gap_frames,
     loop_frames,
     lost_frames,
+    merge_frames,
     window_frames,
     write_room,
 )
@@ -109,9 +112,23 @@ def window_folders(
 
 
 @pytest.fixture(scope="session")
-def loop_folders(tmp_path_factory: pytest.TempPathFactory) -> Room:
-    """Render the loop room with its right views, once per session, and write its folders."""
-    return write_room(tmp_path_factory.mktemp("loop"), loop_frames())
+def rendered_loop() -> list[room.Frame]:
+    """Render the loop room with its right views, once per session."""
+    return loop_frames()
+
+
+@pytest.fixture(scope="session")
+def loop_folders(rendered_loop: list[room.Frame], tmp_path_factory: pytest.TempPathFactory) -> Room:
+    """Write the loop room as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("loop"), rendered_loop)
+
+
+@pytest.fixture(scope="session")
+def merge_folders(
+    rendered_loop: list[room.Frame], tmp_path_factory: pytest.TempPathFactory
+) -> Room:
+    """Write the merge room (:func:`merge_frames`) as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("merge"), merge_frames(rendered_loop))
 
 
 class RoomRun:
@@ -239,3 +256,9 @@ def loop_threaded_runs(loop_folders: Room, tmp_path_factory: pytest.TempPathFact
     """Run the loop room threaded, its frames fed at their rate by the native programs."""
     out = tmp_path_factory.mktemp("loop_threaded_runs")
     return RoomRun(loop_folders, OPTIONS, out, threaded=True)
+
+
+@pytest.fixture(scope="session")
+def merge_runs(merge_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the merge room with :data:`MERGE_OPTIONS`: its two maps merge."""
+    return RoomRun(merge_folders, MERGE_OPTIONS, tmp_path_factory.mktemp("merge_runs"))
