@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <deque>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -1558,6 +1559,62 @@ Result<graphs::Summary> global_bundle_adjust(Map& m, const Camera& camera, const
     return std::unexpected(std::move(ok.error()));
   }
   return adjusted->summary;
+}
+
+Result<Propagated> propagate_global_ba(Map& now, const Map& solved) {
+  std::vector<Eigen::Matrix4d> poses = now.kf_pose;
+  std::map<std::int64_t, std::size_t> rows_of;
+  std::map<std::int64_t, std::vector<std::size_t>> children;
+  for (std::size_t k = 0; k < keyframe_count(now); ++k) {
+    rows_of[now.kf_id[k]] = k;
+    children[now.kf_parent[k]].push_back(k);
+  }
+  Propagated out;
+  std::deque<std::size_t> walk;
+  if (const auto roots = children.find(-1); roots != children.end()) {
+    walk.assign(roots->second.begin(), roots->second.end());
+  }
+  while (!walk.empty()) {
+    const std::size_t k = walk.front();
+    walk.pop_front();
+    const std::int64_t from = keyframe_row(solved, now.kf_id[k]);
+    if (from >= 0) {
+      poses[k] = solved.kf_pose[static_cast<std::size_t>(from)];
+      ++out.adjusted;
+    } else if (const auto parent = rows_of.find(now.kf_parent[k]); parent != rows_of.end()) {
+      const std::size_t p = parent->second;
+      poses[k] = now.kf_pose[k] * sim3::inverse(now.kf_pose[p]) * poses[p];
+      ++out.propagated;
+    }
+    if (const auto below = children.find(now.kf_id[k]); below != children.end()) {
+      walk.insert(walk.end(), below->second.begin(), below->second.end());
+    }
+  }
+  for (std::size_t p = 0; p < point_count(now); ++p) {
+    const std::int64_t from = point_row(solved, now.pt_id[p]);
+    if (from >= 0) {
+      now.pt_xyz[p] = solved.pt_xyz[static_cast<std::size_t>(from)];
+      ++out.points;
+      continue;
+    }
+    const auto reference = rows_of.find(now.pt_reference_kf[p]);
+    if (reference == rows_of.end()) {
+      continue;
+    }
+    const Eigen::Matrix4d& to_camera = now.kf_pose[reference->second];
+    const Eigen::Vector3d local =
+        to_camera.topLeftCorner<3, 3>() * now.pt_xyz[p] + to_camera.topRightCorner<3, 1>();
+    const Eigen::Matrix4d to_world = sim3::inverse(poses[reference->second]);
+    now.pt_xyz[p] = to_world.topLeftCorner<3, 3>() * local + to_world.topRightCorner<3, 1>();
+    ++out.carried;
+  }
+  now.kf_pose = std::move(poses);
+  Ids rows(point_count(now));
+  std::ranges::iota(rows, std::int64_t{0});
+  if (auto ok = refresh_points(now, rows); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return out;
 }
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity): Python's _correct, step for step

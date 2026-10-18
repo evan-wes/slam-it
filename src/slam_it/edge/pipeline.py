@@ -1257,11 +1257,10 @@ class _Threads:
                 keyframe, base = int(m.kf_id[-1]), self.atlas.point_base
         finally:
             self._busy = False
-        schedule = None if mapped.schedule is None else mapped.schedule.as_dict()
         entries = {
             "map_seconds": seconds,
             "mapping": mapped.summary.as_dict(),
-            "schedule": schedule,
+            "schedule": mapped.schedule.as_dict(),
         }
         made = np.where(mapped.made >= 0, base + mapped.made, -1)
         self._complete(Completion(request.index, entries, made=made))

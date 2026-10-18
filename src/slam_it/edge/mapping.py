@@ -208,14 +208,14 @@ class Mapped:
         The id of the point made for each of the keyframe's keypoints (from its depth, or
         triangulated), -1 where none: as made, though fusion or culling may since have removed
         it.
-    schedule : Schedule or None
-        How its steps were scheduled; None from a compiled backend, which does not keep it yet.
+    schedule : Schedule
+        How its steps were scheduled.
     """
 
     map: Map
     summary: MappingSummary
     made: IntArray
-    schedule: Schedule | None = None
+    schedule: Schedule
 
 
 _COUNTS = (
@@ -238,7 +238,8 @@ class Implementation(Protocol):
     The map crosses as :meth:`Map.as_dict`, a frame as
     :meth:`slam_it.edge.frames.Frame.as_dict`, a tracked frame as :meth:`Tracked.as_dict`, the
     mode by name. A mapped keyframe crosses back as a dict of ``map``, the summary's counts,
-    ``solves`` (as :func:`slam_it.edge.adjust.decode_solves` reads them) and ``made``.
+    ``solves`` (as :func:`slam_it.edge.adjust.decode_solves` reads them), ``made`` and
+    ``schedule`` (each step's :class:`Scheduled` by name).
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -255,6 +256,8 @@ class Implementation(Protocol):
         reference: int,
         mode: str,
         options: Crossing,
+        idle: bool,
+        since_keyframe: int | None,
     ) -> bool:
         """Decide whether a tracked frame becomes a keyframe."""
         ...
@@ -334,6 +337,7 @@ def _decode_mapped(raw: Crossing, codes: backends.Codes) -> Mapped:
         map=maps.decode(raw["map"], codes),
         summary=MappingSummary(solves=adjust.decode_solves(raw["solves"], codes), **counts),
         made=backends.checked_array(raw["made"], np.int64, 1, "made ids"),
+        schedule=Schedule(**{step: Scheduled(name) for step, name in raw["schedule"].items()}),
     )
 
 
@@ -490,11 +494,9 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     ------
     slam_it.foundations.errors.InvalidInputError
         If the mode is unknown, the map has no keyframe, the depths are infinite, the matches
-        are not one per depth, or mapping busy is given to a compiled backend.
+        are not one per depth.
     """
     check_mode(mode)
-    if not idle and backend != "python":
-        raise InvalidInputError("idle: only the Python reference decides with mapping busy so far")
     _check_newest(m)
     depths = as_real(depth, "depth", allow_nan=True).reshape(-1)
     ids = np.asarray(tracked.points)
@@ -518,7 +520,15 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
             since_keyframe=since_keyframe,
         ),
         arguments=_arguments(
-            m, camera, options, depth=depths, tracked=checked.as_dict(), reference=row, mode=mode
+            m,
+            camera,
+            options,
+            depth=depths,
+            tracked=checked.as_dict(),
+            reference=row,
+            mode=mode,
+            idle=idle,
+            since_keyframe=since_keyframe,
         ),
         decode=lambda raw, codes: bool(raw),
     )

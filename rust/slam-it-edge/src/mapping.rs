@@ -137,6 +137,9 @@ pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
 /// * `reference` - Its reference keyframe's row ([`crate::tracking::LocalTracking::reference`]).
 /// * `mode` - The pipeline's mode.
 /// * `options` - The ratios and counts.
+/// * `idle` - Whether local mapping is idle (as when it runs inline).
+/// * `since_keyframe` - The frames since the last keyframe, read only with mapping busy; `None`,
+///   as if too few.
 ///
 /// # Returns
 ///
@@ -150,6 +153,10 @@ pub fn close_depth(camera: &Camera, options: &Options) -> f64 {
     clippy::cast_precision_loss,
     reason = "counts of keypoints, exact in f64"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the stage's state, as the reference takes it"
+)]
 pub fn need_keyframe(
     m: &Map,
     camera: &Camera,
@@ -158,6 +165,8 @@ pub fn need_keyframe(
     reference: usize,
     mode: Mode,
     options: &Options,
+    idle: bool,
+    since_keyframe: Option<usize>,
 ) -> Result<bool> {
     check_newest(m, camera, options)?;
     check_range("reference", reference, 0, m.keyframes() - 1)?;
@@ -207,7 +216,15 @@ pub fn need_keyframe(
     }
     let count = tracked.inliers();
     let weak = (count as f64) < tracked_reference as f64 * ratio || need_close;
-    Ok(weak && count > options.keyframes.min_inliers)
+    let wanted = weak && count > options.keyframes.min_inliers; // c2
+    if idle {
+        return Ok(wanted); // c1b: no frames need pass, with mapping idle
+    }
+    let late = since_keyframe.is_some_and(|since| since >= options.tracking.max_frames); // c1a
+    let poor = mode != Mode::Monocular // c1c
+        && ((count as f64) < tracked_reference as f64 * options.keyframes.busy_ref_ratio
+            || need_close);
+    Ok(wanted && (late || poor))
 }
 
 /// Creates points from the newest keyframe's close depth
@@ -1193,6 +1210,77 @@ pub struct MappingSummary {
     pub culled_keyframes: usize,
 }
 
+/// How a step local mapping schedules went (`slam_it.edge.mapping.Scheduled`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Scheduled {
+    /// It ran (and may have found nothing to do).
+    #[default]
+    Ran = 0,
+    /// It was passed over: a keyframe waited, or a stop was requested.
+    Skipped = 1,
+    /// It started and was stopped early.
+    Aborted = 2,
+}
+
+impl Scheduled {
+    /// The outcome's name, as `slam_it.edge.mapping.Scheduled` spells it.
+    ///
+    /// # Returns
+    ///
+    /// A static string.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ran => "ran",
+            Self::Skipped => "skipped",
+            Self::Aborted => "aborted",
+        }
+    }
+}
+
+/// How local mapping scheduled a keyframe's steps (`slam_it.edge.mapping.Schedule`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Schedule {
+    /// Fusing duplicates with the neighbours (`SearchInNeighbors`).
+    pub fusion: Scheduled,
+    /// The local BA.
+    pub adjustment: Scheduled,
+    /// Culling redundant keyframes.
+    pub culling: Scheduled,
+}
+
+/// What local mapping's own thread is asked between its steps
+/// (`slam_it.edge.mapping.Interrupts`, ORB-SLAM's `LocalMapping::Run`).
+pub trait Interrupts {
+    /// Whether another keyframe waits to be mapped (`CheckNewKeyFrames`).
+    ///
+    /// # Returns
+    ///
+    /// Whether one waits.
+    fn waiting(&self) -> bool;
+
+    /// Whether a stop of local mapping is requested (`stopRequested`).
+    ///
+    /// # Returns
+    ///
+    /// Whether one is.
+    fn stopping(&self) -> bool;
+
+    /// The flag that stops the local BA (`mbAbortBA`).
+    ///
+    /// # Returns
+    ///
+    /// The flag.
+    fn abort(&self) -> &Stop;
+
+    /// Publishes the map so far for tracking, the keyframe's new points made.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map.
+    fn publish(&self, m: &Map);
+}
+
 /// A keyframe mapped (`slam_it.edge.mapping.Mapped`, the map aside: it changes in place):
 /// how it went, and the points made of its keypoints.
 #[derive(Debug, Clone, PartialEq)]
@@ -1202,6 +1290,8 @@ pub struct Mapped {
     /// The id of the point made for each of the keyframe's keypoints (from its depth, or
     /// triangulated), -1 where none: as made, though fusion or culling may since have removed it.
     pub made: Vec<i64>,
+    /// How its steps were scheduled.
+    pub schedule: Schedule,
 }
 
 /// Inserts a keyframe and runs local mapping on it (`slam_it.edge.mapping.process`).
@@ -1215,15 +1305,21 @@ pub struct Mapped {
 /// * `mode` - The pipeline's mode.
 /// * `options` - The settings.
 /// * `held` - The ids of the keyframes loop detection holds, which culling spares.
+/// * `interrupts` - What local mapping's thread is asked between the steps; `None` inline,
+///   every step run.
 ///
 /// # Returns
 ///
-/// How each step went, and the points made for the keyframe's keypoints.
+/// How each step went and was scheduled, and the points made for the keyframe's keypoints.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for matches that are not one per keypoint, or an invalid camera or
 /// settings.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the stage's state, as the reference takes it"
+)]
 pub fn process(
     m: &mut Map,
     camera: &Camera,
@@ -1232,6 +1328,7 @@ pub fn process(
     mode: Mode,
     options: &Options,
     held: &[i64],
+    interrupts: Option<&dyn Interrupts>,
 ) -> Result<Mapped> {
     map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
     // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
@@ -1254,23 +1351,36 @@ pub fn process(
             *id = triangulated;
         }
     }
-    fuse_points(m, camera, mode, options)?;
+    let mut schedule = Schedule::default();
+    if let Some(asked) = interrupts {
+        asked.publish(m);
+    }
+    if interrupts.is_none_or(|asked| !asked.waiting()) {
+        fuse_points(m, camera, mode, options)?;
+    } else {
+        schedule.fusion = Scheduled::Skipped;
+    }
     covisibility::adopt(m, newest)?;
     let fused = m.points();
+    let quiet = interrupts.is_none_or(|asked| !(asked.waiting() || asked.stopping()));
+    if !quiet {
+        schedule.adjustment = Scheduled::Skipped;
+        schedule.culling = Scheduled::Skipped;
+    }
     let mut adjustment = Adjustment::default();
-    if m.keyframes() >= options.adjustment.min_keyframes {
+    if quiet && m.keyframes() >= options.adjustment.min_keyframes {
         let fixed: Vec<bool> = m.kf_id.iter().map(|&id| id == 0).collect();
-        adjustment = bundle_adjust(
-            m,
-            camera,
-            &local_rows(m, options),
-            &fixed,
-            options,
-            &Stop::never(),
-        )?;
+        let never = Stop::never();
+        let abort = interrupts.map_or(&never, |asked| asked.abort());
+        adjustment = bundle_adjust(m, camera, &local_rows(m, options), &fixed, options, abort)?;
+        if adjustment.aborted {
+            schedule.adjustment = Scheduled::Aborted;
+        }
     }
     let keyframes = m.keyframes();
-    cull_keyframes(m, camera, mode, options, held)?;
+    if quiet {
+        cull_keyframes(m, camera, mode, options, held)?;
+    }
     Ok(Mapped {
         summary: MappingSummary {
             from_depth: with_depth - start,
@@ -1285,5 +1395,6 @@ pub fn process(
             culled_keyframes: keyframes - m.keyframes(),
         },
         made: new_ids,
+        schedule,
     })
 }

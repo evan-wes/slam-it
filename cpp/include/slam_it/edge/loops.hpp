@@ -296,6 +296,46 @@ struct Detection {
 [[nodiscard]] foundations::Result<foundations::graphs::Summary> global_bundle_adjust(
     Map& m, const Camera& camera, const Options& options, const std::atomic<bool>* stop = nullptr);
 
+/// @brief How a global BA's result was carried onto the map as it has become
+///        (`slam_it.edge.loops.Propagated`, the map aside: it changes in place).
+struct Propagated {
+  /// @brief Its keyframes the global BA solved, set to their result.
+  std::int64_t adjusted{0};
+  /// @brief Its keyframes made since, moved with their parents.
+  std::int64_t propagated{0};
+  /// @brief Its points the global BA solved, set to their result.
+  std::int64_t points{0};
+  /// @brief Its points made since, moved with their reference keyframes.
+  std::int64_t carried{0};
+};
+
+/// @brief Carry a global BA's result, solved on an earlier copy of the map, onto the map as it
+///        is now (`slam_it.edge.loops.propagate_global_ba`, ORB-SLAM's
+///        `RunGlobalBundleAdjustment` after its solve): walking the spanning tree from its
+///        roots, each keyframe the BA solved takes its solved pose, and each made since moves
+///        with its parent (`T_child' = T_child T_parent^-1 T_parent'`); each point the BA solved
+///        takes its solved position, and each made since moves with its reference keyframe
+///        (`X' = T_ref'^-1 T_ref X`). A keyframe the walk does not reach, or a point whose
+///        reference keyframe is gone, stays where it is. Every point is refreshed after.
+/// @param now The map as it is now, changed in place.
+/// @param solved The copy the global BA solved, moved to its result.
+/// @return How many keyframes and points went each way; a refresh's error.
+[[nodiscard]] foundations::Result<Propagated> propagate_global_ba(Map& now, const Map& solved);
+
+/// @brief How a global BA in a thread of its own went (`slam_it.edge.loops.GlobalSummary`), as
+///        a run records it on the frame it ended on.
+struct GlobalSummary {
+  /// @brief Its generation: the loops corrected before it in the run.
+  std::int64_t generation{0};
+  /// @brief Whether its result was carried onto the map; not if a newer loop superseded it, or
+  ///        the map was lost, first.
+  bool applied{false};
+  /// @brief Its solve.
+  foundations::graphs::Summary solve;
+  /// @brief How its result was carried, when it was.
+  std::optional<Propagated> propagation;
+};
+
 /// @brief How a loop's correction went (`slam_it.edge.loops.CorrectionSummary`).
 struct CorrectionSummary {
   /// @brief The id of the keyframe the loop closed on.

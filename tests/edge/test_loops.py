@@ -825,13 +825,14 @@ def _moved_world(m: Map, motion: np.ndarray) -> Map:
     return replace(m, kf_pose=m.kf_pose @ se3.inverse(motion), pt_xyz=xyz)
 
 
-def test_a_global_ba_carries_what_was_made_since(loop_rigid: Loop) -> None:
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_global_ba_carries_what_was_made_since(backend: str, loop_rigid: Loop) -> None:
     """Solved on an earlier copy, the result carries onto keyframes and points made since.
 
     The copy lacks the loop map's last keyframe and the points first seen there. Were the BA
     to move the copy's world rigidly, every keyframe and point of the map now moves the same
     way: the solved ones by their result, the newest keyframe with its parent, and its points
-    with it, their reference keyframe.
+    with it, their reference keyframe. Every backend carries it alike.
     """
     now = loop_rigid.map
     newest = int(now.kf_id[-1])
@@ -839,7 +840,8 @@ def test_a_global_ba_carries_what_was_made_since(loop_rigid: Loop) -> None:
     earlier = maps.erase_keyframe(now, now.keyframes - 1)
     earlier = maps.erase_points(earlier, np.isin(earlier.pt_id, made_there), Removal.CULLED)
     motion = se3.exp(np.array([0.05, -0.02, 0.03, 0.01, 0.02, -0.015]))
-    out = loops.propagate_global_ba(now, _moved_world(earlier, motion))
+    chosen = require_function(backend, loops.__name__, "propagate_global_ba")
+    out = loops.propagate_global_ba(now, _moved_world(earlier, motion), backend=chosen)
     expected = _moved_world(now, motion)
     np.testing.assert_allclose(out.map.kf_pose, expected.kf_pose, atol=1e-12)
     np.testing.assert_allclose(out.map.pt_xyz, expected.pt_xyz, atol=1e-12)

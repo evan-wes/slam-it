@@ -55,6 +55,8 @@ fn keyframes_and_points_follow_the_rules() {
             built.keyframes() - 1,
             Mode::Rgbd,
             &Options::default(),
+            true,
+            None,
         )
         .unwrap()
     };
@@ -74,6 +76,8 @@ fn keyframes_and_points_follow_the_rules() {
         past,
         Mode::Rgbd,
         &Options::default(),
+        true,
+        None,
     );
     assert!(
         refused.is_err(),
@@ -185,6 +189,7 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
         Mode::Rgbd,
         &Options::default(),
         &[],
+        None,
     )
     .unwrap();
     assert_eq!(m.kf_id.last(), Some(&3));

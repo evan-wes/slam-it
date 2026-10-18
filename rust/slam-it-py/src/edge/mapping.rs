@@ -27,6 +27,8 @@ use crate::common::{add_functions, contiguous, enum_codes, to_i64, unwrap};
 /// * `reference` - Its reference keyframe's row.
 /// * `mode` - The mode's name.
 /// * `options` - The settings, as a dict.
+/// * `idle` - Whether local mapping is idle.
+/// * `since_keyframe` - The frames since the last keyframe, or `None`.
 ///
 /// # Returns
 ///
@@ -36,7 +38,7 @@ use crate::common::{add_functions, contiguous, enum_codes, to_i64, unwrap};
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (m, camera, depth, tracked, reference, mode, options))]
+#[pyo3(signature = (m, camera, depth, tracked, reference, mode, options, idle, since_keyframe))]
 #[allow(
     clippy::too_many_arguments,
     reason = "the stage's state, as the reference takes it"
@@ -50,6 +52,8 @@ fn need_keyframe<'py>(
     reference: usize,
     mode: &str,
     options: &Bound<'py, PyDict>,
+    idle: bool,
+    since_keyframe: Option<usize>,
 ) -> PyResult<bool> {
     unwrap(
         py,
@@ -61,6 +65,8 @@ fn need_keyframe<'py>(
             reference,
             mode_in(mode)?,
             &options_in(options)?,
+            idle,
+            since_keyframe,
         ),
     )
 }
@@ -334,7 +340,8 @@ fn match_for_triangulation<'py>(
 ///
 /// # Returns
 ///
-/// The new map, as a dict, how each step went (the summary's counts and `solves`), and `made`.
+/// The new map, as a dict, how each step went (the summary's counts and `solves`), `made`, and
+/// how the steps were scheduled (`schedule`, by name).
 ///
 /// # Errors
 ///
@@ -368,6 +375,7 @@ fn process<'py>(
             mode,
             &options,
             contiguous(&held)?,
+            None,
         ),
     )?;
     let summary = &done.summary;
@@ -384,6 +392,11 @@ fn process<'py>(
     out.set_item("weak_points", to_i64(summary.weak_points))?;
     out.set_item("culled_keyframes", to_i64(summary.culled_keyframes))?;
     out.set_item("made", vector_array(py, &done.made))?;
+    let schedule = PyDict::new(py);
+    schedule.set_item("fusion", done.schedule.fusion.name())?;
+    schedule.set_item("adjustment", done.schedule.adjustment.name())?;
+    schedule.set_item("culling", done.schedule.culling.name())?;
+    out.set_item("schedule", schedule)?;
     Ok(out)
 }
 

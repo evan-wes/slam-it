@@ -589,6 +589,42 @@ fn global_bundle_adjust<'py>(
     Ok(out)
 }
 
+/// Carries a global BA's result onto the map as it has become.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `now` - The map now, as a dict.
+/// * `solved` - The copy the global BA solved, as a dict.
+///
+/// # Returns
+///
+/// `map`, and the keyframes and points carried each way.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+#[pyo3(signature = (now, solved))]
+fn propagate_global_ba<'py>(
+    py: Python<'py>,
+    now: &Bound<'py, PyDict>,
+    solved: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut moved = map_in(py, now)?;
+    let carried = unwrap(
+        py,
+        core::propagate_global_ba(&mut moved, &map_in(py, solved)?),
+    )?;
+    let out = PyDict::new(py);
+    out.set_item("map", map_dict(py, &moved)?)?;
+    out.set_item("adjusted", to_i64(carried.adjusted))?;
+    out.set_item("propagated", to_i64(carried.propagated))?;
+    out.set_item("points", to_i64(carried.points))?;
+    out.set_item("carried", to_i64(carried.carried))?;
+    Ok(out)
+}
+
 /// Looks for a loop at a newly mapped keyframe.
 ///
 /// # Arguments
@@ -709,6 +745,7 @@ pub fn loops(m: &Bound<'_, PyModule>) -> PyResult<()> {
         refine,
         fuse_by_similarity,
         global_bundle_adjust,
+        propagate_global_ba,
         detect,
         correct
     );

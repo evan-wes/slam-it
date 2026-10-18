@@ -77,6 +77,7 @@ def _same(backend: str, function: str, *args: object, **kwargs: object) -> None:
     elif isinstance(expected, mapping.Mapped):
         assert_maps_match(got.map, expected.map, SOLVER_TOLERANCE)
         assert_records_match(got.summary.as_dict(), expected.summary.as_dict())
+        assert got.schedule == expected.schedule
     else:
         np.testing.assert_array_equal(got, expected)
 
@@ -413,19 +414,21 @@ def test_a_compiled_backend_refuses_interrupts(mapped: Mapped) -> None:
         )  # fmt: skip
 
 
-def test_mapping_busy_asks_for_a_keyframe_less_often(mapped: Mapped) -> None:
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_mapping_busy_asks_for_a_keyframe_less_often(backend: str, mapped: Mapped) -> None:
     """Busy, a wanted keyframe also needs the frames since the last, or with depth, poor tracking.
 
     The frame tracks 60 of its reference's points: wanted while idle; busy, monocular wants it
     only once ``tracking.max_frames`` frames have passed; with depth, it is under a quarter
-    (ORB-SLAM's ``c1c``) only if the reference sees more than 240.
+    (ORB-SLAM's ``c1c``) only if the reference sees more than 240. Every backend decides alike.
     """
     m, frame, tracked = mapped.map, mapped.frame, mapped.tracked
     matched = np.flatnonzero(tracked.points >= 0)
     thin = replace(tracked, points=np.where(np.isin(np.arange(len(tracked.points)), matched[:60]),
                                             tracked.points, -1))  # fmt: skip
     ask = partial(mapping.need_keyframe, m, CAMERA, frame.depth, thin,
-                  reference=mapped.reference, options=OPTIONS)  # fmt: skip
+                  reference=mapped.reference, options=OPTIONS,
+                  backend=require_function(backend, mapping.__name__, "need_keyframe"))  # fmt: skip
     seen = m.kp_point[m.keypoint_rows(mapped.reference)]
     rows = m.point_rows(seen[seen >= 0])
     reference_points = int(np.count_nonzero(maps.observation_weight(m, rows[rows >= 0]) >= 3))
@@ -434,5 +437,3 @@ def test_mapping_busy_asks_for_a_keyframe_less_often(mapped: Mapped) -> None:
     assert ask(mode="monocular", idle=False, since_keyframe=OPTIONS.tracking.max_frames)
     poor = OPTIONS.keyframes.busy_ref_ratio * reference_points > 60
     assert ask(mode="rgbd", idle=False, since_keyframe=0) == poor
-    with pytest.raises(InvalidInputError, match="idle"):
-        ask(mode="rgbd", idle=False, backend="cpp")

@@ -6,7 +6,7 @@
 //! Similarities are ORB-SLAM's `S_cw`, `[[s R, t], [0, 1]]`; a keyframe's own pose is one with
 //! `s = 1`. A search projects through the rigid `(R, t / s)`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use nalgebra::{Matrix4, Vector2, Vector3};
 use slam_it_foundations::camera::MIN_DEPTH;
@@ -2153,6 +2153,97 @@ pub fn global_bundle_adjust(
     let all: Vec<usize> = (0..m.points()).collect();
     map::refresh_points(m, &all)?;
     Ok(adjusted.summary)
+}
+
+/// How a global BA's result was carried onto the map as it has become
+/// (`slam_it.edge.loops.Propagated`, the map aside: it changes in place).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Propagated {
+    /// Its keyframes the global BA solved, set to their result.
+    pub adjusted: usize,
+    /// Its keyframes made since, moved with their parents.
+    pub propagated: usize,
+    /// Its points the global BA solved, set to their result.
+    pub points: usize,
+    /// Its points made since, moved with their reference keyframes.
+    pub carried: usize,
+}
+
+/// How a global BA in a thread of its own went (`slam_it.edge.loops.GlobalSummary`), as a run
+/// records it on the frame it ended on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GlobalSummary {
+    /// Its generation: the loops corrected before it in the run.
+    pub generation: u64,
+    /// Whether its result was carried onto the map; not if a newer loop superseded it, or the
+    /// map was lost, first.
+    pub applied: bool,
+    /// Its solve.
+    pub solve: graphs::Summary,
+    /// How its result was carried, when it was.
+    pub propagation: Option<Propagated>,
+}
+
+/// Carries a global BA's result, solved on an earlier copy of the map, onto the map as it is
+/// now (`slam_it.edge.loops.propagate_global_ba`, ORB-SLAM's `RunGlobalBundleAdjustment` after
+/// its solve): walking the spanning tree from its roots, each keyframe the BA solved takes its
+/// solved pose, and each made since moves with its parent
+/// (`T_child' = T_child T_parent^-1 T_parent'`); each point the BA solved takes its solved
+/// position, and each made since moves with its reference keyframe (`X' = T_ref'^-1 T_ref X`).
+/// A keyframe the walk does not reach, or a point whose reference keyframe is gone, stays where
+/// it is. Every point is refreshed after.
+///
+/// # Arguments
+///
+/// * `now` - The map as it is now, changed in place.
+/// * `solved` - The copy the global BA solved, moved to its result.
+///
+/// # Returns
+///
+/// How many keyframes and points went each way.
+///
+/// # Errors
+///
+/// A refresh's.
+pub fn propagate_global_ba(now: &mut Map, solved: &Map) -> Result<Propagated> {
+    let mut poses = now.kf_pose.clone();
+    let mut rows_of = BTreeMap::new();
+    let mut children: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+    for k in 0..now.keyframes() {
+        rows_of.insert(now.kf_id[k], k);
+        children.entry(now.kf_parent[k]).or_default().push(k);
+    }
+    let mut out = Propagated::default();
+    let mut walk: VecDeque<usize> = children.get(&-1).cloned().unwrap_or_default().into();
+    while let Some(k) = walk.pop_front() {
+        if let Some(from) = solved.keyframe_row(now.kf_id[k]) {
+            poses[k] = solved.kf_pose[from];
+            out.adjusted += 1;
+        } else if let Some(&p) = rows_of.get(&now.kf_parent[k]) {
+            poses[k] = now.kf_pose[k] * sim3::inverse(&now.kf_pose[p]) * poses[p];
+            out.propagated += 1;
+        }
+        if let Some(below) = children.get(&now.kf_id[k]) {
+            walk.extend(below);
+        }
+    }
+    for p in 0..now.points() {
+        if let Some(from) = solved.point_row(now.pt_id[p]) {
+            now.pt_xyz[p] = solved.pt_xyz[from];
+            out.points += 1;
+            continue;
+        }
+        let Some(&reference) = rows_of.get(&now.pt_reference_kf[p]) else {
+            continue;
+        };
+        let local = to_camera(&now.kf_pose[reference], &now.pt_xyz[p]);
+        now.pt_xyz[p] = to_camera(&sim3::inverse(&poses[reference]), &local);
+        out.carried += 1;
+    }
+    now.kf_pose = poses;
+    let all: Vec<usize> = (0..now.points()).collect();
+    map::refresh_points(now, &all)?;
+    Ok(out)
 }
 
 /// Sets each keyframe to its optimised pose, and moves each point with its keyframe

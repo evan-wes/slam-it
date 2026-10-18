@@ -1477,18 +1477,17 @@ class GlobalSummary:
         }
 
 
-def propagate_global_ba(now: Map, solved: Map) -> Propagated:
+def propagate_global_ba(now: Map, solved: Map, *, backend: str = "python") -> Propagated:
     """Carry a global BA's result, solved on an earlier copy of the map, onto the map as it is now.
 
-    ORB-SLAM's ``RunGlobalBundleAdjustment``, after its solve: walking the spanning tree from the
-    map's first keyframe, each keyframe the BA solved takes its solved pose, and each keyframe
-    made since moves with its parent, its pose relative to the parent kept
-    (``T_child' = T_child T_parent^-1 T_parent'``); each point the BA solved takes its solved
-    position, and each made since moves with its reference keyframe
+    ORB-SLAM's ``RunGlobalBundleAdjustment``, after its solve: walking the spanning tree from its
+    roots (the map's first keyframe, and any keyframe without a parent), each keyframe the BA
+    solved takes its solved pose, and each keyframe made since moves with its parent, its pose
+    relative to the parent kept (``T_child' = T_child T_parent^-1 T_parent'``); each point the BA
+    solved takes its solved position, and each made since moves with its reference keyframe
     (``X' = T_ref'^-1 T_ref X``). A keyframe the walk does not reach, or a point whose reference
-    keyframe is gone, stays where it is. The points moved are refreshed
-    (:func:`slam_it.edge.map.refresh_points`). The Python reference alone, until milestone 2B's
-    B3b's compiled ports.
+    keyframe is gone, stays where it is. Every point is refreshed after
+    (:func:`slam_it.edge.map.refresh_points`).
 
     Parameters
     ----------
@@ -1496,12 +1495,31 @@ def propagate_global_ba(now: Map, solved: Map) -> Propagated:
         The map as it is now.
     solved : slam_it.edge.map.Map
         The copy the global BA solved, moved to its result (:func:`global_bundle_adjust`).
+    backend : {"python", "cpp", "rust"}, optional
+        The implementation to run (default: the Python reference).
 
     Returns
     -------
     Propagated
         The map moved, and how many keyframes and points each way.
     """
+
+    def decode(raw: Crossing, codes: backends.Codes) -> Propagated:
+        counts = {name: int(raw[name]) for name in ("adjusted", "propagated", "points", "carried")}
+        return Propagated(map=maps.decode(raw["map"], codes), **counts)
+
+    return backends.call(
+        backend,
+        __name__,
+        "propagate_global_ba",
+        reference=lambda: _propagate_global_ba(now, solved),
+        arguments={"now": now.as_dict(), "solved": solved.as_dict()},
+        decode=decode,
+    )
+
+
+def _propagate_global_ba(now: Map, solved: Map) -> Propagated:
+    """Carry a global BA's result onto the map as it is now (reference)."""
     new_poses = now.kf_pose.copy()
     solved_rows = solved.keyframe_rows(now.kf_id)
     rows_of = {int(keyframe): k for k, keyframe in enumerate(now.kf_id)}
@@ -1646,6 +1664,10 @@ class Implementation(Protocol):
 
     def global_bundle_adjust(self, *, m: Crossing, camera: Crossing, options: Crossing) -> Crossing:
         """Bundle-adjust every keyframe and point."""
+        ...
+
+    def propagate_global_ba(self, *, now: Crossing, solved: Crossing) -> Crossing:
+        """Carry a global BA's result onto the map as it has become."""
         ...
 
     def detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state

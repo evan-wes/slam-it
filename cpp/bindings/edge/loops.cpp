@@ -276,6 +276,24 @@ nb::dict global_bundle_adjust(const nb::dict& m, const nb::dict& camera, const n
   return out;
 }
 
+/// @brief Carry a global BA's result onto the map as it has become.
+/// @param now The map now, as a dict.
+/// @param solved The copy the global BA solved, as a dict.
+/// @return `map`, and the keyframes and points carried each way.
+/// @throws CoreError for a refresh's failure.
+nb::dict propagate_global_ba(const nb::dict& now, const nb::dict& solved) {
+  edge::Map map = edge_crossing::map_in(now);
+  const loops::Propagated moved =
+      unwrap(loops::propagate_global_ba(map, edge_crossing::map_in(solved)));
+  nb::dict out;
+  out["map"] = edge_crossing::map_dict(map);
+  out["adjusted"] = moved.adjusted;
+  out["propagated"] = moved.propagated;
+  out["points"] = moved.points;
+  out["carried"] = moved.carried;
+  return out;
+}
+
 /// @brief Look for a loop at a newly mapped keyframe.
 /// @param m The map, as a dict.
 /// @param database Its database, as a dict.
@@ -358,6 +376,8 @@ void bind_loops(nb::module_& m) {
         "Fuse points into a keyframe through a similarity.");
   m.def("global_bundle_adjust", &global_bundle_adjust, nb::arg("m"), nb::arg("camera"),
         nb::arg("options"), "Bundle-adjust every keyframe and point.");
+  m.def("propagate_global_ba", &propagate_global_ba, nb::arg("now"), nb::arg("solved"),
+        "Carry a global BA's result onto the map as it has become.");
   m.def("detect", &detect, nb::arg("m"), nb::arg("database"), nb::arg("camera"),
         nb::arg("keyframe"), nb::arg("pending").none(), nb::arg("mode"), nb::arg("options"),
         "Look for a loop at a newly mapped keyframe.");

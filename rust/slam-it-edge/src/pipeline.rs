@@ -834,6 +834,8 @@ fn track_step(
             reference,
             mode,
             options,
+            true,
+            None,
         )?;
     Ok(Tracking {
         tracked: Some(local.tracked),
@@ -1257,7 +1259,7 @@ impl Pipeline {
         let (camera, mode, options) = (&self.camera, self.mode, &self.options);
         // Local mapping's step: insert the frame as a keyframe and map around it.
         let mapped = self.owner.apply_mapping(|m| {
-            mapping::process(m, camera, frame, tracked, mode, options, &holding)
+            mapping::process(m, camera, frame, tracked, mode, options, &holding, None)
         })?;
         let mut out = KeyframeMapped {
             map_seconds: start.elapsed().as_secs_f64(),
