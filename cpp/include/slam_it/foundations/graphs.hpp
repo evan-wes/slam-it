@@ -216,8 +216,8 @@ struct ProjectionResidual {
   Eigen::MatrixXd d_pose;
   /// @brief Its Jacobian on the point (D x 3).
   Eigen::MatrixXd d_point;
-  /// @brief Whether the point is in front of the camera; one that is not contributes nothing
-  ///        (zero residual and Jacobians).
+  /// @brief Whether the point is in front of the camera; one that is not costs GTSAM's own
+  ///        factors' constant, twice the focal length in every row, with zero Jacobians.
   bool in_front = false;
 };
 

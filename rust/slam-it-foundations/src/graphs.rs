@@ -527,11 +527,19 @@ fn write_rows(matrix: &DMatrix<f64>, out: &mut [f64]) {
     }
 }
 
+/// A pose's or a similarity's values as they cross the bridge: its 4x4 matrix, row-major.
+const MATRIX_VALUES: usize = 16;
+
+/// A projection factor's values: its pose's matrix, then its point's 3.
+const PROJECTION_VALUES: usize = MATRIX_VALUES + 3;
+
 /// GTSAM's call into a Rust factor: its residual and its Jacobian (each variable's block side
 /// by side, row-major).
 ///
-/// Never panics, as a call from C++ must not: a factor index or a value count it does not know
-/// leaves the outputs at zero, which the factors built here never produce.
+/// A call from C++ must not panic: a factor index or a value count it does not know leaves the
+/// outputs at zero, which the factors built here never produce. It does rely on one invariant:
+/// the bridge sizes `residual` by the factor's own dimension (2, or 3 with a right column), as
+/// every factor built here declares, so the copy into it cannot fail.
 ///
 /// # Arguments
 ///
@@ -550,9 +558,9 @@ fn evaluate(
     residual.fill(0.0);
     jacobian.fill(0.0);
     match evaluator.factors.get(index) {
-        Some(Factor::Projection { measured }) if values.len() == 19 => {
-            let pose = Matrix4::from_row_slice(&values[..16]);
-            let point = Vector3::from_column_slice(&values[16..]);
+        Some(Factor::Projection { measured }) if values.len() == PROJECTION_VALUES => {
+            let pose = Matrix4::from_row_slice(&values[..MATRIX_VALUES]);
+            let point = Vector3::from_column_slice(&values[MATRIX_VALUES..]);
             if let Ok(at) = projection_residual(&pose, &point, measured, &evaluator.lens) {
                 let mut both = DMatrix::zeros(at.residual.len(), POSE_DIM + 3);
                 both.columns_mut(0, POSE_DIM).copy_from(&at.d_pose);
@@ -568,7 +576,7 @@ fn evaluate(
             pixel2,
             first,
             fixed_scale,
-        }) if values.len() == 16 => {
+        }) if values.len() == MATRIX_VALUES => {
             let motion = if *fixed_scale {
                 Matrix4::from_row_slice(values)
             } else {

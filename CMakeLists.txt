@@ -114,5 +114,11 @@ if(SKBUILD)
   nanobind_add_module(_cpp NB_STATIC ${SLAM_IT_BINDING_SOURCES})
   target_include_directories(_cpp PRIVATE cpp/bindings)
   target_link_libraries(_cpp PRIVATE slam_it_foundations slam_it_edge)
+  # The static libraries' symbols (GTSAM's among them) stay private to the extension, as Rust's
+  # cdylib keeps them: exported, a library loaded with RTLD_GLOBAL could bind another GTSAM
+  # copy's calls to this one's (B3's review panel, A13).
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(_cpp PRIVATE "LINKER:--exclude-libs,ALL")
+  endif()
   install(TARGETS _cpp LIBRARY DESTINATION slam_it)
 endif()

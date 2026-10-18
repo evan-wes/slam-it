@@ -28,12 +28,18 @@ namespace {
 /// @brief A row-major 4x4 matrix.
 using Matrix4Rows = Eigen::Matrix<double, 4, 4, Eigen::RowMajor>;
 
+/// @brief A pose's or a similarity's values: its 4x4 matrix, row-major.
+constexpr std::size_t kMatrixValues = 16;
+
+/// @brief A point's values.
+constexpr std::size_t kPointValues = 3;
+
 /// @brief Read 16 row-major doubles as a 4x4 matrix.
 /// @param values The doubles.
 /// @return The matrix.
 /// @throws std::invalid_argument for a length other than 16.
 Eigen::Matrix4d matrix_of(rust::Slice<const double> values) {
-  if (values.size() != 16) {
+  if (values.size() != kMatrixValues) {
     throw std::invalid_argument("graphs bridge: expected 16 values for a 4x4 matrix");
   }
   return Eigen::Map<const Matrix4Rows>(values.data());
@@ -44,7 +50,7 @@ Eigen::Matrix4d matrix_of(rust::Slice<const double> values) {
 /// @param out The 16 doubles.
 /// @throws std::invalid_argument for a length other than 16.
 void write_matrix(const Eigen::Matrix4d& matrix, rust::Slice<double> out) {
-  if (out.size() != 16) {
+  if (out.size() != kMatrixValues) {
     throw std::invalid_argument("graphs bridge: expected room for 16 values");
   }
   Eigen::Map<Matrix4Rows>(out.data()) = matrix;
@@ -59,6 +65,22 @@ enum class Kind : std::uint8_t {
   /// @brief A point: 3 values, tangent 3.
   kPoint = 2,
 };
+
+/// @brief A variable kind's tangent dimension, in GTSAM's order: `(ω, v)` for a pose,
+///        `(ω, v, λ)` for a similarity, a point's 3.
+/// @param kind The kind.
+/// @return Its dimension.
+constexpr Eigen::Index tangent_dimension(Kind kind) {
+  switch (kind) {
+    case Kind::kPose:
+      return 6;
+    case Kind::kSimilarity:
+      return 7;
+    case Kind::kPoint:
+      return 3;
+  }
+  return 0;
+}
 
 /// @brief The evaluator the current call holds, shared by the factors and the optimizer.
 using Slot = std::shared_ptr<const Evaluator*>;
@@ -92,34 +114,31 @@ class RustFactor final : public gtsam::NoiseModelFactor {
       throw std::logic_error("graphs bridge: a factor was evaluated with no evaluator held");
     }
     std::vector<double> flat;
-    std::size_t tangent = 0;
+    Eigen::Index tangent = 0;
     for (std::size_t k = 0; k < kinds_.size(); ++k) {
       const gtsam::Key key = keys()[k];
       switch (kinds_[k]) {
         case Kind::kPose: {
           const Matrix4Rows matrix = x.at<gtsam::Pose3>(key).matrix();
-          flat.insert(flat.end(), matrix.data(), matrix.data() + 16);
-          tangent += 6;
+          flat.insert(flat.end(), matrix.data(), matrix.data() + kMatrixValues);
           break;
         }
         case Kind::kSimilarity: {
           const Matrix4Rows matrix = x.at<gtsam::Similarity3>(key).matrix();
-          flat.insert(flat.end(), matrix.data(), matrix.data() + 16);
-          tangent += 7;
+          flat.insert(flat.end(), matrix.data(), matrix.data() + kMatrixValues);
           break;
         }
         case Kind::kPoint: {
           const gtsam::Point3 point = x.at<gtsam::Point3>(key);
-          flat.insert(flat.end(), point.data(), point.data() + 3);
-          tangent += 3;
+          flat.insert(flat.end(), point.data(), point.data() + kPointValues);
           break;
         }
       }
+      tangent += tangent_dimension(kinds_[k]);
     }
     const auto rows = static_cast<Eigen::Index>(dim());
     gtsam::Vector residual(rows);
-    Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> jacobian(
-        rows, static_cast<Eigen::Index>(tangent));
+    Eigen::Matrix<double, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor> jacobian(rows, tangent);
     evaluate(**slot_, index_, rust::Slice<const double>(flat.data(), flat.size()),
              rust::Slice<double>(residual.data(), static_cast<std::size_t>(residual.size())),
              rust::Slice<double>(jacobian.data(), static_cast<std::size_t>(jacobian.size())));
@@ -127,9 +146,7 @@ class RustFactor final : public gtsam::NoiseModelFactor {
       jacobians->resize(kinds_.size());
       Eigen::Index column = 0;
       for (std::size_t k = 0; k < kinds_.size(); ++k) {
-        const Eigen::Index width = kinds_[k] == Kind::kPose         ? 6
-                                   : kinds_[k] == Kind::kSimilarity ? 7
-                                                                    : 3;
+        const Eigen::Index width = tangent_dimension(kinds_[k]);
         (*jacobians)[k] = jacobian.middleCols(column, width);
         column += width;
       }
