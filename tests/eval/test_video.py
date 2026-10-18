@@ -582,13 +582,18 @@ def test_an_oversized_map_is_named_as_we_name_it_not_as_the_zip_does(
     assert "\n" not in str(raised.value)
 
 
+def _room_video(rendered: list[room.Frame], folder: Path) -> tuple[Path, list[str]]:
+    """Encode the room's first three frames, and give its intrinsics as the program takes them."""
+    path = encode(folder / "room.mov", [rgb(f.gray) for f in rendered[:3]])
+    c = room.SMALL
+    return path, [str(v) for v in (c.fx, c.fy, c.cx, c.cy)]
+
+
 def test_main_imports_and_says_what(
     rendered: list[room.Frame], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The program imports a video with the intrinsics given, or a Stray Scanner zip."""
-    path = encode(tmp_path / "room.mov", [rgb(f.gray) for f in rendered[:3]])
-    c = room.SMALL
-    given = [str(v) for v in (c.fx, c.fy, c.cx, c.cy)]
+    path, given = _room_video(rendered, tmp_path)
     assert video.main([str(path), str(tmp_path / "a"), "--intrinsics", *given]) == 0
     recording = stray_zip(tmp_path / "room.zip", rendered[:3])
     assert video.main([str(recording), str(tmp_path / "b"), "--stray"]) == 0
@@ -605,8 +610,53 @@ def test_main_imports_and_says_what(
         video.main([str(path), str(tmp_path / "d"), "--min-confidence", "1"])
 
 
+def test_main_imports_a_mask(
+    rendered: list[room.Frame], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """--mask writes the mask beside the frames, carried through them, and the import says so."""
+    path, given = _room_video(rendered, tmp_path)
+    mask = np.full((240, 320), 255, np.uint8)
+    mask[200:, :] = 0  # the bottom: an overlay's, say
+    images.write_png(tmp_path / "mask.png", mask)
+    command = [str(path), "--intrinsics", *given, "--mask"]
+    assert video.main([*command, str(tmp_path / "mask.png"), str(tmp_path / "a")]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        f"{tmp_path / 'a'}: 3 frames, 320x240, intrinsics from given, masked"
+    ]
+    frames, source = _imported(tmp_path / "a")
+    assert frames.mask is not None
+    np.testing.assert_array_equal(frames.mask, mask)  # 320x240: neither scaled nor undistorted
+    assert source["mask"] is True
+    images.write_png(tmp_path / "small.png", mask[1:])
+    with pytest.raises(InvalidInputError, match="mask: expected the video's stored size 320x240"):
+        video.main([*command, str(tmp_path / "small.png"), str(tmp_path / "small")])
+    assert not (tmp_path / "small").exists()
+    recording = stray_zip(tmp_path / "room.zip", rendered[:3])
+    with pytest.raises(SystemExit):
+        video.main([str(recording), str(tmp_path / "b"), "--stray", "--mask", "mask.png"])
+
+
 RAYS = np.array([(0.0, 0.0), (-0.45, -0.22), (0.4, 0.2), (-0.3, 0.25), (0.47, -0.25), (0.15, -0.1)])
 """Rays through the iPhone 14 Pro profile's view, as pinhole coordinates (x/z, y/z)."""
+
+
+def _blobs_at_rays() -> tuple[lenses.Profile, np.ndarray, np.ndarray]:
+    """Draw a blob at each of :data:`RAYS` through the iPhone 14 Pro's fisheye profile.
+
+    Returns the profile, the picture (RGB, the profile's 1920x1080) and where each ray falls
+    in it, ``(len(RAYS), 2)`` pixels.
+    """
+    profile = lenses.read_profile(
+        PROFILES / "Apple_iPhone 14 Pro_24mm__1080p_16by9_1920x1080-25.00fps.json"
+    )
+    assert profile is not None
+    lens = profile.fisheye
+    sources = lens.source(RAYS[:, 0], RAYS[:, 1])
+    ys, xs = np.mgrid[0 : lens.camera.height, 0 : lens.camera.width].astype(np.float64)
+    drawn = np.full(xs.shape, 20.0)
+    for x0, y0 in sources:
+        drawn += 200.0 * np.exp(-((xs - x0) ** 2 + (ys - y0) ** 2) / (2 * 7.0**2))
+    return profile, rgb(np.clip(np.round(drawn), 0, 255).astype(np.uint8)), np.asarray(sources)
 
 
 def _turn_rays(rays: np.ndarray, turns: int) -> np.ndarray:
@@ -631,17 +681,8 @@ def test_imported_frames_show_each_ray_where_their_camera_projects_it(
     declared rotation (an iPhone's portrait clip declares -90), then imported; each blob's
     centre must be where camera.txt projects its ray, turned as the frame was, within 0.1 px.
     """
-    profile = lenses.read_profile(
-        PROFILES / "Apple_iPhone 14 Pro_24mm__1080p_16by9_1920x1080-25.00fps.json"
-    )
-    assert profile is not None
+    profile, picture, _ = _blobs_at_rays()
     lens = profile.fisheye
-    sources = lens.source(RAYS[:, 0], RAYS[:, 1])
-    ys, xs = np.mgrid[0 : lens.camera.height, 0 : lens.camera.width].astype(np.float64)
-    drawn = np.full(xs.shape, 20.0)
-    for x0, y0 in sources:
-        drawn += 200.0 * np.exp(-((xs - x0) ** 2 + (ys - y0) ** 2) / (2 * 7.0**2))
-    picture = rgb(np.clip(np.round(drawn), 0, 255).astype(np.uint8))
     path = encode(tmp_path / "rays.mov", [picture, picture], rotation=rotation)
     video.import_video(path, tmp_path / "out", lenses.Chosen(lens, "profile", profile.name))
     frames = tum.read_frames(tmp_path / "out")
@@ -655,3 +696,41 @@ def test_imported_frames_show_each_ray_where_their_camera_projects_it(
         weights = shown * ((np.abs(xs - x0) < 12) & (np.abs(ys - y0) < 12))
         centre = np.array([(weights * xs).sum(), (weights * ys).sum()]) / weights.sum()
         assert np.hypot(*(centre - (x0, y0))) < 0.1
+
+
+@pytest.mark.parametrize("rotation", [90, 180])
+def test_a_mask_lands_where_the_frames_pixels_do(rotation: int, tmp_path: Path) -> None:
+    """Scaled, undistorted and turned with the frames, a mask covers what it covered.
+
+    A fisheye frame shows blobs at known rays, and the mask covers a disc at each; imported,
+    each disc's centre in mask.png must be within a pixel of its blob's centre in the frame.
+    """
+    profile, picture, sources = _blobs_at_rays()
+    lens = profile.fisheye
+    ys, xs = np.mgrid[0 : lens.camera.height, 0 : lens.camera.width].astype(np.float64)
+    mask = np.full(xs.shape, 255, np.uint8)
+    for x0, y0 in sources:
+        mask[(xs - x0) ** 2 + (ys - y0) ** 2 < 14.0**2] = 0
+    path = encode(tmp_path / "rays.mov", [picture, picture], rotation=rotation)
+    chosen = lenses.Chosen(lens, "profile", profile.name)
+    video.import_video(path, tmp_path / "out", chosen, mask=mask)
+    frames = tum.read_frames(tmp_path / "out")
+    assert frames.mask is not None
+    shown = images.read_gray(frames.images[0]).astype(np.float64)
+    shown = np.clip(shown - np.median(shown), 0.0, None)
+    covered = (frames.mask == 0).astype(np.float64)
+    fx, fy, cx, cy = frames.camera.intrinsics
+    turned = _turn_rays(RAYS, rotation // 90)
+    expected = np.stack([fx * turned[:, 0] + cx, fy * turned[:, 1] + cy], axis=-1)
+    ys, xs = np.mgrid[0 : shown.shape[0], 0 : shown.shape[1]].astype(np.float64)
+    for x0, y0 in expected:
+        near = (np.abs(xs - x0) < 12) & (np.abs(ys - y0) < 12)
+        blob = (
+            np.array([(shown * near * xs).sum(), (shown * near * ys).sum()]) / (shown * near).sum()
+        )
+        disc = (
+            np.array([(covered * near * xs).sum(), (covered * near * ys).sum()])
+            / (covered * near).sum()
+        )
+        assert np.hypot(*(blob - disc)) < 1.0
+    assert covered.mean() < 0.05  # the discs alone: nothing else masked

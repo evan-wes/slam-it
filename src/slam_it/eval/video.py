@@ -77,7 +77,16 @@ run.
   with its edit list ignored, and every frame has its ``odometry.csv`` row.
 
 **Metadata.** ``source.json`` records the intrinsics' source and the metadata fields the import
-read (:data:`METADATA_KEYS`). Location tags and every other field are never copied.
+read (:data:`METADATA_KEYS`), and whether a mask was given. Location tags and every other field
+are never copied.
+
+**A mask** (:func:`import_video`'s ``mask``): an 8-bit gray image at the video's stored size, 0
+where no feature is to be tracked (a camera's burned-in overlay, the car's own body). It is
+carried through the frames' own geometry and written as ``mask.png``
+(:data:`slam_it.eval.tum.MASK_FILE`), which a run reads: scaled down as the frames are, a pixel
+masked if any stored pixel under it is (:func:`_scaled_mask`); then, for a fisheye lens, each
+written pixel taking the scaled mask's pixel nearest where the undistortion samples, masked if
+that is outside it; then turned upright with the frames.
 
 **Assumptions the test clips check** (the design doc's section 5, "Checked first"): that
 PyAV's rotation is counter-clockwise on a real portrait clip, as it is on the files PyAV
@@ -89,8 +98,8 @@ Scanner's conventions, read in its source, hold on a real recording.
 Run as a program::
 
     python -m slam_it.eval.video VIDEO OUT [--source auto|profile|35mm|nominal]
-        [--profiles DIR]
-    python -m slam_it.eval.video VIDEO OUT --intrinsics FX FY CX CY
+        [--profiles DIR] [--mask PNG]
+    python -m slam_it.eval.video VIDEO OUT --intrinsics FX FY CX CY [--mask PNG]
     python -m slam_it.eval.video RECORDING.zip OUT --stray [--min-confidence {0,1,2}]
 """
 
@@ -111,11 +120,12 @@ from typing import Any
 
 import av
 import numpy as np
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
 from slam_it.eval import images, lenses, lidar, runs, tum
 from slam_it.foundations import image, so3
+from slam_it.foundations.arrays import as_image
 from slam_it.foundations.errors import InvalidInputError
 
 MAX_BYTES = 500 * 10**6
@@ -372,6 +382,41 @@ def _picture(frame: av.VideoFrame, geometry: _Geometry) -> NDArray[np.uint8]:
     return np.rot90(picture, geometry.turns)
 
 
+def _scaled_mask(mask: NDArray[np.uint8], size: tuple[int, int]) -> NDArray[np.uint8]:
+    """Scale a mask down to `size` (width, height): a pixel is masked if any pixel under it is.
+
+    Each output pixel covers ``[i s, (i + 1) s)`` of the stored rows (and columns), `s` the
+    stored size over the output's; every stored pixel that range touches counts.
+    """
+    out = mask
+    for axis, target in ((0, size[1]), (1, size[0])):
+        stored = out.shape[axis]
+        step = stored / target
+        starts = np.floor(np.arange(target) * step).astype(np.int64)
+        ends = np.minimum(np.ceil((np.arange(target) + 1) * step).astype(np.int64), stored)
+        out = np.stack(
+            [
+                np.take(out, range(a, b), axis=axis).min(axis=axis)
+                for a, b in zip(starts, ends, strict=True)
+            ],
+            axis=axis,
+        )
+    return np.where(out != 0, 255, 0).astype(np.uint8)
+
+
+def _mask_picture(mask: NDArray[np.uint8], geometry: _Geometry) -> NDArray[np.uint8]:
+    """Carry a stored-size mask through the frames' geometry (the module docstring)."""
+    scaled = _scaled_mask(mask, geometry.size)
+    if geometry.mapping is not None:
+        h, w = scaled.shape
+        col = np.floor(geometry.mapping[..., 0] + 0.5).astype(np.int64)
+        row = np.floor(geometry.mapping[..., 1] + 0.5).astype(np.int64)
+        inside = (col >= 0) & (col < w) & (row >= 0) & (row < h)
+        scaled = np.where(inside, scaled[np.clip(row, 0, h - 1), np.clip(col, 0, w - 1)], 0)
+        scaled = scaled.astype(np.uint8)
+    return np.ascontiguousarray(np.rot90(scaled, geometry.turns))
+
+
 def _write_frames(  # noqa: PLR0913 -- the video, the folder, the lens; how, keyword-only
     video: Path,
     out: Path,
@@ -380,10 +425,13 @@ def _write_frames(  # noqa: PLR0913 -- the video, the folder, the lens; how, key
     edits: bool = True,
     limits: Limits = UPLOAD,
     clock: Sequence[float] | None = None,
+    mask: NDArray[np.uint8] | None = None,
 ) -> _Frames:
     """Write a video's frames into a TUM-format folder: ``rgb/``, ``rgb.txt``, ``camera.txt``.
 
     Each frame is timed by the video, since its first, or by `clock`, one time a decoded frame.
+    A `mask` at the frames' stored size is written as ``mask.png``, carried through their
+    geometry (the module docstring).
     """
     times: list[float] = []
     decoded: list[int] = []
@@ -413,6 +461,14 @@ def _write_frames(  # noqa: PLR0913 -- the video, the folder, the lens; how, key
         raise InvalidInputError(f"{video.name}: no frames")
     if clock is not None and count != len(clock):
         raise InvalidInputError(f"{video.name}: {count} frames, {len(clock)} timed")
+    if mask is not None:
+        width, height = geometry.stored
+        if mask.shape != (height, width):
+            raise InvalidInputError(
+                f"mask: expected the video's stored size {width}x{height}, got "
+                f"{mask.shape[1]}x{mask.shape[0]}"
+            )
+        images.write_png(out / tum.MASK_FILE, _mask_picture(mask, geometry))
     camera = geometry.camera
     matrix = _matrix(camera)
     tum.write_list(out / "rgb.txt", listed)
@@ -472,6 +528,7 @@ def import_video(  # noqa: PLR0913 -- the video, the folder, the lens; a dataset
     clock: Sequence[float] | None = None,
     truth: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
     source: Mapping[str, Any] | None = None,
+    mask: ArrayLike | None = None,
 ) -> None:
     """Import a video into a TUM-format folder (the module docstring).
 
@@ -496,6 +553,10 @@ def import_video(  # noqa: PLR0913 -- the video, the folder, the lens; a dataset
         What a dataset's import names it by in ``source.json``: its ``kind`` and the fields
         that identify it, as the sequence and its calibration (default ``{"kind": "video"}``,
         an upload).
+    mask : array_like of uint8, shape (H, W), optional
+        The features a run drops, those on a 0, at the video's stored size (before its
+        declared rotation): written as ``mask.png``, carried through the frames' geometry (the
+        module docstring).
 
     Raises
     ------
@@ -505,20 +566,22 @@ def import_video(  # noqa: PLR0913 -- the video, the folder, the lens; a dataset
         If the folder is not new or empty, the video is over a cap, not a readable video, has
         no frames, declares a rotation that is not a quarter turn, or is not the intrinsics'
         size; if a fisheye lens leaves no rectangle undistorted; or if a clock is given that
-        does not time each decoded frame once.
+        does not time each decoded frame once; or if the mask is not uint8 of the video's
+        stored size.
     """
+    keep = None if mask is None else as_image(mask, "mask")
     path = Path(video)
     if not path.is_file():
         raise FileNotFoundError(f"no video at {path}")
     _check_size(path, MAX_BYTES)
     metadata = probe(path).metadata
     with tum.staged(out) as folder:
-        frames = _write_frames(path, folder, chosen.lens, limits=limits, clock=clock)
+        frames = _write_frames(path, folder, chosen.lens, limits=limits, clock=clock, mask=keep)
         if truth is not None:
             runs.write_trajectory(folder / "groundtruth.txt", *truth)
         named = dict(source or {"kind": "video"})
         kind = str(named.pop("kind", "video"))
-        read = {**named, "metadata": metadata, "depth": None}
+        read = {**named, "metadata": metadata, "depth": None, "mask": keep is not None}
         _write_source(folder, kind, chosen, frames, read)
 
 
@@ -858,7 +921,11 @@ def import_stray(recording: str | Path, out: str | Path, min_confidence: int = l
                 _write_depth(archive, entries, folder, frames, depth)
         poses = _stray_poses(table)[frames.decoded]
         runs.write_trajectory(folder / "groundtruth.txt", frames.times, poses)
-        read = {"metadata": {}, "depth": None if depth is None else {"min_confidence": depth}}
+        read = {
+            "metadata": {},
+            "depth": None if depth is None else {"min_confidence": depth},
+            "mask": False,
+        }
         _write_source(folder, "stray", lenses.Chosen(camera, "stray-scanner"), frames, read)
 
 
@@ -890,12 +957,19 @@ def main(arguments: Sequence[str]) -> int:
     )  # fmt: skip
     parser.add_argument("--profiles", type=Path, help="the lens profiles (default: fetched)")
     parser.add_argument(
+        "--mask", type=Path,
+        help="an 8-bit gray PNG at the video's stored size, 0 where features are dropped",
+    )  # fmt: skip
+    parser.add_argument(
         "--min-confidence", type=int, choices=(0, lidar.MEDIUM, lidar.HIGH),
         help="with --stray, the least LiDAR confidence kept (default: high)",
     )  # fmt: skip
     args = parser.parse_args(arguments)
     if args.min_confidence is not None and not args.stray:
         parser.error("--min-confidence: only with --stray")
+    if args.mask is not None and args.stray:
+        parser.error("--mask: not with --stray")
+    mask = None if args.mask is None else images.read_gray(args.mask)
     if args.stray:
         threshold = lidar.HIGH if args.min_confidence is None else args.min_confidence
         import_stray(args.upload, args.out, threshold)
@@ -903,13 +977,13 @@ def main(arguments: Sequence[str]) -> int:
         fx, fy, cx, cy = args.intrinsics
         video = probe(args.upload)
         pinhole = lenses.Pinhole(fx, fy, cx, cy, video.width, video.height)
-        import_video(args.upload, args.out, lenses.Chosen(pinhole, "given"))
+        import_video(args.upload, args.out, lenses.Chosen(pinhole, "given"), mask=mask)
     else:
         # The database is needed, and so required, only when a profile may be chosen.
         wanted = args.source in ("auto", "profile")
         profiles = lenses.database(args.profiles) if wanted else []
         chosen = lenses.choose(probe(args.upload), profiles, args.source)
-        import_video(args.upload, args.out, chosen)
+        import_video(args.upload, args.out, chosen, mask=mask)
     record = json.loads((args.out / "source.json").read_text())
     depth = record["depth"]
     print(
@@ -917,6 +991,7 @@ def main(arguments: Sequence[str]) -> int:
         f"{record['intrinsics']['width']}x{record['intrinsics']['height']}, "
         f"intrinsics from {record['intrinsics']['source']}"
         + ("" if depth is None else f", LiDAR depth of confidence {depth['min_confidence']} up")
+        + (", masked" if record["mask"] else "")
     )
     return 0
 
