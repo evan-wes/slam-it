@@ -193,33 +193,37 @@ fn relocalizing(reset_keyframes: usize) -> Options {
     out
 }
 
+/// Starts a map on the path's first frame, a keyframe, with the one-word vocabulary, then tracks
+/// `count` empty frames `step` seconds apart; returns their results, and checks that the last
+/// alone loses the track.
+#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
+fn lose_the_track(options: &Options, step: f64, count: usize) -> Vec<FrameResult> {
+    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), *options, Some(one_word())).unwrap();
+    assert!(
+        pipeline
+            .track(&frame_at(&along(0), true, 0))
+            .unwrap()
+            .keyframe
+    );
+    let failed: Vec<FrameResult> = (0..count)
+        .map(|k| pipeline.track(&empty_frame(step * (k + 1) as f64)).unwrap())
+        .collect();
+    let states: Vec<State> = failed.iter().map(|r| r.state).collect();
+    let mut expected = vec![State::Tracking; count - 1];
+    expected.push(State::Lost);
+    assert_eq!(states, expected, "step {step}, {count} frames");
+    failed
+}
+
 /// Relocalising (Python's `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map
 /// above `loss.reset_keyframes` is lost once more than `loss.relocalize_seconds` have passed since
 /// the first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the thirteenth's 3 s
 /// is not more), one of `loss.reset_keyframes` or fewer on the `loss.lost_frames`-th failure,
 /// whatever the time; each failed frame tried relocalisation.
 #[test]
-#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {
     for (reset_keyframes, step, lost_on) in [(0, 0.25, 14), (1, 0.25, 5), (1, 0.001, 5)] {
-        let options = relocalizing(reset_keyframes);
-        let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, Some(one_word())).unwrap();
-        assert!(
-            pipeline
-                .track(&frame_at(&along(0), true, 0))
-                .unwrap()
-                .keyframe
-        );
-        let failed: Vec<FrameResult> = (0..lost_on)
-            .map(|k| pipeline.track(&empty_frame(step * (k + 1) as f64)).unwrap())
-            .collect();
-        let states: Vec<State> = failed.iter().map(|r| r.state).collect();
-        let mut expected = vec![State::Tracking; lost_on - 1];
-        expected.push(State::Lost);
-        assert_eq!(
-            states, expected,
-            "reset_keyframes {reset_keyframes}, step {step}"
-        );
+        let failed = lose_the_track(&relocalizing(reset_keyframes), step, lost_on);
         assert!(failed.iter().all(|r| r.summary.relocalization.is_some()));
     }
 }
@@ -229,29 +233,10 @@ fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {
 /// case): the keyframe database is kept, but no failed frame tries relocalisation, and a kept map
 /// is lost on the `loss.lost_frames`-th failure (B3's review panel, run 2, A20).
 #[test]
-#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn closing_loops_alone_relocalizes_nothing() {
     let mut options = relocalizing(0);
     options.relocalization.enabled = false;
-    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, Some(one_word())).unwrap();
-    assert!(
-        pipeline
-            .track(&frame_at(&along(0), true, 0))
-            .unwrap()
-            .keyframe
-    );
-    let lost_on = options.loss.lost_frames;
-    let failed: Vec<FrameResult> = (0..lost_on)
-        .map(|k| {
-            pipeline
-                .track(&empty_frame(0.001 * (k + 1) as f64))
-                .unwrap()
-        })
-        .collect();
-    let states: Vec<State> = failed.iter().map(|r| r.state).collect();
-    let mut expected = vec![State::Tracking; lost_on - 1];
-    expected.push(State::Lost);
-    assert_eq!(states, expected);
+    let failed = lose_the_track(&options, 0.001, options.loss.lost_frames);
     assert!(failed.iter().all(|r| r.summary.relocalization.is_none()));
 }
 

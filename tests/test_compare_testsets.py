@@ -7,6 +7,7 @@ import json
 import shutil
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -120,16 +121,25 @@ def test_the_found_room_compared_off_and_on(
     assert "| room rgbd | relocalised | 1 |" in out
 
 
+def _undetailed(script: ModuleType, on: Path, copy: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Copy the measure in `on` to `copy`, its one result without its run's details.
+
+    Returns the result as measured, and as written to the copy.
+    """
+    shutil.copytree(on, copy)
+    (measured,) = [json.loads(line) for line in (on / "results.jsonl").read_text().splitlines()]
+    bare = {k: v for k, v in measured.items() if k not in script.measure_testset.DETAILS}
+    (copy / "results.jsonl").write_text(json.dumps(bare) + "\n")
+    return measured, bare
+
+
 def test_a_measure_made_without_its_runs_details_is_given_them(
     script: ModuleType, batches: tuple[Path, Path, Path], tmp_path: Path
 ) -> None:
     """``summarize`` reads each run and its truth for the details the measure itself records."""
     _, on, config = batches
     copy = tmp_path / "on"
-    shutil.copytree(on, copy)
-    (measured,) = [json.loads(line) for line in (on / "results.jsonl").read_text().splitlines()]
-    bare = {k: v for k, v in measured.items() if k not in script.measure_testset.DETAILS}
-    (copy / "results.jsonl").write_text(json.dumps(bare) + "\n")
+    measured, bare = _undetailed(script, on, copy)
     assert script.main(["summarize", str(copy), str(config)]) == 0
     assert json.loads((copy / "results.jsonl").read_text()) == measured
     assert json.loads((copy / script.UNDETAILED).read_text()) == bare
@@ -145,10 +155,7 @@ def test_summarize_reads_each_sequences_truth_as_its_dataset(
     """A sequence's truth is read as its config names its dataset (B3's review panel, H10)."""
     _, on, config = batches
     copy = tmp_path / "on"
-    shutil.copytree(on, copy)
-    (measured,) = [json.loads(line) for line in (on / "results.jsonl").read_text().splitlines()]
-    bare = {k: v for k, v in measured.items() if k not in script.measure_testset.DETAILS}
-    (copy / "results.jsonl").write_text(json.dumps(bare) + "\n")
+    _undetailed(script, on, copy)
     euroc = tmp_path / "euroc.toml"
     euroc.write_text(config.read_text() + 'dataset = "euroc"\n')
     read: list[tuple[str, Path]] = []
