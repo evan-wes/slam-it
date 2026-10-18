@@ -6,7 +6,8 @@ ORB-SLAM's TUM ``bf``) and as a EuRoC sequence (``mav0/cam0`` and ``cam1``: PNGs
 ``data.csv`` and ``sensor.yaml``, the right camera :data:`tests.edge.room.BASELINE` to the
 left one's right, no distortion). The gap room drops the frames of :data:`GAP`. The loop room
 follows :func:`tests.edge.room.loop_path` instead, back over where it began
-(:func:`loop_frames`). The tests' fixtures (``tests/orchestration/conftest.py``) and the golden
+(:func:`loop_frames`); the merge room is the loop room blinded long enough to start a new map
+(:func:`merge_frames`). The tests' fixtures (``tests/orchestration/conftest.py``) and the golden
 records' generator (``tests/fixtures/edge/generate_room_runs.py``) both write them from here.
 """
 
@@ -394,6 +395,37 @@ def loop_frames() -> list[room.Frame]:
         The frames.
     """
     return room.sequence(room.LOOP_FRAMES, stereo=True, loop=True)
+
+
+MERGE_AT = 60
+"""Where the merge room's black frames begin: the loop room's camera about a quarter of the way
+round (90 degrees of its turn)."""
+
+MERGE_BLANKS = 96
+"""The merge room's black frames: 3.2 s at the room's 30 Hz, longer than the 3 s
+``loss.relocalize_seconds`` relocalises a lost map for, meant to lose the track and start a new
+map on the frames after, which begin about 235 degrees round; the camera comes back over the
+first map's start at 360 degrees. Its bar, with merging in the pipeline, is milestone 2B's B4's
+second phase, which shows whether a run does so."""
+
+
+def merge_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the merge room: the loop room, its frames from :data:`MERGE_AT` blank.
+
+    :data:`MERGE_BLANKS` of them.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The loop room's frames (:func:`loop_frames`).
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        As many frames, at the same times, the black ones blank.
+    """
+    black = range(MERGE_AT, MERGE_AT + MERGE_BLANKS)
+    return [blank(f) if k in black else f for k, f in enumerate(rendered)]
 
 
 def room_inputs() -> dict[str, Any]:
