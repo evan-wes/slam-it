@@ -3,15 +3,19 @@
 A dashcam writes each camera's recording as short segments (:mod:`slam_it.eval.dashcam.d016`).
 :func:`scan` lists a card's (or its copy's) segments; :func:`find_drives` groups them into
 drives, a new drive wherever one camera's segments leave a gap longer than ``max_gap`` between
-one start and the next, and gives each drive its front and rear segments.
+one start and the next, and gives each drive its front and rear segments. A card holds the odd
+damaged segment (:class:`slam_it.eval.video.DamagedSegmentError`): each step skips it with a
+warning (:func:`skip`) and goes on with the rest.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
+from slam_it.eval import video
 from slam_it.eval.dashcam import d016
 from slam_it.foundations.errors import InvalidInputError
 
@@ -190,3 +194,22 @@ def window(
         for s in segments
         if (start is None or s.start >= start) and (end is None or s.start <= end)
     )
+
+
+def skip(segment: str | Path, error: video.DamagedSegmentError) -> tuple[str, str]:
+    """Warn that a damaged segment is skipped, as the video import warns; return why.
+
+    Parameters
+    ----------
+    segment : str or pathlib.Path
+        The segment's file.
+    error : slam_it.eval.video.DamagedSegmentError
+        What reading it raised.
+
+    Returns
+    -------
+    tuple of str
+        The segment's file name, and why it was skipped.
+    """
+    warnings.warn(f"skipped a damaged segment, {error}", video.SkippedSegmentWarning, stacklevel=3)
+    return Path(segment).name, str(error)

@@ -34,8 +34,10 @@ def import_drive(  # noqa: PLR0913 -- the segments, the folder, the lens; how, k
     lag: float,
     mask: NDArray[np.uint8] | None = None,
     limits: video.Limits = LIMITS,
-) -> None:
+) -> list[tuple[str, str]]:
     """Import one camera's segments as one sequence (the module docstring).
+
+    A damaged segment is skipped, with a warning (:func:`slam_it.eval.video.import_segments`).
 
     Parameters
     ----------
@@ -52,11 +54,16 @@ def import_drive(  # noqa: PLR0913 -- the segments, the folder, the lens; how, k
     limits : slam_it.eval.video.Limits, optional
         The longest segment, the most frames in all, and the frames' short side.
 
+    Returns
+    -------
+    list of tuple of str
+        Each damaged segment skipped: its file name, and why.
+
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If there are no segments, they are of more than one camera, or the import refuses them
-        (:func:`slam_it.eval.video.import_segments`).
+        If there are no segments, they are of more than one camera, every one is damaged, or
+        the import refuses them (:func:`slam_it.eval.video.import_segments`).
     """
     if not segments:
         raise InvalidInputError("segments: none given")
@@ -64,7 +71,7 @@ def import_drive(  # noqa: PLR0913 -- the segments, the folder, the lens; how, k
     if len(cameras) != 1:
         raise InvalidInputError(f"segments: expected one camera's, got {sorted(cameras)}")
     ordered = sorted(segments, key=lambda s: s.start)
-    video.import_segments(
+    return video.import_segments(
         [s.path for s in ordered],
         [s.seconds + lag for s in ordered],
         out,

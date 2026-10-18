@@ -13,7 +13,9 @@ named by the drive's id (its first front segment's start, ``YYYYMMDD_HHMMSS``):
 - ``import``: import one camera's share of a drive, or a window of it, as a TUM-format sequence
   (:mod:`.ingest`), with the config's lens and mask and the overlay's lag.
 
-``mask``, ``overlay`` and ``calibrate`` refuse to replace what they wrote before.
+``mask``, ``overlay`` and ``calibrate`` refuse to replace what they wrote before. Every step
+skips a damaged segment with a warning and goes on (:func:`.drives.skip`); ``overlay`` and
+``import`` list those skipped in what they write and print.
 """
 
 from __future__ import annotations
@@ -58,6 +60,23 @@ def _segments(
     return chosen
 
 
+def _sized(segments: Sequence[drives.Segment]) -> tuple[drives.Segment, tuple[int, int]]:
+    """Return the first segment that opens, and its frame size; the step warns of the rest."""
+    for segment in segments:
+        try:
+            return segment, video.segment_size(segment.path)
+        except video.DamagedSegmentError:
+            continue
+    raise InvalidInputError("segments: every one is damaged")
+
+
+def _skipped(skipped: Sequence[tuple[str, str]]) -> str:
+    """Return a summary's note of the damaged segments skipped, if any."""
+    return (
+        f", skipped {len(skipped)} damaged ({', '.join(n for n, _ in skipped)})" if skipped else ""
+    )
+
+
 def _fresh(path: Path) -> Path:
     """Return a path to write, refusing one that exists."""
     if path.exists():
@@ -99,10 +118,10 @@ def _mask(settings: config.Config, args: argparse.Namespace) -> None:
     segments = _segments(drive, args.camera, args.start, args.end)
     target = _fresh(camera.mask)
     static = mask.measure([s.path for s in segments], every=args.every, share=args.share)
-    width, height = video.segment_size(segments[0].path)
+    first, (width, height) = _sized(segments)
     finished = mask.finish(static, width, height, bottom=camera.bottom, lines=camera.lines)
     images.write_png(target, finished)
-    _, frame = next(video.sample_frames(segments[0].path, every=1.0, width=960))
+    _, frame = next(video.sample_frames(first.path, every=1.0, width=960))
     small = mask.scaled(finished, frame.shape[1], frame.shape[0])
     preview = np.where((small == 0)[..., None], frame // 3, frame).astype(np.uint8)
     images.write_png(_fresh(settings.work / name / f"mask_{args.camera}_preview.png"), preview)
@@ -123,12 +142,13 @@ def _overlay(settings: config.Config, args: argparse.Namespace) -> None:
             "reads": read.reads,
             "kept": read.kept,
             "segments": [s.path.name for s in segments],
+            "skipped": [{"segment": n, "reason": why} for n, why in read.skipped],
             "fixes": [asdict(f) for f in read.fixes],
         }
         target.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
         print(
             f"{target}: lag {read.lag:+.2f} s, {len(read.fixes)} fixes, "
-            f"{read.kept} of {read.reads} reads kept"
+            f"{read.kept} of {read.reads} reads kept" + _skipped(read.skipped)
         )
 
 
@@ -144,7 +164,7 @@ def _calibrate(settings: config.Config, args: argparse.Namespace) -> None:
     sizes: dict[str, tuple[int, int]] = {}
     for camera in ("F", "R"):
         segments = _segments(drive, camera, args.start, args.end)
-        sizes[camera] = video.segment_size(segments[0].path)
+        sizes[camera] = _sized(segments)[1]
         lag = float(_read_overlay(folder, camera)["lag"])
         frames = work / camera / "frames"
         clocks = calibrate.extract_frames(segments, frames, lag=lag, fps=args.fps, width=args.width)
@@ -191,11 +211,13 @@ def _import(settings: config.Config, args: argparse.Namespace) -> None:
     if args.max_frames is not None:
         limits = video.Limits(limits.max_seconds, args.max_frames, limits.short_side)
     segments = _segments(drive, args.camera, args.start, args.end)
-    ingest.import_drive(segments, args.out, camera.lens, lag=lag, mask=keep, limits=limits)
+    skipped = ingest.import_drive(
+        segments, args.out, camera.lens, lag=lag, mask=keep, limits=limits
+    )
     record = json.loads((args.out / "source.json").read_text(encoding="utf-8"))
     print(
-        f"{args.out}: {record['frames']['kept']} frames from {len(segments)} segments"
-        + (", masked" if record["mask"] else ", no mask")
+        f"{args.out}: {record['frames']['kept']} frames from {len(segments) - len(skipped)} "
+        "segments" + (", masked" if record["mask"] else ", no mask") + _skipped(skipped)
     )
 
 

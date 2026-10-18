@@ -35,14 +35,14 @@ from collections import Counter
 from collections.abc import Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from numpy.typing import NDArray
 
 from slam_it.eval import video
 from slam_it.eval.dashcam import d016
-from slam_it.eval.dashcam.drives import Segment
+from slam_it.eval.dashcam.drives import Segment, skip
 from slam_it.foundations.errors import InvalidInputError
 
 EVERY = 0.2
@@ -229,12 +229,15 @@ class Track:
     reads, kept : int
         The frames read, and the reads kept: their clock read, dated right and on time (a
         second's fix is voted among those whose fix parsed too).
+    skipped : tuple of tuple of str
+        Each damaged segment skipped (:func:`read`): its file name, and why.
     """
 
     fixes: list[Fix]
     lag: float
     reads: int
     kept: int
+    skipped: tuple[tuple[str, str], ...] = ()
 
 
 def shared_middle(lows: Sequence[float]) -> float:
@@ -326,6 +329,8 @@ def track(segments: Sequence[Segment], readings: Sequence[Sequence[Reading]]) ->
 def read(segments: Sequence[Segment], *, every: float = EVERY, jobs: int = 4) -> Track:
     """Read a camera's overlay over its segments: :func:`read_segment` each, then :func:`track`.
 
+    A damaged segment is skipped whole, with a warning (:func:`.drives.skip`).
+
     Parameters
     ----------
     segments : sequence of Segment
@@ -338,6 +343,23 @@ def read(segments: Sequence[Segment], *, every: float = EVERY, jobs: int = 4) ->
     Returns
     -------
     Track
-        The camera's fixes and lag.
+        The camera's fixes and lag, and the segments skipped.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If every segment is damaged, or no read's clock parsed (:func:`track`).
     """
-    return track(segments, [read_segment(s, every=every, jobs=jobs) for s in segments])
+    read: list[Segment] = []
+    readings: list[list[Reading]] = []
+    skipped: list[tuple[str, str]] = []
+    for segment in segments:
+        try:
+            readings.append(read_segment(segment, every=every, jobs=jobs))
+        except video.DamagedSegmentError as error:
+            skipped.append(skip(segment.path, error))
+            continue
+        read.append(segment)
+    if not read:
+        raise InvalidInputError("segments: every one is damaged")
+    return replace(track(read, readings), skipped=tuple(skipped))

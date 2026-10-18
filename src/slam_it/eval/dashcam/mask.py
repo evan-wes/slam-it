@@ -21,6 +21,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slam_it.eval import video
+from slam_it.eval.dashcam.drives import skip
 from slam_it.foundations.errors import InvalidInputError
 
 Mask = NDArray[np.bool_]
@@ -115,6 +116,23 @@ def edges(gray: NDArray[np.uint8], threshold: float) -> Mask:
     return np.asarray(np.hypot(dx, dy) > threshold)
 
 
+def _edge_counts(
+    frames: Iterable[NDArray[np.uint8]], threshold: float, total: NDArray[np.float64] | None
+) -> tuple[NDArray[np.float64] | None, int]:
+    """Return `total` plus each frame's edges, as a new array, and the frames counted."""
+    out = None if total is None else total.copy()
+    count = 0
+    for frame in frames:
+        e = edges(frame, threshold)
+        if out is None:
+            out = np.zeros(e.shape)
+        elif e.shape != out.shape:
+            raise InvalidInputError("frames: expected one size")
+        out += e
+        count += 1
+    return out, count
+
+
 def persistence(frames: Iterable[NDArray[np.uint8]], threshold: float) -> NDArray[np.float64]:
     """Return the share of frames with an edge at each pixel.
 
@@ -123,17 +141,8 @@ def persistence(frames: Iterable[NDArray[np.uint8]], threshold: float) -> NDArra
     slam_it.foundations.errors.InvalidInputError
         If there are no frames, or they differ in size.
     """
-    total: NDArray[np.float64] | None = None
-    count = 0
-    for frame in frames:
-        e = edges(frame, threshold)
-        if total is None:
-            total = np.zeros(e.shape)
-        elif e.shape != total.shape:
-            raise InvalidInputError("frames: expected one size")
-        total += e
-        count += 1
-    if total is None:
+    total, count = _edge_counts(frames, threshold, None)
+    if total is None or not count:
         raise InvalidInputError("frames: none")
     return total / count
 
@@ -175,10 +184,12 @@ def measure(  # noqa: PLR0913 -- the segments; how they are judged, keyword-only
     ndarray of bool, shape (H, W)
         The static pixels, at the analysis size.
 
+    A damaged segment is skipped whole, with a warning (:func:`.drives.skip`).
+
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If there are no segments, or a setting is out of range.
+        If there are no segments, every one is damaged, or a setting is out of range.
     """
     if not segments:
         raise InvalidInputError("segments: none given")
@@ -186,13 +197,21 @@ def measure(  # noqa: PLR0913 -- the segments; how they are judged, keyword-only
         raise InvalidInputError(f"share: expected a fraction in (0, 1), got {share}")
     if min(close, grow) < 0 or min_size < 0:
         raise InvalidInputError("close, grow, min_size: expected values >= 0")
-
-    def frames() -> Iterable[NDArray[np.uint8]]:
-        for segment in segments:
-            for _, frame in video.sample_frames(segment, every=every, width=width, gray=True):
-                yield frame
-
-    static = persistence(frames(), threshold) > share
+    total: NDArray[np.float64] | None = None
+    count = 0
+    for segment in segments:
+        sampled = (f for _, f in video.sample_frames(segment, every=every, width=width, gray=True))
+        try:
+            added, more = _edge_counts(sampled, threshold, total)
+            if not more:
+                raise video.DamagedSegmentError(f"{Path(segment).name}: no frames")
+        except video.DamagedSegmentError as error:
+            skip(segment, error)
+            continue
+        total, count = added, count + more
+    if total is None:
+        raise InvalidInputError("segments: every one is damaged")
+    static = total / count > share
     if close:
         static = erode(dilate(static, close), close)
     static = drop_small(static, min_size)

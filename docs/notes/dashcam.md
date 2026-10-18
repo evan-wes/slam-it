@@ -97,6 +97,22 @@ folder a drive named by its id (its first front segment's start):
 positions in their two leading principal axes, a 2D similarity aligned to the track (both
 mirror images tried), the errors in metres (RMSE, median, 90th percentile).
 
+## Damaged segments
+
+A card holds the odd damaged segment, such as a file cut off when a recording stopped. Every
+step skips one with a warning naming it and why, goes on with the rest, and fails only if none
+is left; `overlay` and `import` list the skipped in what they write (`overlay_F.json`,
+`source.json`) and print. Damaged (`eval.video.DamagedSegmentError`) means the segment cannot
+be read through: it does not open as MPEG-TS, has no video stream or stated frame size, its
+demuxing or decoding raises, a frame has no presentation time, or it holds no frame. A
+skipped segment contributes nothing: the frames it gave before failing are taken back, their
+files removed. Not damage:
+
+- a decoder concealing a few corrupt frames, which raises nothing: the segment is kept;
+- a file cut short, which decodes the frames it holds;
+- a missing file, a segment over the limits, or frames of another size: the caller's to fix,
+  so the step stops.
+
 ## What is not done yet
 
 - **A rig bundle adjustment.** GTSAM arrives with milestone 2B's B3, not yet on `develop`; the

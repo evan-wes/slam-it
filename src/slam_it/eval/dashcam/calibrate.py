@@ -43,7 +43,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slam_it.eval import gnss, images, lenses, video
-from slam_it.eval.dashcam.drives import Segment
+from slam_it.eval.dashcam.drives import Segment, skip
 from slam_it.eval.readers import COLMAP_PIXEL_OFFSET
 from slam_it.foundations import so3
 from slam_it.foundations.errors import InvalidInputError
@@ -149,6 +149,9 @@ def extract_frames(
 ) -> dict[str, float]:
     """Write a camera's frames, `fps` a second, as PNGs named by their time on its clock (ms).
 
+    A damaged segment is skipped whole, the frames written from it removed, with a warning
+    (:func:`.drives.skip`).
+
     Parameters
     ----------
     segments : sequence of Segment
@@ -166,16 +169,33 @@ def extract_frames(
     -------
     dict of str to float
         Each file's name and its frame's time, in seconds.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If every segment is damaged.
     """
     folder.mkdir(parents=True, exist_ok=True)
     names: dict[str, float] = {}
+    damaged = 0
     for segment in segments:
-        for elapsed, frame in video.sample_frames(segment.path, every=1.0 / fps, width=width):
-            clock = segment.seconds + lag + elapsed
-            name = f"{round(clock * 1000):d}.png"
-            if name not in names:
-                images.write_png(folder / name, frame)
-                names[name] = clock
+        written: list[str] = []
+        try:
+            for elapsed, frame in video.sample_frames(segment.path, every=1.0 / fps, width=width):
+                clock = segment.seconds + lag + elapsed
+                name = f"{round(clock * 1000):d}.png"
+                if name not in names:
+                    images.write_png(folder / name, frame)
+                    names[name] = clock
+                    written.append(name)
+        except video.DamagedSegmentError as error:
+            for name in written:  # this segment's own frames, written just now
+                (folder / name).unlink()
+                del names[name]
+            skip(segment.path, error)
+            damaged += 1
+    if damaged == len(segments):
+        raise InvalidInputError("segments: every one is damaged")
     return names
 
 

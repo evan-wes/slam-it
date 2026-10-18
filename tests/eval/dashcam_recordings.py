@@ -72,6 +72,19 @@ def hooded(picture: NDArray[np.uint8]) -> NDArray[np.uint8]:
     return np.ascontiguousarray(np.repeat(out[:, :, None], 3, axis=2))
 
 
+def card(
+    root: Path, camera: str, starts: Sequence[dt.datetime], *, frames: int = 10, rate: int = 5
+) -> list[Path]:
+    """Write a camera's segments under a card's root, a moving scene under a hood."""
+    rng = np.random.default_rng(len(starts) + ord(camera))
+    paths = []
+    for start in starts:
+        pictures = [hooded(scene(rng, 90, 160)) for _ in range(frames)]
+        path = root / "video" / camera / segment_name(start, camera)
+        paths.append(write_segment(path, pictures, rate=rate))
+    return paths
+
+
 def record(
     utc: dt.datetime, *, valid: bool = True, knots: float = 10.0, course: float = 90.0
 ) -> bytes:

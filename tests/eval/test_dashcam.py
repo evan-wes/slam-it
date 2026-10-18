@@ -20,6 +20,7 @@ from slam_it.eval.dashcam.__main__ import main
 from slam_it.foundations.errors import InvalidInputError
 from tests.eval.dashcam_recordings import (
     HOOD,
+    card,
     hooded,
     record,
     scene,
@@ -29,19 +30,6 @@ from tests.eval.dashcam_recordings import (
 
 START = dt.datetime(2026, 1, 2, 3, 4, 5)
 """The first segment's start."""
-
-
-def _segments(
-    root: Path, camera: str, starts: list[dt.datetime], *, frames: int = 10, rate: int = 5
-) -> list[Path]:
-    """Write a camera's segments under a card's root, a moving scene under a hood."""
-    rng = np.random.default_rng(len(starts) + ord(camera))
-    paths = []
-    for start in starts:
-        pictures = [hooded(scene(rng, 90, 160)) for _ in range(frames)]
-        path = root / "video" / camera / segment_name(start, camera)
-        paths.append(write_segment(path, pictures, rate=rate))
-    return paths
 
 
 # -- The D016's formats ------------------------------------------------------------------------
@@ -159,7 +147,7 @@ def test_segments_group_into_drives_with_their_rear(tmp_path: Path) -> None:
 
 def test_the_hood_is_measured_static_and_the_moving_scene_is_not(tmp_path: Path) -> None:
     """The hood's edges never move, so it is masked; the moving scene is not."""
-    paths = _segments(tmp_path, "F", [START], frames=30, rate=5)
+    paths = card(tmp_path, "F", [START], frames=30, rate=5)
     static = mask.measure(paths, every=0.2, width=160, min_size=20, close=2, grow=1)
     top = round(HOOD * static.shape[0])
     assert static[top + 2 :, :].mean() > 0.9
@@ -199,7 +187,7 @@ def test_mask_settings_out_of_range_are_refused() -> None:
 def test_a_drives_segments_import_as_one_sequence_on_the_overlay_clock(tmp_path: Path) -> None:
     """Two segments import as one sequence timed on the overlay clock, gap kept."""
     later = START + dt.timedelta(minutes=1)
-    _segments(tmp_path, "F", [START, later], frames=10, rate=5)
+    card(tmp_path, "F", [START, later], frames=10, rate=5)
     front = drives.find_drives(drives.scan(tmp_path))[0].front
     camera = lenses.Pinhole(150.0, 150.0, 79.5, 44.5, 160, 90)
     keep = np.full((90, 160), 255, dtype=np.uint8)
@@ -221,8 +209,8 @@ def test_a_drives_segments_import_as_one_sequence_on_the_overlay_clock(tmp_path:
 
 def test_a_drive_import_is_refused_past_its_limits_or_across_cameras(tmp_path: Path) -> None:
     """An import past its frame limit leaves nothing; two cameras' segments are refused."""
-    _segments(tmp_path, "F", [START], frames=10, rate=5)
-    _segments(tmp_path, "R", [START], frames=10, rate=5)
+    card(tmp_path, "F", [START], frames=10, rate=5)
+    card(tmp_path, "R", [START], frames=10, rate=5)
     drive = drives.find_drives(drives.scan(tmp_path))[0]
     camera = lenses.Pinhole(150.0, 150.0, 79.5, 44.5, 160, 90)
     few = video.Limits(max_seconds=60.0, max_frames=5, short_side=480)
@@ -302,9 +290,9 @@ def test_the_steps_list_mask_and_import_a_drive(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """The command line lists the drives, masks one, and imports it."""
-    card = tmp_path / "card"
-    _segments(card, "F", [START, START + dt.timedelta(minutes=1)], frames=10, rate=5)
-    _segments(card, "R", [START + dt.timedelta(seconds=1)], frames=10, rate=5)
+    root = tmp_path / "card"
+    card(root, "F", [START, START + dt.timedelta(minutes=1)], frames=10, rate=5)
+    card(root, "R", [START + dt.timedelta(seconds=1)], frames=10, rate=5)
     path = _config(tmp_path, FRONT_LENS)
     assert main(["drives", str(path)]) == 0
     listed = capsys.readouterr().out
