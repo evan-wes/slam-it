@@ -126,6 +126,11 @@ this document first.
   links it, Python uses its official bindings built over the same library, and Rust reaches it
   through a bridge with `cxx` (its runtime crate in `slam-it-foundations`, the one crate allowed
   `unsafe`, in that module alone) ([the 2B design](2026-10-14-online-slam.md), section 10).
+  The worker's image builds the C++ library the same way, for the C++ program its runs use
+  (`worker.py` runs backend `"cpp"`); its Python, which imports GTSAM but never solves with it,
+  takes PyPI's 4.3.0 wheel, pinned by its hash (`scripts/locks/worker-gtsam.lock`). GTSAM is in
+  no header: `graphs.cpp` and the Rust bridge's source include it, and nothing else does, in
+  any language (the contracts below; B3's review panel, A3, A10 and run 2's A17, A21).
 - The three readers read a file the same way (gray from a gray file as stored, from a colour
   one through `image.to_gray`), held to shared PNG fixtures.
 - The native run writers and VO programs add none (decided for PR 8): they write JSON and
@@ -455,6 +460,8 @@ thin roots that only wire them.
   own modules keep an order (`__main__`, `app`, `jobs | storage`, `config`).
 - **The pipeline never needs the `video` extra:** of `orchestration`, only the worker imports
   `eval.video`, which alone imports PyAV.
+- **GTSAM stays behind rung 0's factor graphs** (from milestone 2B's B3): of `slam_it`, only
+  `foundations.graphs` imports `gtsam`, and its converters to GTSAM's types are private.
 
 **The same layering holds in C++ and Rust.** Each rung is its own C++ library and Rust
 crate, so a rung can only link what it declares. `scripts/check_layers.py` reads the
@@ -464,7 +471,12 @@ contracts above from `pyproject.toml` and fails layer 1 on:
 - a forbidden crate dependency;
 - inside a rung, a C++ `#include` or a Rust `crate::`/`super::` path that breaks the rung's
   or a package's internal order (such as "Rung 0's internal order"), chains through unlisted
-  modules included.
+  modules included;
+- a file header (`<fstream>`, `<filesystem>`, `<cstdio>`) or `std::fs` in a rung kept from
+  files, outside its tests;
+- a GTSAM header included anywhere but a confined module's sources: `cpp/src/foundations/
+  graphs.cpp` and `rust/slam-it-foundations/cxx/graphs_bridge.cpp`, never a header, since the
+  env's compiler finds GTSAM's headers in the env's prefix whatever a target links.
 
 The three languages therefore share one source of truth.
 
@@ -1104,13 +1116,26 @@ shared with the owner's other projects.
     Rust but internal in C++, and the search settings are `Window` in C++ and `Search` in Rust;
     the Protocol checks only the dispatched functions. Align them when B4 reuses the essential
     graph.
-  - **`loops` split for B4 (A15, H8).** About 2,200 lines in each language, half of which B4's
-    merge reuses (detection's stages, the essential graph and global BA: the online-SLAM
-    design's section 14, items 3 and 4). When B4 lands, split common-region detection, and
-    perhaps the correction's solves, into modules of their own, rather than growing `loops` or
-    having merging reach into it; and split `correct` (C++'s about 115 lines, under a
-    cognitive-complexity NOLINT) into moving, replacing and fusing, collecting the new links,
-    and the solves, and `slam_it.eval.loops.judge_loops` into its place and pose judgements.
+  - **`loops` split for B4 (A15, H8).** 2,208 lines in Python, 2,284 in Rust and 1,685 in C++
+    (at `eedb319`; B3's review panel, run 2, H29), half of which B4's merge reuses (detection's
+    stages, the essential graph and global BA: the online-SLAM design's section 14, items 3 and
+    4). When B4 lands, split common-region detection, and perhaps the correction's solves, into
+    modules of their own, rather than growing `loops` or having merging reach into it; and split
+    `correct` (about 115 lines in C++, under a cognitive-complexity NOLINT) into moving,
+    replacing and fusing, collecting the new links, and the solves, and
+    `slam_it.eval.loops.judge_loops` into its place and pose judgements.
+  - **GTSAM's native confinement, widened with B4's bridges (run 2, A24).** `check_layers.py`'s
+    `check_confined` scans `cpp/` and each crate's `cxx/` alone: a C++ bridge placed elsewhere
+    in a crate, or another crate's `build.rs` linking GTSAM, would escape it. Today only
+    `slam-it-foundations` has a bridge, its `ffi` module private. If B4 adds a bridge, scan every
+    C++ file under `rust/` (but `target/`), or check that only `slam-it-foundations` depends on
+    `cxx`.
+  - **The GitHub workflow's runner (run 2, H30 with A22).** Since B3 its setup builds GTSAM's
+    Python wrapper, whose largest file needs more than 8 GB, uncapped; GitHub's standard Linux
+    runner for a private repository may have less memory than that (the reviewers' recollection,
+    not checked). Before the next release, run the workflow once by `workflow_dispatch`, or name
+    a larger runner in `test.yml`. Offline CI, which gates each PR, runs the wrapper's compile
+    in its own 16 GB scope; its first run on B3's head is the check of that scope.
 - **Deferred from the readiness PR's review panel**
   ([report](../reviews/2026-10-18-chore-public-readiness.md)):
   - **The `slam-it-rs` wheel's licence files (readiness PR hygiene review, H7).** The wheel

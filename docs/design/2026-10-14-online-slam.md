@@ -734,9 +734,9 @@ measures how much.
     - layer 1 builds the C++ tests once more with ThreadSanitizer; Rust's threads are safe code.
 14. **A failed correction, a question from B3's review panel** (H17;
     [the report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md)): a GTSAM failure inside a
-    loop's correction propagates out of the pipeline's loop closing and ends the whole run. Whether a failed
-    correction should instead be recorded and the loop skipped is decided with B3b's design,
-    where loop closing runs in a thread of its own.
+    loop's correction propagates out of the pipeline's loop closing and ends the whole run.
+    Whether a failed correction should instead be recorded and the loop skipped is decided with
+    B3b's design, where loop closing runs in a thread of its own.
 
 ## 13. Measurements (B3b)
 

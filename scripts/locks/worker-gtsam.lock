@@ -1,8 +1,9 @@
 # GTSAM's Python wrapper in the worker's image (docker/worker.Dockerfile): PyPI's build of 4.3.0,
-# its CPython 3.11 manylinux2014 x86_64 wheel, pinned by its SHA-256 (found 2026-10-17 with
-#   pip download --only-binary=:all: --python-version 3.11 --platform manylinux2014_x86_64 gtsam==4.3.0
-# ). A hash puts pip in hash-checking mode for everything it installs, so the image installs this
-# file alone, as its requirements, without the wheel's dependencies, before slam_it's wheel,
-# whose install pins those (numpy, pytest) by slam-it.lock. The worker's runs are the C++ program's, which links the
-# image's own GTSAM build; Python's slam_it only imports this one.
+# its CPython 3.11 manylinux2014 x86_64 wheel, pinned by its SHA-256, found on 2026-10-17 with
+# `pip download --only-binary=:all: --python-version 3.11 --platform manylinux2014_x86_64`
+# `gtsam==4.3.0`. A hash puts pip in hash-checking mode for everything it installs, so the image
+# installs this file alone, as its requirements, without the wheel's dependencies, before
+# slam_it's wheel, whose install pins those (numpy, pytest) by slam-it.lock. The worker's runs are
+# the C++ program's, which links the image's own GTSAM build; Python's slam_it only imports this
+# one.
 gtsam==4.3.0 --hash=sha256:63cae1c925f0094832b7f8d629951d4631cac57c6d7faba140c8ecc9f3c57752
