@@ -904,3 +904,42 @@ same checkout while it ran. Run 2's reviewers therefore worked without a passing
 
 Layer 1 and offline CI on the final head are recorded in the pull request's Verification
 section.
+
+## After the rebase onto the new develop -- 2026-10-18
+
+**The history was rewritten and the repository recreated** on 2026-10-18, before going public
+(develop's 0.3.11.2: the PolyForm Noncommercial licence in every commit, personal details
+removed, and the third-party notices). B3 was then rebased onto that develop, 0.3.11.2
+(`54b770a`), its 55 commits replayed in order.
+
+**Three files conflicted**, and each was resolved by keeping both sides whole:
+
+- `VERSION`: 0.3.12.0.
+- `CHANGELOG.md`: B3's 0.3.12.0 section above develop's 0.3.11.2 section.
+- `docs/design/2026-10-02-slam-it-ladder.md`: both new groups of open items kept, B3's
+  ("Deferred from milestone 2B's B3 review panel", with run 2's additions) first, then
+  develop's ("Deferred from the readiness PR's review panel"), above B2's. Develop's licensing
+  sentence merged without a conflict.
+
+No B3 commit names the Rust 3x3 SVD by its old path or the notices by their old file name. The
+rebased tree is the three-way merge of B3 and develop with these resolutions, and nothing else.
+One commit message was corrected: the version commit now says 0.3.12.0 sits above 0.3.11.2,
+and its measurement note lists this rebase, which changed no computation.
+
+**Added after the rebase:**
+
+- **The notices:** B3's share of the text the readiness PR held back from
+  `THIRD_PARTY_NOTICES.md` until the code it describes landed. The GTSAM 4.3.0 row (with
+  CCOLAMD, METIS and Spectra), `cxx` in the Rust crates row, and in the ORB-SLAM credit, loop
+  closing and the essential graph, and `slam_it.foundations.sim3` and
+  `slam_it.foundations.graphs` following `Sim3Solver` and `Optimizer`'s solves, on GTSAM. Each
+  was checked against this tree. B4's share (map merging, the atlas, 7-Scenes) stays out.
+- **The licence audit's D1:** `loops.py`'s list of departures from ORB-SLAM said "as
+  ORB-SLAM's code means to", and now says "as ORB-SLAM's design intends; its source adds them
+  all". The C++ and Rust cores carry no such phrase.
+- **The guard** (`tests/test_no_local_paths.py`) also reports a link to a Claude Code session,
+  with a case in its self-test. The tree has no such link, and the guard reports nothing in
+  this report.
+
+**No further panel run.** The owner chose not to run the panel again after the rebase. Layer 1
+and offline CI on the final head are recorded in the pull request's Verification section.
