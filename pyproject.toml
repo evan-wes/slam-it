@@ -248,9 +248,10 @@ forbidden_modules = ["poselib", "mpmath", "manifpy"]
 # The order of modules inside eval: the timestamp helpers, the image reader, the sensor.yaml
 # helpers, the LiDAR depth and a vocabulary's folder at the bottom, the dataset readers and
 # metrics on them, runs (and the COLMAP reference) on them, then what writes a dataset's
-# TUM-format folder with its ground truth (the video import, ZJU-SenseTime's, ARKitScenes') and
-# the compute budgets, which judge runs, and on top ADVIO's import, a video's through the video
-# import. New modules are optional layers, as in rung 0's contract.
+# TUM-format folder with its ground truth (the video import, ZJU-SenseTime's, ARKitScenes'), the
+# compute budgets, which judge runs, and the loops' judge, which judges a run's loops, and on top
+# ADVIO's import, a video's through the video import. New modules are optional layers, as in
+# rung 0's contract.
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
@@ -258,7 +259,7 @@ exhaustive = true
 containers = ["slam_it.eval"]
 layers = [
   "(advio)",
-  "(budgets) | (video) | (zju) | (arkitscenes)",
+  "(budgets) | (video) | (zju) | (arkitscenes) | (loops)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
   "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml) | (vocabularies)",

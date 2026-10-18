@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from slam_it.edge.options import Options
-from slam_it.eval import lenses, runs, tum
+from slam_it.eval import lenses, loops, runs, tum
 from slam_it.foundations import so3
 from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
@@ -254,15 +254,15 @@ def test_a_loop_is_judged_by_the_reference() -> None:
     turned[1, :3, :3] = so3.exp([0.0, 0.0, np.radians(10.0)])
     run = replace(run, keyframe_poses=turned, keyframe_loops=np.array([[0, 1], [0, 3]]))
     scored = runs.evaluate_absolute(run, *truth)
-    near, far = _script().judge_loops(run, truth, scored)
+    near, far = loops.judge_loops(run, truth, scored)
     assert near["keyframes"] == [0, 1]
     assert (near["wrong_place"], near["poor_pose"]) == (False, True)
     _, poses = truth
     assert near["distance"] == pytest.approx(np.linalg.norm(poses[10, :3, 3] - poses[0, :3, 3]))
     assert near["rotation_error"] == pytest.approx(10.0, abs=1e-6)
     assert (far["wrong_place"], far["poor_pose"]) == (True, False)
-    assert far["distance"] > _script().WRONG_DISTANCE
-    unjudged = _script().judge_loops(run, None, None)
+    assert far["distance"] > loops.WRONG_DISTANCE
+    unjudged = loops.judge_loops(run, None, None)
     assert unjudged[0]["wrong_place"] is None
     assert unjudged[0]["poor_pose"] is None
 
@@ -278,7 +278,7 @@ def test_a_loop_turned_about_its_view_is_in_the_right_place() -> None:
     rolled[10, :3, :3] = so3.exp([0.0, 0.0, np.radians(90.0)])
     run = replace(run, keyframe_loops=np.array([[0, 1]]))
     scored = runs.evaluate_absolute(run, times, rolled)
-    (judged,) = _script().judge_loops(run, (times, rolled), scored)
+    (judged,) = loops.judge_loops(run, (times, rolled), scored)
     assert judged["angle"] == pytest.approx(0.0, abs=1e-6)
     assert judged["wrong_place"] is False
 

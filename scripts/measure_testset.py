@@ -40,17 +40,13 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
   (:func:`slam_it.eval.runs.evaluate_absolute`): the measure reports no relative error, and a
   reference too sparse for one still scores;
 - ``loops``: each loop closed, ``keyframes`` (the older first), judged against the reference
-  (:func:`judge_loops`): ``distance`` between the two keyframes by the reference and
-  ``angle`` (degrees) between their viewing directions, ``wrong_place`` when more than
-  :data:`WRONG_DISTANCE` or :data:`WRONG_ANGLE` apart (they cannot have seen the same place; a
-  turn about the viewing direction leaves the place seen); and, the map aligned as its ATE
-  aligns it, the
-  two keyframes' relative pose after the run against the reference's, ``translation_error``
-  and ``rotation_error`` (degrees), ``poor_pose`` when the first is more than
-  :data:`POOR_FACTOR` times the map's median error or the second more than :data:`POOR_ANGLE`
-  (the online-SLAM design's section 10). Each judgement is null where the reference has no
-  pose within :data:`slam_it.eval.runs.MAX_DIFFERENCE` of a keyframe, or the map was not
-  scored;
+  by :func:`slam_it.eval.loops.judge_loops`, as the loop room's test judges its loops:
+  ``distance`` between the two keyframes by the reference and ``angle`` (degrees) between their
+  viewing directions, and ``wrong_place``; the two keyframes' relative pose after the run
+  against the reference's, ``translation_error`` and ``rotation_error`` (degrees), and
+  ``poor_pose`` (the online-SLAM design's section 10). Each judgement is null where the
+  reference has no pose within :data:`slam_it.eval.runs.MAX_DIFFERENCE` of a keyframe, or the
+  map was not scored;
 - ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds,
   read against the frame period ``deadline``, with the frames ``late`` past it
   (:func:`slam_it.eval.budgets.judge`); null, with ``unjudged`` saying why, if the run is too
@@ -97,7 +93,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 import tomllib
@@ -108,7 +103,7 @@ from typing import Any, NamedTuple
 import numpy as np
 
 from slam_it.edge.options import MODES, Options
-from slam_it.eval import budgets, lenses, runs, tum
+from slam_it.eval import budgets, lenses, loops, runs, tum
 from slam_it.foundations.errors import DegenerateError, InvalidInputError, SlamItError
 from slam_it.orchestration import vo
 
@@ -117,18 +112,6 @@ KEYS = ("name", "folder", "mode", "reference")
 
 OPTIONAL_KEYS = ("dataset",)
 """The keys a sequence may also have: its ``dataset``, ``"tum"`` unless given."""
-
-WRONG_DISTANCE = 3.0
-"""A loop's keyframes farther apart than this by the reference, in metres, are at a wrong place."""
-
-WRONG_ANGLE = 60.0
-"""A loop's keyframes looking further apart than this, in degrees, are at a wrong place."""
-
-POOR_FACTOR = 5.0
-"""A loop's relative pose missing by more than this many times its map's median error is poor."""
-
-POOR_ANGLE = 5.0
-"""A loop's relative pose turned by more than this, in degrees, from the reference's is poor."""
 
 SETTINGS = frozenset(Options().settings())
 """The settings an ``--option`` may replace, each named by its group and field."""
@@ -261,79 +244,6 @@ def keyframes_ate(run: runs.Run, truth: runs.Truth) -> float | None:
         return runs.evaluate_absolute(keyframes, *truth).ate_rmse
     except DegenerateError:
         return None
-
-
-def _turn(rotation: np.ndarray) -> float:
-    """Return a rotation's angle, in degrees."""
-    return math.degrees(math.acos(float(np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0))))
-
-
-def _looking_apart(a: np.ndarray, b: np.ndarray) -> float:
-    """Return the angle between two cameras' viewing directions (their z axes), in degrees."""
-    return math.degrees(math.acos(float(np.clip(a[:3, 2] @ b[:3, 2], -1.0, 1.0))))
-
-
-def judge_loops(
-    run: runs.Run, truth: runs.Truth | None, scored: runs.Evaluation | None
-) -> list[dict[str, Any]]:
-    """Return each loop the run closed, judged against the reference (the module docstring).
-
-    `scored` is the run scored against `truth`, None where there is none or no map could be
-    aligned to it: the judgements are null then.
-    """
-    aligned = {} if scored is None else {e.map: e.absolute for e in scored.maps}
-    out: list[dict[str, Any]] = []
-    for older, newer in run.keyframe_loops.tolist():
-        judged: dict[str, Any] = {
-            "keyframes": [older, newer],
-            "distance": None,
-            "angle": None,
-            "wrong_place": None,
-            "translation_error": None,
-            "rotation_error": None,
-            "poor_pose": None,
-        }
-        out.append(judged)
-        if truth is None:
-            continue
-        times, poses = truth
-        rows = [int(np.argmin(np.abs(times - run.keyframe_timestamps[k]))) for k in (older, newer)]
-        if any(
-            abs(times[j] - run.keyframe_timestamps[k]) > runs.MAX_DIFFERENCE
-            for j, k in zip(rows, (older, newer), strict=True)
-        ):
-            continue
-        a, b = poses[rows[0]], poses[rows[1]]
-        distance = float(np.linalg.norm(a[:3, 3] - b[:3, 3]))
-        angle = _looking_apart(a, b)
-        judged.update(
-            distance=distance,
-            angle=angle,
-            wrong_place=distance > WRONG_DISTANCE or angle > WRONG_ANGLE,
-        )
-        absolute = aligned.get(int(run.keyframe_maps[older]))
-        if absolute is None:
-            continue
-        # Each keyframe placed on the reference: its centre carried by the alignment, its
-        # rotation turned by the alignment's; the pair's relative pose in the first's frame.
-        turn = absolute.alignment[:3, :3] / absolute.scale
-        centres = [
-            absolute.alignment[:3, :3] @ run.keyframe_poses[k][:3, 3] + absolute.alignment[:3, 3]
-            for k in (older, newer)
-        ]
-        rotations = [turn @ run.keyframe_poses[k][:3, :3] for k in (older, newer)]
-        moved = float(
-            np.linalg.norm(
-                rotations[0].T @ (centres[1] - centres[0]) - a[:3, :3].T @ (b[:3, 3] - a[:3, 3])
-            )
-        )
-        turned = _turn((rotations[0].T @ rotations[1]).T @ (a[:3, :3].T @ b[:3, :3]))
-        judged.update(
-            translation_error=moved,
-            rotation_error=turned,
-            poor_pose=moved > POOR_FACTOR * absolute.median or turned > POOR_ANGLE,
-        )
-    return out
 
 
 def details(
@@ -550,7 +460,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         result.update(p95=judged.latency.p95, deadline=judged.deadline, late=judged.late)
     except InvalidInputError as error:  # a run too short to judge: said, never hidden
         result["unjudged"] = str(error)
-    result["loops"] = judge_loops(run, truth, scored)
+    result["loops"] = loops.judge_loops(run, truth, scored)
     result.update(details(run, truth, scored))
     return result
 
