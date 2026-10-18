@@ -14,11 +14,11 @@ import numpy as np
 import pytest
 
 from slam_it.edge.options import Options
-from slam_it.eval import lenses, loops, runs, tum
-from slam_it.foundations import so3
+from slam_it.eval import lenses, runs, tum
 from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES
+from tests.eval.synthetic_runs import line_run
 from tests.orchestration.conftest import require_program
 from tests.orchestration.datasets import (
     FOUND_AT,
@@ -220,72 +220,9 @@ def test_a_euroc_sequence_is_measured_from_its_own_folder(tmp_path: Path) -> Non
     assert result["loops"] == []
 
 
-def _line_run(count: int) -> tuple[runs.Run, runs.Truth]:
-    """Return a run along a 6 m line, keyframes every tenth frame at the truth's poses.
-
-    The frames' poses are a centimetre off the truth's, so the map has a median error.
-    """
-    times = np.arange(count, dtype=np.float64) / 10.0
-    poses = np.tile(np.eye(4), (count, 1, 1))
-    poses[:, 0, 3] = np.linspace(0.0, 6.0, count)
-    poses[:, 1, 3] = 0.1 * np.sin(times)  # off a line, so the ATE aligns
-    tracked = poses.copy()
-    tracked[:, :3, 3] += np.random.default_rng(4).normal(0.0, 0.01, (count, 3))
-    rows = [0, 10, 20, count - 1]
-    run = runs.Run(
-        "synthetic", "line", "rgbd", "python", times, tracked, tracked,
-        keyframe_timestamps=times[rows], keyframe_poses=poses[rows].copy(),
-        keyframe_lives=np.array([[k, -1, -1] for k in rows], dtype=np.int64),
-        pose_maps=np.zeros(count, dtype=np.int64),
-        keyframe_maps=np.zeros(len(rows), dtype=np.int64),
-    )  # fmt: skip
-    return run, (times, poses)
-
-
-def test_a_loop_is_judged_by_the_reference() -> None:
-    """A loop over 3 m apart is at a wrong place; one whose keyframe turned 10 degrees is poor.
-
-    The keyframes' poses are the run's own after it, placed on the reference by the trajectory's
-    alignment; a loop closed between keyframes 2 m apart, the second turned, is in the right
-    place with a poor pose.
-    """
-    run, truth = _line_run(30)
-    turned = run.keyframe_poses.copy()
-    turned[1, :3, :3] = so3.exp([0.0, 0.0, np.radians(10.0)])
-    run = replace(run, keyframe_poses=turned, keyframe_loops=np.array([[0, 1], [0, 3]]))
-    scored = runs.evaluate_absolute(run, *truth)
-    near, far = loops.judge_loops(run, truth, scored)
-    assert near["keyframes"] == [0, 1]
-    assert (near["wrong_place"], near["poor_pose"]) == (False, True)
-    _, poses = truth
-    assert near["distance"] == pytest.approx(np.linalg.norm(poses[10, :3, 3] - poses[0, :3, 3]))
-    assert near["rotation_error"] == pytest.approx(10.0, abs=1e-6)
-    assert (far["wrong_place"], far["poor_pose"]) == (True, False)
-    assert far["distance"] > loops.WRONG_DISTANCE
-    unjudged = loops.judge_loops(run, None, None)
-    assert unjudged[0]["wrong_place"] is None
-    assert unjudged[0]["poor_pose"] is None
-
-
-def test_a_loop_turned_about_its_view_is_in_the_right_place() -> None:
-    """Keyframes 1 m apart, one rolled 90 degrees about its viewing direction, saw one place.
-
-    The judge measures the angle between the viewing directions, not the whole turn between
-    the two keyframes (TUM's fr2_360_hemisphere: 88 degrees of turn, 18 between the views).
-    """
-    run, (times, poses) = _line_run(30)
-    rolled = poses.copy()
-    rolled[10, :3, :3] = so3.exp([0.0, 0.0, np.radians(90.0)])
-    run = replace(run, keyframe_loops=np.array([[0, 1]]))
-    scored = runs.evaluate_absolute(run, times, rolled)
-    (judged,) = loops.judge_loops(run, (times, rolled), scored)
-    assert judged["angle"] == pytest.approx(0.0, abs=1e-6)
-    assert judged["wrong_place"] is False
-
-
 def test_the_keyframes_ate_is_their_own() -> None:
     """The final keyframes' ATE is scored on them alone: a keyframe moved 1 m shows."""
-    run, truth = _line_run(30)
+    run, truth = line_run(30)
     assert _script().keyframes_ate(run, truth) == pytest.approx(0.0, abs=1e-9)  # the truth's
     moved = run.keyframe_poses.copy()
     moved[1, 2, 3] += 1.0
