@@ -5,7 +5,7 @@ to lose the track), found (blanked, then back at the start) and the window room 
 lost by the time); the loop room is rendered apart (:func:`loop_folders`). :func:`room_runs`,
 :func:`gap_runs`, :func:`lost_runs`, :func:`kept_runs`, :func:`found_runs`, :func:`window_runs`
 and :func:`loop_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
-recording their features.
+recording their features; :func:`loop_threaded_runs` runs the loop room threaded.
 """
 
 from __future__ import annotations
@@ -126,13 +126,18 @@ class RoomRun:
         The settings.
     out : pathlib.Path
         Where the runs' folders go.
+    threaded : bool, optional
+        Whether the steps run in threads of their own (default: in order).
     """
 
-    def __init__(self, folders: Room, options: Options, out: Path) -> None:
+    def __init__(
+        self, folders: Room, options: Options, out: Path, *, threaded: bool = False
+    ) -> None:
         """Hold the room and the settings; nothing runs yet."""
         self._folders = folders
         self._options = options
         self._out = out
+        self._threaded = threaded
         self._done: dict[tuple[str, str, str], runs.Run] = {}
 
     def __call__(self, dataset: str, mode: str, backend: str) -> runs.Run:
@@ -142,7 +147,7 @@ class RoomRun:
             folder = self._folders.tum if dataset == "tum" else self._folders.euroc
             self._done[key] = vo.run(
                 dataset, folder, mode, self._folder(key), backend=backend, options=self._options,
-                record_features=True,
+                record_features=True, threaded=self._threaded,
             )  # fmt: skip
         return self._done[key]
 
@@ -210,3 +215,10 @@ def kept_runs(lost_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> R
 def loop_runs(loop_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the loop room at the room's settings: a loop closes in every mode."""
     return RoomRun(loop_folders, OPTIONS, tmp_path_factory.mktemp("loop_runs"))
+
+
+@pytest.fixture(scope="session")
+def loop_threaded_runs(loop_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the loop room threaded, its frames fed at their rate by the native programs."""
+    out = tmp_path_factory.mktemp("loop_threaded_runs")
+    return RoomRun(loop_folders, OPTIONS, out, threaded=True)

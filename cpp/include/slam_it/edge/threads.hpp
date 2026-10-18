@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -169,6 +170,13 @@ class Queue {
     return items_.size();
   }
 
+  /// @brief The items queued and not yet handled, the one being handled included.
+  /// @return The count.
+  [[nodiscard]] std::size_t unfinished() const {
+    const std::scoped_lock lock(mutex_);
+    return unfinished_;
+  }
+
   /// @brief Wait until every item queued is handled.
   void drain() {
     std::unique_lock lock(mutex_);
@@ -187,21 +195,43 @@ class Queue {
 };
 
 /// @brief The count each global BA started takes (`slam_it.edge.threads.Generation`): a run
-///        whose count has moved on was superseded (ORB-SLAM's `mnFullBAIdx`).
+///        whose count has moved on was superseded (ORB-SLAM's `mnFullBAIdx`). A solve stops on a
+///        flag, so each generation also has one, set when the next starts (`stop`), where
+///        Python's solve asks the count itself.
 class Generation {
  public:
-  /// @brief Start a new generation, superseding any run of the last.
+  /// @brief Start a new generation, superseding any run of the last: its stop flag is set.
   /// @return The new generation.
-  std::int64_t next() { return value_.fetch_add(1) + 1; }
+  std::int64_t next() {
+    const std::scoped_lock lock(mutex_);
+    stop_->store(true);
+    stop_ = std::make_shared<std::atomic<bool>>(false);
+    return ++value_;
+  }
 
   /// @brief Whether a run of `value` is still the latest.
   /// @param value The run's generation.
   /// @return Whether no generation was started since.
-  [[nodiscard]] bool current(std::int64_t value) const { return value_.load() == value; }
+  [[nodiscard]] bool current(std::int64_t value) const {
+    const std::scoped_lock lock(mutex_);
+    return value_ == value;
+  }
+
+  /// @brief The latest generation's stop flag, set once a newer one starts: a solve of it stops
+  ///        at its next iteration (`mbStopGBA`).
+  /// @return The flag, kept alive while the run holds it.
+  [[nodiscard]] std::shared_ptr<const std::atomic<bool>> stop() const {
+    const std::scoped_lock lock(mutex_);
+    return stop_;
+  }
 
  private:
+  /// @brief Guards the fields below.
+  mutable std::mutex mutex_;
   /// @brief The latest generation.
-  std::atomic<std::int64_t> value_{0};
+  std::int64_t value_{0};
+  /// @brief Its stop flag.
+  std::shared_ptr<std::atomic<bool>> stop_{std::make_shared<std::atomic<bool>>(false)};
 };
 
 /// @brief A thread running a step on each item of its queue, in order
@@ -233,6 +263,10 @@ class Worker {
   /// @brief The items waiting.
   /// @return The count.
   [[nodiscard]] std::size_t waiting() const { return queue_.waiting(); }
+
+  /// @brief The items queued and not yet handled, the one being handled included.
+  /// @return The count.
+  [[nodiscard]] std::size_t unfinished() const { return queue_.unfinished(); }
 
   /// @brief Wait until every item queued is handled.
   void drain() { queue_.drain(); }

@@ -154,7 +154,7 @@ void check_the_queue(int& failures) {
   items.put(2);
   expect(items.waiting() == 2, "two waiting", failures);
   expect(items.get() == 1, "the first first", failures);
-  expect(items.waiting() == 1, "one handled now, one waiting", failures);
+  expect(items.waiting() == 1 && items.unfinished() == 2, "one handled now, one waiting", failures);
   items.done();
   expect(items.get() == 2, "then the second", failures);
   std::atomic<bool> drained{false};
@@ -177,6 +177,10 @@ void check_the_generation(int& failures) {
   const std::int64_t second = generation.next();
   expect(!generation.current(first) && generation.current(second),
          "a new generation supersedes the last", failures);
+  const auto stop = generation.stop();
+  expect(!stop->load(), "the latest's stop flag is clear", failures);
+  generation.next();
+  expect(stop->load() && !generation.stop()->load(), "and set once a newer one starts", failures);
 }
 
 /// @brief Each item handled once, in order; stop waits for the ones queued; a step that fails

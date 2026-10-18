@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -64,6 +65,12 @@ struct Trajectory {
 /// @brief The run's records across its maps (`slam_it.edge.atlas.Atlas`): the maps' numbers and
 ///        the run's id bases, every point's and keyframe's life, the closed maps' last places,
 ///        and each tracked frame's place for the final trajectory. It only reads a map.
+///
+/// With the steps in threads of their own (milestone 2B's B3b), the threads that change the map
+/// record what they made and removed as they change it (`record`), dated by the frame being
+/// tracked then, and tracking counts the frames (`tick`); a frame that became a keyframe is
+/// placed before local mapping makes its keyframe (`place_pending`), its reference set once it
+/// has (`resolve`). Every method holds the atlas's lock.
 class Atlas {
  public:
   /// @brief An atlas before the run's first frame.
@@ -72,15 +79,26 @@ class Atlas {
 
   /// @brief The current map's number, if a map is being tracked.
   /// @return The number.
-  [[nodiscard]] std::optional<std::int64_t> map_id() const { return map_id_; }
+  [[nodiscard]] std::optional<std::int64_t> map_id() const;
 
   /// @brief The run's id of the current map's keyframe 0 (the next map's, between maps).
   /// @return The id.
-  [[nodiscard]] std::int64_t keyframe_base() const { return kf_base_; }
+  [[nodiscard]] std::int64_t keyframe_base() const;
 
   /// @brief The run's id of the current map's point 0 (the next map's, between maps).
   /// @return The id.
-  [[nodiscard]] std::int64_t point_base() const { return pt_base_; }
+  [[nodiscard]] std::int64_t point_base() const;
+
+  /// @brief The frames counted so far: the number of the frame being tracked.
+  /// @return The count.
+  [[nodiscard]] std::int64_t frames() const;
+
+  /// @brief The frame a record is dated by now: the one being tracked, or the last after `end`.
+  /// @return The frame's number.
+  [[nodiscard]] std::int64_t frame() const;
+
+  /// @brief End the run's frames: what threads record after the last is dated by it.
+  void end();
 
   /// @brief Give the map starting on this frame its number, and its ids past every map before
   ///        it.
@@ -88,9 +106,18 @@ class Atlas {
 
   /// @brief Date what this frame made in the current map and what it removed from it, read
   ///        from its archive of removals, which the map's owner then empties. Every frame is
-  ///        dated, one a frame, whether or not a map is being tracked.
+  ///        dated, one a frame, whether or not a map is being tracked: `record`, then `tick`.
   /// @param m The current map after the frame, or null if there is none.
   void date(const Map* m);
+
+  /// @brief Count a frame: what is recorded from now on is dated by the next.
+  void tick();
+
+  /// @brief Record what the current map made and removed since the last record, dated by the
+  ///        frame being tracked (`frame`); what it removed is read from its archive, which the
+  ///        map's owner then empties.
+  /// @param m The current map, or null if there is none.
+  void record(const Map* m);
 
   /// @brief Close the current map on the frame just dated: keep its record, or reset it (its
   ///        lives end as `Removal::kReset`, its frames' places dropped). A stand-in until
@@ -117,6 +144,19 @@ class Atlas {
   /// @param pose Its `T_cam_world` as tracked.
   void place_keyframe(const Map& m, double timestamp, const Eigen::Matrix4d& pose);
 
+  /// @brief Place a frame that will be the current map's next keyframe, once local mapping
+  ///        makes it: its reference its own keyframe, its pose relative to it the identity, set
+  ///        by `resolve`; until then the trajectory gives its pose as tracked.
+  /// @param frame The frame's number (`frames` when it was tracked).
+  /// @param timestamp Its time.
+  /// @param pose Its `T_cam_world` as tracked.
+  void place_pending(std::int64_t frame, double timestamp, const Eigen::Matrix4d& pose);
+
+  /// @brief Set a pending frame's reference to the map's newest keyframe, the one made of it.
+  /// @param frame The frame's number, as `place_pending` was given it.
+  /// @param m The current map, the frame's keyframe its last.
+  void resolve(std::int64_t frame, const Map& m);
+
   /// @brief Every point and keyframe the run has made, with their lives and maps.
   /// @param m The current map, or null if there is none.
   /// @return The points and keyframes by the run's id: those in the current map where it has
@@ -136,6 +176,10 @@ class Atlas {
   [[nodiscard]] std::int64_t run_id(std::int64_t id) const;
 
  private:
+  /// @brief Record what a map made and removed (the lock held).
+  /// @param m The current map, or null.
+  void record_held(const Map* m);
+
   /// @brief A tracked frame's place, for the final trajectory (`slam_it.edge.atlas._Placement`).
   struct FramePlace {
     /// @brief The frame's time.
@@ -187,6 +231,12 @@ class Atlas {
   std::vector<FramePlace> placements_;
   /// @brief Each culled keyframe's parent and its pose relative to it, by the run's ids.
   std::map<std::int64_t, std::pair<std::int64_t, Eigen::Matrix4d>> culled_;
+  /// @brief Each frame placed before its keyframe was made: its place's index, by the frame.
+  std::map<std::int64_t, std::size_t> pending_;
+  /// @brief Whether the run's frames have ended.
+  bool ended_{false};
+  /// @brief Guards every field.
+  mutable std::mutex mutex_;
 };
 
 }  // namespace slam_it::edge

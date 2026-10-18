@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -12,14 +13,61 @@
 
 namespace slam_it::edge {
 
+std::optional<std::int64_t> Atlas::map_id() const {
+  const std::scoped_lock lock(mutex_);
+  return map_id_;
+}
+
+std::int64_t Atlas::keyframe_base() const {
+  const std::scoped_lock lock(mutex_);
+  return kf_base_;
+}
+
+std::int64_t Atlas::point_base() const {
+  const std::scoped_lock lock(mutex_);
+  return pt_base_;
+}
+
+std::int64_t Atlas::frames() const {
+  const std::scoped_lock lock(mutex_);
+  return frames_;
+}
+
+std::int64_t Atlas::frame() const {
+  const std::scoped_lock lock(mutex_);
+  return ended_ ? frames_ - 1 : frames_;
+}
+
+void Atlas::end() {
+  const std::scoped_lock lock(mutex_);
+  ended_ = true;
+}
+
 void Atlas::start() {
+  const std::scoped_lock lock(mutex_);
   map_id_ = maps_++;
   kf_base_ = static_cast<std::int64_t>(keyframe_lives_.size());
   pt_base_ = static_cast<std::int64_t>(point_lives_.size());
 }
 
 void Atlas::date(const Map* m) {
-  const std::int64_t frame = frames_++;
+  const std::scoped_lock lock(mutex_);
+  record_held(m);
+  ++frames_;
+}
+
+void Atlas::tick() {
+  const std::scoped_lock lock(mutex_);
+  ++frames_;
+}
+
+void Atlas::record(const Map* m) {
+  const std::scoped_lock lock(mutex_);
+  record_held(m);
+}
+
+void Atlas::record_held(const Map* m) {
+  const std::int64_t frame = ended_ ? frames_ - 1 : frames_;
   if (m == nullptr || !map_id_) {
     return;
   }
@@ -54,6 +102,7 @@ void Atlas::date(const Map* m) {
 }
 
 void Atlas::close(const Map& m, bool reset) {
+  const std::scoped_lock lock(mutex_);
   const std::int64_t frame = frames_ - 1;  // dated already
   const auto code = static_cast<std::int64_t>(Removal::kReset);
   for (std::size_t p = 0; p < point_count(m); ++p) {
@@ -84,10 +133,12 @@ void Atlas::close(const Map& m, bool reset) {
     std::erase_if(placements_, [this](const FramePlace& p) { return p.map == *map_id_; });
   }
   map_id_.reset();
+  pending_.clear();
 }
 
 void Atlas::place_frame(const Map& m, double timestamp, std::int64_t reference,
                         const Eigen::Matrix4d& pose) {
+  const std::scoped_lock lock(mutex_);
   const auto k = static_cast<std::size_t>(keyframe_row(m, reference));
   placements_.push_back({.timestamp = timestamp,
                          .map = map_id_.value_or(0),
@@ -97,6 +148,7 @@ void Atlas::place_frame(const Map& m, double timestamp, std::int64_t reference,
 }
 
 void Atlas::place_keyframe(const Map& m, double timestamp, const Eigen::Matrix4d& pose) {
+  const std::scoped_lock lock(mutex_);
   placements_.push_back({.timestamp = timestamp,
                          .map = map_id_.value_or(0),
                          .reference = kf_base_ + m.kf_id.back(),
@@ -104,7 +156,29 @@ void Atlas::place_keyframe(const Map& m, double timestamp, const Eigen::Matrix4d
                          .tracked = pose});
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (frame, timestamp), Python's order
+void Atlas::place_pending(std::int64_t frame, double timestamp, const Eigen::Matrix4d& pose) {
+  const std::scoped_lock lock(mutex_);
+  pending_[frame] = placements_.size();
+  placements_.push_back({.timestamp = timestamp,
+                         .map = map_id_.value_or(0),
+                         .reference = -1,
+                         .relative = Eigen::Matrix4d::Identity(),
+                         .tracked = pose});
+}
+
+void Atlas::resolve(std::int64_t frame, const Map& m) {
+  const std::scoped_lock lock(mutex_);
+  const auto at = pending_.find(frame);
+  if (at == pending_.end()) {
+    return;
+  }
+  placements_[at->second].reference = kf_base_ + m.kf_id.back();
+  pending_.erase(at);
+}
+
 Lifetimes Atlas::lifetimes(const Map* m) const {
+  const std::scoped_lock lock(mutex_);
   Lifetimes out{.points = past_points_,
                 .point_lives = point_lives_,
                 .keyframe_times = past_times_,
@@ -136,6 +210,7 @@ Lifetimes Atlas::lifetimes(const Map* m) const {
 }
 
 Trajectory Atlas::trajectory(const Map* m) const {
+  const std::scoped_lock lock(mutex_);
   std::map<std::int64_t, Eigen::Matrix4d> last;
   for (std::size_t id = 0; id < past_poses_.size(); ++id) {
     if (keyframe_lives_[id][1] >= 0) {

@@ -13,6 +13,9 @@ first runs' (2026-10-17, the same in every backend in RGB-D and stereo): final A
 (RGB-D), 3.64 cm (stereo) and 1.14 to 1.34 cm (monocular); the points' median distance to the
 walls 7.3, 7.1 and 3.9 to 4.3 cm; 276 of the 280 frames tracked in monocular, every one
 otherwise.
+
+The compiled backends hold the same bar threaded (:data:`THREADED`), their frames fed at the
+room's rate (the online-SLAM design's section 12); Python's threaded run is measured, not tested.
 """
 
 from __future__ import annotations
@@ -39,18 +42,40 @@ placed on the truth by its ATE alignment."""
 TRACKED = 0.95
 """The share of the frames tracked at least: the design's bar."""
 
+THREADED = ("cpp",)
+"""The backends whose threaded runs are held to the bar."""
 
-@pytest.mark.parametrize("backend", backends.BACKENDS)
+RUNS = [
+    *(pytest.param(backend, False, id=backend) for backend in backends.BACKENDS),
+    *(pytest.param(backend, True, id=f"{backend}-threaded") for backend in THREADED),
+]
+"""Each backend's run in order, and the threaded runs."""
+
+
+def _run(
+    request: pytest.FixtureRequest, dataset: str, mode: str, backend: str, threaded: bool
+) -> runs.Run:
+    """Return a case's run, in order or threaded, run the first time it is asked for."""
+    fixture = "loop_threaded_runs" if threaded else "loop_runs"
+    return request.getfixturevalue(fixture)(dataset, mode, backend)  # type: ignore[no-any-return]
+
+
+@pytest.mark.parametrize(("backend", "threaded"), RUNS)
 @pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
-def test_every_backend_closes_the_loop_room(
-    dataset: str, mode: str, backend: str, loop_folders: Room, loop_runs: RoomRun
+def test_every_backend_closes_the_loop_room(  # noqa: PLR0917 -- the case, the fixtures
+    request: pytest.FixtureRequest,
+    dataset: str,
+    mode: str,
+    backend: str,
+    threaded: bool,
+    loop_folders: Room,
 ) -> None:
     """Nearly every frame tracked in one map, a loop closed, the final trajectory near the truth.
 
     The final trajectory is closer to the truth than the poses as tracked: the loop corrected
     the drift.
     """
-    run = loop_runs(dataset, mode, backend)
+    run = _run(request, dataset, mode, backend, threaded)
     assert len(run.timestamps) >= TRACKED * len(run.diagnostics)
     assert len(run.maps()) == 1
     assert len(run.keyframe_loops) >= 1
@@ -60,29 +85,39 @@ def test_every_backend_closes_the_loop_room(
     assert final.ate_rmse < tracked.ate_rmse
 
 
-@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("backend", "threaded"), RUNS)
 @pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
-def test_no_loop_closes_at_a_wrong_place(
-    dataset: str, mode: str, backend: str, loop_folders: Room, loop_runs: RoomRun
+def test_no_loop_closes_at_a_wrong_place(  # noqa: PLR0917 -- the case, the fixtures
+    request: pytest.FixtureRequest,
+    dataset: str,
+    mode: str,
+    backend: str,
+    threaded: bool,
+    loop_folders: Room,
 ) -> None:
     """By the truth, every loop's two keyframes were near each other and looked alike.
 
     Judged by the test-set measure's judge (B3's review panel, A7), which finds every keyframe
     in the truth: the room's frames are the truth's.
     """
-    run = loop_runs(dataset, mode, backend)
+    run = _run(request, dataset, mode, backend, threaded)
     truth = (loop_folders.timestamps, loop_folders.poses)
     judged = loops.judge_loops(run, truth, runs.evaluate_absolute(run, *truth))
     assert [loop["wrong_place"] for loop in judged] == [False] * len(run.keyframe_loops)
 
 
-@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("backend", "threaded"), RUNS)
 @pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
-def test_the_points_lie_on_the_walls(
-    dataset: str, mode: str, backend: str, loop_folders: Room, loop_runs: RoomRun
+def test_the_points_lie_on_the_walls(  # noqa: PLR0917 -- the case, the fixtures
+    request: pytest.FixtureRequest,
+    dataset: str,
+    mode: str,
+    backend: str,
+    threaded: bool,
+    loop_folders: Room,
 ) -> None:
     """Placed on the truth by the trajectory's alignment, the points lie near the room's walls."""
-    run = loop_runs(dataset, mode, backend)
+    run = _run(request, dataset, mode, backend, threaded)
     (placed,) = runs.evaluate_absolute(run, loop_folders.timestamps, loop_folders.poses).maps
     alignment = placed.absolute.alignment
     points = run.final_points() @ alignment[:3, :3].T + alignment[:3, 3]

@@ -5,20 +5,428 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <span>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/mapping.hpp"
+#include "slam_it/edge/threads.hpp"
 #include "slam_it/edge/tracking.hpp"
 #include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/sim3.hpp"
 
 namespace slam_it::edge {
 
 using foundations::ErrorKind;
 using foundations::fail;
 using foundations::Result;
+
+namespace {
+
+/// @brief The clock the steps are timed by.
+using Clock = std::chrono::steady_clock;
+
+/// @brief Seconds, as the results give them.
+using Seconds = std::chrono::duration<double>;
+
+/// @brief A frame as tracked, its points no longer in the map dropped (`ProcessNewKeyFrame`;
+///        `slam_it.edge.pipeline._still_mapped`): threaded, mapping may cull or fuse a point a
+///        keyframe tracked before it inserts the keyframe, and ORB-SLAM skips the points gone
+///        bad.
+/// @param tracked The frame's pose and matches.
+/// @param m The map.
+/// @return Its pose, and its matches still in the map.
+Tracked still_mapped(const Tracked& tracked, const Map& m) {
+  Tracked out = tracked;
+  for (std::int64_t& id : out.points) {
+    if (id >= 0 && point_row(m, id) < 0) {
+      id = -1;
+    }
+  }
+  return out;
+}
+
+/// @brief Add a frame's counts to the map: the points seen, and found, in it (a point gone is
+///        skipped).
+/// @param m The map.
+/// @param visible The points the frame's view held, by the map's ids.
+/// @param found The points it tracked.
+/// @return Nothing; `count`'s error.
+Result<void> add_counts(Map& m, const std::vector<std::int64_t>& visible,
+                        const std::vector<std::int64_t>& found) {
+  const std::vector<std::int64_t> seen(visible.size(), 1);
+  const std::vector<std::int64_t> unseen(visible.size(), 0);
+  if (auto ok = edge::count(m, visible, seen, unseen); !ok) {
+    return ok;
+  }
+  const std::vector<std::int64_t> tracked(found.size(), 1);
+  const std::vector<std::int64_t> untracked(found.size(), 0);
+  return edge::count(m, found, untracked, tracked);
+}
+
+}  // namespace
+
+/// @brief Local mapping, loop closing and the global BAs, each in a thread of its own
+///        (`slam_it.edge.pipeline._Threads`, the module docstring's "In threads of their own"):
+///        tracking asks it whether mapping takes a keyframe, and gives it the keyframes; the
+///        threads give back `Completion` records.
+class PipelineThreads {
+ public:
+  /// @brief A keyframe tracking asked local mapping for (`slam_it.edge.pipeline._Request`).
+  struct Request {
+    /// @brief Its frame's number.
+    std::int64_t index{0};
+    /// @brief The frame.
+    Frame frame;
+    /// @brief Its pose and matches.
+    Tracked tracked;
+  };
+
+  /// @brief A keyframe mapped, given to loop closing.
+  struct Searched {
+    /// @brief Its frame's number.
+    std::int64_t index{0};
+    /// @brief Its id in the map.
+    std::int64_t keyframe{0};
+  };
+
+  /// @brief Start the threads.
+  /// @param owner The map's owner, its writer given.
+  /// @param atlas The run's records.
+  /// @param closing Loop closing's state.
+  /// @param mode The sensor mode.
+  /// @param camera The camera.
+  /// @param options The settings.
+  PipelineThreads(MapOwner& owner, Atlas& atlas, LoopState& closing, Mode mode, Camera camera,
+                  const Options& options)
+      : owner_(owner),
+        atlas_(atlas),
+        closing_(closing),
+        mode_(mode),
+        camera_(std::move(camera)),
+        options_(options),
+        without_global_ba_(options),
+        loop_closing_([this](Searched& item) { return close_loops(item); }),
+        mapping_([this](Request& request) { return map(request); }) {
+    without_global_ba_.loops.global_ba = false;  // it runs in a thread of its own
+  }
+
+  /// @brief Supersede a global BA running, end the threads after their work, and wait for the
+  ///        global BAs.
+  ~PipelineThreads() {
+    generation_.next();
+    stop();
+    for (std::thread& thread : running()) {
+      thread.join();
+    }
+  }
+
+  PipelineThreads(const PipelineThreads&) = delete;
+  PipelineThreads& operator=(const PipelineThreads&) = delete;
+  PipelineThreads(PipelineThreads&&) = delete;
+  PipelineThreads& operator=(PipelineThreads&&) = delete;
+
+  /// @brief Whether local mapping takes a keyframe at once (`AcceptKeyFrames`): none in hand,
+  ///        none waiting.
+  /// @return Whether it is idle.
+  [[nodiscard]] bool idle() const { return mapping_.unfinished() == 0; }
+
+  /// @brief Whether local mapping is stopped or being stopped.
+  /// @return Whether it is.
+  [[nodiscard]] bool stopping() const { return writer().stopping(); }
+
+  /// @brief The keyframes waiting for local mapping (`KeyframesInQueue`).
+  /// @return The count.
+  [[nodiscard]] std::int64_t waiting() const {
+    return static_cast<std::int64_t>(mapping_.waiting());
+  }
+
+  /// @brief Interrupt local mapping's local BA (`InterruptBA`).
+  void interrupt() { writer().interrupt(); }
+
+  /// @brief Queue a keyframe for local mapping, aborting its local BA (`InsertKeyFrame`).
+  /// @param request The keyframe.
+  void request(Request request) {
+    mapping_.put(std::move(request));
+    writer().interrupt();
+  }
+
+  /// @brief The completions since the last call, in the order they came.
+  /// @return The completions.
+  [[nodiscard]] std::vector<Completion> completed() {
+    const std::scoped_lock lock(mutex_);
+    return std::exchange(completions_, {});
+  }
+
+  /// @brief The error a thread failed with, if one did.
+  /// @return Nothing, or the error.
+  [[nodiscard]] Result<void> check() const {
+    if (auto ok = mapping_.check(); !ok) {
+      return ok;
+    }
+    if (auto ok = loop_closing_.check(); !ok) {
+      return ok;
+    }
+    const std::scoped_lock lock(mutex_);
+    if (error_) {
+      return std::unexpected(*error_);
+    }
+    return {};
+  }
+
+  /// @brief Wait for local mapping and loop closing to handle every keyframe given, and for the
+  ///        global BAs.
+  /// @param apply Whether a global BA still running applies its result when it ends (the run's
+  ///        end); if not (a map lost), it is superseded.
+  /// @return Nothing; the error a thread failed with.
+  Result<void> settle(bool apply) {
+    mapping_.drain();
+    loop_closing_.drain();
+    if (!apply) {
+      generation_.next();
+    }
+    for (std::thread& thread : running()) {
+      thread.join();
+    }
+    return check();
+  }
+
+  /// @brief End local mapping and loop closing, after the keyframes given (`settle` first).
+  void stop() {
+    mapping_.stop();
+    loop_closing_.stop();
+  }
+
+ private:
+  /// @brief The handshake between the threads.
+  /// @return The owner's writer.
+  [[nodiscard]] threads::Writer& writer() const { return *owner_.writer(); }
+
+  /// @brief Take the global BAs' threads started so far.
+  /// @return The threads.
+  std::vector<std::thread> running() {
+    const std::scoped_lock lock(mutex_);
+    return std::exchange(global_, {});
+  }
+
+  /// @brief Keep a completion for the run.
+  /// @param completion The completion.
+  void complete(Completion completion) {
+    const std::scoped_lock lock(mutex_);
+    completions_.push_back(std::move(completion));
+  }
+
+  /// @brief Keep a global BA's error, for tracking's thread.
+  /// @param error The error.
+  void keep(foundations::Error error) {
+    const std::scoped_lock lock(mutex_);
+    if (!error_) {
+      error_ = std::move(error);
+    }
+  }
+
+  /// @brief Local mapping's thread: map a keyframe, the one writer while it does, interrupted
+  ///        between its steps; then give it to loop closing.
+  /// @param request The keyframe.
+  /// @return Nothing; a step's error.
+  Result<void> map(Request& request) {
+    Completion done;
+    done.frame = request.index;
+    std::int64_t keyframe = 0;
+    {
+      const threads::Writer::Mapping turn(writer());
+      writer().resume();
+      if (auto ok = owner_.apply_counts(); !ok) {
+        return ok;
+      }
+      const auto start = Clock::now();
+      const Interrupts asked{.waiting = [this] { return mapping_.waiting() > 0; },
+                             .stopping = [this] { return writer().stopping(); },
+                             .abort = &writer().abort(),
+                             .publish = [this](const Map& m) { owner_.publish(m); }};
+      const std::vector<std::int64_t> holding = held(closing_);
+      auto mapped = owner_.apply_mapping([&](Map& m) {
+        return process(m, camera_, request.frame, still_mapped(request.tracked, m), mode_, options_,
+                       holding, &asked);
+      });
+      if (!mapped) {
+        return std::unexpected(std::move(mapped.error()));
+      }
+      done.map_seconds = Seconds(Clock::now() - start).count();
+      const std::optional<Map>& current = owner_.map();
+      if (!current) {
+        return fail(ErrorKind::kInvalidInput, "mapping: no map");
+      }
+      const Map& m = *current;
+      atlas_.resolve(request.index, m);
+      atlas_.record(&m);
+      owner_.clear_gone();
+      keyframe = m.kf_id.back();
+      const std::int64_t base = atlas_.point_base();
+      for (const std::int64_t id : mapped->made) {
+        done.made.push_back(id >= 0 ? base + id : -1);
+      }
+      done.mapping = std::move(mapped->summary);
+      done.schedule = mapped->schedule;
+    }
+    complete(std::move(done));
+    loop_closing_.put({.index = request.index, .keyframe = keyframe});
+    return {};
+  }
+
+  /// @brief Loop closing's thread: search a keyframe for a loop with mapping held off, and
+  ///        correct one that closes with mapping stopped, without global BA, which then solves
+  ///        a copy of the map in a thread of its own.
+  /// @param item The keyframe.
+  /// @return Nothing; a step's error.
+  Result<void> close_loops(Searched& item) {
+    if (!options_.loops.enabled || item.keyframe == 0) {
+      return {};
+    }
+    const auto start = Clock::now();
+    std::optional<Map> copy;
+    std::int64_t generation = 0;
+    std::shared_ptr<const std::atomic<bool>> superseded;
+    LoopSummary summary;
+    auto searched = owner_.reading([&] -> Result<bool> {
+      const std::optional<Map>& current = owner_.map();
+      const std::optional<Database>& db = owner_.database();
+      if (!current || !db || keyframe_row(*current, item.keyframe) < 0) {
+        return false;  // not relocalising, or culled since it was mapped
+      }
+      auto found = loops::detect(*current, *db, camera_, item.keyframe, closing_.pending,
+                                 name(mode_), options_);
+      if (!found) {
+        return std::unexpected(std::move(found.error()));
+      }
+      closing_.pending = std::move(found->pending);
+      summary.detection = std::move(found->summary);
+      if (!found->loop) {
+        return true;
+      }
+      const loops::Loop& loop = *found->loop;
+      auto fixed = owner_.stopped([&](Map& m) -> Result<loops::CorrectionSummary> {
+        generation = generation_.next();
+        superseded = generation_.stop();
+        auto corrected = loops::correct(m, camera_, loop, name(mode_), without_global_ba_);
+        if (!corrected) {
+          return corrected;
+        }
+        if (auto ok = owner_.corrected(); !ok) {
+          return std::unexpected(std::move(ok.error()));
+        }
+        atlas_.record(&m);
+        owner_.clear_gone();
+        if (options_.loops.global_ba) {
+          copy = m;
+        }
+        return corrected;
+      });
+      if (!fixed) {
+        return std::unexpected(std::move(fixed.error()));
+      }
+      summary.correction = std::move(*fixed);
+      return true;
+    });
+    if (!searched) {
+      return std::unexpected(std::move(searched.error()));
+    }
+    if (!*searched) {
+      return {};
+    }
+    Completion done;
+    done.frame = item.index;
+    done.loop_seconds = Seconds(Clock::now() - start).count();
+    done.loop = std::move(summary);
+    complete(std::move(done));
+    if (copy) {
+      std::thread thread(
+          [this, solving = std::move(*copy), generation, stop = std::move(superseded)] mutable {
+            global_ba(std::move(solving), generation, stop.get());
+          });
+      const std::scoped_lock lock(mutex_);
+      global_.push_back(std::move(thread));
+    }
+    return {};
+  }
+
+  /// @brief A global BA's thread: solve a copy, then carry the result onto the map as it has
+  ///        become if no newer loop superseded it, mapping stopped.
+  /// @param copy The map as the loop's correction left it.
+  /// @param generation The global BA's generation.
+  /// @param superseded Its stop flag, set once a newer generation starts.
+  void global_ba(Map copy, std::int64_t generation, const std::atomic<bool>* superseded) {
+    const auto start = Clock::now();
+    auto solved = loops::global_bundle_adjust(copy, camera_, options_, superseded);
+    if (!solved) {
+      keep(std::move(solved.error()));
+      return;
+    }
+    std::optional<loops::Propagated> moved;
+    std::int64_t frame = 0;
+    auto applied = owner_.stopped([&](Map& m) -> Result<void> {
+      if (generation_.current(generation)) {
+        auto carried = loops::propagate_global_ba(m, copy);
+        if (!carried) {
+          return std::unexpected(std::move(carried.error()));
+        }
+        moved = *carried;
+        if (auto ok = owner_.corrected(); !ok) {
+          return ok;
+        }
+        atlas_.record(&m);
+        owner_.clear_gone();
+      }
+      frame = atlas_.frame();
+      return {};
+    });
+    if (!applied) {
+      keep(std::move(applied.error()));
+      return;
+    }
+    Completion done;
+    done.frame = frame;
+    done.global_ba = loops::GlobalSummary{.generation = generation,
+                                          .applied = moved.has_value(),
+                                          .solve = *solved,
+                                          .propagation = moved};
+    done.global_ba_seconds = Seconds(Clock::now() - start).count();
+    complete(std::move(done));
+  }
+
+  /// @brief The map's owner.
+  MapOwner& owner_;
+  /// @brief The run's records.
+  Atlas& atlas_;
+  /// @brief Loop closing's state.
+  LoopState& closing_;
+  /// @brief The sensor mode.
+  Mode mode_;
+  /// @brief The camera.
+  Camera camera_;
+  /// @brief The settings.
+  Options options_;
+  /// @brief The settings, global BA left out of a loop's correction.
+  Options without_global_ba_;
+  /// @brief The global BAs' generations.
+  threads::Generation generation_;
+  /// @brief Guards the fields below.
+  mutable std::mutex mutex_;
+  /// @brief The completions not yet taken.
+  std::vector<Completion> completions_;
+  /// @brief The global BAs' threads started and not yet joined.
+  std::vector<std::thread> global_;
+  /// @brief A global BA's error, if one failed.
+  std::optional<foundations::Error> error_;
+  /// @brief Loop closing's thread, started after the fields above.
+  threads::Worker<Searched> loop_closing_;
+  /// @brief Local mapping's thread, ended first: it gives loop closing its keyframes.
+  threads::Worker<Request> mapping_;
+};
 
 namespace {
 
@@ -45,6 +453,8 @@ struct Placed {
   FrameSummary summary;
   /// @brief The last stage's match for each keypoint before refinement.
   std::vector<std::int64_t> matched;
+  /// @brief The time spent waiting for the map, 0 inline.
+  double waited{0.0};
 };
 
 /// @brief A placed frame tracked against the local map, as `refine` gives it.
@@ -62,6 +472,8 @@ struct Refined {
 /// @brief Tracking's result on a frame, as `track_step` gives it
 ///        (`slam_it.edge.pipeline._Tracking`).
 struct Tracking {
+  /// @brief The map tracking read: the view, held for the frame.
+  std::shared_ptr<const Map> view;
   /// @brief The tracked frame, if it kept enough inliers.
   std::optional<Tracked> tracked;
   /// @brief How its stages went.
@@ -70,10 +482,18 @@ struct Tracking {
   std::vector<std::int64_t> matched;
   /// @brief The frame's reference keyframe's row, -1 when not tracked.
   std::int64_t reference{-1};
-  /// @brief Whether it asks for a keyframe.
+  /// @brief Whether it becomes a keyframe.
   bool keyframe{false};
   /// @brief Whether the frame lost the track.
   bool lost{false};
+  /// @brief The time spent waiting for the map, 0 inline.
+  double wait_seconds{0.0};
+  /// @brief Whether it wanted a keyframe.
+  bool asked{false};
+  /// @brief Whether mapping could not take the keyframe it wanted.
+  bool refused{false};
+  /// @brief The keyframes waiting for mapping when it asked.
+  std::int64_t queue{0};
 };
 
 /// @brief Pair a monocular frame with the reference, or make it the reference.
@@ -116,18 +536,22 @@ Result<Initialization> initialize_monocular(TrackingState& state, const Camera& 
   return edge::initialize_monocular(camera, *state.reference, frame, pairs, options);
 }
 
-/// @brief Track the last frame, or recover by PnP, or relocalise.
+/// @brief Track the last frame against the view, or recover by PnP, or relocalise. Threaded,
+///        relocalisation reads the database with mapping held off, against the view published
+///        last, which the database matches; the frame goes on with that view.
 /// @param state Tracking's state.
 /// @param owner The map's owner, for its database.
-/// @param m The map.
+/// @param view The map tracking reads; threaded, a relocalisation's view replaces it.
 /// @param camera The camera.
 /// @param frame The frame.
 /// @param mode The sensor mode.
 /// @param options The settings.
-/// @return The placed frame, if any, how it was placed, and the last stage's matches; a
-///         stage's error.
-Result<Placed> place(const TrackingState& state, const MapOwner& owner, const Map& m,
-                     const Camera& camera, const Frame& frame, Mode mode, const Options& options) {
+/// @return The placed frame, if any, how it was placed, the last stage's matches and the time
+///         spent waiting for the map; a stage's error.
+Result<Placed> place(const TrackingState& state, const MapOwner& owner,
+                     std::shared_ptr<const Map>& view, const Camera& camera, const Frame& frame,
+                     Mode mode, const Options& options) {
+  const Map& m = *view;
   if (!state.last_frame || !state.last_tracked) {
     return fail(ErrorKind::kInvalidInput, "track: no last frame to track from");
   }
@@ -145,25 +569,34 @@ Result<Placed> place(const TrackingState& state, const MapOwner& owner, const Ma
     summary.placed_by = Placement::kMotion;
     return Placed{.tracked = std::move(motion->tracked),
                   .summary = std::move(summary),
-                  .matched = std::move(motion->matched)};
+                  .matched = std::move(motion->matched),
+                  .waited = 0.0};
   }
   auto recovery = relocalize_locally(m, camera, frame, state.last_tracked->points, options);
   if (!recovery) {
     return std::unexpected(std::move(recovery.error()));
   }
   summary.pnp = recovery->summary;
-  const std::optional<Database>& db = owner.database();
   const std::optional<foundations::vocabulary::Vocabulary>& words = owner.vocabulary();
-  if (recovery->tracked || !db || !words ||
+  if (recovery->tracked || !words ||
       !options.relocalization.enabled) {  // placed, or not relocalising
     if (recovery->tracked) {
       summary.placed_by = Placement::kLocalPnp;
     }
     return Placed{.tracked = std::move(recovery->tracked),
                   .summary = std::move(summary),
-                  .matched = std::move(recovery->matched)};
+                  .matched = std::move(recovery->matched),
+                  .waited = 0.0};
   }
-  auto found = relocalize(m, *db, *words, camera, frame, options);
+  const auto asked = Clock::now();
+  auto held = asked;
+  auto found = owner.reading([&] {
+    held = Clock::now();
+    if (owner.writer() != nullptr) {
+      view = owner.view();
+    }
+    return relocalize(*view, *owner.database(), *words, camera, frame, options);
+  });
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
@@ -173,7 +606,8 @@ Result<Placed> place(const TrackingState& state, const MapOwner& owner, const Ma
   }
   return Placed{.tracked = std::move(found->tracked),
                 .summary = std::move(summary),
-                .matched = std::move(found->matched)};
+                .matched = std::move(found->matched),
+                .waited = owner.writer() != nullptr ? Seconds(held - asked).count() : 0.0};
 }
 
 /// @brief Track the local map from a placed frame, and count its points through the owner.
@@ -211,9 +645,36 @@ Result<Refined> refine(MapOwner& owner, const Map& m, const Camera& camera, cons
   return out;
 }
 
+/// @brief Ask local mapping for a keyframe a frame wants, as ORB-SLAM's `NeedNewKeyFrame` does:
+///        none while mapping is stopped or being stopped; taken at once with mapping idle (as
+///        inline, always); busy, the local BA is interrupted, and a stereo or RGB-D keyframe is
+///        queued while fewer than `mapping.max_queued` wait, a monocular one refused.
+/// @param out Tracking's result, its keyframe, refusal and queue set.
+/// @param threads The threads; null inline.
+/// @param idle Whether mapping was idle when the frame asked.
+/// @param mode The sensor mode.
+/// @param options The settings.
+void ask_mapping(Tracking& out, PipelineThreads* threads, bool idle, Mode mode,
+                 const Options& options) {
+  if (threads == nullptr) {
+    out.keyframe = true;
+    return;
+  }
+  out.queue = threads->waiting();
+  if (threads->stopping()) {
+    out.refused = true;
+  } else if (idle) {
+    out.keyframe = true;
+  } else {
+    threads->interrupt();
+    out.keyframe = mode != Mode::kMonocular && out.queue < options.mapping.max_queued;
+    out.refused = !out.keyframe;
+  }
+}
+
 /// @brief Tracking's step (`slam_it.edge.pipeline._track_frame`): place a frame against the
-///        map, track the local map, and ask for a keyframe; a frame not tracked is counted as a
-///        failure.
+///        map's view, track the local map, and ask for a keyframe; a frame not tracked is
+///        counted as a failure.
 /// @param state Tracking's state.
 /// @param owner The map's owner, given the frame's counts.
 /// @param camera The camera.
@@ -221,20 +682,22 @@ Result<Refined> refine(MapOwner& owner, const Map& m, const Camera& camera, cons
 /// @param mode The sensor mode.
 /// @param options The settings.
 /// @param keyframe_base The run's id of the map's keyframe 0, for the summary.
+/// @param threads The threads, asked whether mapping takes a keyframe; null inline.
 /// @return How tracking went; a stage's error, or `InvalidInput` with no map.
 Result<Tracking> track_step(TrackingState& state, MapOwner& owner, const Camera& camera,
                             const Frame& frame, Mode mode, const Options& options,
-                            std::int64_t keyframe_base) {
-  const std::optional<Map>& current = owner.map();
-  if (!current) {
+                            std::int64_t keyframe_base, PipelineThreads* threads) {
+  ++state.since_keyframe;
+  std::shared_ptr<const Map> view = owner.view();
+  if (!view) {
     return fail(ErrorKind::kInvalidInput, "track: no map to track against");
   }
-  const Map& m = *current;
-  auto placed = place(state, owner, m, camera, frame, mode, options);
+  auto placed = place(state, owner, view, camera, frame, mode, options);
   if (!placed) {
     return std::unexpected(std::move(placed.error()));
   }
-  auto& [where, summary, matched] = *placed;
+  const Map& m = *view;
+  auto& [where, summary, matched, waited] = *placed;
   if (summary.placed_by == Placement::kLocalPnp ||
       summary.placed_by == Placement::kRelocalization) {
     state.since_recovery = 0;
@@ -244,12 +707,17 @@ Result<Tracking> track_step(TrackingState& state, MapOwner& owner, const Camera&
   const bool recent = state.since_recovery && *state.since_recovery < options.tracking.max_frames;
   const bool wide =
       state.since_recovery && *state.since_recovery < options.tracking.recovery_window_frames;
-  Tracking out{.tracked = std::nullopt,
+  Tracking out{.view = view,
+               .tracked = std::nullopt,
                .summary = {},
                .matched = {},
                .reference = -1,
                .keyframe = false,
-               .lost = false};
+               .lost = false,
+               .wait_seconds = waited,
+               .asked = false,
+               .refused = false,
+               .queue = 0};
   if (where) {
     auto refined =
         refine(owner, m, camera, frame, *where, wide, recent, mode, options, keyframe_base);
@@ -267,14 +735,22 @@ Result<Tracking> track_step(TrackingState& state, MapOwner& owner, const Camera&
     out.lost = record_failure(state, frame, keyframe_count(m), options);
     return out;
   }
-  const bool held = recent && std::cmp_greater(keyframe_count(m), options.tracking.max_frames);
-  auto need =
-      held ? Result<bool>(false)
-           : need_keyframe(m, camera, frame.depth, *out.tracked, out.reference, mode, options);
+  if (recent && std::cmp_greater(keyframe_count(m), options.tracking.max_frames)) {
+    return out;  // none just after a recovery
+  }
+  const bool idle = threads == nullptr || threads->idle();
+  auto need = need_keyframe(m, camera, frame.depth, *out.tracked, out.reference, mode, options,
+                            idle, state.since_keyframe);
   if (!need) {
     return std::unexpected(std::move(need.error()));
   }
-  out.keyframe = *need;
+  out.asked = *need;
+  if (out.asked) {
+    ask_mapping(out, threads, idle, mode, options);
+  }
+  if (out.keyframe) {
+    state.since_keyframe = 0;
+  }
   return out;
 }
 
@@ -391,12 +867,45 @@ void move_last(TrackingState& state, const Eigen::Matrix4d& pose) {
   }
 }
 
+void anchor_to(TrackingState& state, const Map& view, std::size_t row) {
+  if (!state.last_tracked) {
+    return;
+  }
+  state.anchor = view.kf_id[row];
+  state.anchor_relative =
+      Eigen::Matrix4d(state.last_tracked->pose * foundations::sim3::inverse(view.kf_pose[row]));
+}
+
+void follow(TrackingState& state, const Map& view, std::int64_t corrections) {
+  if (corrections == state.corrections) {
+    return;
+  }
+  state.corrections = corrections;
+  if (!state.last_tracked || !state.anchor || !state.anchor_relative) {
+    return;
+  }
+  if (const std::int64_t row = keyframe_row(view, *state.anchor); row >= 0) {
+    move_last(state, *state.anchor_relative * view.kf_pose[static_cast<std::size_t>(row)]);
+  }
+}
+
 std::vector<std::int64_t> held(const LoopState& state) {
   return state.pending ? loops::held(*state.pending) : std::vector<std::int64_t>{};
 }
 
+std::shared_ptr<const Map> MapOwner::view() const {
+  if (writer_ == nullptr) {  // the map itself, not owned
+    return map_ ? std::shared_ptr<const Map>(std::shared_ptr<const Map>(), &*map_) : nullptr;
+  }
+  const std::scoped_lock lock(view_mutex_);
+  return view_;
+}
+
 Result<void> MapOwner::start(Map m) {
   map_ = std::move(m);
+  if (writer_ != nullptr) {
+    publish(*map_);
+  }
   if (vocabulary_) {
     database_.emplace();
     return sync_database();
@@ -406,17 +915,46 @@ Result<void> MapOwner::start(Map m) {
 
 Result<void> MapOwner::count(const std::vector<std::int64_t>& visible,
                              const std::vector<std::int64_t>& found) {
+  if (writer_ != nullptr) {
+    const std::scoped_lock lock(counts_mutex_);
+    counts_.emplace_back(visible, found);
+    return {};
+  }
   if (!map_) {
     return fail(ErrorKind::kInvalidInput, "count: no map");
   }
-  const std::vector<std::int64_t> seen(visible.size(), 1);
-  const std::vector<std::int64_t> unseen(visible.size(), 0);
-  if (auto ok = edge::count(*map_, visible, seen, unseen); !ok) {
+  return add_counts(*map_, visible, found);
+}
+
+Result<void> MapOwner::apply_counts() {
+  std::vector<std::pair<std::vector<std::int64_t>, std::vector<std::int64_t>>> counts;
+  {
+    const std::scoped_lock lock(counts_mutex_);
+    counts.swap(counts_);
+  }
+  if (!map_) {
+    return fail(ErrorKind::kInvalidInput, "apply_counts: no map");
+  }
+  for (const auto& [visible, found] : counts) {
+    if (auto ok = add_counts(*map_, visible, found); !ok) {
+      return ok;
+    }
+  }
+  return {};
+}
+
+Result<void> MapOwner::corrected() {
+  if (auto ok = changed(); !ok) {
     return ok;
   }
-  const std::vector<std::int64_t> tracked(found.size(), 1);
-  const std::vector<std::int64_t> untracked(found.size(), 0);
-  return edge::count(*map_, found, untracked, tracked);
+  ++corrections_;
+  return {};
+}
+
+void MapOwner::publish(const Map& m) {
+  auto copy = std::make_shared<const Map>(m);
+  const std::scoped_lock lock(view_mutex_);
+  view_ = std::move(copy);
 }
 
 void MapOwner::clear_gone() {
@@ -429,7 +967,23 @@ std::optional<Map> MapOwner::close() {
   std::optional<Map> out = std::move(map_);
   map_.reset();
   database_.reset();
+  {
+    const std::scoped_lock lock(view_mutex_);
+    view_.reset();
+  }
+  const std::scoped_lock lock(counts_mutex_);
+  counts_.clear();
   return out;
+}
+
+Result<void> MapOwner::changed() {
+  if (auto ok = sync_database(); !ok) {
+    return ok;
+  }
+  if (writer_ != nullptr && map_) {
+    publish(*map_);
+  }
+  return {};
 }
 
 Result<void> MapOwner::sync_database() {
@@ -462,8 +1016,25 @@ Result<void> MapOwner::sync_database() {
   return {};
 }
 
+Pipeline::Pipeline(Mode mode, Camera camera, Options options,
+                   std::optional<foundations::vocabulary::Vocabulary> vocabulary, bool threaded)
+    : mode_(mode),
+      camera_(std::move(camera)),
+      options_(options),
+      shared_(std::make_unique<Shared>(std::move(vocabulary), options_, threaded)) {
+  if (threaded) {
+    threads_ = std::make_unique<PipelineThreads>(shared_->owner(), shared_->atlas(),
+                                                 shared_->closing(), mode_, camera_, options_);
+  }
+}
+
+Pipeline::~Pipeline() = default;
+
+Pipeline::Pipeline(Pipeline&&) noexcept = default;
+
 Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
-                                  std::optional<foundations::vocabulary::Vocabulary> vocabulary) {
+                                  std::optional<foundations::vocabulary::Vocabulary> vocabulary,
+                                  bool threaded) {
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -480,7 +1051,7 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
     return fail(ErrorKind::kInvalidInput,
                 "vocabulary: given, but relocalization.enabled and loops.enabled are both off");
   }
-  return Pipeline(mode, std::move(camera), options, std::move(vocabulary));
+  return Pipeline(mode, std::move(camera), options, std::move(vocabulary), threaded);
 }
 
 foundations::orb::Options Pipeline::extraction() const {
@@ -488,31 +1059,56 @@ foundations::orb::Options Pipeline::extraction() const {
 }
 
 Result<FrameResult> Pipeline::track(const Frame& frame) {
-  const auto start = std::chrono::steady_clock::now();
+  if (finished_) {
+    return fail(ErrorKind::kInvalidInput, "track: the run is finished");
+  }
+  const auto start = Clock::now();
   // Between frames the state is never kLost: a lost track closes its map on its frame.
-  auto stepped = state_ == State::kTracking ? track_frame(frame) : initialize(frame);
+  const bool tracking_map = state_ == State::kTracking;
+  auto stepped = tracking_map ? track_frame(frame) : initialize(frame);
   if (!stepped) {
     return std::unexpected(std::move(stepped.error()));
   }
   Step step = std::move(*stepped);
-  atlas_.date(owner_.map() ? &*owner_.map() : nullptr);
-  owner_.clear_gone();
+  MapOwner& owner = shared_->owner();
+  Atlas& atlas = shared_->atlas();
+  double waited = step.wait_seconds;
+  if (!threads_) {
+    atlas.date(owner.map() ? &*owner.map() : nullptr);
+    owner.clear_gone();
+  } else {
+    if (auto ok = threads_->check(); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
+    if (!tracking_map && owner.map()) {  // a map started on it: the threads have none of it
+      atlas.record(&*owner.map());
+      owner.clear_gone();
+    }
+    if (step.lost && owner.map()) {  // the threads end the map's work first
+      const auto settling = Clock::now();
+      if (auto ok = threads_->settle(false); !ok) {
+        return std::unexpected(std::move(ok.error()));
+      }
+      waited += Seconds(Clock::now() - settling).count();
+    }
+    atlas.tick();
+  }
   const State state = step.lost ? State::kLost : state_;
-  const std::optional<std::int64_t> map_id = atlas_.map_id();
+  const std::optional<std::int64_t> map_id = atlas.map_id();
   const std::optional<Tracked>& tracked = step.tracked;
   Fates fates{.fate = std::vector<Fate>(keypoint_count(frame), Fate::kUnmatched),
               .point = std::vector<std::int64_t>(keypoint_count(frame), -1)};
-  mark(fates, Fate::kRejected, step.matched, atlas_.point_base());
+  mark(fates, Fate::kRejected, step.matched, atlas.point_base());
   if (tracked) {
-    mark(fates, Fate::kTracked, tracked->points, atlas_.point_base());
+    mark(fates, Fate::kTracked, tracked->points, atlas.point_base());
   }
-  mark(fates, Fate::kMade, step.made, atlas_.point_base());
+  mark(fates, Fate::kMade, step.made, atlas.point_base());
   if (step.lost) {  // a lost frame was tracking, so there is a map
-    if (const std::optional<Map> lost = owner_.close()) {
+    if (const std::optional<Map> lost = owner.close()) {
       step.summary.lost = close(*lost);
     }
   }
-  const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
+  const Seconds took = Clock::now() - start;
   return FrameResult{.timestamp = frame.timestamp,
                      .state = state,
                      .map = map_id,
@@ -523,22 +1119,47 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
                      .map_seconds = step.map_seconds,
                      .loop_seconds = step.loop_seconds,
                      .summary = std::move(step.summary),
-                     .fates = std::move(fates)};
+                     .fates = std::move(fates),
+                     .wait_seconds = waited,
+                     .asked = step.asked,
+                     .refused = step.refused,
+                     .queue = step.queue,
+                     .schedule = step.schedule};
+}
+
+Result<void> Pipeline::finish() {
+  if (threads_ && !finished_) {
+    finished_ = true;
+    shared_->atlas().end();
+    auto settled = threads_->settle(true);
+    threads_->stop();
+    return settled;
+  }
+  finished_ = true;
+  return {};
+}
+
+std::vector<Completion> Pipeline::completed() {
+  return threads_ ? threads_->completed() : std::vector<Completion>{};
 }
 
 Lifetimes Pipeline::lifetimes() const {
-  return atlas_.lifetimes(owner_.map() ? &*owner_.map() : nullptr);
+  const MapOwner& owner = shared_->owner();
+  return owner.reading(
+      [&] { return shared_->atlas().lifetimes(owner.map() ? &*owner.map() : nullptr); });
 }
 
 Trajectory Pipeline::trajectory() const {
-  return atlas_.trajectory(owner_.map() ? &*owner_.map() : nullptr);
+  const MapOwner& owner = shared_->owner();
+  return owner.reading(
+      [&] { return shared_->atlas().trajectory(owner.map() ? &*owner.map() : nullptr); });
 }
 
 LostSummary Pipeline::close(const Map& m) {
   const bool reset = std::cmp_less_equal(keyframe_count(m), options_.loss.reset_keyframes);
-  atlas_.close(m, reset);
+  shared_->atlas().close(m, reset);
   tracking_ = TrackingState{};
-  closing_ = LoopState{};
+  shared_->closing() = LoopState{};  // shared with loop closing's thread, settled by now
   state_ = State::kNotInitialized;
   return LostSummary{.keyframes = static_cast<std::int64_t>(keyframe_count(m)),
                      .points = static_cast<std::int64_t>(point_count(m)),
@@ -567,20 +1188,32 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
                         .lost = std::nullopt},
             .matched = {},
             .made = {},
-            .lost = false};
+            .lost = false,
+            .wait_seconds = 0.0,
+            .asked = false,
+            .refused = false,
+            .queue = 0,
+            .schedule = std::nullopt};
   if (!attempt->started) {
     return step;
   }
-  atlas_.start();
+  Atlas& atlas = shared_->atlas();
+  MapOwner& owner = shared_->owner();
+  atlas.start();
   state_ = State::kTracking;
   Tracked tracked = attempt->started->tracked;
   const Map& started = attempt->started->map;
-  atlas_.place_frame(started, frame.timestamp, started.kf_id.back(), tracked.pose);
-  if (auto ok = owner_.start(std::move(attempt->started->map)); !ok) {
+  atlas.place_frame(started, frame.timestamp, started.kf_id.back(), tracked.pose);
+  if (auto ok = owner.start(std::move(attempt->started->map)); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   if (auto ok = accept(tracking_, frame, tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
+  }
+  if (threads_) {
+    const std::shared_ptr<const Map> view = owner.view();
+    anchor_to(tracking_, *view, keyframe_count(*view) - 1);
+    tracking_.corrections = owner.corrections();
   }
   step.made = tracked.points;  // every point the frame observes was made of it
   step.tracked = std::move(tracked);
@@ -591,69 +1224,108 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
 
 Result<Pipeline::Keyframed> Pipeline::make_keyframe(const Map& m, const Frame& frame,
                                                     const Tracked& tracked, FrameSummary& summary) {
-  const auto start = std::chrono::steady_clock::now();
-  const std::vector<std::int64_t> holding = held(closing_);
+  const auto start = Clock::now();
+  const std::vector<std::int64_t> holding = held(shared_->closing());
   // Local mapping's step: insert the frame as a keyframe and map around it.
-  auto mapping = owner_.apply_mapping([&](Map& changed) {
+  auto mapping = shared_->owner().apply_mapping([&](Map& changed) {
     return process(changed, camera_, frame, tracked, mode_, options_, holding);
   });
   if (!mapping) {
     return std::unexpected(std::move(mapping.error()));
   }
-  const std::chrono::duration<double> mapped = std::chrono::steady_clock::now() - start;
+  const Seconds mapped = Clock::now() - start;
   summary.mapping = std::move(mapping->summary);
   // The frame's reference is its own keyframe, placed where the frame was.
-  atlas_.place_keyframe(m, frame.timestamp, tracked.pose);
-  const auto searching = std::chrono::steady_clock::now();
-  auto looped = close_loops(closing_, owner_, camera_, mode_, options_);
+  shared_->atlas().place_keyframe(m, frame.timestamp, tracked.pose);
+  const auto searching = Clock::now();
+  auto looped = close_loops(shared_->closing(), shared_->owner(), camera_, mode_, options_);
   if (!looped) {
     return std::unexpected(std::move(looped.error()));
   }
   Keyframed out{.map_seconds = mapped.count(),
                 .loop_seconds = 0.0,
                 .corrected = looped->second,
-                .made = std::move(mapping->made)};
+                .made = std::move(mapping->made),
+                .schedule = mapping->schedule};
   if (looped->first) {
-    out.loop_seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - searching).count();
+    out.loop_seconds = Seconds(Clock::now() - searching).count();
     summary.loop = std::move(looped->first);
   }
   return out;
 }
 
-Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
-  const std::optional<Map>& current = owner_.map();
-  if (!current) {
-    return fail(ErrorKind::kInvalidInput, "track: no map to track against");
+Result<void> Pipeline::hand_over(const Frame& frame, const Map& view, const Tracked& tracked,
+                                 std::int64_t reference, bool keyframe) {
+  Atlas& atlas = shared_->atlas();
+  const std::int64_t row =
+      reference >= 0 ? reference : static_cast<std::int64_t>(keyframe_count(view)) - 1;
+  const auto k = static_cast<std::size_t>(row);
+  if (keyframe) {
+    const std::int64_t index = atlas.frames();
+    atlas.place_pending(index, frame.timestamp, tracked.pose);
+    threads_->request({.index = index, .frame = frame, .tracked = tracked});
+  } else {
+    atlas.place_frame(view, frame.timestamp, view.kf_id[k], tracked.pose);
   }
-  const Map& m = *current;  // the owner changes it in place
-  auto found =
-      track_step(tracking_, owner_, camera_, frame, mode_, options_, atlas_.keyframe_base());
+  if (auto ok = accept(tracking_, frame, tracked); !ok) {
+    return ok;
+  }
+  anchor_to(tracking_, view, k);
+  return {};
+}
+
+Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
+  MapOwner& owner = shared_->owner();
+  if (threads_) {
+    if (const std::shared_ptr<const Map> view = owner.view()) {
+      follow(tracking_, *view, owner.corrections());
+    }
+  }
+  auto found = track_step(tracking_, owner, camera_, frame, mode_, options_,
+                          shared_->atlas().keyframe_base(), threads_.get());
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
+  Step step{.tracked = std::nullopt,
+            .keyframe = false,
+            .map_seconds = 0.0,
+            .loop_seconds = 0.0,
+            .summary = std::move(found->summary),
+            .matched = std::move(found->matched),
+            .made = {},
+            .lost = found->lost,
+            .wait_seconds = found->wait_seconds,
+            .asked = found->asked,
+            .refused = found->refused,
+            .queue = found->queue,
+            .schedule = std::nullopt};
   if (!found->tracked) {
-    return Step{.tracked = std::nullopt,
-                .keyframe = false,
-                .map_seconds = 0.0,
-                .loop_seconds = 0.0,
-                .summary = std::move(found->summary),
-                .matched = std::move(found->matched),
-                .made = {},
-                .lost = found->lost};
+    return step;
   }
+  // The frame's view; inline, the map itself, which mapping changes in place.
+  const Map& m = *found->view;
   const Tracked& tracked = *found->tracked;
+  step.keyframe = found->keyframe;
+  if (threads_) {
+    if (auto ok = hand_over(frame, m, tracked, found->reference, found->keyframe); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
+    step.tracked = std::move(found->tracked);
+    return step;
+  }
   Keyframed keyframed;
   if (found->keyframe) {
-    auto made = make_keyframe(m, frame, tracked, found->summary);
+    auto made = make_keyframe(m, frame, tracked, step.summary);
     if (!made) {
       return std::unexpected(std::move(made.error()));
     }
     keyframed = std::move(*made);
+    step.schedule = keyframed.schedule;
   } else {
     const std::int64_t row =
         found->reference >= 0 ? found->reference : static_cast<std::int64_t>(keyframe_count(m)) - 1;
-    atlas_.place_frame(m, frame.timestamp, m.kf_id[static_cast<std::size_t>(row)], tracked.pose);
+    shared_->atlas().place_frame(m, frame.timestamp, m.kf_id[static_cast<std::size_t>(row)],
+                                 tracked.pose);
   }
   if (auto ok = accept(tracking_, frame, tracked); !ok) {
     return std::unexpected(std::move(ok.error()));
@@ -661,14 +1333,11 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   if (keyframed.corrected) {  // the last frame, the new keyframe's own, moved with it
     move_last(tracking_, m.kf_pose.back());
   }
-  return Step{.tracked = std::move(found->tracked),
-              .keyframe = found->keyframe,
-              .map_seconds = keyframed.map_seconds,
-              .loop_seconds = keyframed.loop_seconds,
-              .summary = std::move(found->summary),
-              .matched = std::move(found->matched),
-              .made = std::move(keyframed.made),
-              .lost = false};
+  step.tracked = std::move(found->tracked);
+  step.map_seconds = keyframed.map_seconds;
+  step.loop_seconds = keyframed.loop_seconds;
+  step.made = std::move(keyframed.made);
+  return step;
 }
 
 }  // namespace slam_it::edge

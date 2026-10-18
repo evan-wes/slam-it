@@ -69,9 +69,11 @@ frame the atlas dates what the frame made and removed.
 section 12), tracking runs in the caller's thread, and local mapping, loop closing and each
 global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
 
-- **Tracking** reads only the map's published view (:attr:`MapOwner.view`), and takes no lock:
-  its counts of the points seen and found go to mapping as messages, applied before its next
-  keyframe. Relocalisation reads the whole map and its database with mapping held off. A frame
+- **Tracking** reads only the map's published view (:attr:`MapOwner.view`), the one it took for
+  the whole frame, and takes no lock: its counts of the points seen and found go to mapping as
+  messages, applied before its next keyframe. Relocalisation reads the database with mapping
+  held off, against the view published last, which the database matches, and the frame goes on
+  with that view. A frame
   that wants a keyframe asks for one as ORB-SLAM's ``NeedNewKeyFrame`` does: none while mapping
   is stopped or being stopped; taken at once with mapping idle; busy, the local BA is
   interrupted, and a stereo or RGB-D keyframe is queued while fewer than ``mapping.max_queued``
@@ -843,10 +845,12 @@ class _Tracking:
     """Tracking's result on a frame: the frame tracked or None, how, and whether it asks a keyframe.
 
     ``matched`` holds the last stage's matches before refinement; ``reference`` is the frame's
-    reference keyframe's row in the map, -1 when not tracked; ``lost`` says the frame lost the
-    track; ``wait_seconds``, ``asked``, ``refused`` and ``queue`` are :class:`FrameResult`'s.
+    reference keyframe's row in ``view``, the map tracking read, -1 when not tracked; ``lost``
+    says the frame lost the track; ``wait_seconds``, ``asked``, ``refused`` and ``queue`` are
+    :class:`FrameResult`'s.
     """
 
+    view: Map
     tracked: Tracked | None
     summary: FrameSummary
     matched: IntArray
@@ -931,12 +935,13 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the 
     *,
     mode: str,
     options: Options,
-) -> tuple[Tracked | None, FrameSummary, IntArray, float]:
+) -> tuple[Tracked | None, FrameSummary, IntArray, float, Map]:
     """Track the last frame against `m`, the view, or recover by PnP, or relocalise.
 
-    Relocalisation reads the whole map and its database with mapping held off. Return the
-    frame, how it was placed, the last stage's matches before refinement, and the time spent
-    waiting for the map (0 inline).
+    Relocalisation reads the database with mapping held off, against the view published last,
+    which the database matches. Return the frame, how it was placed, the last stage's matches
+    before refinement, the time spent waiting for the map (0 inline), and the view the frame
+    goes on with.
     """
     assert state.last_frame is not None
     assert state.last_tracked is not None
@@ -950,27 +955,29 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the 
     )  # fmt: skip
     summary = FrameSummary(motion=motion.summary)
     if motion.tracked is not None:
-        return motion.tracked, replace(summary, placed_by=Placement.MOTION), motion.matched, 0.0
+        placed_by = Placement.MOTION
+        return motion.tracked, replace(summary, placed_by=placed_by), motion.matched, 0.0, m
     last = state.last_tracked.points
     recovery = tracking.relocalize_locally(m, camera, frame, last, options)
     summary = replace(summary, pnp=recovery.summary)
     if recovery.tracked is not None:
         placed_by = Placement.LOCAL_PNP
-        return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched, 0.0
+        return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched, 0.0, m
     if owner.database is None or not options.relocalization.enabled:
-        return None, summary, recovery.matched, 0.0
+        return None, summary, recovery.matched, 0.0, m
     asked = time.perf_counter()
     with owner.reading():
         held = time.perf_counter()
-        db = owner.database
+        db, view = owner.database, owner.view
         assert db is not None
-        found = relocalization.relocalize(owner.read(), db, camera, frame, options)
+        assert view is not None
+        found = relocalization.relocalize(view, db, camera, frame, options)
     waited = 0.0 if owner.writer is None else held - asked
     summary = replace(summary, relocalization=found.summary)
     if found.tracked is None:
-        return None, summary, found.matched, waited
+        return None, summary, found.matched, waited, view
     placed_by = Placement.RELOCALIZATION
-    return found.tracked, replace(summary, placed_by=placed_by), found.matched, waited
+    return found.tracked, replace(summary, placed_by=placed_by), found.matched, waited, view
 
 
 def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the frame, the settings
@@ -991,10 +998,10 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
     says whether local mapping takes a keyframe (the module docstring).
     """
     state.since_keyframe += 1
-    m = owner.view
-    assert m is not None
-    placed, summary, matched, waited = _place(
-        state, m, owner, camera, frame, mode=mode, options=options
+    view = owner.view
+    assert view is not None
+    placed, summary, matched, waited, m = _place(
+        state, view, owner, camera, frame, mode=mode, options=options
     )
     if summary.placed_by in (Placement.LOCAL_PNP, Placement.RELOCALIZATION):
         state.since_recovery = 0
@@ -1015,13 +1022,11 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
         needed = options.tracking.recovery_tracked if recent else options.tracking.min_tracked
         tracked = local.tracked if local.tracked.inliers >= needed else None
         reference = local.reference
-    m = owner.view
-    assert m is not None
     if tracked is None:
         lost = state.fail(frame, m.keyframes, options)
-        return _Tracking(None, summary, matched, lost=lost, wait_seconds=waited)
+        return _Tracking(m, None, summary, matched, lost=lost, wait_seconds=waited)
     if recent and m.keyframes > options.tracking.max_frames:  # none just after a recovery
-        return _Tracking(tracked, summary, matched, reference=reference, wait_seconds=waited)
+        return _Tracking(m, tracked, summary, matched, reference=reference, wait_seconds=waited)
     idle = mapper.idle()
     asked = mapping.need_keyframe(
         m, camera, frame.depth, tracked, reference=reference, mode=mode, options=options,
@@ -1042,7 +1047,7 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
     if keyframe:
         state.since_keyframe = 0
     return _Tracking(
-        tracked, summary, matched, reference=reference, keyframe=keyframe,
+        m, tracked, summary, matched, reference=reference, keyframe=keyframe,
         wait_seconds=waited, asked=asked, refused=refused, queue=queue,
     )  # fmt: skip
 
@@ -1631,8 +1636,7 @@ class Pipeline:
         """Threaded: place a tracked frame, and give local mapping its keyframe if it is one."""
         tracked = found.tracked
         assert tracked is not None
-        view = self.owner.view
-        assert view is not None
+        view = found.view  # the map the frame was tracked in, its reference's row in it
         if found.keyframe:
             index = self.atlas.frames
             self.atlas.place_pending(index, frame.timestamp, tracked.pose)

@@ -4,9 +4,12 @@
 ///        its map and keeps the path's direction, and empty frames lose the track, the next
 ///        frame starting a new map; relocalising, a kept map is lost in time and a small one in
 ///        frames, and a frame the fallback cannot reach is relocalised.
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -310,6 +313,166 @@ void check_relocalized(int& failures) {
 
 /// @brief The test body.
 /// @return The exit code.
+/// @brief The scene's settings, a first keyframe's reference ratio raised to the others' (from
+///        0.4), so that `thinning`'s frames ask for a keyframe.
+/// @return The settings.
+edge::Options asking() {
+  edge::Options out = small_scene();
+  out.keyframes.first_ref_ratio = out.keyframes.ref_ratio;
+  return out;
+}
+
+/// @brief A frame of the path, RGB-D, at its time, that sees the scene's points from `2 i` on
+///        (24 at most dropped): its tracking thins as the path goes, so that with `asking`'s
+///        settings it asks for a keyframe once under `keyframes.ref_ratio` of its reference's
+///        points (from the eighth).
+/// @param i The frame.
+/// @return The frame.
+edge::Frame thinning(std::int64_t i) {
+  edge::Frame full = scene::frame_at(along(i), true);
+  const auto dropped = static_cast<std::ptrdiff_t>(std::min<std::int64_t>(2 * i, 24));
+  auto& keypoints = full.features.keypoints;
+  auto& descriptors = full.features.descriptors;
+  keypoints.erase(keypoints.begin(), keypoints.begin() + dropped);
+  descriptors.erase(descriptors.begin(), descriptors.begin() + dropped);
+  full.bearings.erase(full.bearings.begin(), full.bearings.begin() + dropped);
+  full.depth.erase(full.depth.begin(), full.depth.begin() + dropped);
+  full.right.erase(full.right.begin(), full.right.begin() + dropped);
+  return edge::make_frame(static_cast<double>(i), std::move(full.features),
+                          std::move(full.bearings), std::move(full.depth), std::move(full.right))
+      .value();
+}
+
+/// @brief Track the path's thinning frames through a pipeline.
+/// @param pipeline The pipeline.
+/// @param from The first frame.
+/// @param to The frame after the last.
+/// @param results Where each frame's result goes.
+/// @return Whether every frame was tracked without an error.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (from, to), a range
+bool track_path(edge::Pipeline& pipeline, std::int64_t from, std::int64_t to,
+                std::vector<edge::FrameResult>& results) {
+  for (std::int64_t i = from; i < to; ++i) {
+    auto result = pipeline.track(thinning(i));
+    if (!result) {
+      return false;
+    }
+    results.push_back(*std::move(result));
+  }
+  return true;
+}
+
+/// @brief Check the path threaded, RGB-D (`tests/edge/test_pipeline_threads.py`): every frame
+///        tracked on the true path; each keyframe given mapped once, a completion on its frame
+///        with its schedule; the lives count the first keyframe and each mapped one; the
+///        trajectory places every frame, in order; a finished run tracks no more; and inline,
+///        nothing completes later.
+/// @param failures Running failure count.
+void check_threaded(int& failures) {
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(), std::nullopt, true);
+  std::vector<edge::FrameResult> results;
+  if (!pipeline || !track_path(*pipeline, 0, kFrames, results) || !pipeline->finish()) {
+    expect(false, "a threaded pipeline tracks the path and finishes", failures);
+    return;
+  }
+  double worst = 0.0;
+  bool every = std::cmp_equal(results.size(), kFrames);
+  std::vector<std::int64_t> given;
+  for (std::size_t i = 0; every && i < results.size(); ++i) {
+    const std::optional<Eigen::Matrix4d>& pose = results[i].pose;
+    every = pose.has_value() && results[i].map_seconds == 0.0 && results[i].loop_seconds == 0.0;
+    if (pose) {
+      worst = std::max(worst, (*pose - along(static_cast<std::int64_t>(i))).cwiseAbs().maxCoeff());
+    }
+    if (i > 0 && results[i].keyframe) {
+      given.push_back(static_cast<std::int64_t>(i));
+    }
+  }
+  expect(every && worst < 1e-6, "threaded, every frame is tracked on the true path", failures);
+  std::vector<std::int64_t> mapped;
+  bool scheduled = true;
+  for (const edge::Completion& done : pipeline->completed()) {
+    if (done.mapping) {
+      mapped.push_back(done.frame);
+      scheduled = scheduled && done.schedule.has_value() && done.map_seconds.has_value();
+    }
+  }
+  std::ranges::sort(mapped);
+  expect(!given.empty() && mapped == given && scheduled,
+         "each keyframe given is mapped once, a completion on its frame", failures);
+  const edge::Lifetimes lives = pipeline->lifetimes();
+  const edge::Trajectory trajectory = pipeline->trajectory();
+  expect(lives.keyframe_times.size() == 1 + given.size() &&
+             trajectory.timestamps.size() == results.size() &&
+             std::ranges::adjacent_find(trajectory.timestamps, std::greater_equal<>()) ==
+                 trajectory.timestamps.end(),
+         "the records hold every keyframe mapped and every frame, in order", failures);
+  expect(is_invalid_input(pipeline->track(scene::frame_at(along(0), true))),
+         "a finished run tracks no more", failures);
+  std::vector<edge::FrameResult> inline_results;
+  auto in_order = run(edge::Mode::kRgbd, inline_results);
+  expect(in_order && in_order->finish() && in_order->completed().empty(),
+         "inline, nothing completes later", failures);
+}
+
+/// @brief Check a stop held: while mapping is stopped, every keyframe tracking asks for is
+///        refused (`test_a_stop_refuses_every_keyframe_asked`).
+/// @param failures Running failure count.
+void check_a_stop_refuses_keyframes(int& failures) {
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(), std::nullopt, true);
+  std::vector<edge::FrameResult> before;
+  std::vector<edge::FrameResult> held;
+  bool tracked = pipeline && track_path(*pipeline, 0, kFrames / 2, before);
+  if (tracked) {
+    const edge::threads::Writer::Stopped stop(*pipeline->writer());
+    tracked = track_path(*pipeline, kFrames / 2, kFrames, held);
+  }
+  tracked = tracked && pipeline->finish();
+  const bool asked = std::ranges::any_of(held, [](const auto& r) { return r.asked; });
+  const bool refused = std::ranges::all_of(
+      held, [](const auto& r) { return !r.asked || (r.refused && !r.keyframe); });
+  expect(tracked && asked && refused, "while mapping is stopped, each keyframe asked is refused",
+         failures);
+}
+
+/// @brief Check a lost map threaded (`test_a_lost_map_settles_the_threads_then_closes`): the
+///        threads settle, then it closes as inline, kept, and the next frame starts map 1.
+/// @param failures Running failure count.
+void check_lost_threaded(int& failures) {
+  edge::Options options = small_scene();
+  options.loss.reset_keyframes = 0;
+  std::vector<std::vector<std::tuple<edge::State, std::optional<std::int64_t>, bool, std::int64_t>>>
+      outcomes;
+  for (const bool threaded : {false, true}) {
+    auto pipeline =
+        edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt, threaded);
+    std::vector<edge::FrameResult> results;
+    bool ok = pipeline && track_path(*pipeline, 0, 1, results);
+    for (std::int64_t i = 1; ok && i <= options.loss.lost_frames; ++i) {
+      auto lost = pipeline->track(empty_at(static_cast<double>(i)));
+      ok = lost.has_value();
+      if (ok) {
+        results.push_back(*std::move(lost));
+      }
+    }
+    ok = ok && track_path(*pipeline, 1, 2, results) && pipeline->finish();
+    if (!ok) {
+      expect(false, "a lost map's run goes on", failures);
+      return;
+    }
+    auto& outcome = outcomes.emplace_back();
+    for (const edge::FrameResult& r : results) {
+      outcome.emplace_back(r.state, r.map, r.summary.lost.has_value(),
+                           r.summary.lost ? r.summary.lost->keyframes : -1);
+    }
+  }
+  expect(outcomes[0] == outcomes[1] && std::get<0>(outcomes[1].back()) == edge::State::kTracking &&
+             std::get<1>(outcomes[1].back()) == 1,
+         "threaded, a lost map closes as inline, and the next frame starts map 1", failures);
+}
+
 int run_tests() {
   int failures = 0;
   check_depth_modes(failures);
@@ -318,6 +481,9 @@ int run_tests() {
   check_lost_relocalizing(failures);
   check_closing_loops_alone(failures);
   check_relocalized(failures);
+  check_threaded(failures);
+  check_a_stop_refuses_keyframes(failures);
+  check_lost_threaded(failures);
   return slam_it::testing::finish("edge/pipeline", failures);
 }
 

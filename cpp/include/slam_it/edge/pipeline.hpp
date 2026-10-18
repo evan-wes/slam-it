@@ -1,13 +1,20 @@
 /// @file
 /// @brief The edge pipeline, initialising, tracking each frame and mapping on keyframes: the
 ///        C++ core's mirror of `slam_it.edge.pipeline`, whose docstring states the per-frame
-///        loop, the steps' own state and the map's owner. It runs in the native program, not
-///        across the binding.
+///        loop, the steps' own state, the map's owner and the steps in threads of their own. It
+///        runs in the native program, not across the binding.
+///
+/// Threaded, the published view is a copy of the map (`std::shared_ptr<const Map>`), made
+/// each time a writer publishes: tracking holds the copy it read for its whole frame, and the
+/// writers go on changing the map in place. Inline, the view is the map itself.
 #pragma once
 
 #include <Eigen/Core>
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -22,6 +29,7 @@
 #include "slam_it/edge/mapping.hpp"
 #include "slam_it/edge/options.hpp"
 #include "slam_it/edge/relocalization.hpp"
+#include "slam_it/edge/threads.hpp"
 #include "slam_it/edge/tracking.hpp"
 #include "slam_it/foundations/error.hpp"
 #include "slam_it/foundations/orb.hpp"
@@ -162,6 +170,47 @@ struct FrameResult {
   FrameSummary summary;
   /// @brief What became of each of its keypoints.
   Fates fates;
+  /// @brief The time tracking waited for the map, part of `track_seconds`: 0 inline; threaded,
+  ///        relocalisation's wait for mapping to let the map go, and a lost map's for the
+  ///        threads.
+  double wait_seconds{0.0};
+  /// @brief Whether it wanted a keyframe (`need_keyframe`).
+  bool asked{false};
+  /// @brief Whether it wanted one and mapping could not take it: stopped, or busy and its queue
+  ///        full (a monocular frame's queue being none). Never inline.
+  bool refused{false};
+  /// @brief The keyframes waiting for mapping when it asked; 0 inline, and when it did not ask.
+  std::int64_t queue{0};
+  /// @brief How mapping scheduled its keyframe's steps, inline; threaded, it comes later
+  ///        (`Completion`).
+  std::optional<Schedule> schedule;
+};
+
+/// @brief What a thread of its own finished after its frame's result was given
+///        (`slam_it.edge.pipeline.Completion`, threaded runs): a keyframe's mapping and loop
+///        closing on the keyframe's frame; a global BA's on the frame being tracked when it
+///        ended, or the last frame when the run's end waited for it. Each part is set only by
+///        the step that finished.
+struct Completion {
+  /// @brief The frame, counted from 0, one per `Pipeline::track`.
+  std::int64_t frame{0};
+  /// @brief A keyframe's mapping: its time, in seconds.
+  std::optional<double> map_seconds;
+  /// @brief How it went.
+  std::optional<MappingSummary> mapping;
+  /// @brief How its steps were scheduled.
+  std::optional<Schedule> schedule;
+  /// @brief The keyframe's keypoints' points made by mapping, by the run's ids, -1 where none:
+  ///        their fate is `Fate::kMade`. Empty but for a keyframe's mapping.
+  std::vector<std::int64_t> made;
+  /// @brief Loop closing on a keyframe: its time, in seconds.
+  std::optional<double> loop_seconds;
+  /// @brief How it went.
+  std::optional<LoopSummary> loop;
+  /// @brief A global BA in a thread of its own, ended.
+  std::optional<loops::GlobalSummary> global_ba;
+  /// @brief Its time, in seconds.
+  double global_ba_seconds{0.0};
 };
 
 /// @brief Tracking's own state from frame to frame (`slam_it.edge.pipeline.TrackingState`,
@@ -183,6 +232,14 @@ struct TrackingState {
   std::optional<std::int64_t> since_recovery;
   /// @brief The first failed frame's time, while the track is recently lost.
   std::optional<double> lost_since;
+  /// @brief The frames since the last that became a keyframe (ORB-SLAM's `mnLastKeyFrameId`).
+  std::int64_t since_keyframe{0};
+  /// @brief Threaded: the keyframe the last frame was tracked against, by the map's id.
+  std::optional<std::int64_t> anchor;
+  /// @brief Threaded: the last frame's pose relative to it, `T_last_anchor`.
+  std::optional<Eigen::Matrix4d> anchor_relative;
+  /// @brief Threaded: the corrections of the map seen (`MapOwner::corrections`).
+  std::int64_t corrections{0};
 };
 
 /// @brief Make a tracked frame the last one; the velocity only spans consecutive frames
@@ -216,6 +273,22 @@ void set_reference(TrackingState& state, const Frame& frame);
 /// @param pose Its new `T_cam_world`.
 void move_last(TrackingState& state, const Eigen::Matrix4d& pose);
 
+/// @brief Keep the last frame's pose relative to the keyframe it was tracked against
+///        (`slam_it.edge.pipeline.TrackingState.anchor_to`, threaded).
+/// @param state Tracking's state, its last frame tracked.
+/// @param view The map tracking read.
+/// @param row The keyframe's row in it.
+void anchor_to(TrackingState& state, const Map& view, std::size_t row);
+
+/// @brief Move the last frame with its anchor keyframe, if the map was corrected since
+///        (`slam_it.edge.pipeline.TrackingState.follow`, threaded): ORB-SLAM's
+///        `UpdateLastFrame` places the last frame by its reference keyframe; here only after a
+///        correction, as inline only the keyframe's own frame moves.
+/// @param state Tracking's state.
+/// @param view The map's view now.
+/// @param corrections The corrections of the map so far.
+void follow(TrackingState& state, const Map& view, std::int64_t corrections);
+
 /// @brief Loop closing's own state from keyframe to keyframe (`slam_it.edge.pipeline.LoopState`,
 ///        ORB-SLAM3's `LoopClosing`'s). A map closed takes it with it.
 struct LoopState {
@@ -231,24 +304,33 @@ struct LoopState {
 
 /// @brief The map being tracked and its keyframe database (`slam_it.edge.pipeline.MapOwner`):
 ///        every change to them goes through here. The steps change the map in place, so the
-///        owner runs each step that changes it on its map, then keeps the database in step. In
-///        one thread it holds the map between the steps; it is the one place milestone 2B's B3b
-///        gives the map one writer at a time and tracking a published view of it (the
-///        online-SLAM design, section 12).
+///        owner runs each step that changes it on its map, then keeps the database in step.
+///        Inline, it holds the map between the steps, and the view is the map. Threaded (a
+///        writer given), one thread writes the map at a time (`threads::Writer`), tracking reads
+///        the view the writers publish, a copy, and tracking's counts wait for local mapping to
+///        apply them (`apply_counts`). The map and the database are read and written only under
+///        the writer's hand-over: local mapping's turn, a hold or a stop.
 class MapOwner {
  public:
   /// @brief An owner with no map yet.
   /// @param vocabulary The database's vocabulary; none when neither relocalising nor closing
   ///        loops, and there is no database.
-  explicit MapOwner(std::optional<foundations::vocabulary::Vocabulary> vocabulary)
-      : vocabulary_(std::move(vocabulary)) {}
+  /// @param writer The handshake between the threads, not owned; null inline.
+  MapOwner(std::optional<foundations::vocabulary::Vocabulary> vocabulary, threads::Writer* writer)
+      : vocabulary_(std::move(vocabulary)), writer_(writer) {}
 
   /// @brief The map being tracked: none until one starts, and from a lost one to the next.
+  ///        Threaded, read it only under the writer's hand-over.
   /// @return The map, if any.
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
+  /// @brief The map as last published, what tracking reads: a copy, threaded; the map itself,
+  ///        inline (not owned, valid while the map is).
+  /// @return The view, or null with no map.
+  [[nodiscard]] std::shared_ptr<const Map> view() const;
+
   /// @brief Its keyframe database: none when neither relocalising nor closing loops, or with no
-  ///        map.
+  ///        map. Threaded, read it only under the writer's hand-over.
   /// @return The database, if any.
   [[nodiscard]] const std::optional<Database>& database() const { return database_; }
 
@@ -258,19 +340,34 @@ class MapOwner {
     return vocabulary_;
   }
 
-  /// @brief Take a map just started, and start its database with its keyframes.
+  /// @brief The handshake between the threads.
+  /// @return The writer; null inline.
+  [[nodiscard]] threads::Writer* writer() const { return writer_; }
+
+  /// @brief The corrections applied: loops corrected, and global BAs carried onto the map.
+  /// @return The count.
+  [[nodiscard]] std::int64_t corrections() const { return corrections_.load(); }
+
+  /// @brief Take a map just started, publish it, and start its database with its keyframes.
   /// @param m The new map.
   /// @return Nothing; a quantisation's error.
   foundations::Result<void> start(Map m);
 
   /// @brief Count a frame tracked against the local map: the points seen, and found, in it.
+  ///        Threaded, the counts wait for local mapping (`apply_counts`).
   /// @param visible The points the frame's view held, by the map's ids.
   /// @param found The points it tracked.
-  /// @return Nothing; `InvalidInput` with no map, or for an id the map does not hold.
+  /// @return Nothing; `InvalidInput` with no map, inline.
   foundations::Result<void> count(const std::vector<std::int64_t>& visible,
                                   const std::vector<std::int64_t>& found);
 
-  /// @brief Run a mapping step on the map, then bring the database to its keyframes.
+  /// @brief Apply the counts tracking sent since the last (threaded; local mapping's, in its
+  ///        turn). A point gone since is skipped.
+  /// @return Nothing; `InvalidInput` with no map.
+  foundations::Result<void> apply_counts();
+
+  /// @brief Run a mapping step on the map, then bring the database to its keyframes and,
+  ///        threaded, publish the map.
   /// @tparam Step A callable taking the map, changed in place, and giving a `Result`.
   /// @param step The step.
   /// @return The step's result; `InvalidInput` with no map, or the database's error.
@@ -279,57 +376,90 @@ class MapOwner {
     if (!map_) {
       return foundations::fail(foundations::ErrorKind::kInvalidInput, "mapping: no map");
     }
-    return synced(std::forward<Step>(step)(*map_));
+    auto out = std::forward<Step>(step)(*map_);
+    if (!out) {
+      return out;
+    }
+    if (auto ok = changed(); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
+    return out;
   }
 
   /// @brief Run a loop's correction on the map, held through the handshake (`stopped`), then
-  ///        bring the database to its keyframes.
+  ///        take it as corrected (`corrected`).
   /// @tparam Step A callable taking the map, changed in place, and giving a `Result`.
   /// @param step The correction.
   /// @return The correction's result; `InvalidInput` with no map, or the database's error.
   template <typename Step>
   auto apply_correction(Step&& step) -> std::invoke_result_t<Step, Map&> {
-    return synced(stopped(std::forward<Step>(step)));
+    return stopped([this, &step](Map& m) -> std::invoke_result_t<Step, Map&> {
+      auto out = std::forward<Step>(step)(m);
+      if (!out) {
+        return out;
+      }
+      if (auto ok = corrected(); !ok) {
+        return std::unexpected(std::move(ok.error()));
+      }
+      return out;
+    });
   }
 
-  /// @brief The handshake: run a change on the map held, mapping stopped and global BA aborted,
-  ///        then both released, as ORB-SLAM's loop closing does (`RequestStop`, `mbStopGBA`,
-  ///        `Release`). In one thread nothing runs beside the change, so there is nothing to
-  ///        stop or abort: this is the one place milestone 2B's B3b's threads do it, and its
-  ///        merge (B4) enters it too.
+  /// @brief The handshake: run a change on the map held, mapping stopped and its local BA
+  ///        aborted, then mapping released, as ORB-SLAM's loop closing does (`RequestStop`,
+  ///        `Release`; a global BA running is superseded by the caller's new generation).
+  ///        Inline nothing runs beside the change, so there is nothing to stop. Loop
+  ///        corrections, global BAs' results and milestone 2B's B4's merges all enter here.
   /// @tparam Step A callable taking the map, changed in place, and giving a `Result`.
   /// @param step The change.
   /// @return The change's result; `InvalidInput` with no map.
   template <typename Step>
   auto stopped(Step&& step) -> std::invoke_result_t<Step, Map&> {
+    std::optional<threads::Writer::Stopped> stop;
+    if (writer_ != nullptr) {
+      stop.emplace(*writer_);
+    }
     if (!map_) {
       return foundations::fail(foundations::ErrorKind::kInvalidInput, "stopped: no map");
     }
     return std::forward<Step>(step)(*map_);
   }
 
+  /// @brief Take the map as corrected, inside the handshake (`stopped`): bring the database to
+  ///        its keyframes, publish it, and count the correction.
+  /// @return Nothing; the database's error.
+  foundations::Result<void> corrected();
+
+  /// @brief Publish the map so far for tracking to read, while its writer goes on (threaded):
+  ///        a copy.
+  /// @param m The map so far.
+  void publish(const Map& m);
+
+  /// @brief Run something with the map held whole, local mapping held off (a hold, threaded;
+  ///        nothing to hold inline).
+  /// @tparam Read A callable taking nothing.
+  /// @param read What to run.
+  /// @return What it gives.
+  template <typename Read>
+  auto reading(Read&& read) const -> std::invoke_result_t<Read> {
+    std::optional<threads::Writer::Held> hold;
+    if (writer_ != nullptr) {
+      hold.emplace(*writer_);
+    }
+    return std::forward<Read>(read)();
+  }
+
   /// @brief Empty the map's archive of removals, once the atlas has dated them.
   void clear_gone();
 
-  /// @brief Give up the map, lost: the database goes with it.
+  /// @brief Give up the map, lost: the database and the view go with it.
   /// @return The map, if there was one.
   std::optional<Map> close();
 
  private:
-  /// @brief Bring the database to the map after a step that changed it.
-  /// @tparam T The step's value.
-  /// @param out The step's result.
-  /// @return It, or the database's error.
-  template <typename T>
-  foundations::Result<T> synced(foundations::Result<T> out) {
-    if (!out) {
-      return out;
-    }
-    if (auto ok = sync_database(); !ok) {
-      return std::unexpected(std::move(ok.error()));
-    }
-    return out;
-  }
+  /// @brief After a step changed the map: bring the database to it and, threaded, publish it.
+  /// @return Nothing; a quantisation's error.
+  foundations::Result<void> changed();
 
   /// @brief Bring the keyframe database to the map's keyframes: add the new, erase the culled.
   /// @return Nothing; a quantisation's error.
@@ -337,14 +467,32 @@ class MapOwner {
 
   /// @brief The vocabulary, when relocalising or closing loops.
   std::optional<foundations::vocabulary::Vocabulary> vocabulary_;
+  /// @brief The handshake between the threads; null inline.
+  threads::Writer* writer_;
   /// @brief The map, once initialised.
   std::optional<Map> map_;
   /// @brief The map's keyframe database, when relocalising or closing loops and a map exists.
   std::optional<Database> database_;
+  /// @brief Guards `view_`.
+  mutable std::mutex view_mutex_;
+  /// @brief The map as last published.
+  std::shared_ptr<const Map> view_;
+  /// @brief Guards `counts_`.
+  std::mutex counts_mutex_;
+  /// @brief Tracking's counts waiting for local mapping: the points seen, and found, per frame.
+  std::vector<std::pair<std::vector<std::int64_t>, std::vector<std::int64_t>>> counts_;
+  /// @brief The corrections applied.
+  std::atomic<std::int64_t> corrections_{0};
 };
 
+/// @brief Local mapping, loop closing and the global BAs, each in a thread of its own
+///        (`slam_it.edge.pipeline._Threads`): defined in pipeline.cpp, for a threaded
+///        pipeline.
+class PipelineThreads;
+
 /// @brief The edge pipeline for one sequence (`slam_it.edge.pipeline.Pipeline`): tracking, local
-///        mapping and loop closing as steps over state of their own, called in turn.
+///        mapping and loop closing as steps over state of their own, called in turn, or each in
+///        a thread of its own (threaded).
 class Pipeline {
  public:
   /// @brief Start a pipeline.
@@ -353,30 +501,58 @@ class Pipeline {
   /// @param options The settings.
   /// @param vocabulary The vocabulary of the keyframe database's words: required with
   ///        `relocalization.enabled` or `loops.enabled` on, refused with both off.
+  /// @param threaded Whether the steps run in threads of their own; inline, the default, a run
+  ///        repeats exactly.
   /// @return The pipeline; `InvalidInput` for an invalid camera or settings, a stereo or
   ///         RGB-D camera without a baseline, or a vocabulary missing while relocalising or
   ///         closing loops, or given while doing neither.
   [[nodiscard]] static foundations::Result<Pipeline> create(
       Mode mode, Camera camera, Options options,
-      std::optional<foundations::vocabulary::Vocabulary> vocabulary);
+      std::optional<foundations::vocabulary::Vocabulary> vocabulary, bool threaded = false);
+
+  /// @brief End the threads, if they still run.
+  ~Pipeline();
+  Pipeline(const Pipeline&) = delete;
+  Pipeline& operator=(const Pipeline&) = delete;
+  /// @brief Move a pipeline: its threads go on, their state where it was.
+  Pipeline(Pipeline&&) noexcept;
+  Pipeline& operator=(Pipeline&&) = delete;
 
   /// @brief The extraction settings the next frame should be built with.
   /// @return `features.init_factor` times the features for a monocular frame before the map
   ///         exists, the usual ones otherwise.
   [[nodiscard]] foundations::orb::Options extraction() const;
 
-  /// @brief Track one frame (and map, if it becomes a keyframe).
+  /// @brief Track one frame (and map, if it becomes a keyframe; threaded, local mapping is
+  ///        given it).
   /// @param frame The next frame, built with `extraction`'s settings.
-  /// @return Its pose, or why there is none; a stage's error.
+  /// @return Its pose, or why there is none; a stage's error, the error a thread failed with,
+  ///         or `InvalidInput` once the run is finished.
   [[nodiscard]] foundations::Result<FrameResult> track(const Frame& frame);
+
+  /// @brief End the run: threaded, wait for the threads to finish their work, then end them.
+  ///        Local mapping and loop closing handle every keyframe given, and each global BA
+  ///        running ends, the latest carried onto the map. Inline, nothing waits. No frame is
+  ///        tracked after.
+  /// @return Nothing; the error a thread failed with.
+  foundations::Result<void> finish();
+
+  /// @brief What the threads finished since the last call (threaded; none inline).
+  /// @return The completions, in the order they came.
+  [[nodiscard]] std::vector<Completion> completed();
+
+  /// @brief The handshake between the threads, threaded: a test holds a stop through it.
+  /// @return The writer; null inline.
+  [[nodiscard]] threads::Writer* writer() const { return shared_->writer(); }
 
   /// @brief Where the pipeline is: never `kLost`, which a lost frame's result has.
   /// @return The state.
   [[nodiscard]] State state() const { return state_; }
 
-  /// @brief The current map: none until one starts, and from a lost one to the next.
+  /// @brief The current map: none until one starts, and from a lost one to the next. Threaded,
+  ///        read it once the run is finished.
   /// @return The map, if any.
-  [[nodiscard]] const std::optional<Map>& map() const { return owner_.map(); }
+  [[nodiscard]] const std::optional<Map>& map() const { return shared_->owner().map(); }
 
   /// @brief Every point and keyframe the run has made, with their lives and maps
   ///        (`Atlas::lifetimes`, with the current map).
@@ -408,6 +584,16 @@ class Pipeline {
     std::vector<std::int64_t> made;
     /// @brief Whether the frame lost the track.
     bool lost{false};
+    /// @brief The time tracking waited for the map.
+    double wait_seconds{0.0};
+    /// @brief Whether it wanted a keyframe.
+    bool asked{false};
+    /// @brief Whether mapping could not take the keyframe it wanted.
+    bool refused{false};
+    /// @brief The keyframes waiting for mapping when it asked.
+    std::int64_t queue{0};
+    /// @brief How mapping scheduled its keyframe's steps, inline.
+    std::optional<Schedule> schedule;
   };
 
   /// @brief A keyframe mapped and searched for loops, as `make_keyframe` gives it.
@@ -420,6 +606,57 @@ class Pipeline {
     bool corrected{false};
     /// @brief The point made of each of its keypoints, -1 where none.
     std::vector<std::int64_t> made;
+    /// @brief How mapping scheduled its steps.
+    Schedule schedule;
+  };
+
+  /// @brief What the threads share with tracking, on the heap so that a pipeline moved leaves
+  ///        it where the threads hold it.
+  class Shared {
+   public:
+    /// @brief Start what a pipeline shares.
+    /// @param vocabulary The keyframe database's vocabulary, when relocalising.
+    /// @param options The settings.
+    /// @param threaded Whether the steps run in threads of their own (a writer made).
+    Shared(std::optional<foundations::vocabulary::Vocabulary> vocabulary, const Options& options,
+           bool threaded)
+        : writer_(threaded ? std::make_unique<threads::Writer>() : nullptr),
+          owner_(std::move(vocabulary), writer_.get()),
+          atlas_(options) {}
+
+    /// @brief The handshake between the threads.
+    /// @return The writer; null inline.
+    [[nodiscard]] threads::Writer* writer() const { return writer_.get(); }
+
+    /// @brief The map being tracked and its database.
+    /// @return The owner.
+    [[nodiscard]] MapOwner& owner() { return owner_; }
+
+    /// @brief The map being tracked and its database.
+    /// @return The owner.
+    [[nodiscard]] const MapOwner& owner() const { return owner_; }
+
+    /// @brief The run's records.
+    /// @return The atlas.
+    [[nodiscard]] Atlas& atlas() { return atlas_; }
+
+    /// @brief The run's records.
+    /// @return The atlas.
+    [[nodiscard]] const Atlas& atlas() const { return atlas_; }
+
+    /// @brief Loop closing's own state.
+    /// @return The state.
+    [[nodiscard]] LoopState& closing() { return closing_; }
+
+   private:
+    /// @brief The handshake between the threads; null inline.
+    std::unique_ptr<threads::Writer> writer_;
+    /// @brief The map being tracked and its database.
+    MapOwner owner_;
+    /// @brief The run's records.
+    Atlas atlas_;
+    /// @brief Loop closing's own state.
+    LoopState closing_;
   };
 
   /// @brief A pipeline before its first frame.
@@ -427,13 +664,9 @@ class Pipeline {
   /// @param camera The camera.
   /// @param options The settings.
   /// @param vocabulary The keyframe database's vocabulary, when relocalising or closing loops.
+  /// @param threaded Whether the steps run in threads of their own.
   Pipeline(Mode mode, Camera camera, Options options,
-           std::optional<foundations::vocabulary::Vocabulary> vocabulary)
-      : mode_(mode),
-        camera_(std::move(camera)),
-        options_(options),
-        owner_(std::move(vocabulary)),
-        atlas_(options) {}
+           std::optional<foundations::vocabulary::Vocabulary> vocabulary, bool threaded);
 
   /// @brief Try to start the map with a frame.
   /// @param frame The frame.
@@ -447,6 +680,16 @@ class Pipeline {
   /// @return The tracked frame, if any, whether it became a keyframe, the times mapping and
   ///         loop closing took, and how its stages went; a stage's error.
   foundations::Result<Step> track_frame(const Frame& frame);
+
+  /// @brief Threaded: place a tracked frame, and give local mapping its keyframe if it is one.
+  /// @param frame The frame.
+  /// @param view The map tracking read.
+  /// @param tracked Its pose and matches.
+  /// @param reference Its reference keyframe's row in the view.
+  /// @param keyframe Whether it becomes a keyframe.
+  /// @return Nothing; an error if the last pose cannot be inverted.
+  foundations::Result<void> hand_over(const Frame& frame, const Map& view, const Tracked& tracked,
+                                      std::int64_t reference, bool keyframe);
 
   /// @brief Map a tracked frame as a keyframe, place it, and close loops on it.
   /// @param m The map.
@@ -474,12 +717,12 @@ class Pipeline {
   State state_{State::kNotInitialized};
   /// @brief Tracking's own state.
   TrackingState tracking_;
-  /// @brief Loop closing's own state.
-  LoopState closing_;
-  /// @brief The map being tracked and its database.
-  MapOwner owner_;
-  /// @brief The run's records.
-  Atlas atlas_;
+  /// @brief Whether the run is finished (`finish`).
+  bool finished_{false};
+  /// @brief The writer, the map's owner, the atlas and loop closing's state.
+  std::unique_ptr<Shared> shared_;
+  /// @brief The threads, threaded; ended before what they share.
+  std::unique_ptr<PipelineThreads> threads_;
 };
 
 }  // namespace slam_it::edge

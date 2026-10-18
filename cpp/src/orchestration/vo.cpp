@@ -18,6 +18,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -56,8 +57,11 @@ using foundations::camera::Model;
 
 using foundations::image::Image;
 
-/// @brief The one flag without a value: record each frame's keypoints, with their fates.
+/// @brief A flag without a value: record each frame's keypoints, with their fates.
 constexpr std::string_view kRecordFeatures = "--record-features";
+
+/// @brief A flag without a value: run the steps in threads of their own.
+constexpr std::string_view kThreaded = "--threaded";
 
 /// @brief A stereo pair, rectified.
 struct StereoImages {
@@ -711,27 +715,165 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   return {};
 }
 
-/// @brief Append a frame's keypoints, with their fates, to the run's feature files.
-/// @param features The writer.
+/// @brief A frame's keypoints as a run records them: pixels, levels, and their fates
+///        (`slam_it.orchestration.vo._Keypoints`).
+struct Keypoints {
+  /// @brief Each keypoint's pixel.
+  std::vector<std::array<double, 2>> xy;
+  /// @brief Its pyramid level.
+  std::vector<std::int64_t> level;
+  /// @brief What became of it.
+  edge::Fates fates;
+};
+
+/// @brief A frame's keypoints, with their fates.
 /// @param frame The frame.
 /// @param fates What became of each of its keypoints.
-/// @return Nothing; the writer's error.
-Result<void> write_features(eval::runs::FeatureWriter& features, const edge::Frame& frame,
-                            const edge::Fates& fates) {
-  std::vector<std::array<double, 2>> xy;
-  std::vector<std::int64_t> level;
+/// @return The keypoints.
+Keypoints keypoints_of(const edge::Frame& frame, edge::Fates fates) {
+  Keypoints out{.xy = {}, .level = {}, .fates = std::move(fates)};
   for (const foundations::orb::Keypoint& keypoint : frame.features.keypoints) {
-    xy.push_back(keypoint.xy);
-    level.push_back(keypoint.level);
+    out.xy.push_back(keypoint.xy);
+    out.level.push_back(keypoint.level);
   }
+  return out;
+}
+
+/// @brief Append a frame's keypoints, with their fates, to the run's feature files.
+/// @param features The writer.
+/// @param keypoints The keypoints.
+/// @return Nothing; the writer's error.
+Result<void> write_features(eval::runs::FeatureWriter& features, const Keypoints& keypoints) {
   std::vector<std::int64_t> fate;
-  std::ranges::transform(fates.fate, std::back_inserter(fate),
+  std::ranges::transform(keypoints.fates.fate, std::back_inserter(fate),
                          [](edge::Fate f) { return static_cast<std::int64_t>(f); });
-  return features.write(xy, level, fate, fates.point);
+  return features.write(keypoints.xy, keypoints.level, fate, keypoints.fates.point);
+}
+
+/// @brief Set a key of a frame's diagnostics, in its place, or last if it is new.
+/// @param line The frame's diagnostics.
+/// @param key The key.
+/// @param value Its value.
+void set_key(eval::runs::JsonObject& line, std::string_view key, eval::runs::JsonValue value) {
+  for (auto& [name, held] : line) {
+    if (name == key) {
+      held = std::move(value);
+      return;
+    }
+  }
+  line.emplace_back(std::string(key), std::move(value));
+}
+
+/// @brief Give the keypoints mapping made a point of the fate `Fate::kMade` (threaded).
+/// @param fates The keypoints' fates, changed.
+/// @param made The point made of each keypoint, by the run's ids, -1 where none.
+void mark_made(edge::Fates& fates, const std::vector<std::int64_t>& made) {
+  for (std::size_t j = 0; j < std::min(made.size(), fates.fate.size()); ++j) {
+    if (made[j] >= 0) {
+      fates.fate[j] = edge::Fate::kMade;
+      fates.point[j] = made[j];
+    }
+  }
+}
+
+/// @brief Add what the threads finished to the frames' diagnostics (a keyframe's mapping and
+///        loop closing on its frame), and give the keypoints mapping made a point of the fate
+///        `Fate::kMade` (`slam_it.orchestration.vo._merge`).
+/// @param out The run, each frame recorded.
+/// @param held Each frame's keypoints, when the run records them; else empty.
+/// @param done The completions.
+/// @return Nothing; a summary's error.
+Result<void> merge(eval::runs::Run& out, std::vector<Keypoints>& held,
+                   const std::vector<edge::Completion>& done) {
+  for (const edge::Completion& completion : done) {
+    if (out.diagnostics.empty()) {
+      break;
+    }
+    const auto frame = static_cast<std::size_t>(completion.frame);
+    eval::runs::JsonObject& line = out.diagnostics[std::min(frame, out.diagnostics.size() - 1)];
+    if (completion.map_seconds) {
+      set_key(line, "map_seconds", *completion.map_seconds);
+    }
+    if (completion.mapping) {
+      auto mapping = mapping_json(*completion.mapping);
+      if (!mapping) {
+        return std::unexpected(std::move(mapping.error()));
+      }
+      set_key(line, "mapping", *std::move(mapping));
+    }
+    if (completion.loop_seconds) {
+      set_key(line, "loop_seconds", *completion.loop_seconds);
+    }
+    if (completion.loop) {
+      auto loop = loop_json(*completion.loop);
+      if (!loop) {
+        return std::unexpected(std::move(loop.error()));
+      }
+      set_key(line, "loop", *std::move(loop));
+    }
+    if (frame < held.size()) {
+      mark_made(held[frame].fates, completion.made);
+    }
+  }
+  return {};
+}
+
+/// @brief The clock a run is timed and paced by.
+using Clock = std::chrono::steady_clock;
+
+/// @brief Seconds, as a run records them.
+using Seconds = std::chrono::duration<double>;
+
+/// @brief Feeds frames at their recorded rate (threaded): each is given its interval since
+///        the last, as ORB-SLAM3's examples sleep out the rest of theirs, a late frame delaying
+///        the next.
+class Pacer {
+ public:
+  /// @brief Wait until a frame is due: the last frame's interval after the last was given.
+  /// @param timestamp The frame's time.
+  void wait(double timestamp) {
+    if (last_) {
+      const auto interval = std::chrono::duration_cast<Clock::duration>(
+          Seconds(std::max(0.0, timestamp - last_->second)));
+      std::this_thread::sleep_until(last_->first + interval);
+    }
+    last_ = {Clock::now(), timestamp};
+  }
+
+ private:
+  /// @brief When the last frame was given, and its time.
+  std::optional<std::pair<Clock::time_point, double>> last_;
+};
+
+/// @brief End a run's tracking: wait for the threads (threaded), add what they finished to the
+///        frames' diagnostics, and write the keypoints held for it.
+/// @param pipeline The pipeline.
+/// @param out The run, each frame recorded.
+/// @param held Each frame's keypoints, held while their keyframes were mapped; else empty.
+/// @param features The writer of each frame's keypoints, if the run records them.
+/// @return Nothing; a thread's, a summary's or the feature writer's error.
+Result<void> finish(edge::Pipeline& pipeline, eval::runs::Run& out, std::vector<Keypoints>& held,
+                    eval::runs::FeatureWriter* features) {
+  if (const auto finished = pipeline.finish(); !finished) {
+    return finished;
+  }
+  if (const auto merged = merge(out, held, pipeline.completed()); !merged) {
+    return merged;
+  }
+  if (features == nullptr) {
+    return {};
+  }
+  for (const Keypoints& keypoints : held) {
+    if (const auto written = write_features(*features, keypoints); !written) {
+      return written;
+    }
+  }
+  return {};
 }
 
 /// @brief Track a sequence's frames, from the first asked for, to the end: a lost track
-///        closes its map, and the next frame starts a new one.
+///        closes its map, and the next frame starts a new one. Threaded, the frames come at
+///        their recorded rate, and the run's end waits for the threads.
 /// @param source The sequence.
 /// @param pipeline The pipeline.
 /// @param request The request.
@@ -740,14 +882,14 @@ Result<void> write_features(eval::runs::FeatureWriter& features, const edge::Fra
 /// @return Nothing; a reader's, a frame builder's, the pipeline's or the feature writer's error.
 Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request& request,
                    eval::runs::Run& out, eval::runs::FeatureWriter* features) {
-  using Clock = std::chrono::steady_clock;
-  using Seconds = std::chrono::duration<double>;
   const auto first = static_cast<std::size_t>(request.first);
   const std::size_t end =
       request.count.has_value()
           ? std::min(source.frames, first + static_cast<std::size_t>(*request.count))
           : source.frames;
   const foundations::stereo::MatchOptions matching = edge::stereo_matching(request.options);
+  Pacer pacer;
+  std::vector<Keypoints> held;  // threaded: written once their keyframes are mapped
   for (std::size_t i = first; i < end; ++i) {
     const auto start = Clock::now();
     const Read delivered = source.read(i);
@@ -758,6 +900,10 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
     if (!delivered->has_value()) {
       continue;
     }
+    if (request.threaded) {
+      pacer.wait((*delivered)->timestamp);
+    }
+    const auto given = Clock::now();
     const auto frame = build(**delivered, source.camera, pipeline.extraction(), matching,
                              source.mask ? &*source.mask : nullptr);
     const auto built = Clock::now();
@@ -769,17 +915,20 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
       return std::unexpected(result.error());
     }
     if (const auto recorded =
-            record(out, *result, Seconds(read - start).count(), Seconds(built - read).count());
+            record(out, *result, Seconds(read - start).count(), Seconds(built - given).count());
         !recorded) {
       return recorded;
     }
     if (features != nullptr) {
-      if (const auto written = write_features(*features, *frame, result->fates); !written) {
+      Keypoints keypoints = keypoints_of(*frame, result->fates);
+      if (request.threaded) {
+        held.push_back(std::move(keypoints));
+      } else if (const auto written = write_features(*features, keypoints); !written) {
         return written;
       }
     }
   }
-  return {};
+  return finish(pipeline, out, held, features);
 }
 
 /// @brief Read a mode's name.
@@ -925,9 +1074,9 @@ Result<Request> parse(std::span<const std::string> arguments) {
     if (flag != "--option" && std::ranges::find(seen, flag) != seen.end()) {
       return fail(ErrorKind::kInvalidInput, flag + ": given twice");
     }
-    if (flag == kRecordFeatures) {
+    if (flag == kRecordFeatures || flag == kThreaded) {
       seen.emplace_back(flag);
-      out.record_features = true;
+      (flag == kRecordFeatures ? out.record_features : out.threaded) = true;
       ++i;
       continue;
     }
@@ -993,8 +1142,8 @@ Result<eval::runs::Run> run(const Request& request) {
     words = std::move(read->vocabulary);
     record = read->header;
   }
-  auto pipeline =
-      edge::Pipeline::create(request.mode, source->camera, request.options, std::move(words));
+  auto pipeline = edge::Pipeline::create(request.mode, source->camera, request.options,
+                                         std::move(words), request.threaded);
   if (!pipeline) {
     return std::unexpected(pipeline.error());
   }
