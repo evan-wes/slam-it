@@ -279,6 +279,7 @@ fn refine_similarity<'py>(
 /// * `model` - The camera model's code; `intrinsics` its intrinsics; `bf` the baseline times
 ///   the focal length.
 /// * `fixed` - int64, the cameras held fixed.
+/// * `huber` - Each observation's Huber threshold, or None for no robust loss.
 /// * `options` - `graphs.Options.as_dict()`.
 ///
 /// # Returns
@@ -292,7 +293,7 @@ fn refine_similarity<'py>(
 #[pyfunction]
 #[pyo3(signature = (
     *, poses, points, cameras, point_ids, pixels, right, information, model, intrinsics, bf,
-    fixed, options
+    fixed, huber, options
 ))]
 #[allow(
     clippy::too_many_arguments,
@@ -311,8 +312,13 @@ fn bundle_adjust<'py>(
     intrinsics: PyReadonlyArray1<'py, f64>,
     bf: f64,
     fixed: PyReadonlyArray1<'py, i64>,
+    huber: Option<PyReadonlyArray1<'py, f64>>,
     options: Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
+    let thresholds = match &huber {
+        Some(given) => contiguous(given)?.to_vec(),
+        None => Vec::new(),
+    };
     let starts = rows::<Matrix4<f64>>(&poses)?;
     let world = rows::<Vector3<f64>>(&points)?;
     let which = indices(contiguous(&cameras)?, "cameras")?;
@@ -339,6 +345,7 @@ fn bundle_adjust<'py>(
                     pixels: &seen,
                     right: &columns,
                     information: &weights,
+                    huber: &thresholds,
                 },
                 &lens,
                 &held,

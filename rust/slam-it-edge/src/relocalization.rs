@@ -3,14 +3,18 @@
 //! matching by word, PnP RANSAC as ORB-SLAM sets `MLPnP`'s, the pose optimised and topped up by
 //! searches by projection, 50 inliers to place the frame.
 
+use std::collections::BTreeMap;
+
 use nalgebra::Vector3;
 use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::matching::{self, Match, Projection, SearchOptions};
 use slam_it_foundations::p3p;
 use slam_it_foundations::ransac;
-use slam_it_foundations::vocabulary::Vocabulary;
+use slam_it_foundations::vocabulary::{BowVector, Vocabulary};
 
-use crate::database::{Database, Words, candidates, words_of};
+use crate::database::{
+    Database, Indexed, Ranked, Words, candidates, check_numbers, rank, words_of,
+};
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
 use crate::map::{Map, camera_centre, in_distance_range, keyframe_row, predict_level, to_camera};
 use crate::options::Options;
@@ -547,16 +551,9 @@ pub fn relocalize(
         nodes: frame_nodes,
     } = words_of(vocabulary, &frame.features.descriptors)?;
     let found = candidates(db, m, &vector, options)?;
-    let mut out = Relocalized {
-        tracked: None,
-        summary: RelocalizationSummary {
-            words: vector.ids.len(),
-            sharing: found.sharing,
-            scored: found.scored,
-            ..RelocalizationSummary::default()
-        },
-        matched: vec![-1; frame.size()],
-    };
+    let mut out = unplaced(&vector, frame);
+    out.summary.sharing = found.sharing;
+    out.summary.scored = found.scored;
     for (&keyframe, &score) in found.keyframes.iter().zip(&found.scores) {
         let attempt = try_candidate(
             m,
@@ -567,11 +564,144 @@ pub fn relocalize(
             (keyframe, score),
             options,
         )?;
-        out.summary.candidates.push(attempt.summary);
-        out.matched = attempt.matched;
-        if attempt.tracked.is_some() {
-            out.tracked = attempt.tracked;
-            out.summary.placed = true;
+        if record(&mut out, attempt) {
+            return Ok(out);
+        }
+    }
+    Ok(out)
+}
+
+/// A relocalisation that has placed nothing yet.
+///
+/// # Arguments
+///
+/// * `vector` - The frame's word vector.
+/// * `frame` - The frame.
+///
+/// # Returns
+///
+/// The result, its summary's counts zero.
+fn unplaced(vector: &BowVector, frame: &Frame) -> Relocalized {
+    Relocalized {
+        tracked: None,
+        summary: RelocalizationSummary {
+            words: vector.ids.len(),
+            ..RelocalizationSummary::default()
+        },
+        matched: vec![-1; frame.size()],
+    }
+}
+
+/// Records one candidate tried: its summary and matches, and the frame if it placed it.
+///
+/// # Arguments
+///
+/// * `out` - The search's result so far.
+/// * `attempt` - The candidate tried.
+///
+/// # Returns
+///
+/// Whether it placed the frame, ending the search.
+fn record(out: &mut Relocalized, attempt: Attempt) -> bool {
+    out.summary.candidates.push(attempt.summary);
+    out.matched = attempt.matched;
+    if attempt.tracked.is_none() {
+        return false;
+    }
+    out.tracked = attempt.tracked;
+    out.summary.placed = true;
+    true
+}
+
+/// Relocalisation in every map (`slam_it.edge.relocalization.Across`).
+#[derive(Clone, Debug)]
+pub struct Across {
+    /// The number of the map whose candidate placed the frame, if one did.
+    pub map: Option<i64>,
+    /// The frame placed, in that map's world, and the search over every map's candidates.
+    pub relocalized: Relocalized,
+    /// Each candidate tried's map number, in the summary's order.
+    pub maps: Vec<i64>,
+}
+
+/// Places a frame in whichever map looks like it
+/// (`slam_it.edge.relocalization.relocalize_across`): each map's candidates, its words counted
+/// within it, all of them together by score, descending (ties: the lower map number, then the
+/// lower id), each tried as one map's are, the first to place the frame ending the search.
+///
+/// # Arguments
+///
+/// * `searched` - The maps, each with its database and number.
+/// * `vocabulary` - The vocabulary every database's words are of.
+/// * `camera` - The camera.
+/// * `frame` - The frame.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The map that placed the frame, if one did, and how the search went.
+///
+/// # Errors
+///
+/// `InvalidInput` for no map, two with one number, a candidate whose features are not its
+/// database's, or an invalid camera or settings.
+pub fn relocalize_across(
+    searched: &[Indexed],
+    vocabulary: &Vocabulary,
+    camera: &Camera,
+    frame: &Frame,
+    options: &Options,
+) -> Result<Across> {
+    if searched.is_empty() {
+        return fail(
+            ErrorKind::InvalidInput,
+            "searched: expected at least one map",
+        );
+    }
+    check_numbers(searched, "searched")?;
+    check_setup(camera, options)?;
+    let Words {
+        vector,
+        nodes: frame_nodes,
+    } = words_of(vocabulary, &frame.features.descriptors)?;
+    let mut out = Across {
+        map: None,
+        relocalized: unplaced(&vector, frame),
+        maps: Vec::new(),
+    };
+    let mut found = Vec::new();
+    let mut place = BTreeMap::new();
+    for (at, indexed) in searched.iter().enumerate() {
+        place.insert(indexed.number, at);
+        let each = candidates(&indexed.database, &indexed.map, &vector, options)?;
+        out.relocalized.summary.sharing += each.sharing;
+        out.relocalized.summary.scored += each.scored;
+        found.extend(
+            each.keyframes
+                .iter()
+                .zip(&each.scores)
+                .map(|(&keyframe, &score)| Ranked {
+                    score,
+                    map: indexed.number,
+                    keyframe,
+                }),
+        );
+    }
+    rank(&mut found);
+    for candidate in found {
+        let indexed = &searched[place[&candidate.map]];
+        let attempt = try_candidate(
+            &indexed.map,
+            &indexed.database,
+            camera,
+            frame,
+            &frame_nodes,
+            (candidate.keyframe, candidate.score),
+            options,
+        )?;
+        out.maps.push(candidate.map);
+        if record(&mut out.relocalized, attempt) {
+            out.map = Some(candidate.map);
             return Ok(out);
         }
     }

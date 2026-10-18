@@ -1,9 +1,9 @@
 //! The keyframe database: the Rust core's mirror of `slam_it.edge.database` (ORB-SLAM's
 //! `KeyFrameDatabase`), whose docstring states its rules: each keyframe's word vector and its
 //! features' nodes, the inverted index from each word to its keyframes, and relocalisation's and
-//! loop closing's candidates.
+//! loop closing's and a merge's candidates.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::orb::Descriptor;
@@ -405,4 +405,141 @@ pub fn loop_candidates(
         options,
     )?;
     Ok(chosen(&found, f64::NEG_INFINITY, settings.candidates))
+}
+
+/// A map with its keyframe database, and its number among a run's maps
+/// (`slam_it.edge.database.Indexed`).
+#[derive(Clone, Debug)]
+pub struct Indexed {
+    /// The map's number: maps are numbered in the order they started.
+    pub number: i64,
+    /// The map.
+    pub map: Map,
+    /// Its keyframe database, holding every keyframe of the map.
+    pub database: Database,
+}
+
+/// A merge's candidates, from every other map, best first
+/// (`slam_it.edge.database.MergeCandidates`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MergeCandidates {
+    /// Each candidate's map number.
+    pub maps: Vec<i64>,
+    /// Its id in that map.
+    pub keyframes: Vec<i64>,
+    /// Its group's accumulated score, descending (ties: the lower map number, then the lower id).
+    pub scores: Vec<f64>,
+    /// The keyframes, over every map, that share a word with the query.
+    pub sharing: usize,
+    /// Those scored.
+    pub scored: usize,
+}
+
+/// A candidate of one of several maps.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ranked {
+    /// Its group's accumulated score.
+    pub score: f64,
+    /// Its map's number.
+    pub map: i64,
+    /// Its id in that map.
+    pub keyframe: i64,
+}
+
+/// Checks that no two maps share a number.
+///
+/// # Arguments
+///
+/// * `maps` - The maps.
+/// * `name` - The argument's name, for the message.
+///
+/// # Errors
+///
+/// `InvalidInput` for a number given twice.
+pub fn check_numbers(maps: &[Indexed], name: &str) -> Result<()> {
+    let mut numbers = BTreeSet::new();
+    if maps.iter().all(|map| numbers.insert(map.number)) {
+        Ok(())
+    } else {
+        fail(
+            ErrorKind::InvalidInput,
+            format!("{name}: expected each map once, by its number"),
+        )
+    }
+}
+
+/// Orders several maps' candidates best first: by score, descending; ties by the lower map
+/// number, then the lower id (a merge's and relocalisation's order across maps).
+///
+/// # Arguments
+///
+/// * `found` - The candidates, reordered in place.
+pub fn rank(found: &mut [Ranked]) {
+    found.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then((a.map, a.keyframe).cmp(&(b.map, b.keyframe)))
+    });
+}
+
+/// Finds the keyframes of other maps a keyframe may merge its map with
+/// (`slam_it.edge.database.merge_candidates`, `DetectNBestCandidates`' merge list): in each
+/// map, [`loop_candidates`]' scoring of the query's words, its words counted within it, nothing
+/// left out, its best `loops.candidates` groups; then the best `loops.candidates` of every
+/// map's, by accumulated score.
+///
+/// # Arguments
+///
+/// * `vector` - The query keyframe's word vector.
+/// * `others` - The other maps, each with its database and number.
+/// * `options` - The `loops` settings and `covisibility.min_points`.
+///
+/// # Returns
+///
+/// The candidates, best first.
+///
+/// # Errors
+///
+/// `InvalidInput` for a malformed vector or two maps with one number.
+pub fn merge_candidates(
+    vector: &BowVector,
+    others: &[Indexed],
+    options: &Options,
+) -> Result<MergeCandidates> {
+    vocabulary::check_vector(vector)?;
+    check_numbers(others, "others")?;
+    let settings = &options.loops;
+    let mut found = Vec::new();
+    let mut out = MergeCandidates::default();
+    for other in others {
+        let scored = scoring(
+            &other.database,
+            &other.map,
+            vector,
+            &[],
+            (settings.common_words, settings.neighbours),
+            options,
+        )?;
+        out.sharing += scored.sharing;
+        out.scored += scored.scored;
+        let best = chosen(&scored, f64::NEG_INFINITY, settings.candidates);
+        found.extend(
+            best.keyframes
+                .iter()
+                .zip(&best.scores)
+                .map(|(&keyframe, &score)| Ranked {
+                    score,
+                    map: other.number,
+                    keyframe,
+                }),
+        );
+    }
+    rank(&mut found);
+    found.truncate(settings.candidates);
+    for candidate in found {
+        out.maps.push(candidate.map);
+        out.keyframes.push(candidate.keyframe);
+        out.scores.push(candidate.score);
+    }
+    Ok(out)
 }

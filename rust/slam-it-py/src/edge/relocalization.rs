@@ -2,17 +2,19 @@
 //!
 //! The map, its database (`edge_crossing::database_in`), the vocabulary
 //! (`vocabulary_crossing::vocabulary_in`), the camera, the frame and the settings cross as
-//! dicts. The result is a dict of `tracked` (or None), `matched` and `summary`: `words`,
-//! `sharing`, `scored`, `placed` and `candidates`, a list of dicts of each candidate's summary,
-//! RANSAC's termination as its code in `codes()` (or None).
+//! dicts; in every map, the maps as a list of `Indexed.as_dict()`'s dicts
+//! (`edge_crossing::indexed_in`). The result is a dict of `tracked` (or None), `matched` and
+//! `summary`: `words`, `sharing`, `scored`, `placed` and `candidates`, a list of dicts of each
+//! candidate's summary, RANSAC's termination as its code in `codes()` (or None); in every map,
+//! that dict as `relocalized`, with `map` and `maps`.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use slam_it_edge::relocalization::{self as core, CandidateSummary};
+use slam_it_edge::relocalization::{self as core, CandidateSummary, Relocalized};
 use slam_it_foundations::ransac;
 
 use super::edge_crossing::{
-    camera_in, count_or_none, database_in, frame_in, map_in, maybe_tracked, options_in,
+    camera_in, count_or_none, database_in, frame_in, indexed_in, map_in, maybe_tracked, options_in,
     termination_or_none, vector_array,
 };
 use crate::common::{add_functions, enum_codes, to_i64, unwrap};
@@ -93,6 +95,24 @@ fn relocalize<'py>(
             &options_in(options)?,
         ),
     )?;
+    relocalized_dict(py, found)
+}
+
+/// A relocalisation's result as it crosses.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `found` - The result.
+///
+/// # Returns
+///
+/// `tracked`, `matched` and `summary`.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+fn relocalized_dict(py: Python<'_>, found: Relocalized) -> PyResult<Bound<'_, PyDict>> {
     let tried = PyList::empty(py);
     for candidate in &found.summary.candidates {
         tried.append(candidate_dict(py, candidate)?)?;
@@ -110,6 +130,51 @@ fn relocalize<'py>(
     Ok(out)
 }
 
+/// Places a frame in whichever map looks like it.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `searched` - The maps, each a dict of `number`, `m` and `database`.
+/// * `vocabulary` - The vocabulary, as a dict of its fields.
+/// * `camera` - The camera, as a dict.
+/// * `frame` - The frame, as a dict.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// `map` (or None), `relocalized` (as `relocalize` returns it) and `maps`.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+#[pyo3(signature = (searched, vocabulary, camera, frame, options))]
+fn relocalize_across<'py>(
+    py: Python<'py>,
+    searched: &Bound<'py, PyList>,
+    vocabulary: &Bound<'py, PyDict>,
+    camera: &Bound<'py, PyDict>,
+    frame: &Bound<'py, PyDict>,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let found = unwrap(
+        py,
+        core::relocalize_across(
+            &indexed_in(py, searched)?,
+            &vocabulary_in(py, vocabulary)?,
+            &camera_in(camera)?,
+            &frame_in(frame)?,
+            &options_in(options)?,
+        ),
+    )?;
+    let out = PyDict::new(py);
+    out.set_item("map", found.map)?;
+    out.set_item("relocalized", relocalized_dict(py, found.relocalized)?)?;
+    out.set_item("maps", vector_array(py, &found.maps))?;
+    Ok(out)
+}
+
 enum_codes!("ransac_termination" => ransac::Termination);
 
 /// Registers the module's functions.
@@ -119,6 +184,6 @@ enum_codes!("ransac_termination" => ransac::Termination);
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn relocalization(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; codes, relocalize);
+    add_functions!(m; codes, relocalize, relocalize_across);
     Ok(())
 }

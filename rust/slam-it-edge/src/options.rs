@@ -524,6 +524,13 @@ pub struct LoopOptions {
     pub global_ba: bool,
     /// Its iterations.
     pub global_iterations: usize,
+    /// A merge's welding window: a keyframe and its best this many links, widened to this many
+    /// when it holds fewer (`numTemporalKFs`)...
+    pub weld_neighbours: usize,
+    /// ...each member's best this many links taken in (`numTemporalKFs / 2`)...
+    pub weld_widen: usize,
+    /// ...at most this many times (`nMaxTries`); 0 widens none.
+    pub weld_rounds: usize,
 }
 
 impl Default for LoopOptions {
@@ -564,6 +571,9 @@ impl Default for LoopOptions {
             essential_damping: 1e-16,
             global_ba: true,
             global_iterations: 10,
+            weld_neighbours: 25,
+            weld_widen: 12,
+            weld_rounds: 5,
         }
     }
 }
@@ -799,7 +809,7 @@ named_settings!(
         strong_points: Integer,
     },
     relocalization: RelocalizationOptions { enabled: Flag, ratio: Real, common_words: Real, neighbours: Integer, group_score: Real, min_matches: Integer, inlier_ratio: Real, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, window: Real, narrow_inliers: Integer, narrow_window: Real, narrow_distance: Integer },
-    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer },
+    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer, weld_neighbours: Integer, weld_widen: Integer, weld_rounds: Integer },
     loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer },
 );
 
@@ -852,6 +862,7 @@ pub fn check_options(options: &Options) -> Result<()> {
             options.initialization.min_features_depth,
         ),
         ("loss.reset_keyframes", options.loss.reset_keyframes),
+        ("loops.weld_rounds", options.loops.weld_rounds),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
     }
@@ -1019,6 +1030,8 @@ fn check_counts(options: &Options) -> Result<()> {
             options.loops.essential_iterations,
         ),
         ("loops.global_iterations", options.loops.global_iterations),
+        ("loops.weld_neighbours", options.loops.weld_neighbours),
+        ("loops.weld_widen", options.loops.weld_widen),
     ] {
         check_range(name, value, 1, MAX_SETTING)?;
     }
@@ -1184,7 +1197,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 134);
+        assert_eq!(settings.len(), 137);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
         options

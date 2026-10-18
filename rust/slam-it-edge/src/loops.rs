@@ -861,17 +861,20 @@ pub enum Outcome {
     Closed = 4,
     /// The loop being confirmed went unconfirmed `loops.misses` keyframes in a row.
     Dropped = 5,
+    /// A loop closed on this keyframe was dropped for a merge found on it (`merge_first`).
+    Merged = 6,
 }
 
 impl Outcome {
     /// Every outcome, in code order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Skipped,
         Self::None,
         Self::Started,
         Self::Confirmed,
         Self::Closed,
         Self::Dropped,
+        Self::Merged,
     ];
 
     /// The outcome's name, as `slam_it.edge.loops.Outcome` spells it.
@@ -888,6 +891,7 @@ impl Outcome {
             Self::Confirmed => "confirmed",
             Self::Closed => "closed",
             Self::Dropped => "dropped",
+            Self::Merged => "merged",
         }
     }
 }
@@ -2135,6 +2139,7 @@ pub fn global_bundle_adjust(
             pixels: &pixels,
             right: &right,
             information: &information,
+            huber: &[],
         },
         &graphs::Lens {
             model: camera.model,
