@@ -334,6 +334,43 @@ def test_bundle_adjustment_charges_a_point_behind_its_camera(
     np.testing.assert_array_equal(result.points, [[0.1, 0.2, -1.0]])
 
 
+def test_a_huber_loss_holds_bundle_adjustment_against_an_outlier() -> None:
+    """One observation 40 px off: with Huber's loss the cameras move a tenth as far.
+
+    The Python reference alone takes a robust loss until milestone 2B's B4 ports it; a compiled
+    backend refuses one.
+    """
+    name, intrinsics = PINHOLE
+    poses, points = _scene(7)
+    cameras, ids, pixels = [], [], []
+    for c, pose in enumerate(poses):
+        local = (points - pose[:3, 3]) @ pose[:3, :3]
+        seen = camera.project(name, intrinsics, local)
+        for p in range(points.shape[0]):
+            cameras.append(c)
+            ids.append(p)
+            pixels.append(seen[p] + (40.0 if (c, p) == (2, 0) else 0.0))
+    right = np.full(len(cameras), np.nan)
+
+    def moved(huber: Array | None) -> float:
+        result = graphs.bundle_adjust(
+            poses, points, cameras, ids, pixels, right, np.ones(len(cameras)), model=name,
+            intrinsics=intrinsics, bf=BF, fixed=[0, 1], huber=huber,
+            options=graphs.Options(max_iterations=20),
+        )  # fmt: skip
+        return float(np.abs(result.poses - poses).max())
+
+    plain, robust = moved(None), moved(np.full(len(cameras), np.sqrt(5.991)))
+    assert robust < plain / 10
+    for compiled in backends.COMPILED_BACKENDS:
+        with pytest.raises(InvalidInputError, match="huber"):
+            graphs.bundle_adjust(
+                poses, points, cameras, ids, pixels, right, np.ones(len(cameras)), model=name,
+                intrinsics=intrinsics, bf=BF, fixed=[0, 1], huber=np.ones(len(cameras)),
+                backend=compiled,
+            )  # fmt: skip
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_a_solve_stops_by_its_iterations_its_tolerances_or_its_damping(backend: str) -> None:
     """Capped; converged by the relative tolerance; and, at a minimum, no step lowers the error."""

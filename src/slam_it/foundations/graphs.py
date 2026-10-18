@@ -10,7 +10,8 @@ g2o (``Optimizer.cc``):
 - :func:`refine_similarity`, the similarity (or rigid motion) that carries one keyframe's
   matched points into another's images, both ways (``OptimizeSim3``);
 - :func:`bundle_adjust`, every pose and point against every observation, with no robust loss
-  (``GlobalBundleAdjustemnt``, as loop closing calls it).
+  (``GlobalBundleAdjustemnt``, as loop closing calls it) or a Huber loss (the welding BA of a
+  merge, ``LocalBundleAdjustment``'s).
 
 Python builds them on GTSAM's official bindings, C++ on the library they wrap, and Rust through
 a bridge (``rust/slam-it-foundations``). The two factors GTSAM lacks, a point's reprojection
@@ -985,6 +986,7 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
     intrinsics: Array,
     bf: float,
     fixed: IntArray,
+    huber: Array | None,
     options: Options,
     stop: Callable[[], bool] | None = None,
 ) -> Adjustment:
@@ -1004,6 +1006,9 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
         measured = np.append(pixels[m], right[m]) if stereo else pixels[m]
         c, p = int(cameras[m]), int(point_ids[m])
         noise = gtsam.noiseModel.Isotropic.Precision(measured.shape[0], float(information[m]))
+        if huber is not None:
+            loss = gtsam.noiseModel.mEstimator.Huber.Create(float(huber[m]))
+            noise = gtsam.noiseModel.Robust.Create(loss, noise)
         if builtin is not None:
             graph.add(builtin(measured, noise, c, first_point + p))
             continue
@@ -1050,17 +1055,24 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     intrinsics: ArrayLike,
     bf: float,
     fixed: ArrayLike,
+    huber: ArrayLike | None = None,
     options: Options | None = None,
     stop: Callable[[], bool] | None = None,
     backend: str = "python",
 ) -> Adjustment:
-    """Adjust every pose and point against every observation, with no robust loss.
+    """Adjust every pose and point against every observation, with no robust loss or Huber's.
 
     ORB-SLAM's ``GlobalBundleAdjustemnt`` as loop closing calls it (``bRobust`` false), on
     GTSAM: each observation's reprojection through the camera model, with a right column
     ``u - bf / z`` where it has one (ORB-SLAM's stereo edge), weighted by its information; the
     cameras in `fixed` held exactly. Every point must be seen; one seen once is free along its
-    ray and constrained across it, and the damping holds it along the ray.
+    ray and constrained across it, and the damping holds it along the ray. With `huber`, each
+    observation's whitened error passes through a Huber loss at its threshold (GTSAM's
+    ``mEstimator::Huber``), as ORB-SLAM's local and welding BAs weigh theirs
+    (``RobustKernelHuber``).
+
+    *A placeholder for milestone 2B's B4, until its C++ and Rust ports:* only the Python
+    reference takes `huber` yet, so a compiled backend refuses it.
 
     Parameters
     ----------
@@ -1084,6 +1096,9 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
         The baseline times the focal length, > 0 if any observation has a right column.
     fixed : array_like of int, shape (F,)
         The cameras held fixed.
+    huber : array_like, shape (M,), optional
+        Each observation's Huber threshold on its whitened error's norm, positive (default:
+        no robust loss).
     options : Options, optional
         How the solve runs (default: :class:`Options`'s).
     stop : callable, optional
@@ -1101,8 +1116,9 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     ------
     slam_it.foundations.errors.InvalidInputError
         If a pose is not rigid, the shapes disagree, an index is out of range, a point is not
-        observed, an information is not positive, a right column is given with ``bf <= 0``, the
-        camera is invalid, or a ``stop`` is given to a compiled backend.
+        observed, an information or a Huber threshold is not positive, a right column is given
+        with ``bf <= 0``, the camera is invalid, or a compiled backend is given `huber` or a
+        ``stop``.
     slam_it.foundations.errors.NotConvergedError
         If GTSAM fails while solving.
     """
@@ -1128,6 +1144,9 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
         raise InvalidInputError(f"bf: expected > 0 with a right column, got {bf}")
     held = np.unique(_indices(fixed, checked.shape[0], "fixed"))
     code, params = camera.as_model(model, intrinsics)
+    robust = None if huber is None else _information(huber, which.shape[0], "huber")
+    if robust is not None and backend != "python":
+        raise InvalidInputError("huber: the compiled backends take no robust loss yet")
 
     def decode(raw: dict[str, Any], codes: dict[str, list[str]]) -> Adjustment:
         return Adjustment(
@@ -1152,6 +1171,7 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
             params,
             bf,
             held,
+            robust,
             chosen,
             stop,
         ),
