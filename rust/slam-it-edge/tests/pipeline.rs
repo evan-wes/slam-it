@@ -323,11 +323,19 @@ fn lose_the_track(options: &Options, step: f64, count: usize) -> Vec<FrameResult
 /// above `loss.reset_keyframes` is lost once more than `loss.relocalize_seconds` have passed since
 /// the first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the thirteenth's 3 s
 /// is not more), one of `loss.reset_keyframes` or fewer on the `loss.lost_frames`-th failure,
-/// whatever the time; each failed frame tried relocalisation.
+/// whatever the time; with `loss.relocalize_seconds` 0, a map above it on its first failed frame;
+/// each failed frame tried relocalisation.
 #[test]
 fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {
-    for (reset_keyframes, step, lost_on) in [(0, 0.25, 14), (1, 0.25, 5), (1, 0.001, 5)] {
-        let failed = lose_the_track(&relocalizing(reset_keyframes), step, lost_on);
+    for (reset_keyframes, step, lost_on, seconds) in [
+        (0, 0.25, 14, 3.0),
+        (1, 0.25, 5, 3.0),
+        (1, 0.001, 5, 3.0),
+        (0, 0.25, 1, 0.0),
+    ] {
+        let mut options = relocalizing(reset_keyframes);
+        options.loss.relocalize_seconds = seconds;
+        let failed = lose_the_track(&options, step, lost_on);
         assert!(failed.iter().all(|r| r.summary.relocalization.is_some()));
     }
 }

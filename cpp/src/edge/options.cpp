@@ -173,7 +173,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<RealSetting, 28> positive{{
+  const std::array<RealSetting, 27> positive{{
       {"features.scale_factor", options.features.scale_factor},
       {"stereo.close_depth", options.stereo.close_depth},
       {"initialization.window", options.initialization.window},
@@ -201,12 +201,16 @@ foundations::Result<void> check_options(const Options& options) {
       {"loops.confirm_window", options.loops.confirm_window},
       {"loops.fuse_window", options.loops.fuse_window},
       {"loops.essential_damping", options.loops.essential_damping},
-      {"loss.relocalize_seconds", options.loss.relocalize_seconds},
   }};
   for (const auto& [setting, value] : positive) {
     if (!std::isfinite(value) || value <= 0.0) {
       return foundations::fail_setting(setting, "must be finite and positive", value);
     }
+  }
+  if (const double seconds = options.loss.relocalize_seconds;
+      !std::isfinite(seconds) || seconds < 0.0) {
+    return foundations::fail_setting("loss.relocalize_seconds", "must be finite and not negative",
+                                     seconds);
   }
   const std::array<RealSetting, 22> fractions{{
       {"initialization.ratio", options.initialization.ratio},

@@ -82,6 +82,7 @@ def test_the_settings_cross_as_groups_of_scalars() -> None:
         ({"loops.confidence": 1.0}, r"loops.confidence: must be in \(0, 1\), got 1.0"),
         ({"loops.fine_distance": 257}, "loops.fine_distance: must be from 1 to 256"),
         ({"loops.essential_damping": 0.0}, "loops.essential_damping: must be finite and positive"),
+        ({"loss.relocalize_seconds": -1.0}, "loss.relocalize_seconds: must be finite and not neg"),
         ({"features.n_features": "a"}, "features.n_features: must be an integer"),
         ({"features.n_features": None}, "features.n_features: must be an integer"),
     ],
@@ -101,6 +102,13 @@ def test_every_setting_refuses_a_bad_value_by_name(name: str) -> None:
     bad = (1 << 30) + 1 if isinstance(Options().settings()[name], int) else math.nan
     with pytest.raises(InvalidInputError, match=rf"^{re.escape(name)}: "):
         Options().with_settings({name: bad})
+
+
+def test_the_loss_window_may_be_zero() -> None:
+    """``loss.relocalize_seconds`` 0 is no window, a new map at once; the other reals may not."""
+    assert Options().with_settings({"loss.relocalize_seconds": 0}).loss.relocalize_seconds == 0.0
+    with pytest.raises(InvalidInputError, match="must be finite and positive"):
+        Options().with_settings({"loops.chi2": 0.0})
 
 
 def test_an_unknown_setting_or_group_is_refused() -> None:

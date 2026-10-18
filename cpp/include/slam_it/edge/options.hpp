@@ -360,7 +360,7 @@ struct LoopOptions {
 /// @brief When a lost track's map is closed (`Options.loss`).
 struct LossOptions {
   /// @brief A recently lost track is lost once more than this has passed since its first
-  ///        failed frame, in seconds.
+  ///        failed frame, in seconds; 0 loses the map on its first failed frame.
   double relocalize_seconds{3.0};
   /// @brief A map of `loss.reset_keyframes` keyframes or fewer is lost after this many failed
   ///        frames in a row instead.

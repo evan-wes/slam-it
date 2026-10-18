@@ -1110,7 +1110,8 @@ bool record_failure(TrackingState& state, const Frame& frame, std::size_t keyfra
       std::cmp_less_equal(keyframes, options.loss.reset_keyframes)) {
     return state.failures >= options.loss.lost_frames;
   }
-  return frame.timestamp - since > options.loss.relocalize_seconds;
+  const double seconds = options.loss.relocalize_seconds;
+  return seconds == 0.0 || frame.timestamp - since > seconds;
 }
 
 void set_reference(TrackingState& state, const Frame& frame) {

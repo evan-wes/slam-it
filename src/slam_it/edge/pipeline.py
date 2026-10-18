@@ -18,9 +18,10 @@
    failure.
 3. **Lost:** the track is recently lost from its first failed frame, and found again on the
    next frame tracked. Relocalising, it is lost once more than ``loss.relocalize_seconds`` have
-   passed since that frame with none tracked (ORB-SLAM3's ``RECENTLY_LOST``); a map of
-   ``loss.reset_keyframes`` keyframes or fewer is lost after ``loss.lost_frames`` failures in a
-   row instead (ORB-SLAM3 loses it at once), as is any map with ``relocalization.enabled`` off.
+   passed since that frame with none tracked (ORB-SLAM3's ``RECENTLY_LOST``; with 0, on that
+   frame); a map of ``loss.reset_keyframes`` keyframes or fewer is lost after
+   ``loss.lost_frames`` failures in a row instead (ORB-SLAM3 loses it at once), as is any map
+   with ``relocalization.enabled`` off.
    The map is then kept, or reset if it has ``loss.reset_keyframes`` keyframes or fewer (its
    keyframes and points removed), and the next frame starts a new map (step 1), as ORB-SLAM3's
    atlas does (``Tracking::Track``'s ``CreateMapInAtlas`` and ``ResetActiveMap``). The time runs
@@ -536,9 +537,9 @@ class TrackingState:
     def fail(self, frame: Frame, keyframes: int, options: Options) -> bool:
         """Count an untracked frame, which ends the velocity; return whether it loses the track.
 
-        Lost once more than ``loss.relocalize_seconds`` have passed since the first failed frame,
-        or for a map of ``loss.reset_keyframes`` keyframes or fewer or with
-        ``relocalization.enabled`` off, after ``loss.lost_frames`` failures in a row.
+        Lost once more than ``loss.relocalize_seconds`` have passed since the first failed frame
+        (on that frame if it is 0), or for a map of ``loss.reset_keyframes`` keyframes or fewer
+        or with ``relocalization.enabled`` off, after ``loss.lost_frames`` failures in a row.
 
         Parameters
         ----------
@@ -560,7 +561,8 @@ class TrackingState:
             self.lost_since = frame.timestamp
         if not options.relocalization.enabled or keyframes <= options.loss.reset_keyframes:
             return self.failures >= options.loss.lost_frames
-        return frame.timestamp - self.lost_since > options.loss.relocalize_seconds
+        seconds = options.loss.relocalize_seconds
+        return seconds == 0.0 or frame.timestamp - self.lost_since > seconds
 
     def move_last(self, pose: Array) -> None:
         """Move the last frame tracked to `pose`, its keyframe's, after a correction moved it.

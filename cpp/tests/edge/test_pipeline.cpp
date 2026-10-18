@@ -322,34 +322,55 @@ edge::Frame empty_at(double timestamp) {
   return out;
 }
 
+/// @brief Start the scene's map with a vocabulary of one word, then track empty frames until
+///        the track is lost (Python's `_failures`): each frame before the last keeps it, the
+///        last loses it, and each tried relocalisation or not as asked.
+/// @param options The settings.
+/// @param step The empty frames' interval, in seconds.
+/// @param lost_on The failure the track is lost on.
+/// @param relocalizes Whether each failed frame tries relocalisation.
+/// @return Whether every frame went so.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (step, lost_on), Python's order
+bool loses_the_track(const edge::Options& options, double step, std::int64_t lost_on,
+                     bool relocalizes) {
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, scene::one_word());
+  const auto started = start(pipeline);
+  bool ok = started && started->keyframe;
+  for (std::int64_t k = 0; ok && k < lost_on; ++k) {
+    const auto failed = pipeline->track(empty_at(step * static_cast<double>(k + 1)));
+    const edge::State expected = k + 1 < lost_on ? edge::State::kTracking : edge::State::kLost;
+    ok = failed && failed->state == expected &&
+         failed->summary.relocalization.has_value() == relocalizes;
+  }
+  return ok;
+}
+
 /// @brief Check the loss rules relocalising (Python's
 ///        `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map above
 ///        `loss.reset_keyframes` is lost once more than `loss.relocalize_seconds` have passed since
 ///        the first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the
 ///        thirteenth's 3 s is not more), one of `loss.reset_keyframes` or fewer on the
-///        `loss.lost_frames`-th failure, whatever the time; each failed frame tried relocalisation.
+///        `loss.lost_frames`-th failure, whatever the time; with `loss.relocalize_seconds` 0, a
+///        map above it on its first failed frame; each failed frame tried relocalisation.
 /// @param failures Running failure count.
 void check_lost_relocalizing(int& failures) {
   struct Case {
     std::int64_t reset_keyframes;
     double step;
     std::int64_t lost_on;
+    double seconds;
   };
-  for (const Case c : {Case{.reset_keyframes = 0, .step = 0.25, .lost_on = 14},
-                       Case{.reset_keyframes = 1, .step = 0.25, .lost_on = 5},
-                       Case{.reset_keyframes = 1, .step = 0.001, .lost_on = 5}}) {
-    auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(),
-                                           relocalizing(c.reset_keyframes), scene::one_word());
-    const auto started = start(pipeline);
-    bool ok = started && started->keyframe;
-    for (std::int64_t k = 0; ok && k < c.lost_on; ++k) {
-      const auto failed = pipeline->track(empty_at(c.step * static_cast<double>(k + 1)));
-      const edge::State expected = k + 1 < c.lost_on ? edge::State::kTracking : edge::State::kLost;
-      ok = failed && failed->state == expected && failed->summary.relocalization;
-    }
-    expect(ok,
+  for (const Case c : {Case{.reset_keyframes = 0, .step = 0.25, .lost_on = 14, .seconds = 3.0},
+                       Case{.reset_keyframes = 1, .step = 0.25, .lost_on = 5, .seconds = 3.0},
+                       Case{.reset_keyframes = 1, .step = 0.001, .lost_on = 5, .seconds = 3.0},
+                       Case{.reset_keyframes = 0, .step = 0.25, .lost_on = 1, .seconds = 0.0}}) {
+    edge::Options options = relocalizing(c.reset_keyframes);
+    options.loss.relocalize_seconds = c.seconds;
+    expect(loses_the_track(options, c.step, c.lost_on, true),
            c.reset_keyframes == 0
-               ? "a kept map is lost past loss.relocalize_seconds from the first failed frame"
+               ? "a kept map is lost past loss.relocalize_seconds from the first failed frame, "
+                 "or on it with 0"
                : "a small map is lost on the loss.lost_frames-th failure, whatever the time",
            failures);
   }
@@ -364,17 +385,8 @@ void check_lost_relocalizing(int& failures) {
 void check_closing_loops_alone(int& failures) {
   edge::Options options = relocalizing(0);
   options.relocalization.enabled = false;
-  auto pipeline =
-      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, scene::one_word());
-  const auto started = start(pipeline);
-  bool ok = started && started->keyframe;
-  const std::int64_t lost_on = options.loss.lost_frames;
-  for (std::int64_t k = 0; ok && k < lost_on; ++k) {
-    const auto failed = pipeline->track(empty_at(0.001 * static_cast<double>(k + 1)));
-    const edge::State expected = k + 1 < lost_on ? edge::State::kTracking : edge::State::kLost;
-    ok = failed && failed->state == expected && !failed->summary.relocalization;
-  }
-  expect(ok, "closing loops alone, no failed frame relocalises", failures);
+  expect(loses_the_track(options, 0.001, options.loss.lost_frames, false),
+         "closing loops alone, no failed frame relocalises", failures);
 }
 
 /// @brief Check that a frame the local fallback cannot reach is placed by relocalisation in

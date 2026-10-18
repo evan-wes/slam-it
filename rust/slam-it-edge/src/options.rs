@@ -582,7 +582,7 @@ impl Default for LoopOptions {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LossOptions {
     /// A recently lost track is lost once more than this has passed since its first failed
-    /// frame, in seconds.
+    /// frame, in seconds; 0 loses the map on its first failed frame.
     pub relocalize_seconds: f64,
     /// A map of `loss.reset_keyframes` keyframes or fewer is lost after this many failed frames in
     /// a row instead.
@@ -1043,7 +1043,8 @@ fn check_counts(options: &Options) -> Result<()> {
     Ok(())
 }
 
-/// Checks the real settings that must be finite and positive.
+/// Checks the real settings that must be finite and positive, and the loss window, which may be
+/// 0.
 ///
 /// # Errors
 ///
@@ -1094,7 +1095,6 @@ fn check_positive(options: &Options) -> Result<()> {
             "relocalization.narrow_window",
             options.relocalization.narrow_window,
         ),
-        ("loss.relocalize_seconds", options.loss.relocalize_seconds),
         ("loops.chi2", options.loops.chi2),
         ("loops.coarse_window", options.loops.coarse_window),
         ("loops.huber_chi2", options.loops.huber_chi2),
@@ -1106,6 +1106,14 @@ fn check_positive(options: &Options) -> Result<()> {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
         }
+    }
+    let seconds = options.loss.relocalize_seconds;
+    if !(seconds.is_finite() && seconds >= 0.0) {
+        return fail_setting(
+            "loss.relocalize_seconds",
+            "must be finite and not negative",
+            seconds,
+        );
     }
     Ok(())
 }
@@ -1226,10 +1234,13 @@ mod tests {
         }
     }
 
-    /// The defaults pass; settings out of range are `InvalidInput`.
+    /// The defaults pass, and a loss window of 0; settings out of range are `InvalidInput`.
     #[test]
     fn checks_ranges() {
         check_options(&Options::default()).unwrap();
+        let mut at_once = Options::default();
+        at_once.loss.relocalize_seconds = 0.0;
+        check_options(&at_once).unwrap();
         for bad in [
             Options {
                 covisibility: CovisibilityOptions {
@@ -1249,6 +1260,13 @@ mod tests {
                 adjustment: AdjustmentOptions {
                     chi2_mono: f64::NAN,
                     ..AdjustmentOptions::default()
+                },
+                ..Options::default()
+            },
+            Options {
+                loss: LossOptions {
+                    relocalize_seconds: -1.0,
+                    ..LossOptions::default()
                 },
                 ..Options::default()
             },

@@ -498,7 +498,8 @@ impl TrackingState {
     ///
     /// # Returns
     ///
-    /// Whether it loses the track: past `loss.relocalize_seconds` since the first failure, or
+    /// Whether it loses the track: past `loss.relocalize_seconds` since the first failure (on
+    /// it if that is 0), or
     /// for a small map or with `relocalization.enabled` off, on the `loss.lost_frames`-th in a
     /// row.
     pub fn record_failure(&mut self, frame: &Frame, keyframes: usize, options: &Options) -> bool {
@@ -508,7 +509,8 @@ impl TrackingState {
         if !options.relocalization.enabled || keyframes <= options.loss.reset_keyframes {
             return self.failures >= options.loss.lost_frames;
         }
-        frame.timestamp - since > options.loss.relocalize_seconds
+        let seconds = options.loss.relocalize_seconds;
+        seconds == 0.0 || frame.timestamp - since > seconds
     }
 
     /// Makes a frame the monocular reference, each keypoint searched from its own position.

@@ -279,23 +279,45 @@ def test_a_new_session_closes_the_map_and_starts_another(
     np.testing.assert_array_equal(run.lifetimes().keyframe_lives[0, 1:], ended)
 
 
-@pytest.mark.parametrize(
-    ("reset_keyframes", "step", "lost_on"),
-    [
-        (0, 0.25, 14),  # a kept map: lost past 3 s after the first failure, at 0.25 s: at 3.5 s
-        (1, 0.25, 5),  # a small map: lost on the fifth failure, whatever the time
-        (1, 0.001, 5),
-    ],
-)
-def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(
-    rendered: list[room.Frame], reset_keyframes: int, step: float, lost_on: int
-) -> None:
-    """Time loses a map above loss.reset_keyframes; loss.lost_frames failures, a smaller one."""
-    options = OPTIONS.with_settings({"loss.reset_keyframes": reset_keyframes})
+def _failures(
+    rendered: list[room.Frame], options: Options, step: float, count: int
+) -> list[pipeline.FrameResult]:
+    """Start the room's map with `options` on its first frame, then track `count` empty frames.
+
+    The empty frames come `step` seconds apart; their results are returned.
+    """
     run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     first = rendered[0]
     assert run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction())).keyframe
-    failed = [run.track(_empty(step * (k + 1))) for k in range(lost_on)]
+    return [run.track(_empty(step * (k + 1))) for k in range(count)]
+
+
+@pytest.mark.parametrize(
+    ("reset_keyframes", "step", "lost_on", "seconds"),
+    [
+        (
+            0,
+            0.25,
+            14,
+            3.0,
+        ),  # a kept map: lost past 3 s after the first failure, at 0.25 s: at 3.5 s
+        (1, 0.25, 5, 3.0),  # a small map: lost on the fifth failure, whatever the time
+        (1, 0.001, 5, 3.0),
+        (0, 0.25, 1, 0.0),  # no window: a kept map lost on its first failure
+    ],
+)
+def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(
+    rendered: list[room.Frame], reset_keyframes: int, step: float, lost_on: int, seconds: float
+) -> None:
+    """Time loses a map above loss.reset_keyframes; loss.lost_frames failures, a smaller one.
+
+    With loss.relocalize_seconds 0 a map above loss.reset_keyframes is lost on its first failed
+    frame, which still tried relocalisation.
+    """
+    options = OPTIONS.with_settings(
+        {"loss.reset_keyframes": reset_keyframes, "loss.relocalize_seconds": seconds}
+    )
+    failed = _failures(rendered, options, step, lost_on)
     assert [r.state for r in failed[:-1]] == [pipeline.State.TRACKING] * (lost_on - 1)
     assert failed[-1].state is pipeline.State.LOST
     assert all(r.summary.relocalization is not None for r in failed)
@@ -313,10 +335,7 @@ def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
     options = OPTIONS.with_settings(
         {"relocalization.enabled": False, "loops.enabled": close_loops, "loss.reset_keyframes": 0}
     )
-    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
-    first = rendered[0]
-    assert run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction())).keyframe
-    failed = [run.track(_empty(0.001 * (k + 1))) for k in range(options.loss.lost_frames)]
+    failed = _failures(rendered, options, 0.001, options.loss.lost_frames)
     assert [r.state for r in failed] == [pipeline.State.TRACKING] * 4 + [pipeline.State.LOST]
     assert all(r.summary.relocalization is None for r in failed)
 

@@ -911,9 +911,11 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
 6. **The loss window, measured both ways:** B1's 3 s stays the default. A new map at once is
    measured beside it on the test set (section 15), and decided with evan-wes on the numbers.
 
-   *As built (the measure written, not yet run):* the setting must be positive, so "at once" is
-   `loss.relocalize_seconds` 1e-9 s: the map is lost on its second failed frame in a row, the
-   first trying relocalisation, where ORB-SLAM3's would be lost on the first.
+   *As built (the measure written, not yet run):* `loss.relocalize_seconds` 0 is no window: a
+   map above `loss.reset_keyframes` is lost on its first failed frame, which has tried
+   relocalisation, and the next frame starts a new map (decided on 2026-10-17). A
+   smaller map is still lost after `loss.lost_frames` failures. The measure runs the test set at
+   3 s and at 0.
 7. **The run format, version 9, and the bundle's, version 5:**
    - each keyframe and point records the map it ends in; each frame records the map it ends in
      (the final trajectory's) and the map it was tracked in (the as-tracked one's);

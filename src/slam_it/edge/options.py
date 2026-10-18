@@ -639,7 +639,7 @@ class LossOptions:
         Relocalising, a recently lost track is lost once more than this has passed since its
         first failed frame with none tracked (ORB-SLAM3's ``RECENTLY_LOST``, 3 s): the map is
         kept, or reset (``loss.reset_keyframes``), and the next frame starts a new one (ORB-SLAM3's
-        atlas).
+        atlas). 0 has no window: the map is lost on its first failed frame, a new map at once.
     lost_frames : int
         A map is lost after this many failed frames in a row instead when it has
         ``loss.reset_keyframes`` keyframes or fewer (ORB-SLAM3 loses one at once), or whenever
@@ -882,7 +882,10 @@ def _checked(name: str, kind: str, value: Any) -> bool | int | float:  # noqa: A
     if kind == "int":
         return as_count(value, name, 0 if name in _MAY_BE_ZERO else 1, 1 << 30)
     number = as_number(value, name)
-    if name in _FRACTIONS:
+    if name in _MAY_BE_ZERO:
+        if not (math.isfinite(number) and number >= 0.0):
+            raise InvalidInputError(f"{name}: must be finite and not negative, got {number}")
+    elif name in _FRACTIONS:
         if not (math.isfinite(number) and 0.0 < number <= 1.0):
             raise InvalidInputError(f"{name}: must be in (0, 1], got {number}")
     elif not (math.isfinite(number) and number > 0.0):
@@ -898,9 +901,10 @@ _MAY_BE_ZERO = frozenset(
         "loss.reset_keyframes",
         "loss.session_keyframes",
         "loops.weld_rounds",
+        "loss.relocalize_seconds",
     }
 )
-"""The integer settings that may be 0."""
+"""The settings that may be 0: integers, and one real."""
 
 _FRACTIONS = frozenset(
     {
