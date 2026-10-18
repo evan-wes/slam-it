@@ -1328,7 +1328,10 @@ Result<void> Pipeline::hand_over(const Frame& frame, const Map& view, const Trac
 
 Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   MapOwner& owner = shared_->owner();
+  const auto asked = Clock::now();
   const std::unique_lock<std::mutex> lock = owner.locked();  // the baseline's, through the frame
+  // The baseline's tracking waits for the map's lock as ours waits for a hold: its wait.
+  const double locked = lock.owns_lock() ? Seconds(Clock::now() - asked).count() : 0.0;
   if (threads_) {
     if (const std::shared_ptr<const Map> view = owner.view()) {
       follow(tracking_, *view, owner.corrections());
@@ -1347,7 +1350,7 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
             .matched = std::move(found->matched),
             .made = {},
             .lost = found->lost,
-            .wait_seconds = found->wait_seconds,
+            .wait_seconds = found->wait_seconds + locked,
             .asked = found->asked,
             .refused = found->refused,
             .queue = found->queue,

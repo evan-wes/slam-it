@@ -175,7 +175,7 @@ struct FrameResult {
   Fates fates;
   /// @brief The time tracking waited for the map, part of `track_seconds`: 0 inline; threaded,
   ///        relocalisation's wait for mapping to let the map go, and a lost map's for the
-  ///        threads.
+  ///        threads; by ORB-SLAM's locks, its wait for the map's lock too.
   double wait_seconds{0.0};
   /// @brief Whether it wanted a keyframe (`need_keyframe`).
   bool asked{false};
