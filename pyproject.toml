@@ -15,7 +15,9 @@ authors = [{ name = "evan-wes" }]
 # Pillow reads image files, in slam_it.eval.images alone (a contract below keeps it there).
 # GTSAM is rung 0's factor-graph back end (slam_it.foundations.graphs). scripts/setup_slam_it.sh
 # builds it from its release and pip-installs its Python bindings, built over the same library
-# the C++ core links; no index is asked for it.
+# the C++ core links; the env asks no index for it. The worker's image, whose Python imports it
+# but never solves with it, installs PyPI's 4.3.0 wheel, pinned by its hash
+# (scripts/locks/worker-gtsam.lock).
 dependencies = ["numpy>=2.0", "pillow>=10.0", "gtsam>=4.3"]
 
 [project.optional-dependencies]

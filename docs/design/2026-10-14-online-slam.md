@@ -415,7 +415,9 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
    - C++ links conda-forge's build of it, made against our Eigen 5.0.1. Python uses its
      official bindings, the same build. Rust reaches it through a `cxx` bridge. *As built
      (decided with evan-wes on 2026-10-17):* `setup_slam_it.sh` builds GTSAM 4.3.0 itself, and
-     the worker's image the same way: conda-forge's build blocks Eigen's products by the caches
+     the worker's image its C++ library the same way, for the C++ program it runs (its Python,
+     which imports GTSAM but never solves with it, takes PyPI's 4.3.0 wheel, pinned by its hash:
+     B3's review panel, A3): conda-forge's build blocks Eigen's products by the caches
      of the core that runs first, and its global BA came out different in the last bits on a
      P-core and an E-core of this machine, where our cores compile with `EIGEN_NO_CPUID` so a run
      repeats on any core. Ours compiles with it too; static (METIS and its bundled CCOLAMD too,

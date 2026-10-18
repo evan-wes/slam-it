@@ -20,9 +20,11 @@ and the bundle's 4: runs written by 0.3.11.0 no longer read.
 
 - **GTSAM 4.3 as the back end** (`slam_it.foundations.graphs`, with C++ and Rust twins, Rust
   through a `cxx` bridge whose factors call back into Rust): a pose graph, the Sim(3)
-  refinement and bundle adjustment. `scripts/setup_slam_it.sh` and the worker's image build
-  GTSAM 4.3.0 from its tag with `EIGEN_NO_CPUID`, as the cores compile, so a run repeats on any
-  core.
+  refinement and bundle adjustment. `scripts/setup_slam_it.sh` builds GTSAM 4.3.0 from its tag
+  with `EIGEN_NO_CPUID`, as the cores compile, so a run repeats on any core, and its Python
+  wrapper over the same library; the worker's image builds the C++ library the same way, for
+  its C++ program, and its Python, which imports GTSAM but never solves with it,
+  takes PyPI's 4.3.0 wheel, pinned by its hash (`scripts/locks/worker-gtsam.lock`).
 - **The loop's Sim(3) by RANSAC** in the three languages, each sample solved by Umeyama's
   method, its matches tested as ORB-SLAM's `Sim3Solver` tests them.
 - **Loop closing** (`slam_it.edge.loops`, with C++ and Rust twins), its settings in the `loops`

@@ -18,7 +18,8 @@ cxx-build = "1.0.205"
 
 # The workspace's lints, but for `unsafe_code`: denied here rather than forbidden, so that the
 # one module bridging to GTSAM (`graphs`'s `ffi`, whose C++ side `cxx` declares in an
-# `unsafe extern "C++"` block) can allow it. Keep the rest equal to the workspace's tables.
+# `unsafe extern "C++"` block) can allow it. The rest equals the workspace's tables, which
+# tests/test_build_copies.py holds.
 [lints.rust]
 missing_docs = "deny"
 unsafe_code = "deny"
