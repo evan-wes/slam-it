@@ -4,6 +4,87 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.14.0] - 2026-10-18
+
+Milestone 2B's B3b: tracking, local mapping and loop closing in threads of their own, in the three
+languages (`docs/design/2026-10-14-online-slam.md`, section 12). Tracking runs in the caller's
+thread and reads, with no lock, a view of the map that its one writer at a time publishes; local
+mapping, loop closing and each global BA run in threads of their own, scheduled as ORB-SLAM
+schedules them. ORB-SLAM's own locking runs in C++ as the baseline to compare with. In order, in
+one thread, stays the default, and such a run repeats exactly: the rooms' golden records are
+unchanged. The run format is version 8: runs written in version 7 no longer read. Section 13's
+measurements (the latency bar, the accuracy threaded, and our design against ORB-SLAM's scheme)
+are not run for this release (decided by evan-wes on 2026-10-18).
+
+### Added
+
+- **The seams** (`slam_it.edge.atlas`, with C++ and Rust twins): the run's records leave the
+  pipeline for the atlas; tracking, local mapping and loop closing become steps over state of
+  their own; the map being tracked and its keyframe database are reached through one owner
+  (`MapOwner`). No decision changes.
+- **The threads' handshakes** (`slam_it.edge.threads`, C++'s `slam_it/edge/threads.hpp`, Rust's
+  `slam_it_edge::threads`): one writer of the map at a time, stopped, held and released as
+  ORB-SLAM's `RequestStop` and `Release`; the queue between two threads; the global BAs'
+  generation; and a worker thread whose failure is kept for the thread that gave it work.
+- **The pipeline in threads of its own** (Python's `Pipeline(threaded=True)`, the `Threading`
+  that C++'s `Pipeline::create` and Rust's `Pipeline::new` take, the programs' `--threaded`):
+  tracking in the caller's thread, on the view it took for its frame; local mapping, loop
+  closing and each global BA in threads of their own; a loop searched with mapping held off and
+  corrected with it stopped; global BA solving a copy of the map, stopped when a newer loop
+  supersedes it, its result otherwise carried onto the map through the spanning tree
+  (`loops.propagate_global_ba`); a lost map closed once the threads have finished its
+  keyframes. Threaded, the native programs feed the frames at their recorded rate.
+- **A view of what tracking reads:** the writers publish the keyframes tracking's next frame may
+  read (`covisibility.view_keyframes`), copied into a map of their own (`map.sub_map`), when a
+  map starts, after a keyframe's points are made, when its mapping ends and after each
+  correction; Python's view is its immutable map. A test mode, the programs' `--views`, tracks
+  each frame in order on the view a writer would publish then.
+- **ORB-SLAM's scheduling:** a keyframe is asked for only while mapping accepts one; with depth,
+  a busy mapping's local BA is interrupted and keyframes queue up to `mapping.max_queued` (3), a
+  monocular one is refused; fusion, local BA and culling run only while no keyframe waits; the
+  keyframe rule's busy branch (`keyframes.busy_ref_ratio`, 0.25).
+- **Solves that stop between iterations,** as g2o's `setForceStopFlag` stops ORB-SLAM's: rung 0's
+  least-squares solve and the factor graphs' Levenberg-Marquardt end with the termination
+  "stopped" (nls code 7, graphs code 3); local BA aborts between iterations, and global BA takes
+  a stop.
+- **ORB-SLAM's locking as C++'s baseline** (`Threading::kLocks`, `slam_it_vo --threaded
+  --locks`): the map's lock taken where ORB-SLAM takes a keyframe's or a point's, so stricter
+  than ORB-SLAM, with the same scheduling as our design.
+- **The run format, version 8:** `run.json`'s `threaded` and `locks`, and each frame's
+  handshakes (`slam_it.eval.runs.HANDSHAKES`): `wait_seconds`, `asked`, `refused`, `queue`, its
+  keyframe's `schedule`, the global BAs that ended on it (`global_ba`, `global_ba_seconds`) and
+  the views published while it was tracked (`views`).
+- **The budget judge for threads:** a threaded run's mapping judged by the keyframes asked for
+  and refused, the largest queue and the local BAs aborted, with tracking's wait for the map; a
+  run in order also by the backlog a mapping thread would build, by Lindley's recursion (PR 9's
+  panel, L8); a budget's cores pinned as physical cores (L12). `scripts/measure_testset.py`
+  takes `--threaded`, `--locks` and `--budget` and records section 13's measures;
+  `scripts/measure_sharded.py` takes `--cores`.
+
+### Changed
+
+- **`mapping.need_keyframe` takes whether mapping is idle, the frames since the last keyframe
+  and the map's keyframes,** where it assumed mapping always idle; `mapping.process` takes what
+  its thread is asked between its steps, and says how each step was scheduled.
+- **Layer 1 builds the C++ tests once more with ThreadSanitizer** (`build/tsan`) and runs them
+  with `halt_on_error`; the native threaded tests run both schemes.
+
+### Tests
+
+- The handshakes' order, held by events rather than timing, in each language
+  (`tests/edge/test_threads.py`, `cpp/tests/edge/test_threads.cpp`,
+  `rust/slam-it-edge/tests/threads.rs`).
+- The threaded pipeline in each language: every frame tracked, each keyframe mapped once, the
+  records whole, a finished run refusing frames, a stop refusing every keyframe asked, and a
+  lost map closing as in order (`tests/edge/test_pipeline_threads.py` and the native pipeline
+  tests).
+- The loop room's bar runs threaded in C++ and Rust too, fed at its rate
+  (`tests/orchestration/test_loop_room.py`).
+- `--views` runs equal the runs in order on all 27 golden-record cases, in C++ and Rust;
+  `view_keyframes` and `sub_map` on every backend.
+- The run fixture is a threaded run with locks and handshakes, which the C++ and Rust writers
+  write value for value; the golden bundles are rebaked.
+
 ## [0.3.13.0] - 2026-10-17
 
 A dashcam's recordings as SLAM It! datasets (`slam_it.eval.dashcam`, `docs/notes/dashcam.md`),

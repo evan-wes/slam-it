@@ -283,7 +283,7 @@ Each gets its own section here before its PR, its forks put to the owner then.
 - **Global BA's damping** (after B3, its own PR; B3's review panel, L2, section 11): scaled
   Levenberg-Marquardt damping in the three languages, measured on the loop sequences and the
   test set, the records regenerated.
-- **B3b** (0.3.12.0 -> 0.3.13.0, section 12): the seams, which change no decision; the threads,
+- **B3b** (0.3.13.0 -> 0.3.14.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
   review panel on the finished slice; offline CI before the merge.
@@ -630,7 +630,7 @@ alone, and runs on real data only when asked.
     after B3, measured on the loop sequences and the test set, since it changes decisions and
     the records (section 7).
 
-## 12. B3b: the threads (0.3.12.0 -> 0.3.13.0)
+## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
 Decided with evan-wes on 2026-10-17, following ORB-SLAM's papers and a reading of its source
 (ORB-SLAM3's `Tracking.cc`, `LocalMapping.cc`, `LoopClosing.cc` and `Optimizer.cc`). Until now
@@ -737,6 +737,22 @@ measures how much.
     loop's correction propagates out of the pipeline's loop closing and ends the whole run.
     Whether a failed correction should instead be recorded and the loop skipped is decided with
     B3b's design, where loop closing runs in a thread of its own.
+
+**Deferred for this PR** (decided by evan-wes on 2026-10-18: no long runs for this PR; tracked in
+the ladder's open items):
+- **Section 13's measurements** are not run for this PR: the latency bar, the accuracy threaded
+  on the loop sequences and the test set, and our design against ORB-SLAM's scheme in C++. The
+  judge and the scripts that make them are built (item 11: `scripts/measure_testset.py`'s
+  `--threaded`, `--locks` and `--budget`, and `scripts/measure_sharded.py`'s `--cores`).
+- **A flaky test, not investigated.** The loop room's bar threaded in C++, its TUM monocular
+  case (`tests/orchestration/test_loop_room.py`'s `test_every_backend_closes_the_loop_room`):
+  in one of four runs the final ATE was 8.99 cm against the 2 cm bound, and 1.54 to 1.62 cm in
+  the other three, on a busy machine; threaded runs do not repeat exactly. It was to be run about
+  20 times on a quiet machine before and after the commit that publishes a view of what
+  tracking reads in place of the whole map (item 3), and the failure rates compared; that was
+  not done, so whether the commit changed it is not known.
+- **A failed correction (item 14) is still open,** with no decision yet: whether a GTSAM failure
+  inside a loop's correction should be recorded and the loop skipped.
 
 ## 13. Measurements (B3b)
 
