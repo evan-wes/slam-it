@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.16.1] - 2026-10-19
+
+The showcase's home page shows only its runs: the demo shows the run viewer alone until public
+uploads are ready.
+
+### Changed
+
+- **`viewer/showcase.html`** no longer has its "Your own video" section linking the upload page;
+  the upload page still answers at `/upload`, with its invite code as before, unlinked from the
+  showcase. `tests/server/test_showcase.py` asserts the home page does not link it; the note and
+  the run-viewer design's section 10 say so.
+
 ## [0.3.16.0] - 2026-10-19
 
 The upload server shows runs we baked ourselves: a showcase, named by `SLAM_IT_SHOWCASE`, each
