@@ -99,10 +99,17 @@ global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
 - **A map lost** waits for local mapping and loop closing to finish the keyframes given, and
   supersedes a global BA running, before it closes; so does a map left for a kept one that
   relocalisation found the frame in.
-- *A placeholder until merging in threads is designed* (milestone 2B's B4): threaded, loop
-  closing searches each keyframe for a loop alone, never for a merge. A merge moves the active
-  map's keyframe and point ids on (:class:`slam_it.edge.loops.Merged`), and tracking's state,
-  the keyframes queued for mapping and a frame being tracked still hold the old ones.
+- **A merge** (milestone 2B's B4; the online-SLAM design, section 14, item 4, option B) is found
+  by loop closing, which searches each keyframe for one beside the loop, and made by tracking
+  between two frames (:meth:`_Threads.merge_waiting`): tracking pauses for the whole merge, as
+  ORB-SLAM3's tracking waits for its map while ``MergeLocal`` runs. A merge moves the active
+  map's keyframe and point ids on (:class:`slam_it.edge.loops.Merged`), so nothing may hold the
+  old ones across it: mapping first maps every keyframe queued, which loop closing passes by
+  while the merge waits; with mapping stopped, a global BA still running is superseded, and one
+  is started on the merged map only then; the merged view carries a new correction count; and
+  tracking's last frame takes the new ids (:meth:`TrackingState.merged`), placed by its anchor
+  keyframe on the next frame. A merge found last is made as the run finishes; one still waiting
+  when the track leaves its map is dropped with the map's loop-closing state.
 
 A frame's result is then what tracking made of it; what the threads finish later comes as
 :class:`Completion` records (:meth:`Pipeline.completed`), each naming its frame, and
@@ -140,8 +147,10 @@ from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.initialization import Initialization, InitSummary, Outcome
 from slam_it.edge.loops import (
     CorrectionSummary,
+    Detection,
     DetectionSummary,
     Merge,
+    MergeDetection,
     MergeSummary,
     Merging,
     Pending,
@@ -587,6 +596,35 @@ class TrackingState:
         self.velocity, self.lost_since = None, None
         self.failures = max(self.failures, 1)
 
+    def merged(self, keyframe_offset: int, point_offset: int, to_world: Array) -> None:
+        """Carry the last frame into the map a merge made: its ids moved on, its motions scaled.
+
+        Threaded (inline, the frame is its new keyframe's, moved with it). The merge took the map
+        tracked into the matched map's world by ``G`` (:func:`slam_it.edge.loops.merge_transform`)
+        and moved its keyframe and point ids on by its offsets. The last frame's points and its
+        anchor keyframe take their new ids, and its two motions, the velocity and its pose
+        relative to the anchor, take ``G``'s scale (1 but in monocular). The view the merge
+        published carries a new count, so the next frame first places the last one by its
+        anchor in the merged map (:meth:`follow`).
+
+        Parameters
+        ----------
+        keyframe_offset : int
+            How far the map's keyframe ids moved on.
+        point_offset : int
+            How far its point ids moved on.
+        to_world : ndarray of float64, shape (4, 4)
+            ``G``.
+        """
+        scale = loops.scale_of(to_world)
+        if self.last_tracked is not None:
+            points = _offset(self.last_tracked.points, point_offset)
+            self.last_tracked = replace(self.last_tracked, points=points)
+        if self.anchor is not None:
+            self.anchor += keyframe_offset
+        self.velocity = _scaled(self.velocity, scale)
+        self.anchor_relative = _scaled(self.anchor_relative, scale)
+
     def anchor_to(self, view: Map, row: int, corrections: int) -> None:
         """Keep the last frame's pose relative to the keyframe it was tracked against (threaded).
 
@@ -628,6 +666,28 @@ class TrackingState:
             self.move_last(self.anchor_relative @ view.kf_pose[row])
 
 
+@dataclass(frozen=True)
+class WaitingMerge:
+    """A merge loop closing found, waiting for tracking to make it at its next frame (threaded).
+
+    Attributes
+    ----------
+    index : int
+        The frame whose keyframe it was found on, counted from 0.
+    merge : slam_it.edge.loops.Merge
+        The merge.
+    summary : LoopSummary
+        Loop closing's search on that keyframe, the merge to come.
+    seconds : float
+        The search's time.
+    """
+
+    index: int
+    merge: Merge
+    summary: LoopSummary
+    seconds: float
+
+
 @dataclass
 class LoopState:
     """Loop closing's own state from keyframe to keyframe (ORB-SLAM3's ``LoopClosing``'s).
@@ -640,10 +700,14 @@ class LoopState:
         The loop being confirmed in the map, if any.
     merging : slam_it.edge.loops.Merging or None
         The merge being confirmed with another map, if any.
+    waiting : WaitingMerge or None
+        Threaded: the merge found, waiting for tracking to make it (the module docstring);
+        None inline, where a merge is made once found.
     """
 
     pending: Pending | None = None
     merging: Merging | None = None
+    waiting: WaitingMerge | None = None
 
     def held(self) -> ArrayLike:
         """Return the map's keyframes a loop or merge being confirmed holds, which culling spares.
@@ -651,12 +715,14 @@ class LoopState:
         Returns
         -------
         array_like of int
-            Their ids in the map: the loop's two, and the merge's last; none when neither is
-            being confirmed.
+            Their ids in the map: the loop's two, the merge's last, and the current keyframe of
+            a merge waiting (ORB-SLAM3's ``SetNotErase``); none when there are none.
         """
         held = [] if self.pending is None else self.pending.held.tolist()
         if self.merging is not None:
             held.append(self.merging.pending.last)
+        if self.waiting is not None:
+            held.append(self.waiting.merge.loop.current)
         return sorted(set(held))
 
 
@@ -1273,10 +1339,20 @@ def _map_keyframe(  # noqa: PLR0913 -- the map's owner, the keyframe, the settin
 
 @dataclass(frozen=True)
 class _Joined:
-    """A merge made on a keyframe: how the active map's point ids moved, and ``G``."""
+    """A merge made: how the active map's keyframe and point ids moved, and ``G``."""
 
+    keyframe_offset: int
     point_offset: int
     to_world: Array
+
+
+def _scaled(motion: Array | None, scale: float) -> Array | None:
+    """Return a motion between two cameras, its translation scaled; None kept."""
+    if motion is None:
+        return None
+    out = motion.copy()
+    out[:3, 3] *= scale
+    return out
 
 
 def _offset(ids: IntArray, offset: int) -> IntArray:
@@ -1311,21 +1387,72 @@ def _merge_maps(  # noqa: PLR0913 -- loop closing's state, the maps, the merge, 
     mode: str,
     options: Options,
 ) -> tuple[MergeSummary, _Joined]:
-    """Merge the map being tracked into the kept map a merge found.
+    """Merge the map being tracked into the kept map a merge found, mapping stopped.
+
+    The merge is :func:`_merged`'s.
+    """
+    with owner.stopped() as held:
+        return _merged(state, owner, atlas, found, held, camera=camera, mode=mode, options=options)
+
+
+def _merged(  # noqa: PLR0913 -- loop closing's state, the maps, the merge, the settings
+    state: LoopState,
+    owner: MapOwner,
+    atlas: Atlas,
+    found: Merge,
+    held: Map,
+    *,
+    camera: Camera,
+    mode: str,
+    options: Options,
+) -> tuple[MergeSummary, _Joined]:
+    """Merge `held`, the map being tracked, into the kept map a merge found; mapping stopped.
 
     By :func:`slam_it.edge.loops.merge`. The merged map is tracked on, with the matched map's
-    number and the matched map's database brought to its keyframes; the loop being confirmed
-    is carried into it.
+    number and the matched map's database brought to its keyframes, published with the
+    correction it counts (:meth:`MapOwner.apply_merge`); the loop being confirmed is carried
+    into it.
     """
     matched = next(k for k in atlas.kept() if k.number == found.map)
-    with owner.stopped() as held:
-        to_world = loops.merge_transform(held, found)
-        merged = loops.merge(held, matched.map, camera, found, mode=mode, options=options)
-        atlas.merge(found.map, merged, to_world)
-        owner.apply_merge(merged.map, matched.database)
+    to_world = loops.merge_transform(held, found)
+    merged = loops.merge(held, matched.map, camera, found, mode=mode, options=options)
+    atlas.merge(found.map, merged, to_world)
+    owner.apply_merge(merged.map, matched.database)
     if state.pending is not None:
         state.pending = _carried(state.pending, merged, to_world)
-    return merged.summary, _Joined(point_offset=merged.point_offset, to_world=to_world)
+    joined = _Joined(merged.keyframe_offset, merged.point_offset, to_world)
+    return merged.summary, joined
+
+
+def _search(  # noqa: PLR0913 -- loop closing's state, the map and its database, the settings
+    state: LoopState,
+    m: Map,
+    db: Database,
+    atlas: Atlas,
+    keyframe: int,
+    *,
+    camera: Camera,
+    mode: str,
+    options: Options,
+) -> tuple[Detection, MergeDetection | None]:
+    """Search a keyframe of `m` for a loop and, with maps kept, for a merge; carry the state.
+
+    A merge with a kept map is searched for beside the loop, and given priority over a loop
+    closed on the same keyframe (:func:`slam_it.edge.loops.merge_first`). Return the loop
+    detection, and the merge detection, None with no map kept.
+    """
+    found = loops.detect(m, db, camera, keyframe, state.pending, mode=mode, options=options)
+    others = atlas.indexed()
+    merging = None
+    if others:
+        merging = loops.detect_merge(
+            m, db, camera, keyframe, others=others, pending=state.merging, mode=mode,
+            options=options,
+        )  # fmt: skip
+        state.merging = merging.pending
+        found = loops.merge_first(found, merging)
+    state.pending = found.pending
+    return found, merging
 
 
 def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settings
@@ -1339,26 +1466,17 @@ def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settin
 ) -> tuple[LoopSummary | None, bool, _Joined | None]:
     """Loop closing's step: search the newest keyframe for a loop and for a merge, and make one.
 
-    A merge with a kept map is searched for beside the loop, and given priority over a loop
-    closed on the same keyframe (:func:`slam_it.edge.loops.merge_first`). Return how it went
-    (None when loop closing is off, there is no database, or the keyframe is the map's first),
-    whether a loop was corrected, and the merge made, if one was.
+    The search is :func:`_search`'s. Return how it went (None when loop closing is off, there is
+    no database, or the keyframe is the map's first), whether a loop was corrected, and the
+    merge made, if one was.
     """
     m, db = owner.read(), owner.database
     keyframe = int(m.kf_id[-1])
     if db is None or not options.loops.enabled or keyframe == 0:
         return None, False, None
-    found = loops.detect(m, db, camera, keyframe, state.pending, mode=mode, options=options)
-    others = atlas.indexed()
-    merging = None
-    if others:
-        merging = loops.detect_merge(
-            m, db, camera, keyframe, others=others, pending=state.merging, mode=mode,
-            options=options,
-        )  # fmt: skip
-        state.merging = merging.pending
-        found = loops.merge_first(found, merging)
-    state.pending = found.pending
+    found, merging = _search(
+        state, m, db, atlas, keyframe, camera=camera, mode=mode, options=options
+    )
     searched = None if merging is None else merging.summary
     if merging is not None and merging.merge is not None:
         made, joined = _merge_maps(
@@ -1447,6 +1565,8 @@ class _Threads:
         self._completions: list[Completion] = []
         self._global: list[threading.Thread] = []
         self._errors: list[BaseException] = []
+        # The latest global BA whose result is still to come; read and set with mapping stopped.
+        self._due: int | None = None
         self.loop_closing: Worker[tuple[int, int]] = Worker("loop closing", self._close_loops)
         self.mapping: Worker[_Request] = Worker("local mapping", self._map)
 
@@ -1571,10 +1691,86 @@ class _Threads:
         self._complete(Completion(request.index, entries, made=made))
         self.loop_closing.queue.put((request.index, keyframe))
 
+    def drain(self) -> None:
+        """Wait for mapping and loop closing to handle every keyframe given, in turn.
+
+        Raises
+        ------
+        BaseException
+            The error a thread failed with, if one did.
+        """
+        self.mapping.queue.drain()
+        self.loop_closing.queue.drain()
+        self.check()
+
+    def merge_waiting(self, tracking: TrackingState) -> float:
+        """Make the merge loop closing found, if one waits: tracking's, between two frames.
+
+        The online-SLAM design's section 14, item 4, threaded (option B): tracking pauses for
+        the whole merge, as ORB-SLAM3's tracking waits for its map while ``MergeLocal`` runs.
+        Mapping first maps every keyframe queued, which loop closing passes by while the merge
+        waits (``EmptyQueue``); then, mapping stopped, a global BA still running is superseded,
+        the merge is made as inline (:func:`_merged`) without global BA, and the merged map is
+        published with the correction it counts; a global BA starts on it only if one was
+        superseded (``bRelaunchBA``). Tracking's last frame is carried into it
+        (:meth:`TrackingState.merged`), and the merge is recorded on the frame whose keyframe
+        found it.
+
+        Parameters
+        ----------
+        tracking : TrackingState
+            Tracking's state, carried into the merged map.
+
+        Returns
+        -------
+        float
+            The time tracking waited; 0 if no merge waits.
+
+        Raises
+        ------
+        BaseException
+            The error a thread failed with, if one did.
+        """
+        waiting = self.closing.waiting
+        if waiting is None:
+            return 0.0
+        asked = time.perf_counter()
+        self.drain()
+        start = time.perf_counter()
+        copy, generation = None, 0
+        with self.owner.stopped() as held:
+            superseded = self._due is not None and self.generation.current(self._due)
+            if superseded:
+                self.generation.next()
+            made, joined = _merged(
+                self.closing, self.owner, self.atlas, waiting.merge, held, camera=self.camera,
+                mode=self.mode, options=self._inline_ba_off,
+            )  # fmt: skip
+            self.closing.waiting = None
+            self.atlas.record(self.owner.read())
+            self.owner.clear_gone()
+            if superseded:
+                generation = self._due = self.generation.next()
+                copy = self.owner.read()
+        tracking.merged(joined.keyframe_offset, joined.point_offset, joined.to_world)
+        summary = replace(waiting.summary, merge=made)
+        seconds = waiting.seconds + time.perf_counter() - start
+        entries = {"loop_seconds": seconds, "loop": summary.as_dict()}
+        self._complete(Completion(waiting.index, entries))
+        if copy is not None:
+            self._launch(copy, generation)
+        return time.perf_counter() - asked
+
     def _close_loops(self, item: tuple[int, int]) -> None:
-        """Loop closing's thread: search a keyframe for a loop, and correct one that closes."""
+        """Loop closing's thread: search a keyframe for a loop and a merge; correct a loop.
+
+        A merge found waits for tracking to make it (:meth:`merge_waiting`); until it has, the
+        keyframes mapped are passed by, their ids about to move.
+        """
         index, keyframe = item
         if self.owner.database is None or not self.options.loops.enabled or keyframe == 0:
+            return
+        if self.closing.waiting is not None:
             return
         start = time.perf_counter()
         copy, generation = None, 0
@@ -1583,11 +1779,16 @@ class _Threads:
             assert db is not None
             if keyframe not in m.kf_id:  # culled since it was mapped
                 return
-            found = loops.detect(
-                m, db, self.camera, keyframe, self.closing.pending, mode=self.mode,
+            found, merging = _search(
+                self.closing, m, db, self.atlas, keyframe, camera=self.camera, mode=self.mode,
                 options=self.options,
             )  # fmt: skip
-            self.closing.pending = found.pending
+            searched = None if merging is None else merging.summary
+            if merging is not None and merging.merge is not None:
+                summary = LoopSummary(found.summary, None, merging=searched)
+                seconds = time.perf_counter() - start
+                self.closing.waiting = WaitingMerge(index, merging.merge, summary, seconds)
+                return
             correction = None
             if found.loop is not None:
                 with self.owner.stopped() as held:
@@ -1600,17 +1801,21 @@ class _Threads:
                     self.owner.clear_gone()
                     correction = fixed.summary
                     if self.options.loops.global_ba:
-                        copy = self.owner.read()
-        summary = LoopSummary(detection=found.summary, correction=correction)
+                        copy, self._due = self.owner.read(), generation
+        summary = LoopSummary(detection=found.summary, correction=correction, merging=searched)
         seconds = time.perf_counter() - start
         self._complete(Completion(index, {"loop_seconds": seconds, "loop": summary.as_dict()}))
         if copy is not None:
-            thread = threading.Thread(
-                target=self._global_ba, args=(copy, generation), name="global BA", daemon=True
-            )
-            with self._lock:
-                self._global.append(thread)
-            thread.start()
+            self._launch(copy, generation)
+
+    def _launch(self, copy: Map, generation: int) -> None:
+        """Start a global BA of generation `generation` on `copy`, in a thread of its own."""
+        thread = threading.Thread(
+            target=self._global_ba, args=(copy, generation), name="global BA", daemon=True
+        )
+        with self._lock:
+            self._global.append(thread)
+        thread.start()
 
     def _global_ba(self, copy: Map, generation: int) -> None:
         """Solve a copy in a global BA's thread, and carry the result onto the map if still due."""
@@ -1622,6 +1827,8 @@ class _Threads:
             )  # fmt: skip
             moved = None
             with self.owner.stopped() as now:
+                if self._due == generation:  # applied or dropped now: none to supersede
+                    self._due = None
                 if self.generation.current(generation):
                     moved = loops.propagate_global_ba(now, solved)
                     self.owner.apply_correction(moved.map)
@@ -1752,9 +1959,12 @@ class Pipeline:
             raise InvalidInputError("track: the run is finished")
         start = time.perf_counter()
         tracking_map = self.state is State.TRACKING
-        step = self._track(frame) if tracking_map else self._initialize(frame)
         threads = self._threads
-        waited = step.wait_seconds
+        paused = 0.0
+        if threads is not None and tracking_map:  # a merge found is made between two frames
+            paused = threads.merge_waiting(self.tracking)
+        step = self._track(frame) if tracking_map else self._initialize(frame)
+        waited = step.wait_seconds + paused
         if threads is None:
             self.atlas.date(self.owner.map)
             self.owner.clear_gone()
@@ -1799,8 +2009,9 @@ class Pipeline:
         """End the run: threaded, wait for the threads to finish their work, then end them.
 
         Local mapping and loop closing handle every keyframe given, and each global BA running
-        ends, the latest carried onto the map; then the threads end. Inline, nothing waits.
-        No frame is tracked after.
+        ends, the latest carried onto the map; a merge found then is made
+        (:meth:`_Threads.merge_waiting`); then the threads end. Inline, nothing waits. No frame
+        is tracked after.
 
         Raises
         ------
@@ -1812,6 +2023,7 @@ class Pipeline:
             self.atlas.end()
             try:
                 self._threads.settle(apply=True)
+                self._threads.merge_waiting(self.tracking)
             finally:  # a thread's failure still ends the threads (B3b's review panel, H5)
                 self._end_threads()
         self._finished = True
@@ -1889,8 +2101,9 @@ class Pipeline:
         m, db = self.owner.close()
         reset = m.keyframes < small
         self.atlas.close(m, db, reset=reset, dated=dated)
-        # Loop closing's thread shares the state: cleared in place, the threads settled by now.
-        self.closing.pending, self.closing.merging = None, None
+        # Loop closing's thread shares the state: cleared in place, the threads settled by now. A
+        # merge waiting goes with it, as a loop being confirmed does.
+        self.closing.pending, self.closing.merging, self.closing.waiting = None, None, None
         return LostSummary(keyframes=m.keyframes, points=m.points, reset=reset)
 
     def _switch(self, number: int) -> tuple[LostSummary, float]:
