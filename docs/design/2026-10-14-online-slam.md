@@ -724,7 +724,12 @@ measures how much.
 6. **A map lost:** tracking closes it by a message to mapping, which first finishes the keyframes
    queued for it (ORB-SLAM3's `CreateMapInAtlas` does not drain them; its queued keyframes carry
    their map), and tracking starts the next map at once. A map of 10 keyframes or fewer is reset
-   only once both workers have stopped, as `ResetActiveMap` waits for them.
+   only once both workers have stopped, as `ResetActiveMap` waits for them. *As built* (B3b's
+   review panel, A5): no message; tracking settles the threads itself, on the frame that loses
+   the track: local mapping and loop closing finish the keyframes given, a global BA running is
+   superseded and waited for, and only then is the map closed, kept or reset, the next frame
+   starting the next map. Simpler, and as safe: the map is never closed under a thread still
+   working on it. Its cost is that frame's wait, recorded in its `wait_seconds`.
 7. **ORB-SLAM's own scheme, in our C++,** the baseline (section 4): its locks, held where it
    holds them. Our map has no lock per keyframe or point, so where ORB-SLAM takes those, the
    baseline takes the map's. That is stricter than ORB-SLAM, and is said beside each comparison.
