@@ -50,6 +50,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slam_it.eval import runs
+from slam_it.foundations.arrays import as_real
 from slam_it.foundations.errors import InvalidInputError
 
 STATUS = Path("/proc/self/status")
@@ -534,11 +535,27 @@ def backlog(times: NDArray[np.float64], seconds: NDArray[np.float64]) -> float:
         The largest wait ``W``, from ``W_0 = 0`` and ``W_{n+1} = max(0, W_n + S_n - A_n)``,
         ``A_n`` the time from keyframe ``n`` to the next; 0 for fewer than two keyframes.
 
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either is not one-dimensional and finite, they differ in length, the times are not
+        ascending, or a mapping time is negative.
+
     Examples
     --------
     >>> backlog(np.array([0.0, 0.5, 1.0]), np.array([0.75, 0.75, 0.75]))
     0.5
     """
+    times, seconds = as_real(times, "times"), as_real(seconds, "seconds")
+    if times.ndim != 1 or seconds.shape != times.shape:
+        raise InvalidInputError(
+            f"times, seconds: expected one mapping time per time, got shapes {times.shape} "
+            f"and {seconds.shape}"
+        )
+    if np.any(np.diff(times) < 0.0):
+        raise InvalidInputError(f"times: must be ascending, got {times.tolist()}")
+    if np.any(seconds < 0.0):
+        raise InvalidInputError(f"seconds: must not be negative, got {seconds.min()}")
     wait = longest = 0.0
     for gap, service in zip(np.diff(times), seconds[:-1], strict=True):
         wait = max(0.0, wait + float(service) - float(gap))

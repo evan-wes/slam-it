@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from functools import partial
+from typing import Any
 
 import numpy as np
 import pytest
@@ -411,6 +412,33 @@ def test_a_compiled_backend_refuses_interrupts(mapped: Mapped) -> None:
         mapping.process(
             mapped.map, CAMERA, mapped.frame, mapped.tracked, mode="rgbd", options=OPTIONS,
             interrupts=_Asked(), backend="cpp",
+        )  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("argument", "value", "message"),
+    [
+        ("idle", 1, "idle: must be a boolean"),
+        ("since_keyframe", -1, "since_keyframe: must be from 0"),
+        ("since_keyframe", True, "since_keyframe: must be an integer"),
+        ("keyframes", 0, "keyframes: must be from"),
+    ],
+)
+def test_the_keyframe_rule_refuses_a_bad_handshake_argument(
+    argument: str,
+    value: Any,  # noqa: ANN401 -- each bad value
+    message: str,
+    mapped: Mapped,
+) -> None:
+    """Mapping's state and the whole map's keyframes are checked, each by its name (H9).
+
+    B3b's review panel, H9: ``idle`` a boolean, ``since_keyframe`` a count, ``keyframes`` at
+    least the map's (the whole map holds every keyframe of its view).
+    """
+    with pytest.raises(InvalidInputError, match=message):
+        mapping.need_keyframe(
+            mapped.map, CAMERA, mapped.frame.depth, mapped.tracked, reference=mapped.reference,
+            mode="rgbd", options=OPTIONS, **{argument: value},
         )  # fmt: skip
 
 

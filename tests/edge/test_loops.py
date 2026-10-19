@@ -848,3 +848,15 @@ def test_a_global_ba_carries_what_was_made_since(backend: str, loop_rigid: Loop)
     assert (out.adjusted, out.propagated) == (now.keyframes - 1, 1)
     assert out.points == earlier.points
     assert out.carried == now.points - earlier.points > 0
+
+
+def test_a_global_ba_refuses_what_is_not_an_earlier_copy(loop_rigid: Loop) -> None:
+    """A copy that gave more ids than the map has is none of its: refused, as is no map (H9).
+
+    B3b's review panel, H9: a map gives its ids in order, so its earlier copy gave no more.
+    """
+    now = loop_rigid.map
+    with pytest.raises(InvalidInputError, match="solved: not an earlier copy of now"):
+        loops.propagate_global_ba(now, replace(now, next_pt_id=now.next_pt_id + 1))
+    with pytest.raises(InvalidInputError, match="now, solved: expected keyframes"):
+        loops.propagate_global_ba(now, maps.empty(now.levels, now.scale_factor))

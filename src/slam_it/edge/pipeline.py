@@ -605,6 +605,12 @@ class LoopState:
         return () if self.pending is None else self.pending.held
 
 
+def _counted(m: Map, visible: IntArray, found: IntArray) -> Map:
+    """Return `m` with a frame's counts added: each point seen in it once more, each found too."""
+    seen = maps.count(m, visible, visible=np.ones(len(visible), dtype=np.int64))
+    return maps.count(seen, found, found=np.ones(len(found), dtype=np.int64))
+
+
 @dataclass(frozen=True)
 class View:
     """What tracking reads of the map on a frame (:attr:`MapOwner.view`).
@@ -709,16 +715,14 @@ class MapOwner:
             with self._counting:
                 self._counts.append((visible.copy(), found.copy()))
             return
-        m = maps.count(self.read(), visible, visible=np.ones(len(visible), dtype=np.int64))
-        self._set(maps.count(m, found, found=np.ones(len(found), dtype=np.int64)))
+        self._set(_counted(self.read(), visible, found))
 
     def apply_counts(self) -> None:
         """Apply the counts tracking sent since the last (threaded; local mapping's)."""
         with self._counting:
             counts, self._counts = self._counts, []
         for visible, found in counts:
-            m = maps.count(self.read(), visible, visible=np.ones(len(visible), dtype=np.int64))
-            self._map = maps.count(m, found, found=np.ones(len(found), dtype=np.int64))
+            self._map = _counted(self.read(), visible, found)
 
     def apply_mapping(self, m: Map) -> None:
         """Take a mapping step's map, bring the database to its keyframes, and publish it.

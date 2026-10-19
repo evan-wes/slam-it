@@ -317,6 +317,23 @@ def test_judge_finds_the_backlog_a_mapping_thread_would_build() -> None:
     assert budgets.judge(_timed_run(one)).backlog == 0.0
 
 
+@pytest.mark.parametrize(
+    ("times", "seconds", "message"),
+    [
+        ([0.0, 1.0], [0.1], "expected one mapping time per time"),
+        ([1.0, 0.0], [0.1, 0.1], "times: must be ascending"),
+        ([0.0, 1.0], [0.1, -0.1], "seconds: must not be negative"),
+        ([0.0, float("nan")], [0.1, 0.1], "times"),
+    ],
+)
+def test_the_backlog_refuses_what_is_not_a_run_of_keyframes(
+    times: list[float], seconds: list[float], message: str
+) -> None:
+    """One mapping time per arrival, finite, the arrivals ascending (B3b's review panel, H9)."""
+    with pytest.raises(InvalidInputError, match=message):
+        budgets.backlog(np.array(times), np.array(seconds))
+
+
 def test_judge_measures_a_threaded_runs_mapping_as_it_ran() -> None:
     """Threaded: the queue, the keyframes refused, the local BAs aborted, tracking's wait.
 

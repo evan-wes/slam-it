@@ -1502,7 +1502,23 @@ def propagate_global_ba(now: Map, solved: Map, *, backend: str = "python") -> Pr
     -------
     Propagated
         The map moved, and how many keyframes and points each way.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either map has no keyframe, or `solved` cannot be an earlier copy of `now`: a map
+        gives its ids in order, so a copy has given no more keyframe or point ids than it.
     """
+    if not now.keyframes or not solved.keyframes:
+        raise InvalidInputError(
+            f"now, solved: expected keyframes, got {now.keyframes} and {solved.keyframes}"
+        )
+    if solved.next_kf_id > now.next_kf_id or solved.next_pt_id > now.next_pt_id:
+        raise InvalidInputError(
+            "solved: not an earlier copy of now, its next ids "
+            f"({solved.next_kf_id} keyframe, {solved.next_pt_id} point) past now's "
+            f"({now.next_kf_id}, {now.next_pt_id})"
+        )
 
     def decode(raw: Crossing, codes: backends.Codes) -> Propagated:
         counts = {name: int(raw[name]) for name in ("adjusted", "propagated", "points", "carried")}

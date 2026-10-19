@@ -53,7 +53,7 @@ from slam_it.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
 from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options, check_mode
 from slam_it.foundations import matching, triangulation
-from slam_it.foundations.arrays import as_real
+from slam_it.foundations.arrays import as_count, as_flag, as_real
 from slam_it.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
@@ -501,11 +501,18 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the mode is unknown, the map has no keyframe, the depths are infinite, or the
-        matches are not one per depth.
+        If the mode is unknown, the map has no keyframe, the depths are infinite, the matches
+        are not one per depth, `idle` is not a boolean, `since_keyframe` is not an integer of
+        0 or more, or `keyframes` is not an integer of at least `m`'s keyframes.
     """
     check_mode(mode)
     _check_newest(m)
+    idle = as_flag(idle, "idle")
+    most = int(np.iinfo(np.int64).max)
+    if since_keyframe is not None:
+        since_keyframe = as_count(since_keyframe, "since_keyframe", 0, most)
+    if keyframes is not None:  # the whole map holds every keyframe of its view
+        keyframes = as_count(keyframes, "keyframes", m.keyframes, most)
     depths = as_real(depth, "depth", allow_nan=True).reshape(-1)
     ids = np.asarray(tracked.points)
     if ids.shape != depths.shape or not np.issubdtype(ids.dtype, np.integer):
