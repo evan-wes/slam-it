@@ -8,6 +8,7 @@ import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
 import { ImageView } from "./image_view.js";
+import { LoopView } from "./loop_view.js";
 import { element, remember, remembered } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
@@ -353,6 +354,16 @@ async function main() {
   let run = null;
   let chosen = ""; // the backend last asked for, which a slower earlier load must not replace
   const playhead = new Playhead(bundle.times, show);
+  const loops = new LoopView(
+    {
+      spans: element("spans", HTMLElement),
+      top: tracks.length * SPAN_ROW,
+      previous: element("prev-loop", HTMLButtonElement),
+      next: element("next-loop", HTMLButtonElement),
+    },
+    bundle,
+    (frame) => playhead.seek(frame),
+  );
 
   /** Show the playhead's frame, for the run chosen. */
   function show() {
@@ -362,6 +373,7 @@ async function main() {
     for (const button of backends.querySelectorAll("button")) {
       button.disabled = !ran(trackOf(button.dataset.backend), frame);
     }
+    loops.show(frame);
     if (run === null) {
       return;
     }
@@ -413,6 +425,11 @@ async function main() {
     // Each shown beside the run's map where its map shares that map's frame (SceneView.show).
     scene.setOthers(tracks.filter((o) => o.name !== name));
     solver.setRun(run, tracks, info.frames, differ);
+    try {
+      loops.setRun(run);
+    } catch (error) {
+      fail(error); // the run is shown without its loops
+    }
     show();
   }
 

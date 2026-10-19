@@ -217,6 +217,13 @@ input:focus-visible {
   min-width: 3px;
   background: var(--found);
 }
+/* The chosen run's loops closed: a row of their own under the backends', each a tick. */
+.span.loop {
+  min-width: 2px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--graph-loop);
+}
 .legend.states span {
   padding: 0 5px;
   font-size: 0.64rem;
@@ -238,6 +245,9 @@ input:focus-visible {
 }
 .swatch.found {
   background: var(--found);
+}
+.swatch.loop {
+  background: var(--graph-loop);
 }
 .swatch.reset {
   background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 5px);
@@ -503,6 +513,10 @@ select {
 }
 .ghost:hover {
   color: var(--ink);
+}
+.ghost:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .toggle[aria-pressed="true"] {
   background: var(--accent-soft);

@@ -38,6 +38,26 @@
       <button type="button" class="ghost" id="play" aria-label="play">▶ play</button>
       <button type="button" class="ghost" id="prev" aria-label="previous frame">◀</button>
       <button type="button" class="ghost" id="next" aria-label="next frame">▶</button>
+      <button
+        type="button"
+        class="ghost"
+        id="prev-loop"
+        aria-label="previous loop closed"
+        title="the last loop the run closed before this frame"
+        disabled
+      >
+        ◀ loop
+      </button>
+      <button
+        type="button"
+        class="ghost"
+        id="next-loop"
+        aria-label="next loop closed"
+        title="the next loop the run closed after this frame"
+        disabled
+      >
+        loop ▶
+      </button>
       <div class="scrub">
         <div class="timeline">
           <div class="not-run" id="not-run-before" hidden></div>
@@ -65,6 +85,10 @@
           <span
             title="a frame found again: its track failed, and relocalisation placed it in its map"
             ><i class="swatch found"></i>found again</span
+          >
+          <span
+            title="each loop the chosen run closed, at the frame that corrected it, in a row under the backends'"
+            ><i class="swatch loop"></i>loop closed</span
           >
           <span title="the part of the sequence no run reached"
             ><i class="swatch not-run"></i>not run</span
