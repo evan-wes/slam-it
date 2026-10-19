@@ -3,10 +3,16 @@
 // trajectory is drawn over, or whole), its keyframes and points alive at the frame, the
 // covisibility graph if asked (each keyframe's line to its parent, the strong links, and the
 // loops closed), and the camera. Every point and keyframe sits in one buffer with the frames of its life and its map;
-// a shader hides each outside them, so scrubbing changes two numbers and rebuilds nothing.
+// a shader hides each outside them, so scrubbing changes two numbers and rebuilds nothing. A loop
+// closed can be drawn over it all, bright and thick, for the loop effect (`highlightLoop`).
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { Line2 } from "three/addons/lines/Line2.js";
+import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 
 import {
   cameraAt,
@@ -31,6 +37,7 @@ import {
   treePairs,
   truthSegments,
 } from "./geometry.js";
+import { cycleRows } from "./loops.js";
 
 const VERTEX = `
 attribute float made;
@@ -48,10 +55,11 @@ void main() {
 
 const FRAGMENT = `
 uniform vec3 colour;
+uniform float alpha;
 varying float shown;
 void main() {
   if (shown < 0.5) discard;
-  gl_FragColor = vec4(colour, 1.0);
+  gl_FragColor = vec4(colour, alpha);
 }`;
 
 /**
@@ -64,7 +72,8 @@ function colour(name) {
 }
 
 /**
- * A material that draws only what is alive at its `frame` uniform, of its `shownMap`.
+ * A material that draws only what is alive at its `frame` uniform, of its `shownMap`, opaque
+ * until its `alpha` uniform is set lower (`SceneView.setPointOpacity`).
  * @param {string} token The colour's CSS property.
  * @param {number} size A point's size, in pixels.
  * @returns {THREE.ShaderMaterial} The material.
@@ -76,6 +85,7 @@ function livingMaterial(token, size) {
       shownMap: { value: -1 },
       size: { value: size },
       colour: { value: colour(token) },
+      alpha: { value: 1 },
     },
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
@@ -120,6 +130,27 @@ function livingGeometry(positions, lives, maps, vertices) {
 
 /** A frustum's depth before any map is shown, in the trajectory's units. */
 const DEFAULT_DEPTH = 0.1;
+
+/** A highlighted loop's cycle's width, in CSS pixels: the trajectory's is 1. */
+const CYCLE_WIDTH = 4;
+
+/** A highlighted loop's edge's and its keyframes' frustums' width, in CSS pixels. */
+const LOOP_WIDTH = 2.5;
+
+/**
+ * A screen-space thick line's material, drawn over everything else and able to fade.
+ * @param {string} token The colour's CSS property.
+ * @param {number} width The line's width, in CSS pixels.
+ * @returns {LineMaterial} The material.
+ */
+function thickMaterial(token, width) {
+  return new LineMaterial({
+    color: colour(token),
+    linewidth: width,
+    transparent: true,
+    depthTest: false,
+  });
+}
 
 /** The truth's opacity: faint beside the trajectories it is read against. */
 const TRUTH_OPACITY = 0.6;
@@ -203,6 +234,18 @@ export class SceneView {
     this.path = new Float32Array(0);
     /** @type {Map<number, number>} Each map's frustum depth. */
     this.depths = new Map();
+    /** The frustums' depth, as a factor of each map's own (the keyframe size slider's). */
+    this.size = 1;
+    /** @type {THREE.BufferGeometry | null} The run's keyframes' frustums. */
+    this.keyframeGeometry = null;
+    /** The map points' opacity (the point opacity slider's), from 0 to 1. */
+    this.pointOpacity = 1;
+    /** @type {THREE.ShaderMaterial | null} The run's map points' material. */
+    this.pointMaterial = null;
+    /** @type {(Line2 | LineSegments2)[]} The loop highlighted, if any (`highlightLoop`). */
+    this.loopLines = [];
+    /** The highlighted loop's map: it is drawn only while that map is shown. */
+    this.loopMap = -1;
     new ResizeObserver(() => this.resize()).observe(box);
   }
 
@@ -223,26 +266,23 @@ export class SceneView {
     );
     this.path = centres(run.poses);
     this.trajectory.geometry.setAttribute("position", new THREE.BufferAttribute(this.path, 3));
-    this.depths = mapDepths(this.path, run.poseMaps);
-    const camera = this.bundle.info.camera;
+    this.depths = mapDepths(this.path, run.poseMaps, centres(run.keyframePoses), run.keyframeMaps);
     const keyframes = livingMaterial("--keyframe", 1);
     const points = livingMaterial("--point", 2);
     const tree = livingMaterial("--graph-tree", 1);
     const links = livingMaterial("--graph-link", 1);
     const loops = livingMaterial("--graph-loop", 1);
     this.living = [keyframes, points, tree, links, loops];
-    const frames = mapFrustums(
-      run.keyframePoses,
+    this.pointMaterial = points;
+    this.setPointOpacity(this.pointOpacity);
+    this.keyframeGeometry = livingGeometry(
+      this.keyframeFrustums(run),
+      run.keyframeLives,
       run.keyframeMaps,
-      camera,
-      this.depths,
-      DEFAULT_DEPTH,
+      FRUSTUM_SEGMENTS * 2,
     );
     this.runObjects = [
-      new THREE.LineSegments(
-        livingGeometry(frames, run.keyframeLives, run.keyframeMaps, FRUSTUM_SEGMENTS * 2),
-        keyframes,
-      ),
+      new THREE.LineSegments(this.keyframeGeometry, keyframes),
       new THREE.Points(livingGeometry(run.points, run.pointLives, run.pointMaps, 1), points),
     ];
     this.graphObjects = [
@@ -252,6 +292,60 @@ export class SceneView {
     ];
     this.runObjects.push(...this.graphObjects);
     this.scene.add(...this.runObjects);
+  }
+
+  /**
+   * A run's keyframes' frustums, each as deep as its map's depth times the size factor.
+   * @param {import("./bundle.js").Backend} run The run.
+   * @returns {Float32Array} Their vertices (`mapFrustums`).
+   */
+  keyframeFrustums(run) {
+    const depths = new Map([...this.depths].map(([map, depth]) => [map, depth * this.size]));
+    return mapFrustums(
+      run.keyframePoses,
+      run.keyframeMaps,
+      this.bundle.info.camera,
+      depths,
+      DEFAULT_DEPTH * this.size,
+    );
+  }
+
+  /**
+   * Draw the keyframes' frustums, and the camera's from the next frame shown, at a factor of
+   * each map's own depth: the keyframes' vertices rebuilt in place, their lives and maps kept.
+   * @param {number} factor The factor (the keyframe size slider's).
+   */
+  setKeyframeSize(factor) {
+    this.size = factor;
+    if (this.run === null || this.keyframeGeometry === null) {
+      return;
+    }
+    const position = /** @type {THREE.BufferAttribute} */ (
+      this.keyframeGeometry.getAttribute("position")
+    );
+    position.copyArray(this.keyframeFrustums(this.run));
+    position.needsUpdate = true;
+    this.keyframeGeometry.computeBoundingSphere(); // three.js culls the lines by it
+  }
+
+  /**
+   * Draw the map points at an opacity: below 1 they blend over what is behind them, and write no
+   * depth, so that a faint point never hides another or what is drawn after it.
+   * @param {number} opacity The opacity, from 0 to 1 (the point opacity slider's).
+   */
+  setPointOpacity(opacity) {
+    this.pointOpacity = opacity;
+    const material = this.pointMaterial;
+    if (material === null) {
+      return;
+    }
+    material.uniforms.alpha.value = opacity;
+    const transparent = opacity < 1;
+    if (material.transparent !== transparent) {
+      material.transparent = transparent;
+      material.depthWrite = !transparent;
+      material.needsUpdate = true;
+    }
   }
 
   /**
@@ -374,7 +468,8 @@ export class SceneView {
       const at = cameraAt(this.run.poses, this.run.poseFrames, frame, this.rows);
       this.current.visible = at !== null;
       if (at !== null) {
-        const lines = frustums(at.pose, this.bundle.info.camera, this.depth * 1.5);
+        const depth = this.depth * 1.5 * this.size;
+        const lines = frustums(at.pose, this.bundle.info.camera, depth);
         this.current.geometry.setAttribute("position", new THREE.BufferAttribute(lines, 3));
         if (this.follow) {
           const centre = new THREE.Vector3(at.pose[3], at.pose[7], at.pose[11]);
@@ -385,8 +480,74 @@ export class SceneView {
       }
     }
     this.showOthers(frame);
+    for (const line of this.loopLines) {
+      line.visible = this.shownMap === this.loopMap;
+    }
     this.render();
     return this.shownMap ?? null;
+  }
+
+  /**
+   * Draw a loop over the map until `clearLoop`, bright and thick in the loops' colour: its cycle
+   * (the trajectory from the frame that made its matched keyframe to the loop's frame), the edge
+   * between its two keyframes, and their frustums. It is drawn from the next frame shown (`show`),
+   * which the caller draws: a render here would only be drawn over.
+   * @param {import("./loops.js").Loop} loop The loop, of the run shown.
+   */
+  highlightLoop(loop) {
+    this.clearLoop();
+    const run = this.run;
+    if (run === null) {
+      return;
+    }
+    const [start, end] = cycleRows(loop, run.poseFrames, run.poseMaps);
+    if (end - start >= 2) {
+      const cycle = new LineGeometry();
+      cycle.setPositions(this.path.subarray(start * 3, end * 3));
+      this.loopLines.push(new Line2(cycle, thickMaterial("--graph-loop", CYCLE_WIDTH)));
+    }
+    const poses = new Float32Array(24);
+    poses.set(run.keyframePoses.subarray(loop.older * 12, loop.older * 12 + 12));
+    poses.set(run.keyframePoses.subarray(loop.newer * 12, loop.newer * 12 + 12), 12);
+    const depth = (this.depths.get(loop.map) ?? DEFAULT_DEPTH) * this.size;
+    const edge = new LineSegmentsGeometry();
+    edge.setPositions(
+      Float32Array.from([...centres(poses), ...frustums(poses, this.bundle.info.camera, depth)]),
+    );
+    this.loopLines.push(new LineSegments2(edge, thickMaterial("--graph-loop", LOOP_WIDTH)));
+    this.loopMap = loop.map;
+    for (const line of this.loopLines) {
+      line.frustumCulled = false; // its bounds are not kept up to date
+      line.renderOrder = 1; // over the transparent lines and points too
+      line.visible = this.shownMap === loop.map;
+      this.scene.add(line);
+    }
+  }
+
+  /**
+   * Fade the loop highlighted.
+   * @param {number} opacity Its opacity, from 0 to 1.
+   */
+  setLoopOpacity(opacity) {
+    for (const line of this.loopLines) {
+      line.material.opacity = opacity;
+    }
+    this.render();
+  }
+
+  /** Stop drawing the loop highlighted, if any, and free its lines. */
+  clearLoop() {
+    if (this.loopLines.length === 0) {
+      return;
+    }
+    for (const line of this.loopLines) {
+      this.scene.remove(line);
+      line.geometry.dispose();
+      line.material.dispose();
+    }
+    this.loopLines = [];
+    this.loopMap = -1;
+    this.render();
   }
 
   /**

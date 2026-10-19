@@ -217,6 +217,13 @@ input:focus-visible {
   min-width: 3px;
   background: var(--found);
 }
+/* The chosen run's loops closed: a row of their own under the backends', each a tick. */
+.span.loop {
+  min-width: 2px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--graph-loop);
+}
 .legend.states span {
   padding: 0 5px;
   font-size: 0.64rem;
@@ -239,6 +246,9 @@ input:focus-visible {
 .swatch.found {
   background: var(--found);
 }
+.swatch.loop {
+  background: var(--graph-loop);
+}
 .swatch.reset {
   background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 5px);
   opacity: 0.7;
@@ -257,6 +267,21 @@ input:focus-visible {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+/* The 3D panel's sliders, each value in a fixed width so the head holds still as they move. */
+.slider input[type="range"] {
+  width: 90px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.slider output {
+  min-width: 4ch;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+}
+#keyframe-size-value {
+  min-width: 6ch;
 }
 select {
   background: var(--surface);
@@ -383,6 +408,43 @@ select {
 .tag:empty {
   display: none;
 }
+/* The "seen before" inset: around a loop closed, the earlier pass at the same place, in the
+   frame's bottom-right corner, clear of its tag (top left), its label above it; twice as tall on
+   a click. */
+.inset {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  height: 30%;
+  padding: 0;
+  border: 2px solid var(--graph-loop);
+  background: var(--ground);
+  cursor: zoom-in;
+}
+.inset[aria-pressed="true"] {
+  height: 60%;
+  cursor: zoom-out;
+}
+.inset[hidden] {
+  display: none;
+}
+.inset canvas {
+  display: block;
+  height: 100%;
+  width: auto;
+}
+.inset span {
+  position: absolute;
+  right: -2px;
+  bottom: 100%;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  white-space: nowrap;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--graph-loop);
+}
 
 .scene-box {
   position: relative;
@@ -489,6 +551,10 @@ select {
 .ghost:hover {
   color: var(--ink);
 }
+.ghost:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 .toggle[aria-pressed="true"] {
   background: var(--accent-soft);
   color: var(--ink);
@@ -505,13 +571,20 @@ select {
 }
 .steps td {
   padding: 1px 12px 1px 0;
+  white-space: nowrap;
 }
 .steps tr:first-child td {
   font-weight: 600;
 }
+/* The summary's table: the same rows at every frame of a run, a line each, so the panel holds
+   its height while the frames play; a value too long for its line is cut, whole on hover. */
 .summary table {
   border-collapse: collapse;
   width: 100%;
+  table-layout: fixed;
+}
+.summary col.name {
+  width: 45%;
 }
 .summary th {
   text-align: left;
@@ -519,17 +592,19 @@ select {
   padding: 6px 0 2px;
   color: var(--ink);
 }
+.summary th.idle {
+  color: var(--muted);
+}
 .summary td {
   padding: 1px 0;
   border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .summary td:first-child {
   color: var(--muted);
-  width: 45%;
   cursor: help;
-}
-.summary .none {
-  color: var(--muted);
 }
 .plot {
   margin: 0;

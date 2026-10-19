@@ -52,3 +52,20 @@ test("a stopped playhead does not move", () => {
   assert.equal(head.frame, 0);
   assert.deepEqual(shown, []);
 });
+
+test("the frame shown says whether playback moved it there, or a seek", () => {
+  /** @type {[number, boolean][]} */
+  const shown = [];
+  const head = new Playhead(new Float32Array([0, 0.1, 0.2, 0.3]), (frame, played) =>
+    shown.push([frame, played]),
+  );
+  head.seek(1);
+  head.start(0);
+  head.advance(150, 1);
+  head.seek(0);
+  assert.deepEqual(shown, [
+    [1, false],
+    [2, true],
+    [0, false],
+  ]);
+});

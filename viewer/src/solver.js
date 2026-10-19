@@ -1,14 +1,15 @@
-// The solver panel's content, worked out from a backend's records: each stage's summary at a
-// frame as rows with a one-line explanation each, and the series the plots draw. No drawing.
+// The solver panel's content, worked out from a backend's records: the summary's rows, each
+// with a one-line explanation, the same at every frame of a run, each stage's values at a frame,
+// and the series the plots draw. No drawing.
 
 /**
- * A summary field: its value as shown, and what it means.
- * @typedef {{field: string, value: string, hint: string}} Row
+ * A stage's rows in a run's summary: its title, and each field with what it means.
+ * @typedef {{stage: string, title: string, fields: {field: string, hint: string}[]}} StageLayout
  */
 
 /**
- * A stage's part of a frame's summary.
- * @typedef {{stage: string, title: string, rows: Row[]}} StageRows
+ * A stage's part of a frame's summary, in its layout's order.
+ * @typedef {{ran: boolean, values: string[]}} StageValues
  */
 
 /** Each stage the diagnostics summarise, its title, and its fields' one-line explanations. */
@@ -247,27 +248,40 @@ export function valueText(field, value) {
 }
 
 /**
- * A frame's summary: how it was placed, and each stage that ran, as rows.
+ * A run's summary rows: every stage its records summarise at any frame, in the pipeline's order,
+ * each with all its fields. The same at every frame, so the panel's table keeps its shape.
  * @param {Record<string, unknown[]>} records A backend's records.
- * @param {number} k The record's index (not the bundle's frame).
- * @returns {{placedBy: string, stages: StageRows[]}} How it was placed (none: "–"), and the
- *     stages that ran, in the pipeline's order.
+ * @returns {StageLayout[]} The stages.
  */
-export function summaryAt(records, k) {
-  /** @type {StageRows[]} */
-  const stages = [];
-  for (const { stage, title, hints } of STAGES) {
+export function summaryLayout(records) {
+  return STAGES.filter(({ stage }) =>
+    (records[stage] ?? []).some((summary) => summary !== null),
+  ).map(({ stage, title, hints }) => ({
+    stage,
+    title,
+    fields: Object.entries(hints).map(([field, hint]) => ({ field, hint })),
+  }));
+}
+
+/**
+ * A frame's summary, laid out as its run's: how it was placed, and each stage's values.
+ * @param {Record<string, unknown[]>} records A backend's records.
+ * @param {number} k The record's index (not the bundle's frame); -1 for a frame not run.
+ * @param {StageLayout[]} layout The run's rows (`summaryLayout`).
+ * @returns {{placedBy: string, stages: StageValues[]}} How it was placed (none: "–"), and each
+ *     of the layout's stages: whether it ran at the frame, and its fields' values ("–" each if
+ *     it did not).
+ */
+export function summaryAt(records, k, layout) {
+  const stages = layout.map(({ stage, fields }) => {
     const summary = /** @type {Record<string, unknown> | null} */ (records[stage]?.[k] ?? null);
-    if (summary === null) {
-      continue;
-    }
-    const rows = Object.entries(hints).map(([field, hint]) => ({
-      field,
-      value: valueText(field, summary[field]),
-      hint,
-    }));
-    stages.push({ stage, title, rows });
-  }
+    return {
+      ran: summary !== null,
+      values: fields.map(({ field }) =>
+        summary === null ? "–" : valueText(field, summary[field]),
+      ),
+    };
+  });
   return { placedBy: valueText("placed_by", records.placed_by?.[k]), stages };
 }
 

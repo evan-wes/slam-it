@@ -41,13 +41,13 @@ export function countAlive(lives, frame) {
 }
 
 /**
- * The first index whose value is at least a target, in a sorted strided column.
- * @param {Int32Array} values The values.
- * @param {number} stride Values per row.
+ * The first row whose value is at least a target, in a sorted strided column.
+ * @param {ArrayLike<number>} values The values: a row's is its first, ascending by row.
+ * @param {number} stride Values per row (1 for a plain column).
  * @param {number} target The target.
  * @returns {number} The first row whose value is at least `target` (the row count if none).
  */
-function lowerBound(values, stride, target) {
+export function lowerBound(values, stride, target) {
   let lo = 0;
   let hi = values.length / stride;
   while (lo < hi) {

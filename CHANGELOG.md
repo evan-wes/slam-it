@@ -4,6 +4,81 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.15.0] - 2026-10-19
+
+The run viewer's controls, and the loops a run closed made visible: sliders for the 3D panel's
+keyframe size and map point opacity, value axes on the Solver panel's plots, a Solver panel that
+holds its height during playback, and each loop closed marked on the timeline, shown beside the
+earlier pass at the same place, and flashed over the map when the playhead arrives at it.
+
+### Added
+
+- **A keyframe size slider** in the 3D panel's head: logarithmic, from 2^-4.3 (about 1/20) to 2
+  times each map's own frustum depth, ten steps a doubling (`settings.js`), its value shown
+  ("×0.25") and remembered in the browser; it scales the camera's frustum too. Each map's own
+  depth is now capped at twice the median distance between its consecutive keyframes, still at
+  least `MIN_DEPTH` (`geometry.mapDepths`, `SPACING_SHARE`), so dense keyframes along a long run
+  no longer overlap; a run whose trajectory's share (1/40 of its extent) is the smaller keeps
+  its look.
+- **A map point opacity slider** beside it: 5% to 100% in steps of 5, 100% by default,
+  remembered; below 100% the points blend and write no depth.
+- **Value axes on the Solver panel's plots** (`axis.js`): a gutter with ticks from 0, a step of 1,
+  2, 2.5 or 5 times a power of ten apart, each labelled, faint grid lines across, and the unit
+  ("points"; "ms" on the latency plot, whose values are seconds). The deadline's dashed line is
+  labelled with its frame rate, "deadline 40 ms (25 fps)" (`format.deadline`).
+- **Loops on the timeline** (`loops.js`, `loop_view.js`): each loop the chosen run closed is
+  ticked in a row of its own under the backends' rows, at the frame whose record holds its
+  correction, checked against `keyframe_loops.npy`; its tooltip names its keyframes as the
+  records count them, in their map, and the time between their making. "◀ loop" and "loop ▶" in
+  the transport bar jump to the loop before and after the frame shown.
+- **"Seen before":** from 3 s before each loop's frame to 5 s after it, an inset in the Frame
+  panel's corner shows the earlier pass at the same place. Each frame takes the earlier frame
+  whose final pose's centre is nearest its own, among its map's frames within 10 s of the
+  matched keyframe's making, and never steps back, so the inset plays forward, labelled "seen
+  N s earlier · keyframe K". A click enlarges it; a toggle in the panel head, remembered, turns
+  it off. Its frames load through the main image's loader (`FrameImages`), with a cache of
+  their own.
+- **A loop's flash:** arriving at a loop (playing onto or across its frame, a seek onto it, the
+  loop buttons) draws its cycle (its map's trajectory from the matched keyframe's making to the
+  loop), the edge between its keyframes and their frustums over the map, thick in the loops'
+  colour (three.js's `Line2` and `LineSegments2`), for 1.5 s, then fades them over 1 s on a
+  clock of its own; meanwhile the inset plays the earlier pass from the matched keyframe on, at
+  the frames' own speed. A seek elsewhere or another backend ends it; a new loop replaces it.
+
+### Changed
+
+- **The Solver panel's tables are built once a run,** with every stage the run summarises at any
+  frame and all its fields, and a frame shown changes only their text ("–" where a stage did not
+  run, its heading muted), so the panel holds its height during playback
+  (`solver.summaryLayout`, `summaryAt(records, k, layout)`). Each value is one line, cut with an
+  ellipsis and whole on hover; "this run did not run the frame" takes the panel head's place of
+  "placed by".
+- **The import map pins three's five line modules** (`examples/jsm/lines/`) by their sha384, as
+  it pins the others.
+- **The playhead tells its callback whether playback moved it or a seek did,** which the loop's
+  flash tells apart.
+
+### Tests
+
+- The viewer's tests go from 61 to 84.
+- `viewer/tests/loops.test.js` (12): the C++ runs of the rooms' golden records that close loops
+  (`tests/fixtures/edge/room_runs_cpp.json`), held to what their own columns say (each frame
+  whose summary holds a correction, its keyframes the `keyframe_loops` row), with their tooltips
+  where every frame is tracked; a run with no loop column; a made-up run of two maps whose
+  record counts keyframes in its map, and loops the run does not hold; the loop beside a frame;
+  the inset's earlier frames on a made-up street driven twice and on the loops of the rooms
+  whose every frame is tracked (never stepping back, before the cutoff, nearer the loop's place
+  than the window's start), the window chosen where two overlap, and no earlier frames for no
+  loops or a loop whose map has no tracked poses; a loop's cycle; the flash's opacity over time
+  and the frames the inset plays meanwhile; and what each move of the playhead does to the
+  flash.
+- `viewer/tests/axis.test.js` (4): ticks and their labels, tops that are no positive number, the
+  finest step, and the deadline's text; `viewer/tests/settings.test.js` (2): both sliders'
+  ranges and the values read from storage.
+- `viewer/tests/solver.test.js` gains 2 (the run's rows, and every record's shape),
+  `viewer/tests/images_geometry.test.js` 2 (the depth cap) and `viewer/tests/playback.test.js` 1
+  (playback or a seek).
+
 ## [0.3.14.0] - 2026-10-18
 
 Milestone 2B's B3b: tracking, local mapping and loop closing in threads of their own, in the three

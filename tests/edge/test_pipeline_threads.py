@@ -207,15 +207,21 @@ def _centre(pose: NDArray[np.float64]) -> NDArray[np.float64]:
     return np.asarray(-pose[:3, :3].T @ pose[:3, 3])
 
 
-def test_tracking_reads_the_view_and_its_counts_wait_for_mapping(
-    rendered: list[room.Frame],
-) -> None:
-    """Threaded, the view changes only when published; counts reach the map through mapping."""
+def _owning(rendered: list[room.Frame]) -> tuple[Map, pipeline.MapOwner]:
+    """Return the room's first map, started inline, and a threaded owner started on it."""
     inline = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
     inline.track(_frame(rendered[0], inline))
     m = inline.owner.read()
     owner = pipeline.MapOwner(words_for(OPTIONS), Writer())
     owner.start(m)
+    return m, owner
+
+
+def test_tracking_reads_the_view_and_its_counts_wait_for_mapping(
+    rendered: list[room.Frame],
+) -> None:
+    """Threaded, the view changes only when published; counts reach the map through mapping."""
+    m, owner = _owning(rendered)
     assert _viewed(owner) is owner.map is m
     owner.count(m.pt_id[:3], m.pt_id[:2])
     assert owner.map is m  # waiting for mapping
@@ -272,11 +278,7 @@ def test_a_closed_maps_counts_never_reach_the_next(rendered: list[room.Frame]) -
     The next map numbers its points from 0 again, so a count kept across the loss would land
     on the new map's points of the same ids (B3b's review panel, H1).
     """
-    inline = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
-    inline.track(_frame(rendered[0], inline))
-    m = inline.owner.read()
-    owner = pipeline.MapOwner(words_for(OPTIONS), Writer())
-    owner.start(m)
+    m, owner = _owning(rendered)
     owner.count(m.pt_id[:3], m.pt_id[:2])
     owner.close()
     owner.start(m)  # the next map, its ids from 0 as the closed one's

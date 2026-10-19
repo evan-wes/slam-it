@@ -8,9 +8,11 @@ import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
 import { ImageView } from "./image_view.js";
-import { element } from "./page_view.js";
+import { LoopView } from "./loop_view.js";
+import { element, remember, remembered } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
+import { OPACITY_RANGE, SIZE_RANGE, opacityPercent, sizeFactor, sizeStep } from "./settings.js";
 import { SolverView } from "./solver_view.js";
 import {
   LOST,
@@ -25,6 +27,25 @@ import {
 
 /** The height of each backend's row under the frame slider, in pixels. */
 const SPAN_ROW = 4;
+
+/** Where the browser remembers the keyframe size slider's step. */
+const SIZE_KEY = "slam-it.keyframe-size";
+
+/** Where the browser remembers the point opacity slider's percentage. */
+const OPACITY_KEY = "slam-it.point-opacity";
+
+/**
+ * One of the 3D panel's sliders: its input's id (its value shown in `<id>-value`), where the
+ * browser remembers it, its range, its value from text, the text it is shown as, and what it
+ * sets.
+ * @typedef {object} Slider
+ * @property {string} id The input's id.
+ * @property {string} key Its storage key.
+ * @property {import("./settings.js").Range} range Its least and greatest values, and its step.
+ * @property {(text: string | null) => number} read Its value from text (`settings.js`).
+ * @property {(value: number) => string} text Its value as shown.
+ * @property {(value: number) => void} apply What a value sets.
+ */
 
 /**
  * How to fetch a bundle's files, from where it is served.
@@ -259,6 +280,32 @@ function bindPlayback(playhead, scrubber) {
 }
 
 /**
+ * Bind one of the 3D panel's sliders: its range, its value shown beside it and remembered in
+ * this browser where it can be (else its default), and what moving it sets.
+ * @param {Slider} slider The slider.
+ * @param {() => void} redraw Draw the 3D view again at the frame shown.
+ */
+function bindSlider({ id, key, range, read, text, apply }, redraw) {
+  const input = element(id, HTMLInputElement);
+  const shown = element(`${id}-value`, HTMLOutputElement);
+  [input.min, input.max, input.step] = range.map(String);
+  /** @param {number} value The slider's value. */
+  function set(value) {
+    shown.textContent = text(value);
+    apply(value);
+  }
+  const value = read(remembered(key));
+  input.value = String(value);
+  set(value);
+  input.addEventListener("input", () => {
+    const value = read(input.value);
+    set(value);
+    remember(key, String(value));
+    redraw();
+  });
+}
+
+/**
  * Load the bundle and run the page: its views, the backends' buttons and playback.
  * @returns {Promise<void>} Once the first backend is shown.
  */
@@ -306,7 +353,27 @@ async function main() {
   /** @type {import("./bundle.js").Backend | null} */
   let run = null;
   let chosen = ""; // the backend last asked for, which a slower earlier load must not replace
-  const playhead = new Playhead(bundle.times, show);
+  const playhead = new Playhead(bundle.times, (frame, played) => {
+    loops.moved(frame, played); // before the frame is shown: arriving at a loop sets off its effect
+    show();
+  });
+  const loops = new LoopView(
+    {
+      spans: element("spans", HTMLElement),
+      top: tracks.length * SPAN_ROW,
+      previous: element("prev-loop", HTMLButtonElement),
+      next: element("next-loop", HTMLButtonElement),
+      toggle: element("seen-before", HTMLButtonElement),
+      inset: element("inset", HTMLButtonElement),
+      picture: element("inset-image", HTMLCanvasElement),
+      label: element("inset-label", HTMLElement),
+    },
+    bundle,
+    fetchFile,
+    scene,
+    (frame) => playhead.seek(frame),
+    (error) => fail(error),
+  );
 
   /** Show the playhead's frame, for the run chosen. */
   function show() {
@@ -316,6 +383,7 @@ async function main() {
     for (const button of backends.querySelectorAll("button")) {
       button.disabled = !ran(trackOf(button.dataset.backend), frame);
     }
+    loops.show(frame).catch((error) => fail(error));
     if (run === null) {
       return;
     }
@@ -367,6 +435,11 @@ async function main() {
     // Each shown beside the run's map where its map shares that map's frame (SceneView.show).
     scene.setOthers(tracks.filter((o) => o.name !== name));
     solver.setRun(run, tracks, info.frames, differ);
+    try {
+      loops.setRun(run);
+    } catch (error) {
+      fail(error); // the run is shown without its loops
+    }
     show();
   }
 
@@ -404,6 +477,30 @@ async function main() {
     scene.fit();
     scene.render();
   });
+  /** Draw the 3D view again, alone, at the frame shown. */
+  const redrawScene = () => scene.show(playhead.frame);
+  bindSlider(
+    {
+      id: "keyframe-size",
+      key: SIZE_KEY,
+      range: SIZE_RANGE,
+      read: sizeStep,
+      text: (step) => format.factor(sizeFactor(step)),
+      apply: (step) => scene.setKeyframeSize(sizeFactor(step)),
+    },
+    redrawScene,
+  );
+  bindSlider(
+    {
+      id: "point-opacity",
+      key: OPACITY_KEY,
+      range: OPACITY_RANGE,
+      read: opacityPercent,
+      text: (percent) => format.percent(percent / 100),
+      apply: (percent) => scene.setPointOpacity(percent / 100),
+    },
+    redrawScene,
+  );
 
   /** @param {unknown} error What went wrong. */
   function fail(error) {

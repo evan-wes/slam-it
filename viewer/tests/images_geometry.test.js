@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { loadBundle } from "../src/bundle.js";
 import * as format from "../src/format.js";
 import {
+  DEPTH_SHARE,
   FRUSTUM_SEGMENTS,
   MIN_DEPTH,
   NEVER,
@@ -130,7 +131,12 @@ test("the graph's lines join keyframes' centres, alive while both keyframes are"
 test("each map's frustums are as deep as a share of its own trajectory's extent", () => {
   // Map 0 spans 4 m along x, map 1 a millimetre: its frustums are the shallowest.
   const path = new Float32Array([0, 0, 0, 4, 0, 0, 0, 0, 0, 0.001, 0, 0]);
-  const depths = mapDepths(path, new Int32Array([0, 0, 1, 1]));
+  const depths = mapDepths(
+    path,
+    new Int32Array([0, 0, 1, 1]),
+    new Float32Array(0),
+    new Int32Array(0),
+  );
   assert.deepEqual(
     [...depths],
     [
@@ -147,6 +153,49 @@ test("each map's frustums are as deep as a share of its own trajectory's extent"
     const alone = frustums(poses.subarray(k * 12, k * 12 + 12), camera, depth);
     assert.deepEqual(Array.from(lines.subarray(k * each, (k + 1) * each)), Array.from(alone));
   }
+});
+
+/**
+ * Centres along the x axis.
+ * @param {number[]} xs Their x coordinates.
+ * @returns {Float32Array} (N, 3).
+ */
+function alongX(xs) {
+  return Float32Array.from(xs.flatMap((x) => [x, 0, 0]));
+}
+
+test("dense keyframes along a long run cap their map's frustums at twice their spacing", () => {
+  // A 100 m drive tracked every 10 cm, a keyframe every 50 cm: the extent's share, 2.5 m, would
+  // reach five keyframes ahead; the cap is twice the median spacing.
+  const path = alongX(Array.from({ length: 1001 }, (_, i) => i / 10));
+  const keyframes = alongX(Array.from({ length: 201 }, (_, k) => k / 2));
+  const depths = mapDepths(path, new Int32Array(1001), keyframes, new Int32Array(201));
+  assert.equal(depths.get(0), 1);
+  // Keyframes a millimetre apart: their cap, 2 mm, gives way to `MIN_DEPTH`.
+  const close = alongX(Array.from({ length: 201 }, (_, k) => k / 1000));
+  assert.equal(mapDepths(path, new Int32Array(1001), close, new Int32Array(201)).get(0), MIN_DEPTH);
+});
+
+test("sparse keyframes, one keyframe or none apart keep the extent's share", () => {
+  // Map 0, a room: a 3 m square walked round, a keyframe every 1.5 m, so its cap (3 m) is far
+  // above the extent's share. Maps 1 to 3 each span 1 m: map 1 has one keyframe, map 2 two at
+  // one place, map 3 none.
+  const square = [0, 0, 0, 1.5, 0, 0, 3, 0, 0, 3, 1.5, 0, 3, 3, 0, 1.5, 3, 0, 0, 3, 0, 0, 1.5, 0];
+  const line = [0, 0, 0, 0.5, 0, 0, 1, 0, 0];
+  const path = Float32Array.from([...square, ...line, ...line, ...line]);
+  const maps = Int32Array.from([0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3]);
+  const keyframes = Float32Array.from([...square, 0.5, 0, 0, 1, 0, 0, 1, 0, 0]);
+  const keyframeMaps = Int32Array.from([0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 2]);
+  const depths = mapDepths(path, maps, keyframes, keyframeMaps);
+  assert.deepEqual(
+    [...depths],
+    [
+      [0, Math.hypot(3, 3, 0) * DEPTH_SHARE],
+      [1, DEPTH_SHARE],
+      [2, DEPTH_SHARE],
+      [3, DEPTH_SHARE],
+    ],
+  );
 });
 
 test("the header's numbers read in their units", () => {
