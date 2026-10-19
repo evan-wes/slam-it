@@ -69,18 +69,19 @@ frame the atlas dates what the frame made and removed.
 section 12), tracking runs in the caller's thread, and local mapping, loop closing and each
 global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
 
-- **Tracking** reads only the map's published view (:attr:`MapOwner.view`), the one it took for
-  the whole frame, and takes no lock: its counts of the points seen and found go to mapping as
-  messages, applied before its next keyframe. Python's view is its immutable map, published by
-  reference; the native pipelines publish a copy of the part tracking's next frame may read
-  (:func:`slam_it.edge.covisibility.view_keyframes`, :func:`slam_it.edge.map.sub_map`).
-  Relocalisation reads the database with mapping held off, against the view published last,
-  which the database matches, and the frame goes on with that view. A frame
-  that wants a keyframe asks for one as ORB-SLAM's ``NeedNewKeyFrame`` does: none while mapping
-  is stopped or being stopped; taken at once with mapping idle; busy, the local BA is
-  interrupted, and a stereo or RGB-D keyframe is queued while fewer than ``mapping.max_queued``
-  wait, a monocular one refused. After a correction, the last frame moves with the keyframe it
-  was tracked against.
+- **Tracking** reads only the map's published view (:attr:`MapOwner.view`), once a frame, and
+  takes no lock: the view carries the corrections applied to its map, stamped by the writer that
+  published it, and the frame's step is given that one view. Its counts of the points seen and
+  found go to mapping as messages, applied before its next keyframe. Python's view is its
+  immutable map, published by reference; the native pipelines publish a copy of the part
+  tracking's next frame may read (:func:`slam_it.edge.covisibility.view_keyframes`,
+  :func:`slam_it.edge.map.sub_map`). Relocalisation reads the database with mapping held off,
+  against the view published last, which the database matches, and the frame goes on with that
+  view. A frame that wants a keyframe asks for one as ORB-SLAM's ``NeedNewKeyFrame`` does: none
+  while mapping is stopped or being stopped; taken at once with mapping idle; busy, the local BA
+  is interrupted, and a stereo or RGB-D keyframe is queued while fewer than
+  ``mapping.max_queued`` wait, a monocular one refused. After a correction, the last frame moves
+  with the keyframe it was tracked against.
 - **Local mapping** maps each keyframe in turn, the one writer of the map while it does,
   interrupted as ORB-SLAM's ``LocalMapping::Run`` is (:class:`slam_it.edge.mapping.Interrupts`),
   publishes the map once the keyframe's points are made and again when done, and gives the
@@ -458,7 +459,8 @@ class TrackingState:
     anchor_relative : ndarray of float64, shape (4, 4) or None
         Threaded: the last frame's pose relative to it, ``T_last_anchor``.
     corrections : int
-        Threaded: the corrections of the map seen (:attr:`MapOwner.corrections`).
+        Threaded: the corrections the view the last frame was placed on carried
+        (:attr:`View.corrections`).
     """
 
     last_frame: Frame | None = None
@@ -532,7 +534,7 @@ class TrackingState:
         assert self.last_tracked is not None
         self.last_tracked = replace(self.last_tracked, pose=pose.copy())
 
-    def anchor_to(self, view: Map, row: int) -> None:
+    def anchor_to(self, view: Map, row: int, corrections: int) -> None:
         """Keep the last frame's pose relative to the keyframe it was tracked against (threaded).
 
         Parameters
@@ -541,10 +543,14 @@ class TrackingState:
             The map tracking read.
         row : int
             The keyframe's row in it.
+        corrections : int
+            The corrections the view carried (:attr:`View.corrections`): the last frame's pose
+            is in that map's world.
         """
         assert self.last_tracked is not None
         self.anchor = int(view.kf_id[row])
         self.anchor_relative = self.last_tracked.pose @ se3.inverse(view.kf_pose[row])
+        self.corrections = corrections
 
     def follow(self, view: Map, corrections: int) -> None:
         """Move the last frame with its anchor keyframe, if the map was corrected since (threaded).
@@ -557,7 +563,7 @@ class TrackingState:
         view : Map
             The map's view now.
         corrections : int
-            The corrections of the map so far.
+            The corrections that view carries (:attr:`View.corrections`), read with it.
         """
         if corrections == self.corrections:
             return
@@ -594,6 +600,26 @@ class LoopState:
         return () if self.pending is None else self.pending.held
 
 
+@dataclass(frozen=True)
+class View:
+    """What tracking reads of the map on a frame (:attr:`MapOwner.view`).
+
+    A writer publishes the map and the count of corrections applied to it together, inside its
+    turn, where the count cannot move; so a view read once is a map and the corrections it
+    carries, never one without the other (B3b's review panel, A1).
+
+    Attributes
+    ----------
+    map : Map
+        The map as published: Python's view is its immutable map, by reference.
+    corrections : int
+        The corrections applied to it (:attr:`MapOwner.corrections`).
+    """
+
+    map: Map
+    corrections: int
+
+
 @dataclass
 class MapOwner:
     """The map being tracked and its keyframe database: every change to them goes through here.
@@ -618,7 +644,7 @@ class MapOwner:
     writer: Writer | None = field(default=None, repr=False)
     corrections: int = field(default=0, init=False)
     _map: Map | None = field(default=None, init=False, repr=False)
-    _view: Map | None = field(default=None, init=False, repr=False)
+    _view: View | None = field(default=None, init=False, repr=False)
     _database: Database | None = field(default=None, init=False, repr=False)
     _counts: list[tuple[IntArray, IntArray]] = field(default_factory=list, init=False, repr=False)
     _counting: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
@@ -629,8 +655,8 @@ class MapOwner:
         return self._map
 
     @property
-    def view(self) -> Map | None:
-        """The map as last published, what tracking reads; the map itself, inline."""
+    def view(self) -> View | None:
+        """The map last published, with its corrections: what tracking reads (inline, the map)."""
         return self._view
 
     @property
@@ -657,7 +683,7 @@ class MapOwner:
         m : Map
             The new map.
         """
-        self._map = self._view = m
+        self._map, self._view = m, View(m, self.corrections)
         if self.vocabulary is not None:
             self._database = Database(self.vocabulary)
             self._sync_database()
@@ -699,10 +725,12 @@ class MapOwner:
         """
         self._map = m
         self._sync_database()
-        self._view = m
+        self._view = View(m, self.corrections)
 
     def apply_correction(self, m: Map) -> None:
-        """Take a corrected map, bring the database to its keyframes, and publish it.
+        """Take a corrected map, bring the database to its keyframes, and publish it, counted.
+
+        The correction is counted before the view is published, which carries the new count.
 
         Parameters
         ----------
@@ -711,8 +739,8 @@ class MapOwner:
         """
         self._map = m
         self._sync_database()
-        self._view = m
         self.corrections += 1
+        self._view = View(m, self.corrections)
 
     def publish(self, m: Map) -> None:
         """Publish a map for tracking to read, while its writer goes on (threaded).
@@ -722,7 +750,7 @@ class MapOwner:
         m : Map
             The map so far.
         """
-        self._view = m
+        self._view = View(m, self.corrections)
 
     def clear_gone(self) -> None:
         """Empty the map's archive of removals, once the atlas has dated them."""
@@ -790,7 +818,7 @@ class MapOwner:
         """Take a map changed in place of a step: inline, the view is the map."""
         self._map = m
         if self.writer is None:
-            self._view = m
+            self._view = View(m, self.corrections)
 
     def _sync_database(self) -> None:
         """Bring the keyframe database to the map's keyframes: add the new, erase the culled."""
@@ -852,12 +880,13 @@ class _Tracking:
     """Tracking's result on a frame: the frame tracked or None, how, and whether it asks a keyframe.
 
     ``matched`` holds the last stage's matches before refinement; ``reference`` is the frame's
-    reference keyframe's row in ``view``, the map tracking read, -1 when not tracked; ``lost``
+    reference keyframe's row in ``view.map``, ``view`` the view tracking read, -1 when not
+    tracked; ``lost``
     says the frame lost the track; ``wait_seconds``, ``asked``, ``refused`` and ``queue`` are
     :class:`FrameResult`'s.
     """
 
-    view: Map
+    view: View
     tracked: Tracked | None
     summary: FrameSummary
     matched: IntArray
@@ -935,15 +964,15 @@ def _initialize_monocular(
 
 def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the frame, the settings
     state: TrackingState,
-    m: Map,
+    view: View,
     owner: MapOwner,
     camera: Camera,
     frame: Frame,
     *,
     mode: str,
     options: Options,
-) -> tuple[Tracked | None, FrameSummary, IntArray, float, Map]:
-    """Track the last frame against `m`, the view, or recover by PnP, or relocalise.
+) -> tuple[Tracked | None, FrameSummary, IntArray, float, View]:
+    """Track the last frame against `view`, the frame's view, or recover by PnP, or relocalise.
 
     Relocalisation reads the database with mapping held off, against the view published last,
     which the database matches. Return the frame, how it was placed, the last stage's matches
@@ -952,6 +981,7 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the 
     """
     assert state.last_frame is not None
     assert state.last_tracked is not None
+    m = view.map
     # No velocity (just initialised, or after a failure): predict no motion. ORB-SLAM
     # tracks its reference keyframe by bag of words here; the lite pipeline's words only
     # relocalise.
@@ -963,22 +993,23 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the 
     summary = FrameSummary(motion=motion.summary)
     if motion.tracked is not None:
         placed_by = Placement.MOTION
-        return motion.tracked, replace(summary, placed_by=placed_by), motion.matched, 0.0, m
+        return motion.tracked, replace(summary, placed_by=placed_by), motion.matched, 0.0, view
     last = state.last_tracked.points
     recovery = tracking.relocalize_locally(m, camera, frame, last, options)
     summary = replace(summary, pnp=recovery.summary)
     if recovery.tracked is not None:
         placed_by = Placement.LOCAL_PNP
-        return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched, 0.0, m
+        return recovery.tracked, replace(summary, placed_by=placed_by), recovery.matched, 0.0, view
     if owner.database is None or not options.relocalization.enabled:
-        return None, summary, recovery.matched, 0.0, m
+        return None, summary, recovery.matched, 0.0, view
     asked = time.perf_counter()
     with owner.reading():
         held = time.perf_counter()
-        db, view = owner.database, owner.view
+        db, latest = owner.database, owner.view
         assert db is not None
-        assert view is not None
-        found = relocalization.relocalize(view, db, camera, frame, options)
+        assert latest is not None
+        view = latest
+        found = relocalization.relocalize(view.map, db, camera, frame, options)
     waited = 0.0 if owner.writer is None else held - asked
     summary = replace(summary, relocalization=found.summary)
     if found.tracked is None:
@@ -987,9 +1018,10 @@ def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the 
     return found.tracked, replace(summary, placed_by=placed_by), found.matched, waited, view
 
 
-def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the frame, the settings
+def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner and view, the frame, the settings
     state: TrackingState,
     owner: MapOwner,
+    view: View,
     camera: Camera,
     frame: Frame,
     *,
@@ -998,18 +1030,18 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
     keyframe_base: int,
     mapper: _Mapping,
 ) -> _Tracking:
-    """Tracking's step: place a frame against the map's view, track the local map, ask a keyframe.
+    """Tracking's step: place a frame against its view, track the local map, ask a keyframe.
 
-    The frame's counts go to the map through `owner`; a frame not tracked is counted as a
-    failure. `keyframe_base` is the run's id of the map's keyframe 0, for the summary; `mapper`
-    says whether local mapping takes a keyframe (the module docstring).
+    `view` is the map's view, read once for the frame. The frame's counts go to the map through
+    `owner`; a frame not tracked is counted as a failure. `keyframe_base` is the run's id of the
+    map's keyframe 0, for the summary; `mapper` says whether local mapping takes a keyframe (the
+    module docstring).
     """
     state.since_keyframe += 1
-    view = owner.view
-    assert view is not None
-    placed, summary, matched, waited, m = _place(
+    placed, summary, matched, waited, view = _place(
         state, view, owner, camera, frame, mode=mode, options=options
     )
+    m = view.map
     if summary.placed_by in (Placement.LOCAL_PNP, Placement.RELOCALIZATION):
         state.since_recovery = 0
     elif state.since_recovery is not None:
@@ -1031,9 +1063,9 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
         reference = local.reference
     if tracked is None:
         lost = state.fail(frame, m.keyframes, options)
-        return _Tracking(m, None, summary, matched, lost=lost, wait_seconds=waited)
+        return _Tracking(view, None, summary, matched, lost=lost, wait_seconds=waited)
     if recent and m.keyframes > options.tracking.max_frames:  # none just after a recovery
-        return _Tracking(m, tracked, summary, matched, reference=reference, wait_seconds=waited)
+        return _Tracking(view, tracked, summary, matched, reference=reference, wait_seconds=waited)
     idle = mapper.idle()
     asked = mapping.need_keyframe(
         m, camera, frame.depth, tracked, reference=reference, mode=mode, options=options,
@@ -1054,7 +1086,7 @@ def _track_frame(  # noqa: PLR0913 -- tracking's state, the map's owner, the fra
     if keyframe:
         state.since_keyframe = 0
     return _Tracking(
-        m, tracked, summary, matched, reference=reference, keyframe=keyframe,
+        view, tracked, summary, matched, reference=reference, keyframe=keyframe,
         wait_seconds=waited, asked=asked, refused=refused, queue=queue,
     )  # fmt: skip
 
@@ -1577,8 +1609,9 @@ class Pipeline:
         self.atlas.place_frame(m, frame.timestamp, int(m.kf_id[-1]), tracked.pose)
         self.tracking.accept(frame, tracked)
         if self._threads is not None:
-            self.tracking.anchor_to(m, m.keyframes - 1)
-            self.tracking.corrections = self.owner.corrections
+            view = self.owner.view  # the map's first, of the keyframe it started on
+            assert view is not None
+            self.tracking.anchor_to(view.map, view.map.keyframes - 1, view.corrections)
         summary = replace(summary, placed_by=Placement.INITIALIZATION)
         # Every point the frame observes was made of it.
         return _Step(tracked, keyframe=True, map_seconds=0.0, summary=summary, made=tracked.points)
@@ -1589,13 +1622,13 @@ class Pipeline:
         Threaded, a keyframe goes to local mapping's thread instead (:meth:`_hand_over`).
         """
         threads = self._threads
+        view = self.owner.view  # read once for the frame: its map and the corrections it carries
+        assert view is not None
         if threads is not None:
-            view = self.owner.view
-            assert view is not None
-            self.tracking.follow(view, self.owner.corrections)
+            self.tracking.follow(view.map, view.corrections)
         found = _track_frame(
-            self.tracking, self.owner, self.camera, frame, mode=self.mode, options=self.options,
-            keyframe_base=self.atlas.keyframe_base,
+            self.tracking, self.owner, view, self.camera, frame, mode=self.mode,
+            options=self.options, keyframe_base=self.atlas.keyframe_base,
             mapper=_Inline() if threads is None else threads,
         )  # fmt: skip
         if found.tracked is None:
@@ -1643,7 +1676,7 @@ class Pipeline:
         """Threaded: place a tracked frame, and give local mapping its keyframe if it is one."""
         tracked = found.tracked
         assert tracked is not None
-        view = found.view  # the map the frame was tracked in, its reference's row in it
+        view = found.view.map  # the map the frame was tracked in, its reference's row in it
         if found.keyframe:
             index = self.atlas.frames
             self.atlas.place_pending(index, frame.timestamp, tracked.pose)
@@ -1652,7 +1685,7 @@ class Pipeline:
             reference = int(view.kf_id[found.reference])
             self.atlas.place_frame(view, frame.timestamp, reference, tracked.pose)
         self.tracking.accept(frame, tracked)
-        self.tracking.anchor_to(view, found.reference)
+        self.tracking.anchor_to(view, found.reference, found.view.corrections)
         return _Step(
             tracked, found.keyframe, 0.0, found.summary, matched=found.matched,
             wait_seconds=found.wait_seconds, asked=found.asked, refused=found.refused,

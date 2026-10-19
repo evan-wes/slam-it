@@ -4,13 +4,14 @@
 //! map; relocalising, a kept map is lost in time and a small one in frames, and a frame the
 //! fallback cannot reach is relocalised; the final trajectory follows the keyframes, and a reset
 //! map's frames leave it. Tracking on the view a writer would publish decides as on the map, and
-//! threaded, the views published are a part of the map, their sizes kept.
+//! threaded, the views published are a part of the map, their sizes kept, and after a correction
+//! the next frame follows its keyframe.
 
 mod scene;
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_edge::frames::Frame;
-use slam_it_edge::map::Removal;
+use slam_it_edge::map::{Map, Removal};
 use slam_it_edge::options::{
     InitializationOptions, LoopOptions, Mode, Options, RelocalizationOptions,
 };
@@ -453,6 +454,78 @@ fn threaded_a_stop_refuses_every_keyframe_asked() {
         held.iter()
             .filter(|r| r.asked)
             .all(|r| r.refused && !r.keyframe)
+    );
+}
+
+/// A rigid move of the world, as a loop's correction moves a map: 20 degrees about the vertical
+/// and 0.5 m along x, far past the motion model's search.
+fn correction() -> Matrix4<f64> {
+    let (sin, cos) = 20.0_f64.to_radians().sin_cos();
+    #[rustfmt::skip]
+    let g = Matrix4::new(
+        cos, 0.0, sin, 0.5,
+        0.0, 1.0, 0.0, 0.0,
+        -sin, 0.0, cos, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    );
+    g
+}
+
+/// Moves a map's world by `g`, as a loop's correction moves it rigidly: a keyframe's
+/// `T_cam_world` becomes `T_cam_world g⁻¹`, a point `x` becomes `g x`, its viewing direction
+/// turned with it.
+fn move_world(m: &mut Map, g: &Matrix4<f64>) {
+    let inverse = g.try_inverse().unwrap();
+    let rotation = g.fixed_view::<3, 3>(0, 0).into_owned();
+    let shift = g.fixed_view::<3, 1>(0, 3).into_owned();
+    for pose in &mut m.kf_pose {
+        *pose *= inverse;
+    }
+    for x in &mut m.pt_xyz {
+        *x = rotation * *x + shift;
+    }
+    for n in &mut m.pt_normal {
+        *n = rotation * *n;
+    }
+}
+
+/// After a correction, the next frame follows its keyframe
+/// (`test_after_a_correction_the_next_frame_follows_its_keyframe`, B3b's review panel, A1): the
+/// map corrected under a stop, the view published with it carries the new count; the next frame,
+/// tracked on the one view it reads, moves its last frame with its keyframe first, so the motion
+/// model places it, on the path in the corrected world.
+#[test]
+fn threaded_after_a_correction_the_next_frame_follows_its_keyframe() {
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), asking(), None, Threading::View).unwrap();
+    track_path(&mut pipeline, 0..FRAMES / 2);
+    let g = correction();
+    {
+        let owner = pipeline.owner();
+        let before = owner.view().unwrap().corrections;
+        let corrected = owner
+            .stopped(|m| {
+                move_world(m, &g);
+                Ok(Some(()))
+            })
+            .unwrap();
+        assert!(corrected.is_some());
+        let after = owner.view().unwrap();
+        assert_eq!(
+            after.corrections,
+            before + 1,
+            "the view carries the new count"
+        );
+        assert_eq!(after.corrections, owner.corrections());
+    }
+    let next = track_path(&mut pipeline, FRAMES / 2..FRAMES / 2 + 1);
+    pipeline.finish().unwrap();
+    assert_eq!(next[0].summary.placed_by, Some(Placement::Motion));
+    let expected = along(FRAMES / 2) * g.try_inverse().unwrap();
+    let pose = next[0].pose.expect("the frame tracked");
+    assert!(
+        (pose - expected).abs().max() < 1e-6,
+        "on the path, in the corrected world"
     );
 }
 

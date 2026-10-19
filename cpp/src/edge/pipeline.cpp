@@ -731,11 +731,12 @@ void ask_mapping(Tracking& out, PipelineThreads* threads, bool idle, Mode mode,
   }
 }
 
-/// @brief Tracking's step (`slam_it.edge.pipeline._track_frame`): place a frame against the
-///        map's view, track the local map, and ask for a keyframe; a frame not tracked is
-///        counted as a failure.
+/// @brief Tracking's step (`slam_it.edge.pipeline._track_frame`): place a frame against its
+///        view, track the local map, and ask for a keyframe; a frame not tracked is counted as a
+///        failure.
 /// @param state Tracking's state.
 /// @param owner The map's owner, given the frame's counts.
+/// @param view The map's view, read once for the frame.
 /// @param camera The camera.
 /// @param frame The frame.
 /// @param mode The sensor mode.
@@ -743,11 +744,10 @@ void ask_mapping(Tracking& out, PipelineThreads* threads, bool idle, Mode mode,
 /// @param keyframe_base The run's id of the map's keyframe 0, for the summary.
 /// @param threads The threads, asked whether mapping takes a keyframe; null inline.
 /// @return How tracking went; a stage's error, or `InvalidInput` with no map.
-Result<Tracking> track_step(TrackingState& state, MapOwner& owner, const Camera& camera,
+Result<Tracking> track_step(TrackingState& state, MapOwner& owner, View view, const Camera& camera,
                             const Frame& frame, Mode mode, const Options& options,
                             std::int64_t keyframe_base, PipelineThreads* threads) {
   ++state.since_keyframe;
-  View view = owner.view();
   if (!view.map) {
     return fail(ErrorKind::kInvalidInput, "track: no map to track against");
   }
@@ -927,13 +927,15 @@ void move_last(TrackingState& state, const Eigen::Matrix4d& pose) {
   }
 }
 
-void anchor_to(TrackingState& state, const Map& view, std::size_t row) {
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (row, corrections), as Python's
+void anchor_to(TrackingState& state, const Map& view, std::size_t row, std::int64_t corrections) {
   if (!state.last_tracked) {
     return;
   }
   state.anchor = view.kf_id[row];
   state.anchor_relative =
       Eigen::Matrix4d(state.last_tracked->pose * foundations::sim3::inverse(view.kf_pose[row]));
+  state.corrections = corrections;
 }
 
 void follow(TrackingState& state, const Map& view, std::int64_t corrections) {
@@ -990,9 +992,10 @@ View MapOwner::view() const {
     }
     return view_of(points, reference);
   }
-  // The map itself, not owned.
+  // The map itself, not owned; tracking holds the baseline's lock, so no correction runs now.
   return {.map = std::shared_ptr<const Map>(std::shared_ptr<const Map>(), &*map_),
-          .keyframes = static_cast<std::int64_t>(keyframe_count(*map_))};
+          .keyframes = static_cast<std::int64_t>(keyframe_count(*map_)),
+          .corrections = corrections_.load()};
 }
 
 View MapOwner::view_of(std::span<const std::int64_t> points, std::int64_t reference) const {
@@ -1003,7 +1006,8 @@ View MapOwner::view_of(std::span<const std::int64_t> points, std::int64_t refere
   const auto rows = view_keyframes(m, points, reference, options_);
   // Tracking's points are ids, -1 where none, which view_keyframes takes: it cannot fail here.
   return {.map = std::make_shared<const Map>(rows ? sub_map(m, *rows) : m),
-          .keyframes = static_cast<std::int64_t>(keyframe_count(m))};
+          .keyframes = static_cast<std::int64_t>(keyframe_count(m)),
+          .corrections = corrections_.load()};
 }
 
 void MapOwner::anchor(std::vector<std::int64_t> points, std::int64_t reference) {
@@ -1068,11 +1072,8 @@ Result<void> MapOwner::apply_counts() {
 }
 
 Result<void> MapOwner::corrected() {
-  if (auto ok = changed(); !ok) {
-    return ok;
-  }
-  ++corrections_;
-  return {};
+  ++corrections_;  // counted first: the view published next carries the new count
+  return changed();
 }
 
 void MapOwner::publish(const Map& m) {
@@ -1084,8 +1085,10 @@ void MapOwner::publish(const Map& m) {
     reference = anchor_reference_;
   }
   const auto rows = view_keyframes(m, points, reference, options_);
+  // A writer publishes in its turn, where no correction runs: the count is the map's.
   View made{.map = std::make_shared<const Map>(rows ? sub_map(m, *rows) : m),
-            .keyframes = static_cast<std::int64_t>(keyframe_count(m))};
+            .keyframes = static_cast<std::int64_t>(keyframe_count(m)),
+            .corrections = corrections_.load()};
   Completion done;
   done.frame = clock_ ? clock_() : 0;
   done.view = size_of(*made.map);
@@ -1357,8 +1360,7 @@ Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
   if (threads_) {
     const View view = owner.view();  // the map's first view, of the keyframe it started on
     const std::int64_t newest = keyframe_row(*view.map, first);
-    anchor_to(tracking_, *view.map, static_cast<std::size_t>(newest));
-    tracking_.corrections = owner.corrections();
+    anchor_to(tracking_, *view.map, static_cast<std::size_t>(newest), view.corrections);
   }
   step.made = tracked.points;  // every point the frame observes was made of it
   step.tracked = std::move(tracked);
@@ -1399,9 +1401,10 @@ Result<Pipeline::Keyframed> Pipeline::make_keyframe(const Map& m, const Frame& f
   return out;
 }
 
-Result<void> Pipeline::hand_over(const Frame& frame, const Map& view, const Tracked& tracked,
+Result<void> Pipeline::hand_over(const Frame& frame, const View& seen, const Tracked& tracked,
                                  std::int64_t reference, bool keyframe) {
   Atlas& atlas = shared_->atlas();
+  const Map& view = *seen.map;
   const std::int64_t row =
       reference >= 0 ? reference : static_cast<std::int64_t>(keyframe_count(view)) - 1;
   const auto k = static_cast<std::size_t>(row);
@@ -1415,7 +1418,7 @@ Result<void> Pipeline::hand_over(const Frame& frame, const Map& view, const Trac
   if (auto ok = accept(tracking_, frame, tracked); !ok) {
     return ok;
   }
-  anchor_to(tracking_, view, k);
+  anchor_to(tracking_, view, k, seen.corrections);
   shared_->owner().anchor(tracked.points, view.kf_id[k]);  // what the next views follow
   return {};
 }
@@ -1426,12 +1429,12 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   const std::unique_lock<std::mutex> lock = owner.locked();  // the baseline's, through the frame
   // The baseline's tracking waits for the map's lock as ours waits for a hold: its wait.
   const double locked = lock.owns_lock() ? Seconds(Clock::now() - asked).count() : 0.0;
-  if (threads_) {
-    if (const View view = owner.view(); view.map) {
-      follow(tracking_, *view.map, owner.corrections());
-    }
+  // Read once for the frame: the map and the corrections it carries, published together.
+  View view = owner.view();
+  if (threads_ && view.map) {
+    follow(tracking_, *view.map, view.corrections);
   }
-  auto found = track_step(tracking_, owner, camera_, frame, mode_, options_,
+  auto found = track_step(tracking_, owner, std::move(view), camera_, frame, mode_, options_,
                           shared_->atlas().keyframe_base(), threads_.get());
   if (!found) {
     return std::unexpected(std::move(found.error()));
@@ -1455,8 +1458,7 @@ Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
   const Tracked& tracked = *found->tracked;
   step.keyframe = found->keyframe;
   if (threads_) {
-    if (auto ok = hand_over(frame, *found->view.map, tracked, found->reference, found->keyframe);
-        !ok) {
+    if (auto ok = hand_over(frame, found->view, tracked, found->reference, found->keyframe); !ok) {
       return std::unexpected(std::move(ok.error()));
     }
     step.tracked = std::move(found->tracked);

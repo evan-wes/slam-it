@@ -192,13 +192,18 @@ struct FrameResult {
   std::optional<Schedule> schedule;
 };
 
-/// @brief What tracking reads of the map on a frame (`MapOwner::view`).
+/// @brief What tracking reads of the map on a frame (`MapOwner::view`,
+///        `slam_it.edge.pipeline.View`): a writer publishes the map and the corrections applied
+///        to it together, inside its turn, where the count cannot move, so a view read once
+///        never has one without the other.
 struct View {
   /// @brief The map itself (inline), or the part of it a writer published: those keyframes,
   ///        their keypoints and points, ids kept (`sub_map`). Never changed after.
   std::shared_ptr<const Map> map;
   /// @brief The whole map's keyframes, which tracking's rules count.
   std::int64_t keyframes{0};
+  /// @brief The corrections applied to it (`MapOwner::corrections`).
+  std::int64_t corrections{0};
 };
 
 /// @brief A published view's size, as a run records it.
@@ -270,7 +275,8 @@ struct TrackingState {
   std::optional<std::int64_t> anchor;
   /// @brief Threaded: the last frame's pose relative to it, `T_last_anchor`.
   std::optional<Eigen::Matrix4d> anchor_relative;
-  /// @brief Threaded: the corrections of the map seen (`MapOwner::corrections`).
+  /// @brief Threaded: the corrections the view the last frame was placed on carried
+  ///        (`View::corrections`).
   std::int64_t corrections{0};
 };
 
@@ -310,7 +316,9 @@ void move_last(TrackingState& state, const Eigen::Matrix4d& pose);
 /// @param state Tracking's state, its last frame tracked.
 /// @param view The map tracking read.
 /// @param row The keyframe's row in it.
-void anchor_to(TrackingState& state, const Map& view, std::size_t row);
+/// @param corrections The corrections the view carried (`View::corrections`): the last frame's
+///        pose is in that map's world.
+void anchor_to(TrackingState& state, const Map& view, std::size_t row, std::int64_t corrections);
 
 /// @brief Move the last frame with its anchor keyframe, if the map was corrected since
 ///        (`slam_it.edge.pipeline.TrackingState.follow`, threaded): ORB-SLAM's
@@ -318,7 +326,7 @@ void anchor_to(TrackingState& state, const Map& view, std::size_t row);
 ///        correction, as inline only the keyframe's own frame moves.
 /// @param state Tracking's state.
 /// @param view The map's view now.
-/// @param corrections The corrections of the map so far.
+/// @param corrections The corrections that view carries (`View::corrections`), read with it.
 void follow(TrackingState& state, const Map& view, std::int64_t corrections);
 
 /// @brief Loop closing's own state from keyframe to keyframe (`slam_it.edge.pipeline.LoopState`,
@@ -367,8 +375,9 @@ class MapOwner {
   /// @return The map, if any.
   [[nodiscard]] const std::optional<Map>& map() const { return map_; }
 
-  /// @brief What tracking reads: the view last published, threaded; inline and in the baseline,
-  ///        the map itself (not owned, valid while the map is), or a view made now (`views`).
+  /// @brief What tracking reads, once a frame: the view last published, threaded; inline and in
+  ///        the baseline, the map itself (not owned, valid while the map is), or a view made now
+  ///        (`views`). Each carries the corrections applied to its map.
   /// @return The view; its map null with no map.
   [[nodiscard]] View view() const;
 
@@ -513,8 +522,9 @@ class MapOwner {
     return std::forward<Step>(step)(*map_);
   }
 
-  /// @brief Take the map as corrected, inside the handshake (`stopped`): bring the database to
-  ///        its keyframes, publish it, and count the correction.
+  /// @brief Take the map as corrected, inside the handshake (`stopped`): count the correction,
+  ///        then bring the database to its keyframes and publish it, the view carrying the new
+  ///        count.
   /// @return Nothing; the database's error.
   foundations::Result<void> corrected();
 
@@ -678,6 +688,11 @@ class Pipeline {
   /// @return The writer; null inline.
   [[nodiscard]] threads::Writer* writer() const { return shared_->writer(); }
 
+  /// @brief The map's owner: a test corrects the map through it, as loop closing does
+  ///        (`MapOwner::apply_correction`).
+  /// @return The owner.
+  [[nodiscard]] MapOwner& owner() { return shared_->owner(); }
+
   /// @brief Where the pipeline is: never `kLost`, which a lost frame's result has.
   /// @return The state.
   [[nodiscard]] State state() const { return state_; }
@@ -823,12 +838,12 @@ class Pipeline {
 
   /// @brief Threaded: place a tracked frame, and give local mapping its keyframe if it is one.
   /// @param frame The frame.
-  /// @param view The map tracking read.
+  /// @param seen The view tracking read, with the corrections it carries.
   /// @param tracked Its pose and matches.
   /// @param reference Its reference keyframe's row in the view.
   /// @param keyframe Whether it becomes a keyframe.
   /// @return Nothing; an error if the last pose cannot be inverted.
-  foundations::Result<void> hand_over(const Frame& frame, const Map& view, const Tracked& tracked,
+  foundations::Result<void> hand_over(const Frame& frame, const View& seen, const Tracked& tracked,
                                       std::int64_t reference, bool keyframe);
 
   /// @brief Map a tracked frame as a keyframe, place it, and close loops on it.

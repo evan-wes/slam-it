@@ -5,11 +5,14 @@
 ///        frame starting a new map; relocalising, a kept map is lost in time and a small one in
 ///        frames, and a frame the fallback cannot reach is relocalised. Tracking on the view a
 ///        writer would publish decides as on the map, and threaded, the views published are a
-///        part of the map, their sizes kept.
+///        part of the map, their sizes kept, and after a correction the next frame follows its
+///        keyframe.
+#include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <tuple>
@@ -524,6 +527,80 @@ void check_a_stop_refuses_keyframes(edge::Threading threading, int& failures) {
       failures);
 }
 
+/// @brief A rigid move of the world, as a loop's correction moves a map: 20 degrees about the
+///        vertical and 0.5 m along x, far past the motion model's search.
+/// @return The move, `G`.
+Eigen::Matrix4d correction() {
+  Eigen::Matrix4d g = Eigen::Matrix4d::Identity();
+  g.topLeftCorner<3, 3>() =
+      Eigen::AngleAxisd(20.0 * std::numbers::pi / 180.0, Eigen::Vector3d::UnitY())
+          .toRotationMatrix();
+  g(0, 3) = 0.5;
+  return g;
+}
+
+/// @brief Move a map's world by `g`, as a loop's correction moves it rigidly: a keyframe's
+///        `T_cam_world` becomes `T_cam_world G⁻¹`, a point `x` becomes `G x`, its viewing
+///        direction turned with it.
+/// @param m The map, changed in place.
+/// @param g The move.
+/// @return True: the map was corrected.
+slam_it::foundations::Result<bool> move_world(edge::Map& m, const Eigen::Matrix4d& g) {
+  const Eigen::Matrix4d inverse = g.inverse();
+  const Eigen::Matrix3d rotation = g.topLeftCorner<3, 3>();
+  const Eigen::Vector3d shift = g.topRightCorner<3, 1>();
+  for (Eigen::Matrix4d& pose : m.kf_pose) {
+    pose = Eigen::Matrix4d(pose * inverse);
+  }
+  for (Eigen::Vector3d& x : m.pt_xyz) {
+    x = (rotation * x) + shift;
+  }
+  for (Eigen::Vector3d& n : m.pt_normal) {
+    n = rotation * n;
+  }
+  return true;
+}
+
+/// @brief The view tracking would read now: the baseline's under the map's lock, which its
+///        tracking holds, as mapping changes the map in place.
+/// @param owner The map's owner.
+/// @return The view.
+edge::View view_now(const edge::MapOwner& owner) {
+  const std::unique_lock<std::mutex> lock = owner.locked();
+  return owner.view();
+}
+
+/// @brief Check a correction followed
+/// (`test_after_a_correction_the_next_frame_follows_its_keyframe`,
+///        B3b's review panel, A1): the map corrected under a stop, the view published with it
+///        carries the new count; the next frame, tracked on the one view it reads, moves its
+///        last frame with its keyframe first, so the motion model places it, on the path in
+///        the corrected world.
+/// @param threading Our design or the baseline.
+/// @param failures Running failure count.
+void check_a_correction_followed(edge::Threading threading, int& failures) {
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(), std::nullopt, threading);
+  std::vector<edge::FrameResult> results;
+  bool ok = pipeline && track_path(*pipeline, 0, kFrames / 2, results);
+  const Eigen::Matrix4d g = correction();
+  if (ok) {
+    edge::MapOwner& owner = pipeline->owner();
+    const std::int64_t before = view_now(owner).corrections;
+    const auto corrected = owner.apply_correction([&g](edge::Map& m) { return move_world(m, g); });
+    const edge::View after = view_now(owner);
+    ok = corrected && after.corrections == before + 1 && after.corrections == owner.corrections();
+  }
+  ok = ok && track_path(*pipeline, kFrames / 2, (kFrames / 2) + 1, results) && pipeline->finish();
+  const edge::FrameResult* next = ok ? &results.back() : nullptr;
+  const Eigen::Matrix4d expected = along(kFrames / 2) * g.inverse();
+  expect(
+      next != nullptr && next->summary.placed_by == edge::Placement::kMotion && next->pose &&
+          (*next->pose - expected).cwiseAbs().maxCoeff() < 1e-6,
+      threaded_check("after a correction, the next frame follows its keyframe", threading).c_str(),
+      failures);
+}
+
 /// @brief Check a lost map threaded (`test_a_lost_map_settles_the_threads_then_closes`): the
 ///        threads settle, then it closes as inline, kept, and the next frame starts map 1.
 /// @param failures Running failure count.
@@ -574,6 +651,7 @@ int run_tests() {
   for (const edge::Threading threading : {edge::Threading::kView, edge::Threading::kLocks}) {
     check_threaded(threading, failures);
     check_a_stop_refuses_keyframes(threading, failures);
+    check_a_correction_followed(threading, failures);
   }
   check_lost_threaded(failures);
   return slam_it::testing::finish("edge/pipeline", failures);

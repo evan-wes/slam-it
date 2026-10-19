@@ -232,7 +232,9 @@ pub struct FrameResult {
     pub schedule: Option<Schedule>,
 }
 
-/// What tracking reads of the map on a frame ([`MapOwner::view`]).
+/// What tracking reads of the map on a frame ([`MapOwner::view`], `slam_it.edge.pipeline.View`):
+/// a writer publishes the map and the corrections applied to it together, inside its turn, where
+/// the count cannot move, so a view read once never has one without the other.
 #[derive(Debug, Clone)]
 pub struct View {
     /// The map itself (inline), or the part of it a writer published: those keyframes, their
@@ -240,6 +242,8 @@ pub struct View {
     pub map: Arc<Map>,
     /// The whole map's keyframes, which tracking's rules count.
     pub keyframes: usize,
+    /// The corrections applied to it ([`MapOwner::corrections`]).
+    pub corrections: u64,
 }
 
 /// A published view's size, as a run records it.
@@ -440,7 +444,8 @@ pub struct TrackingState {
     pub anchor: Option<i64>,
     /// Threaded: the last frame's pose relative to it, `T_last_anchor`.
     pub anchor_relative: Option<Matrix4<f64>>,
-    /// Threaded: the corrections of the map seen ([`MapOwner::corrections`]).
+    /// Threaded: the corrections the view the last frame was placed on carried
+    /// ([`View::corrections`]).
     pub corrections: u64,
 }
 
@@ -519,14 +524,17 @@ impl TrackingState {
     ///
     /// * `view` - The map tracking read.
     /// * `row` - The keyframe's row in it.
+    /// * `corrections` - The corrections the view carried ([`View::corrections`]): the last
+    ///   frame's pose is in that map's world.
     ///
     /// # Errors
     ///
     /// An error if the keyframe's pose cannot be inverted.
-    pub fn anchor_to(&mut self, view: &Map, row: usize) -> Result<()> {
+    pub fn anchor_to(&mut self, view: &Map, row: usize, corrections: u64) -> Result<()> {
         if let Some(last) = &self.last_tracked {
             self.anchor = Some(view.kf_id[row]);
             self.anchor_relative = Some(last.pose * se3::inverse(&view.kf_pose[row])?);
+            self.corrections = corrections;
         }
         Ok(())
     }
@@ -539,7 +547,7 @@ impl TrackingState {
     /// # Arguments
     ///
     /// * `view` - The map's view now.
-    /// * `corrections` - The corrections of the map so far.
+    /// * `corrections` - The corrections that view carries ([`View::corrections`]), read with it.
     pub fn follow(&mut self, view: &Map, corrections: u64) {
         if corrections == self.corrections {
             return;
@@ -690,8 +698,9 @@ impl MapOwner {
         self.writer.is_some() || self.views
     }
 
-    /// What tracking reads: threaded, the view last published; inline, the map itself, or a view
-    /// made now ([`Threading::InlineView`]).
+    /// What tracking reads, once a frame: threaded, the view last published; inline, the map
+    /// itself, or a view made now ([`Threading::InlineView`]). Each carries the corrections
+    /// applied to its map.
     ///
     /// # Returns
     ///
@@ -709,6 +718,7 @@ impl MapOwner {
         Some(View {
             map: Arc::clone(m),
             keyframes: m.keyframes(),
+            corrections: self.corrections(),
         })
     }
 
@@ -728,9 +738,12 @@ impl MapOwner {
         // Tracking's points are ids, -1 where none, which view_keyframes takes: it cannot fail.
         let rows = covisibility::view_keyframes(m, points, reference, &self.options)
             .unwrap_or_else(|_| (0..m.keyframes()).collect());
+        // Made in a writer's turn or under a hold, where no correction runs: the count is the
+        // map's.
         View {
             map: Arc::new(map::sub_map(m, &rows)),
             keyframes: m.keyframes(),
+            corrections: self.corrections(),
         }
     }
 
@@ -873,12 +886,13 @@ impl MapOwner {
             add_counts(writable(m)?, visible, found)?;
             return Ok(view);
         }
-        let keyframes = view.keyframes;
+        let (keyframes, corrections) = (view.keyframes, view.corrections);
         drop(view);
         add_counts(writable(m)?, visible, found)?;
         Ok(View {
             map: Arc::clone(m),
             keyframes,
+            corrections,
         })
     }
 
@@ -931,8 +945,9 @@ impl MapOwner {
     /// The handshake: runs a change on the map held, mapping stopped and its local BA aborted,
     /// then mapping released, as ORB-SLAM's loop closing does (`RequestStop`, `Release`; a
     /// global BA running is superseded by the caller's new generation). A change that gives a
-    /// value corrected the map: its database is brought to it, a view is published, and the
-    /// correction counted. Inline nothing runs beside the change, so there is nothing to stop.
+    /// value corrected the map: the correction is counted, then its database is brought to it
+    /// and a view published, carrying the new count. Inline nothing runs beside the change, so
+    /// there is nothing to stop.
     /// Loop corrections, global BAs' results and milestone 2B's B4's merges all enter here.
     ///
     /// # Arguments
@@ -957,8 +972,9 @@ impl MapOwner {
         };
         let out = step(writable(m)?)?;
         if out.is_some() {
-            self.changed(&mut held)?;
+            // Counted first: the view published next carries the new count.
             self.corrections.fetch_add(1, Ordering::SeqCst);
+            self.changed(&mut held)?;
         }
         Ok(out)
     }
@@ -1371,14 +1387,15 @@ fn ask_mapping(
     }
 }
 
-/// Tracking's step (`slam_it.edge.pipeline._track_frame`): places a frame against the map's
-/// view, tracks the local map, counts its points through the owner, and asks for a keyframe; a
-/// frame not tracked is counted as a failure.
+/// Tracking's step (`slam_it.edge.pipeline._track_frame`): places a frame against its view,
+/// tracks the local map, counts its points through the owner, and asks for a keyframe; a frame
+/// not tracked is counted as a failure.
 ///
 /// # Arguments
 ///
 /// * `state` - Tracking's state.
 /// * `owner` - The map's owner, given the frame's counts.
+/// * `view` - The map's view, read once for the frame.
 /// * `camera` - The camera.
 /// * `frame` - The frame.
 /// * `mode` - The sensor mode.
@@ -1395,11 +1412,12 @@ fn ask_mapping(
 /// A stage's error, or `InvalidInput` with no map.
 #[allow(
     clippy::too_many_arguments,
-    reason = "tracking's state, the map's owner, the frame, the settings and the threads"
+    reason = "tracking's state, the map's owner and view, the frame, the settings and the threads"
 )]
 fn track_step(
     state: &mut TrackingState,
     owner: &MapOwner,
+    mut view: View,
     camera: &Camera,
     frame: &Frame,
     mode: Mode,
@@ -1408,9 +1426,6 @@ fn track_step(
     threads: Option<&Threads>,
 ) -> Result<Tracking> {
     state.since_keyframe += 1;
-    let Some(mut view) = owner.view() else {
-        return fail(ErrorKind::InvalidInput, "track: no map to track against");
-    };
     let Placed {
         tracked: placed,
         mut summary,
@@ -2318,6 +2333,17 @@ impl Pipeline {
         self.shared.owner.writer.clone()
     }
 
+    /// The map's owner: a test corrects the map through it, as loop closing does
+    /// ([`MapOwner::stopped`]).
+    ///
+    /// # Returns
+    ///
+    /// The owner.
+    #[must_use]
+    pub fn owner(&self) -> &MapOwner {
+        &self.shared.owner
+    }
+
     /// Tracks one frame (and maps, if it becomes a keyframe; threaded, local mapping is given
     /// it).
     ///
@@ -2540,8 +2566,7 @@ impl Pipeline {
             && let Some(row) = view.map.keyframe_row(reference)
         {
             // The map's first view, of the keyframe it started on.
-            self.tracking.anchor_to(&view.map, row)?;
-            self.tracking.corrections = self.shared.owner.corrections();
+            self.tracking.anchor_to(&view.map, row, view.corrections)?;
         }
         summary.placed_by = Some(Placement::Initialization);
         Ok(Step {
@@ -2569,16 +2594,18 @@ impl Pipeline {
     ///
     /// A stage's error.
     fn track_frame(&mut self, frame: &Frame) -> Result<Step> {
-        if self.threads.is_some()
-            && let Some(view) = self.shared.owner.view()
-        {
-            self.tracking
-                .follow(&view.map, self.shared.owner.corrections());
+        // Read once for the frame: the map and the corrections it carries, published together.
+        let Some(view) = self.shared.owner.view() else {
+            return fail(ErrorKind::InvalidInput, "track: no map to track against");
+        };
+        if self.threads.is_some() {
+            self.tracking.follow(&view.map, view.corrections);
         }
         let keyframe_base = lock(&self.shared.atlas).keyframe_base();
         let mut found = track_step(
             &mut self.tracking,
             &self.shared.owner,
+            view,
             &self.camera,
             frame,
             self.mode,
@@ -2600,7 +2627,7 @@ impl Pipeline {
         };
         step.keyframe = found.keyframe;
         if self.threads.is_some() {
-            self.hand_over(frame, &view.map, &tracked, reference, found.keyframe)?;
+            self.hand_over(frame, &view, &tracked, reference, found.keyframe)?;
             step.tracked = Some(tracked);
             return Ok(step);
         }
@@ -2637,7 +2664,7 @@ impl Pipeline {
     /// # Arguments
     ///
     /// * `frame` - The frame.
-    /// * `view` - The map tracking read.
+    /// * `seen` - The view tracking read, with the corrections it carries.
     /// * `tracked` - Its pose and matches.
     /// * `reference` - Its reference keyframe's row in the view.
     /// * `keyframe` - Whether it becomes a keyframe.
@@ -2648,11 +2675,12 @@ impl Pipeline {
     fn hand_over(
         &mut self,
         frame: &Frame,
-        view: &Map,
+        seen: &View,
         tracked: &Tracked,
         reference: usize,
         keyframe: bool,
     ) -> Result<()> {
+        let view = &*seen.map;
         {
             let mut atlas = lock(&self.shared.atlas);
             if keyframe {
@@ -2671,7 +2699,7 @@ impl Pipeline {
             }
         }
         self.tracking.accept(frame, tracked)?;
-        self.tracking.anchor_to(view, reference)?;
+        self.tracking.anchor_to(view, reference, seen.corrections)?;
         // What the next views follow.
         self.shared
             .owner
