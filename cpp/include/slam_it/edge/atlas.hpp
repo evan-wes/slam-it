@@ -103,8 +103,9 @@ class Atlas {
   void end();
 
   /// @brief The maps kept, not being tracked, by number, each with its database (empty when the
-  ///        run does not relocalise). Read and changed by tracking's thread alone (`close`,
-  ///        `resume`) and, inline, by loop closing's merge.
+  ///        run does not relocalise). Changed by tracking's thread alone (`close`, `resume`,
+  ///        `merge`), between frames with the threads settled or drained, and read by it and,
+  ///        threaded, by loop closing's search, which those changes wait for: so unlocked.
   /// @return The maps.
   [[nodiscard]] std::span<const Indexed> kept() const { return kept_; }
 

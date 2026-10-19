@@ -72,6 +72,132 @@ Result<void> add_counts(Map& m, const std::vector<std::int64_t>& visible,
   return edge::count(m, found, untracked, tracked);
 }
 
+/// @brief Ids moved on by an offset, -1 (none) kept.
+/// @param ids The ids, changed in place.
+/// @param offset The offset.
+void offset_ids(std::vector<std::int64_t>& ids, std::int64_t offset) {
+  for (std::int64_t& id : ids) {
+    id = id >= 0 ? id + offset : id;
+  }
+}
+
+/// @brief A merge made (`slam_it.edge.pipeline._Joined`): how it went, how the active map's
+///        keyframe and point ids moved on, and `G`.
+struct Joined {
+  /// @brief How it went.
+  loops::MergeSummary summary;
+  /// @brief How far the active map's keyframe ids moved on.
+  std::int64_t keyframe_offset{0};
+  /// @brief How far its point ids moved on.
+  std::int64_t point_offset{0};
+  /// @brief `G`, carrying the active map into the matched map's world.
+  Eigen::Matrix4d to_world{Eigen::Matrix4d::Identity()};
+};
+
+/// @brief A loop being confirmed in the active map, as it stands in the merged map
+///        (`slam_it.edge.pipeline._carried`): its ids moved on by the merge's offsets, its
+///        similarity carried into the matched map's world, `S G^-1`.
+/// @param pending The loop, changed in place.
+/// @param merged The merge.
+/// @param to_world `G`.
+void carry_through(loops::Pending& pending, const loops::Merged& merged,
+                   const Eigen::Matrix4d& to_world) {
+  pending.matched += merged.keyframe_offset;
+  pending.last += merged.keyframe_offset;
+  pending.similarity = pending.similarity * foundations::sim3::inverse(to_world);
+  offset_ids(pending.points, merged.point_offset);
+  offset_ids(pending.matched_points, merged.point_offset);
+}
+
+/// @brief Merge `m`, the map being tracked, held with mapping stopped, into the kept map a
+///        merge found (`slam_it.edge.pipeline._merged`), by `loops::merge`: the merged map is
+///        tracked on, with the matched map's number and database, published with the
+///        correction it counts (`MapOwner::take_merged`); the loop being confirmed is carried
+///        into it.
+/// @param state Loop closing's state.
+/// @param owner The map's owner.
+/// @param atlas The atlas, holding the matched map.
+/// @param m The map being tracked, held: the owner's, which the merged map then replaces.
+/// @param camera The camera.
+/// @param found The merge.
+/// @param mode The sensor mode.
+/// @param options The settings.
+/// @return The merge made; a stage's error.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the maps' holders, as Python's
+Result<Joined> merge_held(LoopState& state, MapOwner& owner, Atlas& atlas, const Map& m,
+                          const Camera& camera, const loops::Merge& found, Mode mode,
+                          const Options& options) {
+  const std::span<const Indexed> others = atlas.kept();
+  const auto matched = std::ranges::find(others, found.map, &Indexed::number);
+  if (matched == others.end()) {
+    return fail(ErrorKind::kInvalidInput, "merge: the matched map is not kept");
+  }
+  auto to_world = loops::merge_transform(m, found);
+  if (!to_world) {
+    return std::unexpected(std::move(to_world.error()));
+  }
+  auto merged = loops::merge(m, matched->map, camera, found, name(mode), options);
+  if (!merged) {
+    return std::unexpected(std::move(merged.error()));
+  }
+  Database database = atlas.merge(found.map, *to_world);  // the matched map leaves the kept
+  if (auto ok = owner.take_merged(std::move(merged->map), std::move(database),
+                                  merged->keyframe_offset, merged->point_offset);
+      !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  if (state.pending) {
+    carry_through(*state.pending, *merged, *to_world);
+  }
+  return Joined{.summary = std::move(merged->summary),
+                .keyframe_offset = merged->keyframe_offset,
+                .point_offset = merged->point_offset,
+                .to_world = *to_world};
+}
+
+/// @brief A keyframe searched (`search`): for a loop, and with maps kept, for a merge.
+struct Found {
+  /// @brief The loop detection, a loop dropped for a merge found on the keyframe.
+  loops::Detection loop;
+  /// @brief The merge detection; none with no map kept.
+  std::optional<loops::MergeDetection> merging;
+};
+
+/// @brief Search a keyframe of `m` for a loop and, with maps kept, for a merge, and carry loop
+///        closing's state on (`slam_it.edge.pipeline._search`): a merge goes before a loop
+///        closed on the same keyframe (`loops::merge_first`).
+/// @param state Loop closing's state, carried on.
+/// @param m The map.
+/// @param db Its database.
+/// @param atlas The atlas: the maps kept.
+/// @param camera The camera.
+/// @param keyframe The keyframe, by `m`'s id.
+/// @param mode The sensor mode.
+/// @param options The settings.
+/// @return The two detections; a stage's error.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the map's holders, as Python's
+Result<Found> search(LoopState& state, const Map& m, const Database& db, const Atlas& atlas,
+                     const Camera& camera, std::int64_t keyframe, Mode mode,
+                     const Options& options) {
+  auto found = loops::detect(m, db, camera, keyframe, state.pending, name(mode), options);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
+  }
+  std::optional<loops::MergeDetection> merging;
+  if (const std::span<const Indexed> others = atlas.kept(); !others.empty()) {
+    auto searched =
+        loops::detect_merge(m, db, camera, keyframe, others, state.merging, name(mode), options);
+    if (!searched) {
+      return std::unexpected(std::move(searched.error()));
+    }
+    state.merging = searched->pending;
+    *found = loops::merge_first(std::move(*found), *searched);
+    merging = std::move(*searched);
+  }
+  state.pending = std::move(found->pending);
+  return Found{.loop = std::move(*found), .merging = std::move(merging)};
+}
+
 }  // namespace
 
 /// @brief Local mapping, loop closing and the global BAs, each in a thread of its own
@@ -212,7 +338,86 @@ class PipelineThreads {
     loop_closing_.stop();
   }
 
+  /// @brief Make the merge loop closing found, if one waits: tracking's, between two frames
+  ///        (`slam_it.edge.pipeline._Threads.merge_waiting`; the online-SLAM design's section
+  ///        14, item 4, threaded: option B). Tracking pauses for the whole merge, as
+  ///        ORB-SLAM3's tracking waits for its map while `MergeLocal` runs. Mapping first maps
+  ///        every keyframe queued, which loop closing passes by while the merge waits
+  ///        (`EmptyQueue`); then, mapping stopped, a global BA still running is superseded,
+  ///        the merge is made as inline (`merge_held`) without global BA, and the merged map
+  ///        is published with the correction it counts; a global BA starts on it only if one
+  ///        was superseded (`bRelaunchBA`). Tracking's last frame is carried into it
+  ///        (`merged`), and the merge is recorded on the frame whose keyframe found it.
+  /// @param tracking Tracking's state, carried into the merged map.
+  /// @return The time tracking waited, 0 if no merge waits; the error a thread failed with,
+  ///         or the merge's.
+  Result<double> merge_waiting(TrackingState& tracking) {
+    if (!waiting_.load()) {
+      return 0.0;
+    }
+    const auto asked = Clock::now();
+    if (auto ok = drain(); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
+    const auto start = Clock::now();
+    std::optional<WaitingMerge> waiting;
+    Started started;
+    auto made = owner_.stopped([&](Map& m) -> Result<std::optional<Joined>> {
+      waiting = std::exchange(closing_.waiting, std::nullopt);
+      waiting_ = false;
+      if (!waiting) {
+        return std::nullopt;
+      }
+      const bool superseded = due_ && generation_.current(*due_);
+      if (superseded) {
+        generation_.next();
+      }
+      auto joined = merge_held(closing_, owner_, atlas_, m, camera_, waiting->merge, mode_,
+                               without_global_ba_);
+      if (!joined) {
+        return std::unexpected(std::move(joined.error()));
+      }
+      atlas_.record(&m);  // the merged map, taken where the map was
+      owner_.clear_gone();
+      if (superseded) {
+        started.generation = generation_.next();
+        started.superseded = generation_.stop();
+        started.copy = m;
+        due_ = started.generation;
+      }
+      return std::optional<Joined>(std::move(*joined));
+    });
+    if (!made) {
+      return std::unexpected(std::move(made.error()));
+    }
+    if (!*made || !waiting) {
+      return Seconds(Clock::now() - asked).count();
+    }
+    const Joined& joined = **made;
+    merged(tracking, joined.keyframe_offset, joined.point_offset, joined.to_world);
+    waiting->summary.merge = joined.summary;
+    Completion done;
+    done.frame = waiting->index;
+    done.loop_seconds = waiting->seconds + Seconds(Clock::now() - start).count();
+    done.loop = std::move(waiting->summary);
+    complete(std::move(done));
+    launch(std::move(started));
+    return Seconds(Clock::now() - asked).count();
+  }
+
+  /// @brief Drop a merge waiting: the map it would merge was left (`Pipeline::leave`, loop
+  ///        closing's state cleared with the threads settled).
+  void drop_merge() { waiting_ = false; }
+
  private:
+  /// @brief Wait for mapping and loop closing to handle every keyframe given, in turn.
+  /// @return Nothing; the error a thread failed with.
+  Result<void> drain() {
+    mapping_.drain();
+    loop_closing_.drain();
+    return check();
+  }
+
   /// @brief The handshake between the threads.
   /// @return The owner's writer.
   [[nodiscard]] threads::Writer& writer() const { return *owner_.writer(); }
@@ -312,13 +517,15 @@ class PipelineThreads {
     return {};
   }
 
-  /// @brief Loop closing's thread: search a keyframe for a loop with mapping held off, and
-  ///        correct one that closes with mapping stopped, without global BA, which then solves
-  ///        a copy of the map in a thread of its own.
+  /// @brief Loop closing's thread: search a keyframe for a loop and a merge with mapping held
+  ///        off, and correct a loop that closes with mapping stopped, without global BA, which
+  ///        then solves a copy of the map in a thread of its own. A merge found waits for
+  ///        tracking to make it (`merge_waiting`); until it has, the keyframes mapped are passed
+  ///        by, their ids about to move.
   /// @param item The keyframe.
   /// @return Nothing; a step's error.
   Result<void> close_loops(Searched& item) {
-    if (!options_.loops.enabled || item.keyframe == 0) {
+    if (!options_.loops.enabled || item.keyframe == 0 || waiting_.load()) {
       return {};
     }
     const auto start = Clock::now();
@@ -331,21 +538,30 @@ class PipelineThreads {
       if (!current || !db || keyframe_row(*current, item.keyframe) < 0) {
         return false;  // not relocalising, or culled since it was mapped
       }
-      auto found = loops::detect(*current, *db, camera_, item.keyframe, closing_.pending,
-                                 name(mode_), options_);
+      auto found = search(closing_, *current, *db, atlas_, camera_, item.keyframe, mode_, options_);
       if (!found) {
         return std::unexpected(std::move(found.error()));
       }
-      closing_.pending = std::move(found->pending);
-      summary.detection = std::move(found->summary);
-      if (!found->loop) {
+      summary.detection = std::move(found->loop.summary);
+      if (found->merging) {
+        summary.merging = found->merging->summary;
+        if (found->merging->merge) {  // recorded once tracking has made it
+          closing_.waiting = WaitingMerge{.index = item.index,
+                                          .merge = std::move(*found->merging->merge),
+                                          .summary = std::move(summary),
+                                          .seconds = Seconds(Clock::now() - start).count()};
+          waiting_ = true;
+          return false;
+        }
+      }
+      if (!found->loop.loop) {
         return true;
       }
       if (!owner_.publishing()) {
-        later = std::move(found->loop);
+        later = std::move(found->loop.loop);
         return true;
       }
-      auto fixed = correct_loop(*found->loop, started);
+      auto fixed = correct_loop(*found->loop.loop, started);
       if (!fixed) {
         return std::unexpected(std::move(fixed.error()));
       }
@@ -355,7 +571,7 @@ class PipelineThreads {
     if (!searched) {
       return std::unexpected(std::move(searched.error()));
     }
-    if (!*searched) {
+    if (!*searched) {  // not relocalising, culled since it was mapped, or a merge waiting
       return {};
     }
     if (later) {
@@ -370,26 +586,35 @@ class PipelineThreads {
     done.loop_seconds = Seconds(Clock::now() - start).count();
     done.loop = std::move(summary);
     complete(std::move(done));
-    if (started.copy) {
-      std::thread thread([this, solving = std::move(*started.copy), generation = started.generation,
-                          stop = std::move(started.superseded)] mutable {
-        global_ba(std::move(solving), generation, stop.get());
-      });
-      const std::scoped_lock lock(mutex_);
-      global_.push_back(std::move(thread));
-    }
+    launch(std::move(started));
     return {};
   }
 
-  /// @brief A global BA started by a loop's correction.
+  /// @brief A global BA started by a loop's correction, or by a merge in place of one it
+  ///        superseded.
   struct Started {
-    /// @brief The map as the correction left it, which global BA solves (`loops.global_ba`).
+    /// @brief The map as the correction or merge left it, which global BA solves
+    ///        (`loops.global_ba`).
     std::optional<Map> copy;
     /// @brief Its generation.
     std::int64_t generation{0};
     /// @brief Its stop flag, set once a newer generation starts.
     std::shared_ptr<const std::atomic<bool>> superseded;
   };
+
+  /// @brief Start a global BA in a thread of its own, if one was started.
+  /// @param started Its copy of the map, generation and stop flag; no copy, none.
+  void launch(Started started) {
+    if (!started.copy) {
+      return;
+    }
+    std::thread thread([this, solving = std::move(*started.copy), generation = started.generation,
+                        stop = std::move(started.superseded)] mutable {
+      global_ba(std::move(solving), generation, stop.get());
+    });
+    const std::scoped_lock lock(mutex_);
+    global_.push_back(std::move(thread));
+  }
 
   /// @brief Correct a loop with mapping stopped, without global BA, and take the copy global BA
   ///        solves.
@@ -416,6 +641,7 @@ class PipelineThreads {
       owner_.clear_gone();
       if (options_.loops.global_ba) {
         started.copy = m;
+        due_ = started.generation;
       }
       return std::optional<loops::CorrectionSummary>(std::move(*corrected));
     });
@@ -449,6 +675,9 @@ class PipelineThreads {
     std::optional<loops::Propagated> moved;
     std::int64_t frame = 0;
     auto applied = owner_.stopped([&](Map& m) -> Result<void> {
+      if (due_ == generation) {  // applied or dropped now: none to supersede
+        due_.reset();
+      }
       if (generation_.current(generation)) {
         auto carried = loops::propagate_global_ba(m, copy);
         if (!carried) {
@@ -494,6 +723,12 @@ class PipelineThreads {
   Options without_global_ba_;
   /// @brief The global BAs' generations.
   threads::Generation generation_;
+  /// @brief The latest global BA whose result is still to come; read and set with mapping
+  ///        stopped.
+  std::optional<std::int64_t> due_;
+  /// @brief Whether a merge waits for tracking (`LoopState::waiting`): set by loop closing,
+  ///        cleared by tracking as it makes it, read by both without a hold.
+  std::atomic<bool> waiting_{false};
   /// @brief Guards the fields below.
   mutable std::mutex mutex_;
   /// @brief The completions not yet taken.
@@ -522,15 +757,6 @@ void mark(Fates& fates, Fate fate, const std::vector<std::int64_t>& ids, const A
       fates.fate[j] = fate;
       fates.point[j] = atlas.point_run_id(ids[j]);
     }
-  }
-}
-
-/// @brief Ids moved on by an offset, -1 (none) kept.
-/// @param ids The ids, changed in place.
-/// @param offset The offset.
-void offset_ids(std::vector<std::int64_t>& ids, std::int64_t offset) {
-  for (std::int64_t& id : ids) {
-    id = id >= 0 ? id + offset : id;
   }
 }
 
@@ -931,24 +1157,8 @@ struct Looped {
   std::optional<std::int64_t> point_offset;
 };
 
-/// @brief A loop being confirmed in the active map, as it stands in the merged map
-///        (`slam_it.edge.pipeline._carried`): its ids moved on by the merge's offsets, its
-///        similarity carried into the matched map's world, `S G^-1`.
-/// @param pending The loop, changed in place.
-/// @param merged The merge.
-/// @param to_world `G`.
-void carry_through(loops::Pending& pending, const loops::Merged& merged,
-                   const Eigen::Matrix4d& to_world) {
-  pending.matched += merged.keyframe_offset;
-  pending.last += merged.keyframe_offset;
-  pending.similarity = pending.similarity * foundations::sim3::inverse(to_world);
-  offset_ids(pending.points, merged.point_offset);
-  offset_ids(pending.matched_points, merged.point_offset);
-}
-
-/// @brief Merge the map being tracked into the kept map a merge found
-///        (`slam_it.edge.pipeline._merge_maps`): the merged map is tracked on, with the matched
-///        map's number and database; the loop being confirmed is carried into it.
+/// @brief Merge the map being tracked into the kept map a merge found, mapping stopped
+///        (`slam_it.edge.pipeline._merge_maps`; the merge is `merge_held`'s).
 /// @param state Loop closing's state.
 /// @param owner The map's owner.
 /// @param atlas The atlas, holding the matched map.
@@ -956,37 +1166,12 @@ void carry_through(loops::Pending& pending, const loops::Merged& merged,
 /// @param found The merge.
 /// @param mode The sensor mode.
 /// @param options The settings.
-/// @return The merge's summary, and its point offset; a stage's error.
+/// @return The merge made; a stage's error.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the maps' holders, as Python's
-Result<std::pair<loops::MergeSummary, std::int64_t>> merge_maps(LoopState& state, MapOwner& owner,
-                                                                Atlas& atlas, const Camera& camera,
-                                                                const loops::Merge& found,
-                                                                Mode mode, const Options& options) {
-  const std::span<const Indexed> others = atlas.kept();
-  const auto matched = std::ranges::find(others, found.map, &Indexed::number);
-  if (matched == others.end()) {
-    return fail(ErrorKind::kInvalidInput, "merge: the matched map is not kept");
-  }
-  Eigen::Matrix4d to_world;
-  auto merged = owner.stopped([&](Map& m) -> Result<loops::Merged> {
-    auto transform = loops::merge_transform(m, found);
-    if (!transform) {
-      return std::unexpected(std::move(transform.error()));
-    }
-    to_world = *transform;
-    return loops::merge(m, matched->map, camera, found, name(mode), options);
-  });
-  if (!merged) {
-    return std::unexpected(std::move(merged.error()));
-  }
-  Database database = atlas.merge(found.map, to_world);  // the matched map leaves the kept
-  if (auto ok = owner.take_merged(std::move(merged->map), std::move(database)); !ok) {
-    return std::unexpected(std::move(ok.error()));
-  }
-  if (state.pending) {
-    carry_through(*state.pending, *merged, to_world);
-  }
-  return std::pair{std::move(merged->summary), merged->point_offset};
+Result<Joined> merge_maps(LoopState& state, MapOwner& owner, Atlas& atlas, const Camera& camera,
+                          const loops::Merge& found, Mode mode, const Options& options) {
+  return owner.stopped(
+      [&](Map& m) { return merge_held(state, owner, atlas, m, camera, found, mode, options); });
 }
 
 /// @brief Loop closing's step (`slam_it.edge.pipeline._close_loops`): search the newest
@@ -1001,7 +1186,6 @@ Result<std::pair<loops::MergeSummary, std::int64_t>> merge_maps(LoopState& state
 /// @return How it went (none when loop closing is off, there is no database, or the keyframe
 ///         is the map's first), whether a loop was corrected, and the merge's point offset if
 ///         one was made; a stage's error.
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): Python's _close_loops, step for step
 Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, const Camera& camera,
                            Mode mode, const Options& options) {
   const std::optional<Map>& current = owner.map();
@@ -1010,23 +1194,12 @@ Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, cons
     return Looped{};
   }
   const std::int64_t keyframe = current->kf_id.back();
-  auto found = loops::detect(*current, *db, camera, keyframe, state.pending, name(mode), options);
-  if (!found) {
-    return std::unexpected(std::move(found.error()));
+  auto searched = search(state, *current, *db, atlas, camera, keyframe, mode, options);
+  if (!searched) {
+    return std::unexpected(std::move(searched.error()));
   }
-  std::optional<loops::MergeDetection> merging;
-  if (const std::span<const Indexed> others = atlas.kept(); !others.empty()) {
-    auto searched = loops::detect_merge(*current, *db, camera, keyframe, others, state.merging,
-                                        name(mode), options);
-    if (!searched) {
-      return std::unexpected(std::move(searched.error()));
-    }
-    state.merging = searched->pending;
-    *found = loops::merge_first(std::move(*found), *searched);
-    merging = std::move(*searched);
-  }
-  state.pending = std::move(found->pending);
-  LoopSummary summary{.detection = std::move(found->summary),
+  auto& [found, merging] = *searched;
+  LoopSummary summary{.detection = std::move(found.summary),
                       .correction = std::nullopt,
                       .merging = merging ? std::optional(merging->summary) : std::nullopt,
                       .merge = std::nullopt};
@@ -1035,11 +1208,12 @@ Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, cons
     if (!made) {
       return std::unexpected(std::move(made.error()));
     }
-    summary.merge = std::move(made->first);
-    return Looped{.summary = std::move(summary), .corrected = false, .point_offset = made->second};
+    summary.merge = std::move(made->summary);
+    return Looped{
+        .summary = std::move(summary), .corrected = false, .point_offset = made->point_offset};
   }
-  if (found->loop) {
-    const loops::Loop& loop = *found->loop;
+  if (found.loop) {
+    const loops::Loop& loop = *found.loop;
     auto fixed = owner.apply_correction(
         [&](Map& m) { return loops::correct(m, camera, loop, name(mode), options); });
     if (!fixed) {
@@ -1161,11 +1335,31 @@ void change_map(TrackingState& state) {
   state.failures = std::max<std::int64_t>(state.failures, 1);
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the merge's two offsets, as Python's
+void merged(TrackingState& state, std::int64_t keyframe_offset, std::int64_t point_offset,
+            const Eigen::Matrix4d& to_world) {
+  const double scale = loops::scale_of(to_world);
+  if (state.last_tracked) {
+    offset_ids(state.last_tracked->points, point_offset);
+  }
+  if (state.anchor) {
+    *state.anchor += keyframe_offset;
+  }
+  for (std::optional<Eigen::Matrix4d>* motion : {&state.velocity, &state.anchor_relative}) {
+    if (*motion) {
+      (*motion)->block<3, 1>(0, 3) *= scale;
+    }
+  }
+}
+
 std::vector<std::int64_t> held(const LoopState& state) {
   std::vector<std::int64_t> out =
       state.pending ? loops::held(*state.pending) : std::vector<std::int64_t>{};
   if (state.merging) {
     out.push_back(state.merging->pending.last);
+  }
+  if (state.waiting) {
+    out.push_back(state.waiting->merge.loop.current);
   }
   std::ranges::sort(out);
   const auto [first, last] = std::ranges::unique(out);
@@ -1345,10 +1539,19 @@ void MapOwner::resume(Map m, std::optional<Database> database) {
   database_ = vocabulary_ ? std::move(database) : std::nullopt;
 }
 
-Result<void> MapOwner::take_merged(Map m, Database database) {
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the merge's two offsets, as Python's
+Result<void> MapOwner::take_merged(Map m, Database database, std::int64_t keyframe_offset,
+                                   std::int64_t point_offset) {
   map_ = std::move(m);
   if (vocabulary_) {
     database_ = std::move(database);
+  }
+  {
+    const std::scoped_lock lock(view_mutex_);  // where tracking was, by the merged map's ids
+    offset_ids(anchor_points_, point_offset);
+    if (anchor_reference_ >= 0) {
+      anchor_reference_ += keyframe_offset;
+    }
   }
   ++corrections_;  // counted first, as a correction: the view published next carries the new count
   return changed();
@@ -1444,7 +1647,7 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
   const auto start = Clock::now();
   // Between frames the state is never kLost: a lost track closes its map on its frame.
   const bool tracking_map = state_ == State::kTracking;
-  auto stepped = tracking_map ? track_frame(frame) : initialize(frame);
+  auto stepped = tracking_map ? merge_then_track(frame) : initialize(frame);
   if (!stepped) {
     return std::unexpected(std::move(stepped.error()));
   }
@@ -1511,6 +1714,11 @@ Result<void> Pipeline::finish() {
     finished_ = true;
     shared_->atlas().end();
     auto settled = threads_->settle(true);
+    if (settled) {  // a merge found last is made
+      if (auto made = threads_->merge_waiting(tracking_); !made) {
+        settled = std::unexpected(std::move(made.error()));
+      }
+    }
     threads_->stop();
     return settled;
   }
@@ -1546,6 +1754,9 @@ LostSummary Pipeline::leave(bool dated, std::int64_t small) {
     shared_->atlas().close(std::move(*m), std::move(database), out.reset, dated);
   }
   shared_->closing() = LoopState{};  // shared with loop closing's thread, settled by now
+  if (threads_) {
+    threads_->drop_merge();  // with the loop-closing state it was in
+  }
   return out;
 }
 
@@ -1709,6 +1920,22 @@ Result<void> Pipeline::hand_over(const Frame& frame, const View& seen, const Tra
   anchor_to(tracking_, view, k, seen.corrections);
   shared_->owner().anchor(tracked.points, view.kf_id[k]);  // what the next views follow
   return {};
+}
+
+Result<Pipeline::Step> Pipeline::merge_then_track(const Frame& frame) {
+  double paused = 0.0;
+  if (threads_) {  // a merge found is made between two frames
+    auto made = threads_->merge_waiting(tracking_);
+    if (!made) {
+      return std::unexpected(std::move(made.error()));
+    }
+    paused = *made;
+  }
+  auto step = track_frame(frame);
+  if (step) {
+    step->wait_seconds += paused;
+  }
+  return step;
 }
 
 Result<Pipeline::Step> Pipeline::track_frame(const Frame& frame) {
