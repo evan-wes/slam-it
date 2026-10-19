@@ -170,6 +170,19 @@ class Atlas {
   /// @return The frames tracked, but a reset map's.
   [[nodiscard]] Trajectory trajectory(const Map* m) const;
 
+  /// @brief Place a pose given relative to one of the current map's keyframes by where that
+  ///        keyframe is now (`slam_it.edge.atlas.Atlas.pose_by`): a keyframe culled since is
+  ///        followed through its culled ancestors, as the trajectory places a frame. Local
+  ///        mapping places a keyframe tracked before a correction so (the online-SLAM design,
+  ///        section 12): ORB-SLAM's `UpdateLastFrame` rule.
+  /// @param m The current map.
+  /// @param keyframe The keyframe, by the map's id.
+  /// @param relative The pose relative to it, `T_pose_keyframe`.
+  /// @return The pose's `T_cam_world` in the map now; none if the keyframe's chain of culled
+  ///         ancestors ends at no keyframe of the map.
+  [[nodiscard]] std::optional<Eigen::Matrix4d> pose_by(const Map& m, std::int64_t keyframe,
+                                                       const Eigen::Matrix4d& relative) const;
+
   /// @brief A keyframe of the current map, by the run's id.
   /// @param id Its id in the map, or -1.
   /// @return The run's id, or -1.
@@ -179,6 +192,13 @@ class Atlas {
   /// @brief Record what a map made and removed (the lock held).
   /// @param m The current map, or null.
   void record_held(const Map* m);
+
+  /// @brief Follow a keyframe through its culled ancestors (the lock held).
+  /// @param keyframe The keyframe, by the run's id.
+  /// @param relative A pose relative to it.
+  /// @return The first ancestor not culled, by the run's id, and the pose relative to it.
+  [[nodiscard]] std::pair<std::int64_t, Eigen::Matrix4d> through_culled(
+      std::int64_t keyframe, Eigen::Matrix4d relative) const;
 
   /// @brief A tracked frame's place, for the final trajectory (`slam_it.edge.atlas._Placement`).
   struct FramePlace {

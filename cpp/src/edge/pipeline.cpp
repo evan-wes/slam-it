@@ -78,7 +78,8 @@ Result<void> add_counts(Map& m, const std::vector<std::int64_t>& visible,
 ///        threads give back `Completion` records.
 class PipelineThreads {
  public:
-  /// @brief A keyframe tracking asked local mapping for (`slam_it.edge.pipeline._Request`).
+  /// @brief A keyframe tracking asked local mapping for (`slam_it.edge.pipeline._Request`):
+  ///        mapping places it by its reference keyframe if the map was corrected since.
   struct Request {
     /// @brief Its frame's number.
     std::int64_t index{0};
@@ -86,6 +87,12 @@ class PipelineThreads {
     Frame frame;
     /// @brief Its pose and matches.
     Tracked tracked;
+    /// @brief The frame's reference keyframe, by the map's id.
+    std::int64_t reference{-1};
+    /// @brief Its pose relative to it, `T_frame_reference`.
+    Eigen::Matrix4d relative{Eigen::Matrix4d::Identity()};
+    /// @brief The corrections the view it was tracked on carried (`View::corrections`).
+    std::int64_t corrections{0};
   };
 
   /// @brief A keyframe mapped, given to loop closing.
@@ -231,6 +238,27 @@ class PipelineThreads {
     }
   }
 
+  /// @brief A keyframe as tracked, placed by its reference keyframe if the map moved since
+  ///        (`slam_it.edge.pipeline._Threads._placed`): a correction (a loop's, or a global
+  ///        BA's carried onto the map) since the frame was tracked moved the map from under its
+  ///        pose, so it is placed where its reference keyframe now is,
+  ///        `T_frame_reference T_reference_world` (ORB-SLAM's `UpdateLastFrame` rule; B3b's
+  ///        review panel, A2 and L1), through the reference's culled ancestors. If that chain
+  ///        ends at no keyframe of the map, its pose as tracked is kept, as the trajectory keeps
+  ///        such a frame's. Mapping's turn held.
+  /// @param request The keyframe.
+  /// @param m The map.
+  /// @return Its pose and matches.
+  [[nodiscard]] Tracked placed(const Request& request, const Map& m) const {
+    Tracked out = request.tracked;
+    if (request.corrections != owner_.corrections()) {
+      if (const auto pose = atlas_.pose_by(m, request.reference, request.relative)) {
+        out.pose = *pose;
+      }
+    }
+    return out;
+  }
+
   /// @brief Local mapping's thread: map a keyframe, the one writer while it does, interrupted
   ///        between its steps; then give it to loop closing.
   /// @param request The keyframe.
@@ -255,8 +283,8 @@ class PipelineThreads {
                              .around = lock.owns_lock() ? &around : nullptr};
       const std::vector<std::int64_t> holding = held(closing_);
       auto mapped = owner_.apply_mapping([&](Map& m) {
-        return process(m, camera_, request.frame, still_mapped(request.tracked, m), mode_, options_,
-                       holding, &asked);
+        return process(m, camera_, request.frame, still_mapped(placed(request, m), m), mode_,
+                       options_, holding, &asked);
       });
       if (!mapped) {
         return std::unexpected(std::move(mapped.error()));
@@ -1411,7 +1439,13 @@ Result<void> Pipeline::hand_over(const Frame& frame, const View& seen, const Tra
   if (keyframe) {
     const std::int64_t index = atlas.frames();
     atlas.place_pending(index, frame.timestamp, tracked.pose);
-    threads_->request({.index = index, .frame = frame, .tracked = tracked});
+    threads_->request(
+        {.index = index,
+         .frame = frame,
+         .tracked = tracked,
+         .reference = view.kf_id[k],
+         .relative = Eigen::Matrix4d(tracked.pose * foundations::sim3::inverse(view.kf_pose[k])),
+         .corrections = seen.corrections});
   } else {
     atlas.place_frame(view, frame.timestamp, view.kf_id[k], tracked.pose);
   }

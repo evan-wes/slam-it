@@ -5,8 +5,8 @@
 ///        frame starting a new map; relocalising, a kept map is lost in time and a small one in
 ///        frames, and a frame the fallback cannot reach is relocalised. Tracking on the view a
 ///        writer would publish decides as on the map, and threaded, the views published are a
-///        part of the map, their sizes kept, and after a correction the next frame follows its
-///        keyframe.
+///        part of the map, their sizes kept; after a correction the next frame follows its
+///        keyframe, and a keyframe queued across it is placed by its reference.
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
@@ -601,6 +601,57 @@ void check_a_correction_followed(edge::Threading threading, int& failures) {
       failures);
 }
 
+/// @brief The scene's `asking` settings with local BA and keyframe culling off: a keyframe keeps
+///        the pose it is inserted at, unless a correction moves the map.
+/// @return The settings.
+edge::Options still() {
+  edge::Options out = asking();
+  out.adjustment.min_keyframes = 1000;
+  out.mapping.redundant_observers = 1000;
+  return out;
+}
+
+/// @brief Check a keyframe queued across a correction
+///        (`test_a_keyframe_queued_across_a_correction_is_placed_by_its_reference`, B3b's review
+///        panel, A2): with mapping held off, the keyframes given wait while the map is
+///        corrected; once mapped, each sits where its reference keyframe now is. With local BA
+///        and culling off (`still`), every keyframe keeps the pose it was given: on the path, in
+///        the corrected world.
+/// @param threading Our design or the baseline.
+/// @param failures Running failure count.
+void check_a_queued_keyframe_placed(edge::Threading threading, int& failures) {
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), still(), std::nullopt, threading);
+  std::vector<edge::FrameResult> results;
+  std::vector<edge::FrameResult> held;
+  bool ok = pipeline && track_path(*pipeline, 0, kFrames / 2, results);
+  const Eigen::Matrix4d g = correction();
+  if (ok) {
+    const edge::threads::Writer::Held hold(*pipeline->writer());  // the keyframes given wait
+    ok = track_path(*pipeline, kFrames / 2, 3 * kFrames / 4, held) &&
+         pipeline->owner()
+             .apply_correction([&g](edge::Map& m) { return move_world(m, g); })
+             .has_value();  // a stop inside the hold does not wait for itself
+  }
+  ok = ok && track_path(*pipeline, 3 * kFrames / 4, kFrames, results) && pipeline->finish();
+  const bool waited = std::ranges::any_of(held, [](const auto& r) { return r.keyframe; });
+  bool placed = false;
+  if (const std::optional<edge::Map>& mapped = ok ? pipeline->map() : std::nullopt; mapped) {
+    const edge::Map& m = *mapped;
+    const Eigen::Matrix4d inverse = g.inverse();
+    placed = true;
+    for (std::size_t k = 0; placed && k < m.kf_id.size(); ++k) {
+      const auto i = static_cast<std::int64_t>(m.kf_time[k]);  // `thinning(i)`'s time is i
+      placed = (m.kf_pose[k] - (along(i) * inverse)).cwiseAbs().maxCoeff() < 1e-6;
+    }
+  }
+  expect(
+      waited && placed,
+      threaded_check("a keyframe queued across a correction is placed by its reference", threading)
+          .c_str(),
+      failures);
+}
+
 /// @brief Check a lost map threaded (`test_a_lost_map_settles_the_threads_then_closes`): the
 ///        threads settle, then it closes as inline, kept, and the next frame starts map 1.
 /// @param failures Running failure count.
@@ -652,6 +703,7 @@ int run_tests() {
     check_threaded(threading, failures);
     check_a_stop_refuses_keyframes(threading, failures);
     check_a_correction_followed(threading, failures);
+    check_a_queued_keyframe_placed(threading, failures);
   }
   check_lost_threaded(failures);
   return slam_it::testing::finish("edge/pipeline", failures);

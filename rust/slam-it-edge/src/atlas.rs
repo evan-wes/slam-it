@@ -465,11 +465,7 @@ impl Atlas {
         let last = self.lifetimes(m).keyframe_poses;
         let mut out = Trajectory::default();
         for placed in &self.placements {
-            let (mut pose, mut keyframe) = (placed.relative, placed.reference);
-            while let Some(&(parent, relative)) = self.culled.get(&keyframe) {
-                pose *= relative;
-                keyframe = parent;
-            }
+            let (keyframe, pose) = self.through_culled(placed.reference, placed.relative);
             let anchor = usize::try_from(keyframe).ok().and_then(|k| last.get(k));
             out.timestamps.push(placed.timestamp);
             out.poses
@@ -478,6 +474,47 @@ impl Atlas {
             out.maps.push(placed.map);
         }
         out
+    }
+
+    /// Places a pose given relative to one of the current map's keyframes by where that
+    /// keyframe is now (`slam_it.edge.atlas.Atlas.pose_by`): a keyframe culled since is followed
+    /// through its culled ancestors, as the trajectory places a frame. Local mapping places a
+    /// keyframe tracked before a correction so (the online-SLAM design, section 12): ORB-SLAM's
+    /// `UpdateLastFrame` rule.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The current map.
+    /// * `keyframe` - The keyframe, by the map's id.
+    /// * `relative` - The pose relative to it, `T_pose_keyframe`.
+    ///
+    /// # Returns
+    ///
+    /// The pose's `T_cam_world` in the map now; `None` if the keyframe's chain of culled
+    /// ancestors ends at no keyframe of the map.
+    #[must_use]
+    pub fn pose_by(&self, m: &Map, keyframe: i64, relative: &Matrix4<f64>) -> Option<Matrix4<f64>> {
+        let (found, pose) = self.through_culled(self.kf_base + keyframe, *relative);
+        m.keyframe_row(found - self.kf_base)
+            .map(|row| pose * m.kf_pose[row])
+    }
+
+    /// Follows a keyframe through its culled ancestors.
+    ///
+    /// # Arguments
+    ///
+    /// * `keyframe` - The keyframe, by the run's id.
+    /// * `relative` - A pose relative to it.
+    ///
+    /// # Returns
+    ///
+    /// The first ancestor not culled, by the run's id, and the pose relative to it.
+    fn through_culled(&self, mut keyframe: i64, mut relative: Matrix4<f64>) -> (i64, Matrix4<f64>) {
+        while let Some(&(parent, step)) = self.culled.get(&keyframe) {
+            relative *= step;
+            keyframe = parent;
+        }
+        (keyframe, relative)
     }
 
     /// A keyframe of the current map, by the run's id: -1 kept.

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -230,12 +231,7 @@ Trajectory Atlas::trajectory(const Map* m) const {
   }
   Trajectory out;
   for (const FramePlace& placed : placements_) {
-    Eigen::Matrix4d pose = placed.relative;
-    std::int64_t keyframe = placed.reference;
-    for (auto gone = culled_.find(keyframe); gone != culled_.end(); gone = culled_.find(keyframe)) {
-      pose = pose * gone->second.second;
-      keyframe = gone->second.first;
-    }
+    const auto [keyframe, pose] = through_culled(placed.reference, placed.relative);
     const auto anchor = last.find(keyframe);
     out.timestamps.push_back(placed.timestamp);
     out.poses.push_back(anchor == last.end() ? placed.tracked
@@ -244,6 +240,30 @@ Trajectory Atlas::trajectory(const Map* m) const {
     out.maps.push_back(placed.map);
   }
   return out;
+}
+
+std::optional<Eigen::Matrix4d> Atlas::pose_by(const Map& m, std::int64_t keyframe,
+                                              const Eigen::Matrix4d& relative) const {
+  const auto [found, pose] = [&] {
+    const std::scoped_lock lock(mutex_);
+    auto out = through_culled(kf_base_ + keyframe, relative);
+    out.first -= kf_base_;  // by the map's id
+    return out;
+  }();
+  const std::int64_t row = keyframe_row(m, found);
+  if (row < 0) {
+    return std::nullopt;
+  }
+  return Eigen::Matrix4d(pose * m.kf_pose[static_cast<std::size_t>(row)]);
+}
+
+std::pair<std::int64_t, Eigen::Matrix4d> Atlas::through_culled(std::int64_t keyframe,
+                                                               Eigen::Matrix4d relative) const {
+  for (auto gone = culled_.find(keyframe); gone != culled_.end(); gone = culled_.find(keyframe)) {
+    relative = relative * gone->second.second;
+    keyframe = gone->second.first;
+  }
+  return {keyframe, relative};
 }
 
 std::int64_t Atlas::run_id(std::int64_t id) const { return id >= 0 ? kf_base_ + id : -1; }

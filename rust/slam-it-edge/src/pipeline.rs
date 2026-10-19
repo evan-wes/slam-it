@@ -1648,7 +1648,8 @@ impl Shared {
     }
 }
 
-/// A keyframe tracking asked local mapping for (`slam_it.edge.pipeline._Request`).
+/// A keyframe tracking asked local mapping for (`slam_it.edge.pipeline._Request`): mapping
+/// places it by its reference keyframe if the map was corrected since.
 struct Request {
     /// Its frame's number.
     index: i64,
@@ -1656,6 +1657,12 @@ struct Request {
     frame: Frame,
     /// Its pose and matches.
     tracked: Tracked,
+    /// The frame's reference keyframe, by the map's id.
+    reference: i64,
+    /// Its pose relative to it, `T_frame_reference`.
+    relative: Matrix4<f64>,
+    /// The corrections the view it was tracked on carried ([`View::corrections`]).
+    corrections: u64,
 }
 
 /// A keyframe mapped, given to loop closing: its frame's number and its id.
@@ -1757,6 +1764,33 @@ fn still_mapped(tracked: &Tracked, m: &Map) -> Tracked {
     out
 }
 
+/// A keyframe as tracked, placed by its reference keyframe if the map moved since
+/// (`slam_it.edge.pipeline._Threads._placed`): a correction (a loop's, or a global BA's carried
+/// onto the map) since the frame was tracked moved the map from under its pose, so it is placed
+/// where its reference keyframe now is, `T_frame_reference T_reference_world` (ORB-SLAM's
+/// `UpdateLastFrame` rule; B3b's review panel, A2 and L1), through the reference's culled
+/// ancestors. If that chain ends at no keyframe of the map, its pose as tracked is kept, as the
+/// trajectory keeps such a frame's. Mapping's turn held.
+///
+/// # Arguments
+///
+/// * `shared` - What the threads share with tracking: the owner's count and the atlas.
+/// * `request` - The keyframe.
+/// * `m` - The map.
+///
+/// # Returns
+///
+/// Its pose and matches.
+fn placed(shared: &Shared, request: &Request, m: &Map) -> Tracked {
+    let mut out = request.tracked.clone();
+    if request.corrections != shared.owner.corrections()
+        && let Some(pose) = lock(&shared.atlas).pose_by(m, request.reference, &request.relative)
+    {
+        out.pose = pose;
+    }
+    out
+}
+
 /// Local mapping's thread: maps a keyframe, the one writer while it does, interrupted between
 /// its steps; then gives it to loop closing.
 ///
@@ -1799,7 +1833,7 @@ fn map_keyframe(
         let holding = lock(&shared.closing).held();
         let (camera, mode, options) = (&steps.camera, steps.mode, &steps.options);
         let (mapped, keyframe, base) = owner.apply_mapping(|m| {
-            let tracked = still_mapped(&request.tracked, m);
+            let tracked = still_mapped(&placed(shared, request, m), m);
             let mapped = mapping::process(
                 m,
                 camera,
@@ -2692,6 +2726,9 @@ impl Pipeline {
                         index,
                         frame: frame.clone(),
                         tracked: tracked.clone(),
+                        reference: view.kf_id[reference],
+                        relative: tracked.pose * se3::inverse(&view.kf_pose[reference])?,
+                        corrections: seen.corrections,
                     });
                 }
             } else {

@@ -4,8 +4,8 @@
 //! map; relocalising, a kept map is lost in time and a small one in frames, and a frame the
 //! fallback cannot reach is relocalised; the final trajectory follows the keyframes, and a reset
 //! map's frames leave it. Tracking on the view a writer would publish decides as on the map, and
-//! threaded, the views published are a part of the map, their sizes kept, and after a correction
-//! the next frame follows its keyframe.
+//! threaded, the views published are a part of the map, their sizes kept; after a correction the
+//! next frame follows its keyframe, and a keyframe queued across it is placed by its reference.
 
 mod scene;
 
@@ -527,6 +527,62 @@ fn threaded_after_a_correction_the_next_frame_follows_its_keyframe() {
         (pose - expected).abs().max() < 1e-6,
         "on the path, in the corrected world"
     );
+}
+
+/// The scene's [`asking`] settings with local BA and keyframe culling off: a keyframe keeps the
+/// pose it is inserted at, unless a correction moves the map.
+fn still() -> Options {
+    let mut out = asking();
+    out.adjustment.min_keyframes = 1000;
+    out.mapping.redundant_observers = 1000;
+    out
+}
+
+/// A keyframe queued across a correction is placed by its reference
+/// (`test_a_keyframe_queued_across_a_correction_is_placed_by_its_reference`, B3b's review panel,
+/// A2): with mapping held off, the keyframes given wait while the map is corrected; once mapped,
+/// each sits where its reference keyframe now is. With local BA and culling off ([`still`]),
+/// every keyframe keeps the pose it was given: on the path, in the corrected world.
+#[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a path frame's time is its number"
+)]
+fn threaded_a_keyframe_queued_across_a_correction_is_placed_by_its_reference() {
+    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), still(), None, Threading::View).unwrap();
+    track_path(&mut pipeline, 0..FRAMES / 2);
+    let g = correction();
+    let writer = pipeline.writer().unwrap();
+    let held = {
+        let _hold = writer.held(); // the keyframes given wait
+        let held = track_path(&mut pipeline, FRAMES / 2..3 * FRAMES / 4);
+        // A stop inside the hold does not wait for itself.
+        let corrected = pipeline
+            .owner()
+            .stopped(|m| {
+                move_world(m, &g);
+                Ok(Some(()))
+            })
+            .unwrap();
+        assert!(corrected.is_some());
+        held
+    };
+    track_path(&mut pipeline, 3 * FRAMES / 4..FRAMES);
+    pipeline.finish().unwrap();
+    assert!(
+        held.iter().any(|r| r.keyframe),
+        "a keyframe waited across the correction"
+    );
+    let m = pipeline.map().unwrap();
+    let inverse = g.try_inverse().unwrap();
+    for (time, pose) in m.kf_time.iter().zip(&m.kf_pose) {
+        let i = *time as usize;
+        assert!(
+            (pose - along(i) * inverse).abs().max() < 1e-6,
+            "frame {i}'s keyframe on the path, in the corrected world"
+        );
+    }
 }
 
 /// A frame's state, map and lost map, as a run's outcome is compared.

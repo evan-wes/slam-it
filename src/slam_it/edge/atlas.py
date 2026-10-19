@@ -31,7 +31,10 @@ pipeline's owner (:class:`slam_it.edge.pipeline.MapOwner`).
 record what they made and removed as they change it (:meth:`Atlas.record`), dated by the frame
 being tracked then, and tracking counts the frames (:meth:`Atlas.tick`); a frame that became a
 keyframe is placed before local mapping makes its keyframe (:meth:`Atlas.place_pending`), its
-reference set once it has (:meth:`Atlas.resolve`). Every method holds the atlas's lock.
+reference set once it has (:meth:`Atlas.resolve`); a keyframe tracked before a correction is
+placed by its reference keyframe as the map now has it (:meth:`Atlas.pose_by`), through the
+reference's culled ancestors as the trajectory places a frame. Every method holds the atlas's
+lock.
 """
 
 from __future__ import annotations
@@ -465,6 +468,44 @@ class Atlas:
         with self._lock:
             return self._trajectory(m)
 
+    def pose_by(self, m: Map, keyframe: int, relative: Array) -> Array | None:
+        """Place a pose given relative to one of `m`'s keyframes by where that keyframe is now.
+
+        A keyframe culled since is followed through its culled ancestors, as the trajectory
+        places a frame (the module docstring). Local mapping places a keyframe tracked before a
+        correction so (the online-SLAM design, section 12): ORB-SLAM's ``UpdateLastFrame`` rule.
+
+        Parameters
+        ----------
+        m : Map
+            The current map.
+        keyframe : int
+            The keyframe, by `m`'s id.
+        relative : ndarray of float64, shape (4, 4)
+            The pose relative to it, ``T_pose_keyframe``.
+
+        Returns
+        -------
+        ndarray of float64, shape (4, 4) or None
+            The pose's ``T_cam_world`` in `m` now; None if the keyframe's chain of culled
+            ancestors ends at no keyframe of `m`.
+        """
+        with self._lock:
+            base = self._kf_base
+            found, pose = self._through_culled(base + keyframe, relative)
+        row = int(m.keyframe_rows(np.array([found - base], dtype=np.int64))[0])
+        return None if row < 0 else pose @ m.kf_pose[row]
+
+    def _through_culled(self, keyframe: int, relative: Array) -> tuple[int, Array]:
+        """Follow a keyframe (by the run's id) through its culled ancestors (the lock held).
+
+        Return the first ancestor not culled, by the run's id, and the pose relative to it.
+        """
+        while keyframe in self._culled:
+            parent, step = self._culled[keyframe]
+            relative, keyframe = relative @ step, parent
+        return keyframe, relative
+
     def _trajectory(self, m: Map | None) -> Trajectory:
         """Return the trajectory (the lock held)."""
         last: dict[int, Array] = {k: pose for k, (_, pose, _) in self._past_keyframes.items()}
@@ -472,10 +513,7 @@ class Atlas:
             last.update(zip((self._kf_base + m.kf_id).tolist(), m.kf_pose, strict=True))
         poses: list[Array] = []
         for placed in self._placements:
-            pose, keyframe = placed.relative, placed.reference
-            while keyframe in self._culled:
-                parent, relative = self._culled[keyframe]
-                pose, keyframe = pose @ relative, parent
+            keyframe, pose = self._through_culled(placed.reference, placed.relative)
             anchor = last.get(keyframe)
             poses.append(placed.tracked if anchor is None else pose @ anchor)
         return Trajectory(

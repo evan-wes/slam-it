@@ -282,6 +282,51 @@ def test_a_closed_maps_counts_never_reach_the_next(rendered: list[room.Frame]) -
     np.testing.assert_array_equal(owner.map.pt_found, m.pt_found)
 
 
+STILL = OPTIONS.with_settings(
+    {"adjustment.min_keyframes": 1000, "mapping.redundant_observers": 1000}
+)
+"""The tests' settings with local BA and keyframe culling off: a keyframe keeps the pose it is
+inserted at, unless a correction moves the map."""
+
+
+def test_a_keyframe_queued_across_a_correction_is_placed_by_its_reference(
+    rendered: list[room.Frame],
+) -> None:
+    """A keyframe tracked before a correction and mapped after it is placed by its reference.
+
+    With mapping held off, the keyframes given wait while the map is corrected (moved rigidly);
+    once mapped, each sits where its reference keyframe now is. Local BA and culling are off
+    (:data:`STILL`), so every keyframe keeps the pose it was given: a frame's tracked before the
+    correction moved with the map, a frame's tracked after it as tracked (B3b's review panel, A2
+    and L1).
+    """
+    run = _threaded(STILL)
+    results = [run.track(_frame(f, run)) for f in rendered[:2]]
+    writer = run.owner.writer
+    assert writer is not None
+    with writer.held():  # mapping held off: the keyframes given wait for it
+        for f in rendered[2:-3]:
+            results.append(run.track(_frame(f, run)))
+            if results[-1].keyframe:
+                break
+        before = len(results)  # the frames tracked before the correction
+        with run.owner.stopped() as m:  # a stop inside the hold does not wait for itself
+            run.owner.apply_correction(_moved(m, CORRECTION))
+    results += [run.track(_frame(f, run)) for f in rendered[before : before + 3]]
+    run.finish()
+    assert results[before - 1].keyframe, "a keyframe waited across the correction"
+    mapped = run.map
+    assert mapped is not None
+    frame_of = {r.timestamp: k for k, r in enumerate(results)}
+    inverse = np.linalg.inv(CORRECTION)
+    for time, pose in zip(mapped.kf_time, mapped.kf_pose, strict=True):
+        k = frame_of[float(time)]
+        tracked = results[k].pose
+        assert tracked is not None
+        expected = tracked @ inverse if k < before else tracked
+        np.testing.assert_allclose(pose, expected, atol=1e-9, err_msg=f"frame {k}'s keyframe")
+
+
 def test_a_lost_map_settles_the_threads_then_closes(rendered: list[room.Frame]) -> None:
     """Lost, the map waits for mapping, then closes as inline: kept or reset, the next started."""
     require_backend("cpp")

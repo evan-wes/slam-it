@@ -85,7 +85,10 @@ global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
 - **Local mapping** maps each keyframe in turn, the one writer of the map while it does,
   interrupted as ORB-SLAM's ``LocalMapping::Run`` is (:class:`slam_it.edge.mapping.Interrupts`),
   publishes the map once the keyframe's points are made and again when done, and gives the
-  keyframe to loop closing.
+  keyframe to loop closing. A keyframe tracked on a view older than a correction (queued while
+  it ran, or asked for just after) is placed by its reference keyframe as the map now has it,
+  ORB-SLAM's ``UpdateLastFrame`` rule (:meth:`slam_it.edge.atlas.Atlas.pose_by`; the
+  online-SLAM design, section 12).
 - **Loop closing** searches each keyframe with mapping held off; a loop found is corrected with
   mapping stopped (:meth:`MapOwner.stopped`), without global BA, which then solves a copy of the
   map in a thread of its own. A new loop supersedes a global BA still running
@@ -1138,11 +1141,20 @@ def _close_loops(
 
 @dataclass(frozen=True)
 class _Request:
-    """A keyframe tracking asked local mapping for: the frame, its number, and how it tracked."""
+    """A keyframe tracking asked local mapping for: the frame, its number, and how it tracked.
+
+    ``reference`` is the frame's reference keyframe, by the map's id, ``relative`` its pose
+    relative to it (``T_frame_reference``), and ``corrections`` the corrections the view it was
+    tracked on carried (:attr:`View.corrections`): mapping places it by that keyframe if the map
+    was corrected since.
+    """
 
     index: int
     frame: Frame
     tracked: Tracked
+    reference: int
+    relative: Array
+    corrections: int
 
 
 def _still_mapped(tracked: Tracked, m: Map) -> Tracked:
@@ -1278,6 +1290,21 @@ class _Threads:
         with self._lock:
             self._completions.append(completion)
 
+    def _placed(self, request: _Request) -> Tracked:
+        """Return a keyframe as tracked, placed by its reference keyframe if the map moved since.
+
+        A correction (a loop's, or a global BA's carried onto the map) since the frame was
+        tracked moved the map from under its pose; the keyframe is placed where its reference
+        keyframe now is, ``T_frame_reference T_reference_world`` (ORB-SLAM's ``UpdateLastFrame``
+        rule; B3b's review panel, A2 and L1), through the reference's culled ancestors. If that
+        chain ends at no keyframe of the map, its pose as tracked is kept, as the trajectory
+        keeps such a frame's. Mapping's turn held.
+        """
+        if request.corrections == self.owner.corrections:
+            return request.tracked
+        pose = self.atlas.pose_by(self.owner.read(), request.reference, request.relative)
+        return request.tracked if pose is None else replace(request.tracked, pose=pose)
+
     def _map(self, request: _Request) -> None:
         """Local mapping's thread: map a keyframe, the one writer while it does."""
         self._busy = True
@@ -1286,7 +1313,7 @@ class _Threads:
                 self.writer.abort.clear()
                 self.owner.apply_counts()
                 start = time.perf_counter()
-                tracked = _still_mapped(request.tracked, self.owner.read())
+                tracked = _still_mapped(self._placed(request), self.owner.read())
                 mapped = mapping.process(
                     self.owner.read(), self.camera, request.frame, tracked,
                     mode=self.mode, options=self.options, held=self.closing.held(),
@@ -1680,7 +1707,10 @@ class Pipeline:
         if found.keyframe:
             index = self.atlas.frames
             self.atlas.place_pending(index, frame.timestamp, tracked.pose)
-            threads.request(_Request(index, frame, tracked))
+            reference = int(view.kf_id[found.reference])
+            relative = tracked.pose @ se3.inverse(view.kf_pose[found.reference])
+            corrections = found.view.corrections
+            threads.request(_Request(index, frame, tracked, reference, relative, corrections))
         else:
             reference = int(view.kf_id[found.reference])
             self.atlas.place_frame(view, frame.timestamp, reference, tracked.pose)

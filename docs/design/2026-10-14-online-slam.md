@@ -665,10 +665,11 @@ measures how much.
      locks; global BA's results are carried through the spanning tree under the lock, over the
      whole map, while tracking waits. Its source shows where that sharing slips (read from the
      source, not observed): the abort flags are plain `bool`s, written and read across threads
-     unlocked; `CorrectLoop` empties mapping's queue before mapping has stopped (`MergeLocal`
-     waits first); an aborted global BA can still be writing its results' fields as the next one
-     starts; and tracking can read keyframes and points partway through a change that spans
-     several of them.
+     unlocked; `CorrectLoop` empties mapping's queue (`EmptyQueue`, its handling of the
+     keyframes in flight, below) before mapping has stopped (`MergeLocal` waits first); an
+     aborted global BA can still be writing its results' fields as the next one starts; and
+     tracking can read keyframes and points partway through a change that spans several of
+     them.
    - Ours: one thread changes the map at a time, mapping or, with mapping stopped, loop closing
      (ORB-SLAM's `RequestStop`). After making a keyframe's points, after its local BA and after
      each correction, the writer publishes a view of what tracking reads: the local map's
@@ -677,6 +678,28 @@ measures how much.
      never changed after. Tracking reads only the view and takes no lock. What it writes (each
      point's counts of frames seen and found in, and the keyframes it asks for) goes to mapping as
      messages. Relocalisation, rare, reads the whole map and its database with mapping held off.
+     *As built* (B3b's review panel, A1): a view carries the corrections applied to its map,
+     stamped by its writer, which counts a correction before it publishes the corrected view,
+     and tracking reads the view once a frame, so the last frame follows each correction.
+   - **A keyframe in flight across a correction** (decided by evan-wes on 2026-10-18; B3b's
+     review panel, A2 and L1). ORB-SLAM3 lets none enter its map in a stale world frame, three
+     ways: `CorrectLoop` first inserts the keyframes queued for mapping (`EmptyQueue`, each
+     through `ProcessNewKeyFrame`), so the correction moves them with their neighbours;
+     `LocalMapping::Release` deletes any keyframe queued while mapping was stopped, after a
+     loop's correction and after a global BA's result; and tracking holds `mMutexMapUpdate`
+     through its frame, keyframe creation included, while `NeedNewKeyFrame` asks for none with
+     mapping stopped or being stopped. Ours re-places it: a keyframe's request keeps its
+     reference keyframe, its pose relative to it (`T_frame_reference`) and the corrections the
+     view it was tracked on carried; at insertion, if a correction (a loop's, or a global BA's
+     result) has moved the map since, local mapping places it where its reference keyframe now
+     is, `T_frame_reference T_reference_world`, ORB-SLAM's `UpdateLastFrame` rule, which the
+     last frame follows too, through the reference's culled ancestors as the final trajectory
+     places a frame (`Atlas.pose_by`), and keeps its pose as tracked if that chain ends at no
+     keyframe of the map. Why not ORB-SLAM's queue-emptying: our tracking deliberately holds no
+     lock across its frame, so a frame tracked on the view before a correction can ask for its
+     keyframe just after the stop is released, and a rule applied to the queue at the correction
+     would miss it; re-placing at insertion catches it and a queued one alike. The C++ baseline
+     (item 7) re-places the same way, so section 13's comparison differs only in the sharing.
    - Python's map is already immutable, each operation returning a new one, so its view is the
      map itself, published by reference.
    - Why: tracking never waits on a lock, and no thread changes what another is reading, by
