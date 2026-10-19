@@ -36,6 +36,7 @@ template is `docs/dashcam.template.toml`.
 - **The `dashcam` extra** (PyAV, pytesseract, pycolmap) and Tesseract in the conda layer;
   import-linter contracts keep pytesseract in `dashcam.overlay` and pycolmap in
   `dashcam.calibrate` (and the BA reference), and the pipelines out of both.
+  `THIRD_PARTY_NOTICES.md` lists Tesseract 5.5.3 and pytesseract 0.3.13, both Apache 2.0.
 - **`eval.video` reads recorded segments**: sampled in time, their data packets, and joined
   into one sequence (`import_segments`), sharing the video import's frame writing, which can
   now take back a damaged segment's frames.
