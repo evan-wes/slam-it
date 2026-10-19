@@ -1,0 +1,151 @@
+"""Tests for scripts/measure_sharded.py: the room measured at two seeds side by side; its plan."""
+
+from __future__ import annotations
+
+import importlib
+import json
+import os
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+import pytest
+
+from slam_it.eval import runs
+from slam_it.foundations.errors import InvalidInputError
+from tests.edge import room
+from tests.edge.support import FRAMES
+from tests.orchestration.conftest import require_program
+from tests.orchestration.datasets import write_tum
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def script(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """Import scripts/measure_sharded.py by name, as its workers find it, with its neighbour."""
+    monkeypatch.syspath_prepend(str(REPO / "scripts"))
+    return importlib.import_module("measure_sharded")
+
+
+@pytest.fixture(scope="module")
+def config(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Write the room as a TUM-format folder, and a config listing it in RGB-D."""
+    base = tmp_path_factory.mktemp("sharded")
+    write_tum(base / "room", room.sequence(FRAMES))
+    path = base / "testset.toml"
+    path.write_text(
+        f'[[sequence]]\nname = "room"\nfolder = "{base / "room"}"\nmode = "rgbd"\n'
+        'reference = "its own poses"\n'
+    )
+    return path
+
+
+def test_workers_take_the_highest_numbered_cpus(script: ModuleType) -> None:
+    """All the CPUs offered by default; else as many as asked, the highest-numbered."""
+    offered = {0, 1, 2, 3, 8, 9}
+    assert script.cpus_for(None, offered) == [0, 1, 2, 3, 8, 9]
+    assert script.cpus_for(2, offered) == [8, 9]
+    for jobs in (0, 7):
+        with pytest.raises(InvalidInputError, match="--jobs: expected 1 to 6"):
+            script.cpus_for(jobs, offered)
+
+
+def test_workers_take_whole_groups_of_cores(script: ModuleType) -> None:
+    """A worker's cores are a group of its own, the highest-numbered whole groups."""
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 1) == [[0], [1], [2], [3], [8], [9]]
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 4) == [[2, 3, 8, 9]]
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 2) == [[0, 1], [2, 3], [8, 9]]
+    for cores in (0, 7):
+        with pytest.raises(InvalidInputError, match="--cores: expected 1 to 6"):
+            script.groups_of([0, 1, 2, 3, 8, 9], cores)
+
+
+def test_a_sequences_frames_are_its_listed_images(script: ModuleType, tmp_path: Path) -> None:
+    """Comments and blank lines are not frames; a folder without the list has none."""
+    (tmp_path / "rgb.txt").write_text("# timestamp filename\n0.0 rgb/0.png\n\n0.1 rgb/1.png\n")
+    assert script.frames_of(tmp_path) == 2
+    assert script.frames_of(tmp_path / "missing") == 0
+
+
+def test_the_longest_sequences_run_first(script: ModuleType) -> None:
+    """Every seed's run of every sequence, longest first, then by seed, then in config order."""
+    entries = [
+        script.measure_testset.Entry(name, Path(name), "rgbd", "r") for name in ("a", "b", "c")
+    ]
+    jobs = script.schedule(entries, [0, 1], {"a": 10, "b": 30, "c": 10})
+    assert [(seed, e.name) for seed, e in jobs] == [
+        (0, "b"), (1, "b"), (0, "a"), (0, "c"), (1, "a"), (1, "c"),
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--option", "seed=1"], "the seeds are --seeds"),
+        (["--seeds", "0", "0"], "a seed given twice"),
+        (["--seeds", "-1"], "seed"),
+        (["--jobs", "0"], "--jobs x --cores: expected 1 to"),
+        (["--cores", "0"], "--cores: expected 1 to"),
+        (["--jobs", "1", "--cores", "100000"], "--cores: expected 1 to"),
+        (["--jobs", "100000"], "got 100000 x 1"),
+    ],
+)
+def test_main_refuses_a_seed_twice_or_out_of_range_and_jobs_beyond_the_cpus(
+    extra: list[str], message: str, script: ModuleType, config: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:  # fmt: skip
+    """A seed is given through ``--seeds`` once each; the workers' cores are at most the cores.
+
+    ``--cores`` is checked first, then ``--jobs`` times it, the product named (B3b's review
+    panel, H7).
+    """
+    out = config.with_name("refused")
+    with pytest.raises(SystemExit):
+        script.main([str(config), str(out), *extra])
+    assert message in capsys.readouterr().err
+    assert not out.exists()  # refused before any folder is made
+
+
+def test_each_seed_is_measured_into_its_own_folder(
+    script: ModuleType, config: Path, tmp_path: Path
+) -> None:
+    """Two seeds side by side: each seed's results, its runs at that seed, the options passed on."""
+    require_program("cpp")
+    out = tmp_path / "out"
+    jobs = str(min(2, len(os.sched_getaffinity(0))))
+    arguments = [str(config), str(out), "--seeds", "0", "1", "--jobs", jobs]
+    assert script.main([*arguments, "--option", "relocalization.enabled=false"]) == 0
+    for seed in (0, 1):
+        lines = (out / f"seed-{seed}" / "results.jsonl").read_text().splitlines()
+        assert len(lines) == 1
+        result = json.loads(lines[0])
+        assert result["options"] == {"relocalization.enabled": False, "seed": seed}
+        assert (result["name"], result["tracked"]) == ("room", FRAMES)
+        settings = runs.read_run(out / f"seed-{seed}" / "room" / "run").settings
+        assert (settings["seed"], settings["relocalization"]["enabled"]) == (seed, False)
+
+
+def test_a_failed_worker_is_its_runs_result_and_the_others_are_kept(
+    script: ModuleType, config: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run whose worker raises is written as failed, why named; the other seed's run is kept.
+
+    The workers are forked, so the measure patched here is theirs too.
+    """
+    require_program("cpp")
+    measured = script.measure_testset.measured
+
+    def flaky(entry: object, out: Path, args: object, replaced: dict[str, Any]) -> dict[str, Any]:
+        if replaced["seed"] == 1:
+            raise OSError("the disk is full")
+        result: dict[str, Any] = measured(entry, out, args, replaced)
+        return result
+
+    monkeypatch.setattr(script.measure_testset, "measured", flaky)
+    out = tmp_path / "out"
+    assert script.main([str(config), str(out), "--seeds", "0", "1", "--jobs", "1"]) == 0
+    failed = json.loads((out / "seed-1" / "results.jsonl").read_text())
+    assert failed == {"name": "room", "failed": "OSError: the disk is full"}
+    kept = json.loads((out / "seed-0" / "results.jsonl").read_text())
+    assert (kept["name"], kept["tracked"]) == ("room", FRAMES)

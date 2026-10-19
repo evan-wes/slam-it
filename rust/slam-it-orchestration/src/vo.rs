@@ -1,0 +1,1768 @@
+//! A whole sequence through the edge pipeline: the Rust mirror of `slam_it.orchestration.vo`
+//! (its docstring states the run), behind the native program `slam_it_vo` (`src/main.rs`).
+
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use nalgebra::{Matrix4, Vector2};
+
+use slam_it_edge::adjust::Solve;
+use slam_it_edge::atlas::{Lifetimes, Trajectory};
+use slam_it_edge::frames::{self, Camera, DepthMap, Frame};
+use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummary, GlobalSummary};
+use slam_it_edge::mapping::{MappingSummary, Schedule};
+use slam_it_edge::options::{Mode, Options, Setting, check_options};
+use slam_it_edge::pipeline::{
+    Completion, Fate, Fates, FrameResult, FrameSummary, LoopSummary, Pipeline, Threading, ViewSize,
+};
+use slam_it_edge::relocalization::RelocalizationSummary;
+use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
+use slam_it_eval::{euroc, png, text, tum, vocabularies};
+use slam_it_foundations::camera::Model;
+use slam_it_foundations::error::{ErrorKind, Result, fail};
+use slam_it_foundations::graphs;
+use slam_it_foundations::image::{self, Image};
+use slam_it_foundations::{orb, ransac, se3, stereo};
+
+/// The datasets a sequence can come from (`slam_it.orchestration.vo.DATASETS`).
+pub const DATASETS: [&str; 2] = ["tum", "euroc"];
+
+/// The program's command line.
+pub const USAGE: &str = "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode \
+                         monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] \
+                         [--vocabulary FOLDER] [--record-features] [--threaded | --views] \
+                         [--option KEY=VALUE ...]";
+
+/// A flag without a value: record each frame's keypoints, with their fates.
+const RECORD_FEATURES: &str = "--record-features";
+
+/// A flag without a value: run the steps in threads of their own.
+const THREADED: &str = "--threaded";
+
+/// A flag without a value: track in turn, each frame on the view a writer would publish.
+const VIEWS: &str = "--views";
+
+/// The program's exit code for a command line it cannot read.
+pub const EXIT_USAGE: u8 = 2;
+
+/// Its exit code for a failed run: [`exit_code`] adds the error's kind.
+pub const EXIT_FAILED: u8 = 3;
+
+/// A run asked for: the program's command line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Request {
+    /// One of [`DATASETS`].
+    pub dataset: String,
+    /// The sequence's folder.
+    pub sequence: PathBuf,
+    /// The sensor mode.
+    pub mode: Mode,
+    /// The run's folder, written.
+    pub out: PathBuf,
+    /// The first frame run.
+    pub first: i64,
+    /// The frames run from it, or all.
+    pub count: Option<i64>,
+    /// The pipeline's settings.
+    pub options: Options,
+    /// Whether the run records each frame's keypoints, with their fates.
+    pub record_features: bool,
+    /// The vocabulary's folder: required with `relocalization.enabled` or `loops.enabled` on,
+    /// refused with both off.
+    pub vocabulary: Option<PathBuf>,
+    /// Whether the steps run in threads of their own, the frames fed at their recorded rate.
+    pub threaded: bool,
+    /// In turn, whether each frame is tracked on the view a writer would publish then: a test
+    /// that tracking decides on it as on the whole map.
+    pub views: bool,
+}
+
+impl Request {
+    /// A request, its other fields default: from the first frame, every frame, the default
+    /// settings, no feature records.
+    ///
+    /// # Arguments
+    ///
+    /// * `dataset` - One of [`DATASETS`].
+    /// * `sequence` - The sequence's folder.
+    /// * `mode` - The sensor mode.
+    /// * `out` - The run's folder.
+    ///
+    /// # Returns
+    ///
+    /// The request.
+    #[must_use]
+    pub fn new(dataset: &str, sequence: &Path, mode: Mode, out: &Path) -> Self {
+        Self {
+            dataset: dataset.to_owned(),
+            sequence: sequence.to_path_buf(),
+            mode,
+            out: out.to_path_buf(),
+            first: 0,
+            count: None,
+            options: Options::default(),
+            record_features: false,
+            vocabulary: None,
+            threaded: false,
+            views: false,
+        }
+    }
+}
+
+/// The exit code of a run that failed with an error of a kind: [`EXIT_FAILED`] for
+/// `InvalidInput`, then `Degenerate`, then `NotConverged`
+/// (`slam_it.orchestration.vo.EXIT_FAILED`).
+///
+/// # Arguments
+///
+/// * `kind` - The error's kind.
+///
+/// # Returns
+///
+/// The exit code.
+#[must_use]
+pub const fn exit_code(kind: ErrorKind) -> u8 {
+    EXIT_FAILED
+        + match kind {
+            ErrorKind::InvalidInput => 0,
+            ErrorKind::Degenerate => 1,
+            ErrorKind::NotConverged => 2,
+        }
+}
+
+/// A frame's images as a camera delivers them, decoded, and a stereo pair rectified.
+enum Images {
+    /// A monocular frame's image.
+    Monocular(Image),
+    /// A stereo pair: the left image, then the right.
+    Stereo(Image, Image),
+    /// An RGB-D frame's image and its depth map, in metres.
+    Rgbd(Image, DepthMap),
+}
+
+/// A frame's images and its time (`slam_it.orchestration.vo._Delivered`).
+struct Delivered {
+    /// The frame's time.
+    timestamp: f64,
+    /// Its images.
+    images: Images,
+}
+
+/// Delivers the images at an index: `None` for a frame the run skips.
+type Reader = Box<dyn Fn(usize) -> Result<Option<Delivered>>>;
+
+/// A sequence opened for a run.
+struct Source {
+    /// The camera the pipeline runs with.
+    camera: Camera,
+    /// The sequence's frames.
+    frames: usize,
+    /// Reads one.
+    read: Reader,
+    /// The features every frame drops, those on a 0 (a TUM-format folder's `mask.png`); none
+    /// keeps them all.
+    mask: Option<Image>,
+}
+
+/// Builds a frame from its images, for the mode they were delivered for.
+///
+/// # Arguments
+///
+/// * `delivered` - The images.
+/// * `camera` - The camera.
+/// * `extraction` - The extraction settings the pipeline asks for.
+/// * `matching` - The stereo matcher's settings.
+/// * `mask` - The features to drop, those on a 0; none keeps them all.
+///
+/// # Returns
+///
+/// The frame.
+///
+/// # Errors
+///
+/// The frame builder's.
+fn build(
+    delivered: &Delivered,
+    camera: &Camera,
+    extraction: &orb::Options,
+    matching: &stereo::MatchOptions,
+    mask: Option<&Image>,
+) -> Result<Frame> {
+    let timestamp = delivered.timestamp;
+    match &delivered.images {
+        Images::Monocular(image) => frames::monocular(image, timestamp, camera, extraction, mask),
+        Images::Stereo(left, right) => {
+            frames::stereo_pair((left, right), timestamp, camera, extraction, matching, mask)
+        }
+        Images::Rgbd(image, depth) => {
+            frames::rgbd(image, depth, timestamp, camera, extraction, mask)
+        }
+    }
+}
+
+/// Opens a TUM-format folder: its camera, an RGB-D one with the virtual baseline.
+///
+/// # Arguments
+///
+/// * `root` - The folder.
+/// * `mode` - Monocular or RGB-D.
+///
+/// # Returns
+///
+/// The source.
+///
+/// # Errors
+///
+/// The reader's.
+fn tum_source(root: &Path, mode: Mode) -> Result<Source> {
+    let mut read = tum::read_frames(root, tum::MAX_DIFFERENCE)?;
+    let mask = read.mask.take();
+    let sensor = &read.camera;
+    let baseline = match (mode, sensor.bf) {
+        (Mode::Rgbd, Some(bf)) => bf / sensor.intrinsics[0],
+        (Mode::Rgbd, None) => {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!(
+                    "{}: an RGB-D run needs the depth sensor's bf: add a 'bf' line to {}",
+                    root.display(),
+                    tum::CAMERA_FILE
+                ),
+            );
+        }
+        _ => 0.0,
+    };
+    let camera = Camera {
+        model: sensor.model,
+        intrinsics: sensor.intrinsics.clone(),
+        width: sensor.width,
+        height: sensor.height,
+        baseline,
+    };
+    let count = read.images.len();
+    let deliver: Reader = Box::new(move |i| {
+        let image = png::read_gray(&read.images[i])?;
+        let timestamp = read.timestamps[i];
+        if mode == Mode::Monocular {
+            return Ok(Some(Delivered {
+                timestamp,
+                images: Images::Monocular(image),
+            }));
+        }
+        let Some(depth_file) = &read.depths[i] else {
+            return Ok(None);
+        };
+        let depth = tum::read_depth(depth_file, read.camera.depth_scale)?;
+        let depth_map = DepthMap {
+            rows: depth.rows,
+            cols: depth.cols,
+            values: depth.values,
+        };
+        Ok(Some(Delivered {
+            timestamp,
+            images: Images::Rgbd(image, depth_map),
+        }))
+    });
+    Ok(Source {
+        camera,
+        frames: count,
+        read: deliver,
+        mask,
+    })
+}
+
+/// A EuRoC camera as the rectification takes it.
+///
+/// # Arguments
+///
+/// * `camera` - The camera.
+///
+/// # Returns
+///
+/// Its model (radial-tangential) and intrinsics.
+fn radtan(camera: &euroc::Camera) -> stereo::Camera<'_> {
+    stereo::Camera {
+        model: Model::RadTan,
+        intrinsics: &camera.intrinsics,
+    }
+}
+
+/// Reads an image and rectifies it.
+///
+/// # Arguments
+///
+/// * `path` - The file.
+/// * `coordinates` - Its rectification map.
+/// * `camera` - The rectified camera.
+///
+/// # Returns
+///
+/// The rectified image.
+///
+/// # Errors
+///
+/// The reader's or the remap's.
+fn rectified(path: &Path, coordinates: &[Vector2<f64>], camera: &Camera) -> Result<Image> {
+    image::remap(
+        &png::read_gray(path)?,
+        coordinates,
+        camera.height,
+        camera.width,
+    )
+}
+
+/// Opens a EuRoC sequence's stereo pairs, rectified: the rectified left camera (pinhole) with
+/// the pair's baseline.
+///
+/// # Arguments
+///
+/// * `read` - The sequence's frames.
+///
+/// # Returns
+///
+/// The source.
+///
+/// # Errors
+///
+/// The rectification's.
+fn stereo_source(read: euroc::Frames) -> Result<Source> {
+    let (left, right) = (&read.left_camera, &read.right_camera);
+    let pose = euroc::right_from_left(left, right)?;
+    let rectification = stereo::rectify(radtan(left), radtan(right), &pose, left.rows, left.cols)?;
+    let maps = [
+        (left, &rectification.rotation_left),
+        (right, &rectification.rotation_right),
+    ]
+    .map(|(side, rotation)| {
+        stereo::rectification_map(
+            radtan(side),
+            rotation,
+            &rectification.intrinsics,
+            left.rows,
+            left.cols,
+        )
+    });
+    let [map_left, map_right] = maps;
+    let maps = [map_left?, map_right?];
+    let camera = Camera {
+        model: Model::Pinhole,
+        intrinsics: rectification.intrinsics.as_slice().to_vec(),
+        width: left.cols,
+        height: left.rows,
+        baseline: rectification.baseline,
+    };
+    let count = read.left.len();
+    let rectifying = camera.clone();
+    let deliver: Reader = Box::new(move |i| {
+        let image_left = rectified(&read.left[i], &maps[0], &rectifying)?;
+        let image_right = rectified(&read.right[i], &maps[1], &rectifying)?;
+        Ok(Some(Delivered {
+            timestamp: read.timestamps[i],
+            images: Images::Stereo(image_left, image_right),
+        }))
+    });
+    Ok(Source {
+        camera,
+        frames: count,
+        read: deliver,
+        mask: None,
+    })
+}
+
+/// Opens a EuRoC sequence: its left camera for monocular, the pairs rectified for stereo.
+///
+/// # Arguments
+///
+/// * `root` - The sequence folder.
+/// * `mode` - Monocular or stereo.
+///
+/// # Returns
+///
+/// The source.
+///
+/// # Errors
+///
+/// The reader's.
+fn euroc_source(root: &Path, mode: Mode) -> Result<Source> {
+    let read = euroc::read_frames(root)?;
+    if mode == Mode::Stereo {
+        return stereo_source(read);
+    }
+    let left = &read.left_camera;
+    let camera = Camera {
+        model: Model::RadTan,
+        intrinsics: left.intrinsics.clone(),
+        width: left.cols,
+        height: left.rows,
+        baseline: 0.0,
+    };
+    let count = read.left.len();
+    let deliver: Reader = Box::new(move |i| {
+        Ok(Some(Delivered {
+            timestamp: read.timestamps[i],
+            images: Images::Monocular(png::read_gray(&read.left[i])?),
+        }))
+    });
+    Ok(Source {
+        camera,
+        frames: count,
+        read: deliver,
+        mask: None,
+    })
+}
+
+/// The settings as a run records them (`Options.as_dict`): each group an object of its fields'
+/// values, in order, then `seed`.
+///
+/// # Arguments
+///
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// Each group's name and object, and the seed.
+fn settings(options: &Options) -> JsonObject {
+    let mut out: JsonObject = Vec::new();
+    for (name, value) in options.settings() {
+        let value = match value {
+            Setting::Flag(flag) => JsonValue::Bool(flag),
+            Setting::Integer(integer) => JsonValue::Integer(integer),
+            Setting::Real(real) => JsonValue::Number(real),
+        };
+        let Some((group, field)) = name.split_once('.') else {
+            out.push((name.to_owned(), value));
+            continue;
+        };
+        match out.last_mut() {
+            Some((last, JsonValue::Object(fields))) if last == group => {
+                fields.push((field.to_owned(), value));
+            }
+            _ => out.push((
+                group.to_owned(),
+                JsonValue::Object(vec![(field.to_owned(), value)]),
+            )),
+        }
+    }
+    out
+}
+
+/// A sequence's name: its folder's, the path resolved.
+///
+/// # Arguments
+///
+/// * `sequence` - The folder.
+///
+/// # Returns
+///
+/// The name.
+fn sequence_name(sequence: &Path) -> String {
+    let resolved = std::fs::canonicalize(sequence).unwrap_or_else(|_| sequence.to_path_buf());
+    resolved
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+}
+
+/// A count as JSON.
+///
+/// # Arguments
+///
+/// * `count` - The count.
+///
+/// # Returns
+///
+/// Its value.
+fn count(count: usize) -> JsonValue {
+    JsonValue::Integer(i64::try_from(count).unwrap_or(i64::MAX))
+}
+
+/// A count as JSON, or null if there is none.
+///
+/// # Arguments
+///
+/// * `value` - The count, if any.
+///
+/// # Returns
+///
+/// Its value.
+fn count_or_null(value: Option<usize>) -> JsonValue {
+    value.map_or(JsonValue::Null, count)
+}
+
+/// A name as JSON.
+///
+/// # Arguments
+///
+/// * `name` - The name.
+///
+/// # Returns
+///
+/// Its value.
+fn name_json(name: &str) -> JsonValue {
+    JsonValue::Text(name.to_owned())
+}
+
+/// An object as JSON, from its keys and values.
+///
+/// # Arguments
+///
+/// * `items` - The keys and values, in order.
+///
+/// # Returns
+///
+/// The object.
+fn object<const N: usize>(items: [(&str, JsonValue); N]) -> JsonValue {
+    JsonValue::Object(
+        items
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect(),
+    )
+}
+
+/// Bundle-adjustment solves as JSON (`slam_it.edge.adjust.Solve.as_dict`, each).
+///
+/// # Arguments
+///
+/// * `solves` - The solves.
+///
+/// # Returns
+///
+/// One object per solve.
+fn solves_json(solves: &[Solve]) -> JsonValue {
+    JsonValue::Array(
+        solves
+            .iter()
+            .map(|solve| {
+                object([
+                    ("initial_cost", JsonValue::Number(solve.initial_cost)),
+                    ("final_cost", JsonValue::Number(solve.final_cost)),
+                    ("iterations", count(solve.iterations)),
+                    ("termination", name_json(solve.termination.name())),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// A RANSAC run's termination as a stage records it: its name, `degenerate` when it found no
+/// pose, or null when it did not run.
+///
+/// # Arguments
+///
+/// * `degenerate` - Whether it found no pose.
+/// * `termination` - Why it stopped, if it found one.
+///
+/// # Returns
+///
+/// The value.
+fn termination_json(degenerate: bool, termination: Option<ransac::Termination>) -> JsonValue {
+    if degenerate {
+        return name_json("degenerate");
+    }
+    termination.map_or(JsonValue::Null, |termination| name_json(termination.name()))
+}
+
+/// A graph solve as JSON (`slam_it.edge.loops._solve_record`).
+///
+/// # Arguments
+///
+/// * `summary` - The solve's summary.
+///
+/// # Returns
+///
+/// Its errors, iterations and termination by name.
+fn graph_solve_json(summary: &graphs::Summary) -> JsonValue {
+    object([
+        ("initial_error", JsonValue::Number(summary.initial_error)),
+        ("final_error", JsonValue::Number(summary.final_error)),
+        ("iterations", count(summary.iterations)),
+        ("termination", name_json(summary.termination.name())),
+    ])
+}
+
+/// A loop candidate's summary as JSON (`slam_it.edge.loops.CandidateSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `c` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn candidate_json(c: &CandidateSummary) -> JsonValue {
+    object([
+        ("keyframe", JsonValue::Integer(c.keyframe)),
+        ("score", JsonValue::Number(c.score)),
+        ("near", JsonValue::Bool(c.near)),
+        ("matches", count_or_null(c.matches)),
+        ("best", c.best.map_or(JsonValue::Null, JsonValue::Integer)),
+        ("inliers", count_or_null(c.inliers)),
+        ("projected", count_or_null(c.projected)),
+        ("refined", count_or_null(c.refined)),
+        ("reprojected", count_or_null(c.reprojected)),
+        ("confirmations", count_or_null(c.confirmations)),
+    ])
+}
+
+/// A loop being confirmed's summary as JSON (`slam_it.edge.loops.ConfirmationSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `c` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn confirmation_json(c: &ConfirmationSummary) -> JsonValue {
+    object([
+        ("matched", JsonValue::Integer(c.matched)),
+        ("projected", count(c.projected)),
+        ("refined", count_or_null(c.refined)),
+        ("reprojected", count_or_null(c.reprojected)),
+        ("confirmed", JsonValue::Bool(c.confirmed)),
+    ])
+}
+
+/// A detection's summary as JSON (`slam_it.edge.loops.DetectionSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `d` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn detection_json(d: &DetectionSummary) -> JsonValue {
+    object([
+        ("outcome", name_json(d.outcome.name())),
+        (
+            "confirmation",
+            d.confirmation
+                .as_ref()
+                .map_or(JsonValue::Null, confirmation_json),
+        ),
+        ("sharing", count(d.sharing)),
+        ("scored", count(d.scored)),
+        (
+            "candidates",
+            JsonValue::Array(d.candidates.iter().map(candidate_json).collect()),
+        ),
+        ("confirmations", count(d.confirmations)),
+    ])
+}
+
+/// A similarity as JSON: its rows, as Python's `tolist()` gives them.
+///
+/// # Arguments
+///
+/// * `matrix` - The matrix.
+///
+/// # Returns
+///
+/// Four rows of four numbers.
+fn matrix_json(matrix: &Matrix4<f64>) -> JsonValue {
+    JsonValue::Array(
+        (0..4)
+            .map(|r| JsonValue::Array((0..4).map(|c| JsonValue::Number(matrix[(r, c)])).collect()))
+            .collect(),
+    )
+}
+
+/// Local mapping's summary as JSON (`slam_it.edge.mapping.MappingSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn mapping_json(s: &MappingSummary) -> JsonValue {
+    object([
+        ("from_depth", count(s.from_depth)),
+        ("culled_points", count(s.culled_points)),
+        ("triangulated", count(s.triangulated)),
+        ("fused", count(s.fused)),
+        ("ba", solves_json(&s.solves)),
+        ("free", count(s.free)),
+        ("fixed", count(s.fixed)),
+        ("outliers", count(s.outliers)),
+        ("weak_points", count(s.weak_points)),
+        ("culled_keyframes", count(s.culled_keyframes)),
+    ])
+}
+
+/// Loop closing's summary as JSON (`slam_it.edge.pipeline.LoopSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn loop_json(s: &LoopSummary) -> JsonValue {
+    let correction = s.correction.as_ref().map_or(JsonValue::Null, |c| {
+        object([
+            ("current", JsonValue::Integer(c.current)),
+            ("matched", JsonValue::Integer(c.matched)),
+            ("similarity", matrix_json(&c.similarity)),
+            ("corrected", count(c.corrected)),
+            ("moved", count(c.moved)),
+            ("replaced", count(c.replaced)),
+            ("fused", count(c.fused)),
+            ("links", count(c.links)),
+            ("edges", count(c.edges)),
+            ("essential", graph_solve_json(&c.essential)),
+            (
+                "global_ba",
+                c.global_ba
+                    .as_ref()
+                    .map_or(JsonValue::Null, graph_solve_json),
+            ),
+        ])
+    });
+    object([
+        ("detection", detection_json(&s.detection)),
+        ("correction", correction),
+    ])
+}
+
+/// Relocalisation's summary as JSON (`slam_it.edge.relocalization.RelocalizationSummary`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order, each candidate's as an object.
+fn relocalization_json(s: &RelocalizationSummary) -> JsonValue {
+    let tried = s
+        .candidates
+        .iter()
+        .map(|c| {
+            object([
+                ("keyframe", JsonValue::Integer(c.keyframe)),
+                ("score", JsonValue::Number(c.score)),
+                ("matches", count(c.matches)),
+                ("iterations", count_or_null(c.iterations)),
+                ("termination", termination_json(c.degenerate, c.termination)),
+                ("inliers", count_or_null(c.inliers)),
+                ("refined", count_or_null(c.refined)),
+                ("found", count_or_null(c.found)),
+            ])
+        })
+        .collect();
+    object([
+        ("words", count(s.words)),
+        ("sharing", count(s.sharing)),
+        ("scored", count(s.scored)),
+        ("candidates", JsonValue::Array(tried)),
+        ("placed", JsonValue::Bool(s.placed)),
+    ])
+}
+
+/// How a frame's stages went, as a run records it
+/// (`slam_it.edge.pipeline.FrameSummary.as_dict`): each stage an object, or null.
+///
+/// # Arguments
+///
+/// * `summary` - The summary.
+///
+/// # Returns
+///
+/// Its keys and values, in order.
+fn summary_json(summary: &FrameSummary) -> JsonObject {
+    let placed_by = summary
+        .placed_by
+        .map_or(JsonValue::Null, |placement| name_json(placement.name()));
+    let init = summary.init.as_ref().map_or(JsonValue::Null, |s| {
+        object([
+            ("matches", count_or_null(s.matches)),
+            ("outcome", name_json(s.outcome.name())),
+            ("ba", solves_json(&s.solves)),
+        ])
+    });
+    let motion = summary.motion.map_or(JsonValue::Null, |s| {
+        object([
+            ("matches", count(s.matches)),
+            ("widened", JsonValue::Bool(s.widened)),
+            ("inliers", count_or_null(s.inliers)),
+        ])
+    });
+    let pnp = summary.pnp.map_or(JsonValue::Null, |s| {
+        object([
+            ("candidates", count(s.candidates)),
+            ("matches", count_or_null(s.matches)),
+            ("iterations", count_or_null(s.iterations)),
+            ("termination", termination_json(s.degenerate, s.termination)),
+            ("inliers", count_or_null(s.inliers)),
+            ("refined", count_or_null(s.refined)),
+        ])
+    });
+    let relocalization = summary
+        .relocalization
+        .as_ref()
+        .map_or(JsonValue::Null, relocalization_json);
+    let local_map = summary.local_map.map_or(JsonValue::Null, |s| {
+        object([
+            ("in_view", count(s.in_view)),
+            ("matches", count(s.matches)),
+            ("inliers", count(s.inliers)),
+            ("keyframes", count(s.keyframes)),
+            ("points", count(s.points)),
+            ("reference", JsonValue::Integer(s.reference)),
+        ])
+    });
+    let mapping = summary
+        .mapping
+        .as_ref()
+        .map_or(JsonValue::Null, mapping_json);
+    let loop_closing = summary
+        .loop_closing
+        .as_ref()
+        .map_or(JsonValue::Null, loop_json);
+    let lost = summary.lost.map_or(JsonValue::Null, |s| {
+        object([
+            ("keyframes", count(s.keyframes)),
+            ("points", count(s.points)),
+            ("reset", JsonValue::Bool(s.reset)),
+        ])
+    });
+    [
+        ("placed_by", placed_by),
+        ("init", init),
+        ("motion", motion),
+        ("pnp", pnp),
+        ("relocalization", relocalization),
+        ("local_map", local_map),
+        ("mapping", mapping),
+        ("loop", loop_closing),
+        ("lost", lost),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect()
+}
+
+/// Records a frame's result: its diagnostics.
+///
+/// # Arguments
+///
+/// * `out` - The run.
+/// * `result` - The result.
+/// * `read_seconds` - The time delivering its images took, in seconds.
+/// * `build_seconds` - The time building the frame took, in seconds.
+fn record(out: &mut Run, result: &FrameResult, read_seconds: f64, build_seconds: f64) {
+    let mut diagnostic = vec![
+        ("timestamp".to_owned(), JsonValue::Number(result.timestamp)),
+        ("state".to_owned(), name_json(result.state.name())),
+        (
+            "map".to_owned(),
+            result.map.map_or(JsonValue::Null, JsonValue::Integer),
+        ),
+        ("tracked".to_owned(), count(result.tracked)),
+        ("keyframe".to_owned(), JsonValue::Bool(result.keyframe)),
+        ("read_seconds".to_owned(), JsonValue::Number(read_seconds)),
+        ("build_seconds".to_owned(), JsonValue::Number(build_seconds)),
+        (
+            "track_seconds".to_owned(),
+            JsonValue::Number(result.track_seconds),
+        ),
+        (
+            "map_seconds".to_owned(),
+            JsonValue::Number(result.map_seconds),
+        ),
+        (
+            "loop_seconds".to_owned(),
+            JsonValue::Number(result.loop_seconds),
+        ),
+    ];
+    diagnostic.extend(summary_json(&result.summary));
+    diagnostic.extend(
+        [
+            ("wait_seconds", JsonValue::Number(result.wait_seconds)),
+            ("asked", JsonValue::Bool(result.asked)),
+            ("refused", JsonValue::Bool(result.refused)),
+            ("queue", count(result.queue)),
+            (
+                "schedule",
+                result.schedule.map_or(JsonValue::Null, schedule_json),
+            ),
+            ("global_ba", JsonValue::Array(Vec::new())),
+            ("global_ba_seconds", JsonValue::Number(0.0)),
+            ("views", JsonValue::Array(Vec::new())),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value)),
+    );
+    out.diagnostics.push(diagnostic);
+}
+
+/// How local mapping scheduled a keyframe's steps, as JSON
+/// (`slam_it.edge.mapping.Schedule.as_dict`).
+///
+/// # Arguments
+///
+/// * `schedule` - The schedule.
+///
+/// # Returns
+///
+/// Its fields by name.
+fn schedule_json(schedule: Schedule) -> JsonValue {
+    object([
+        ("fusion", name_json(schedule.fusion.name())),
+        ("adjustment", name_json(schedule.adjustment.name())),
+        ("culling", name_json(schedule.culling.name())),
+    ])
+}
+
+/// How a global BA in a thread of its own went, as JSON
+/// (`slam_it.edge.loops.GlobalSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, the keyframes and points carried 0 when not applied.
+fn global_json(s: &GlobalSummary) -> JsonValue {
+    let moved = s.propagation.unwrap_or_default();
+    object([
+        (
+            "generation",
+            JsonValue::Integer(i64::try_from(s.generation).unwrap_or(i64::MAX)),
+        ),
+        ("applied", JsonValue::Bool(s.applied)),
+        ("solve", graph_solve_json(&s.solve)),
+        ("adjusted", count(moved.adjusted)),
+        ("propagated", count(moved.propagated)),
+        ("points", count(moved.points)),
+        ("carried", count(moved.carried)),
+    ])
+}
+
+/// Records the run's trajectory: each tracked frame's final pose and its pose as tracked, as
+/// `T_world_cam`, and its map; a reset map's frames are left out, as ORB-SLAM3 drops them.
+///
+/// # Arguments
+///
+/// * `out` - The run.
+/// * `trajectory` - The pipeline's trajectory.
+///
+/// # Errors
+///
+/// A pose's inversion's.
+fn record_trajectory(out: &mut Run, trajectory: Trajectory) -> Result<()> {
+    out.timestamps = trajectory.timestamps;
+    out.poses = trajectory
+        .poses
+        .iter()
+        .map(se3::inverse)
+        .collect::<Result<_>>()?;
+    out.tracked_poses = trajectory
+        .tracked
+        .iter()
+        .map(se3::inverse)
+        .collect::<Result<_>>()?;
+    out.pose_maps = trajectory.maps;
+    Ok(())
+}
+
+/// Records every keyframe and point the run made, with their lives and maps.
+///
+/// # Arguments
+///
+/// * `out` - The run.
+/// * `lives` - The pipeline's lifetimes.
+///
+/// # Errors
+///
+/// A pose's inversion's.
+fn record_lives(out: &mut Run, lives: Lifetimes) -> Result<()> {
+    out.keyframe_poses = lives
+        .keyframe_poses
+        .iter()
+        .map(se3::inverse)
+        .collect::<Result<_>>()?;
+    out.keyframe_timestamps = lives.keyframe_times;
+    out.points = lives.points;
+    out.point_lives = lives.point_lives;
+    out.keyframe_lives = lives.keyframe_lives;
+    out.keyframe_parents = lives.keyframe_parents;
+    out.keyframe_links = lives.keyframe_links;
+    out.keyframe_loops = lives.keyframe_loops;
+    out.point_maps = lives.point_maps;
+    out.keyframe_maps = lives.keyframe_maps;
+    Ok(())
+}
+
+/// Tracks a sequence's frames, from the first asked for, to the end: a lost track closes its
+/// map, and the next frame starts a new one.
+///
+/// # Arguments
+///
+/// * `source` - The sequence.
+/// * `pipeline` - The pipeline.
+/// * `request` - The request (checked).
+/// * `out` - The run, each frame recorded.
+/// * `features` - The writer of each frame's keypoints, if the run records them.
+///
+/// # Errors
+///
+/// A reader's, a frame builder's, the pipeline's or the feature writer's.
+fn track(
+    source: &Source,
+    pipeline: &mut Pipeline,
+    request: &Request,
+    out: &mut Run,
+    mut features: Option<&mut FeatureWriter>,
+) -> Result<()> {
+    let first = usize::try_from(request.first).unwrap_or(usize::MAX);
+    let end = request.count.map_or(source.frames, |count| {
+        source
+            .frames
+            .min(first.saturating_add(usize::try_from(count).unwrap_or(0)))
+    });
+    let matching = request.options.stereo_matching();
+    let mut pacer = Pacer::default();
+    let mut held: Vec<Keypoints> = Vec::new(); // threaded: written once their keyframes are mapped
+    for i in first..end {
+        let start = Instant::now();
+        let delivered = (source.read)(i)?;
+        let read = start.elapsed().as_secs_f64();
+        let Some(delivered) = delivered else {
+            continue;
+        };
+        if request.threaded {
+            pacer.wait(delivered.timestamp);
+        }
+        let given = Instant::now();
+        let frame = build(
+            &delivered,
+            &source.camera,
+            &pipeline.extraction(),
+            &matching,
+            source.mask.as_ref(),
+        )?;
+        let built = given.elapsed().as_secs_f64();
+        let result = pipeline.track(&frame)?;
+        record(out, &result, read, built);
+        if let Some(writer) = features.as_deref_mut() {
+            let keypoints = Keypoints::of(&frame, result.fates);
+            if request.threaded {
+                held.push(keypoints);
+            } else {
+                keypoints.write(writer)?;
+            }
+        }
+    }
+    pipeline.finish()?;
+    merge(out, &mut held, &pipeline.completed());
+    if let Some(writer) = features {
+        for keypoints in &held {
+            keypoints.write(writer)?;
+        }
+    }
+    Ok(())
+}
+
+/// Feeds frames at their recorded rate (threaded): each is given its interval since the last,
+/// as ORB-SLAM3's examples sleep out the rest of theirs, a late frame delaying the next.
+#[derive(Default)]
+struct Pacer {
+    /// When the last frame was given, and its time.
+    last: Option<(Instant, f64)>,
+}
+
+impl Pacer {
+    /// Waits until a frame is due: the last frame's interval after the last was given.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` - The frame's time.
+    fn wait(&mut self, timestamp: f64) {
+        if let Some((given, time)) = self.last {
+            let due = given + Duration::from_secs_f64((timestamp - time).max(0.0));
+            let now = Instant::now();
+            if due > now {
+                thread::sleep(due - now);
+            }
+        }
+        self.last = Some((Instant::now(), timestamp));
+    }
+}
+
+/// A frame's keypoints as a run records them: pixels, levels, and their fates
+/// (`slam_it.orchestration.vo._Keypoints`).
+struct Keypoints {
+    /// Each keypoint's pixel.
+    xy: Vec<[f64; 2]>,
+    /// Its pyramid level.
+    level: Vec<i64>,
+    /// What became of it.
+    fates: Fates,
+}
+
+impl Keypoints {
+    /// A frame's keypoints, with their fates.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame.
+    /// * `fates` - What became of each of its keypoints.
+    ///
+    /// # Returns
+    ///
+    /// The keypoints.
+    fn of(frame: &Frame, fates: Fates) -> Self {
+        let keypoints = &frame.features.keypoints;
+        Self {
+            xy: keypoints.iter().map(|k| k.xy).collect(),
+            level: keypoints
+                .iter()
+                .map(|k| i64::try_from(k.level).unwrap_or(i64::MAX))
+                .collect(),
+            fates,
+        }
+    }
+
+    /// Gives the keypoints mapping made a point of the fate [`Fate::Made`] (threaded).
+    ///
+    /// # Arguments
+    ///
+    /// * `made` - The point made of each keypoint, by the run's ids, -1 where none.
+    fn made(&mut self, made: &[i64]) {
+        for ((fate, point), &id) in self
+            .fates
+            .fate
+            .iter_mut()
+            .zip(&mut self.fates.point)
+            .zip(made)
+        {
+            if id >= 0 {
+                *fate = Fate::Made;
+                *point = id;
+            }
+        }
+    }
+
+    /// Appends them to the run's feature files.
+    ///
+    /// # Arguments
+    ///
+    /// * `features` - The writer.
+    ///
+    /// # Errors
+    ///
+    /// The writer's.
+    fn write(&self, features: &mut FeatureWriter) -> Result<()> {
+        let fate: Vec<i64> = self.fates.fate.iter().map(|&f| f as i64).collect();
+        features.write(&self.xy, &self.level, &fate, &self.fates.point)
+    }
+}
+
+/// Sets a key of a frame's diagnostics, in its place, or last if it is new.
+///
+/// # Arguments
+///
+/// * `line` - The frame's diagnostics.
+/// * `key` - The key.
+/// * `value` - Its value.
+fn set_key(line: &mut JsonObject, key: &str, value: JsonValue) {
+    if let Some((_, held)) = line.iter_mut().find(|(name, _)| name == key) {
+        *held = value;
+    } else {
+        line.push((key.to_owned(), value));
+    }
+}
+
+/// A view a writer published, as JSON: its keyframes, points and bytes.
+///
+/// # Arguments
+///
+/// * `view` - Its size.
+///
+/// # Returns
+///
+/// The record.
+fn view_json(view: ViewSize) -> JsonValue {
+    object([
+        ("keyframes", count(view.keyframes)),
+        ("points", count(view.points)),
+        ("bytes", count(view.bytes)),
+    ])
+}
+
+/// Adds a global BA to a frame's diagnostics: listed, its time summed.
+///
+/// # Arguments
+///
+/// * `line` - The frame's diagnostics.
+/// * `global` - The global BA's record.
+/// * `seconds` - Its time.
+fn add_global(line: &mut JsonObject, global: &JsonValue, seconds: f64) {
+    for (name, value) in line.iter_mut() {
+        match (name.as_str(), value) {
+            ("global_ba", JsonValue::Array(listed)) => listed.push(global.clone()),
+            ("global_ba_seconds", JsonValue::Number(total)) => *total += seconds,
+            _ => {}
+        }
+    }
+}
+
+/// Adds what the threads finished to the frames' diagnostics (a keyframe's mapping, its
+/// schedule and loop closing on its frame, a global BA on the frame it ended on, listed, its
+/// time summed), and gives the keypoints mapping made a point of the fate
+/// [`Fate::Made`] (`slam_it.orchestration.vo._merge`).
+///
+/// # Arguments
+///
+/// * `out` - The run, each frame recorded.
+/// * `held` - Each frame's keypoints, when the run records them; else empty.
+/// * `done` - The completions.
+fn merge(out: &mut Run, held: &mut [Keypoints], done: &[Completion]) {
+    let Some(last) = out.diagnostics.len().checked_sub(1) else {
+        return;
+    };
+    for completion in done {
+        let frame = usize::try_from(completion.frame).unwrap_or(usize::MAX);
+        let line = &mut out.diagnostics[frame.min(last)];
+        if let Some(seconds) = completion.map_seconds {
+            set_key(line, "map_seconds", JsonValue::Number(seconds));
+        }
+        if let Some(mapping) = &completion.mapping {
+            set_key(line, "mapping", mapping_json(mapping));
+        }
+        if let Some(seconds) = completion.loop_seconds {
+            set_key(line, "loop_seconds", JsonValue::Number(seconds));
+        }
+        if let Some(schedule) = completion.schedule {
+            set_key(line, "schedule", schedule_json(schedule));
+        }
+        if let Some(looped) = &completion.loop_closing {
+            set_key(line, "loop", loop_json(looped));
+        }
+        if let Some(global) = &completion.global_ba {
+            add_global(line, &global_json(global), completion.global_ba_seconds);
+        }
+        if let Some(view) = completion.view
+            && let Some((_, JsonValue::Array(views))) =
+                line.iter_mut().find(|(name, _)| name == "views")
+        {
+            views.push(view_json(view));
+        }
+        if let Some(keypoints) = held.get_mut(frame) {
+            keypoints.made(&completion.made);
+        }
+    }
+}
+
+/// Fails with `InvalidInput`.
+///
+/// # Arguments
+///
+/// * `message` - What is wrong.
+///
+/// # Errors
+///
+/// Always.
+fn invalid<T>(message: String) -> Result<T> {
+    fail(ErrorKind::InvalidInput, message)
+}
+
+/// Reads a mode's name.
+///
+/// # Arguments
+///
+/// * `text` - The name, as `slam_it.edge.options.MODES` spells it.
+///
+/// # Returns
+///
+/// The mode.
+///
+/// # Errors
+///
+/// `InvalidInput` for another name.
+fn mode_named(text: &str) -> Result<Mode> {
+    Mode::ALL
+        .into_iter()
+        .find(|mode| mode.name() == text)
+        .map_or_else(
+            || {
+                invalid(format!(
+                    "--mode: expected monocular, stereo or rgbd, got '{text}'"
+                ))
+            },
+            Ok,
+        )
+}
+
+/// Reads a whole integer.
+///
+/// # Arguments
+///
+/// * `flag` - The flag it was given with, for the message.
+/// * `text` - The text.
+///
+/// # Returns
+///
+/// The integer.
+///
+/// # Errors
+///
+/// `InvalidInput` for text that is not one.
+fn integer_of(flag: &str, text: &str) -> Result<i64> {
+    text::integer(text).map_or_else(
+        || invalid(format!("{flag}: expected an integer, got '{text}'")),
+        Ok,
+    )
+}
+
+/// Reads one `--option KEY=VALUE` into the settings.
+///
+/// # Arguments
+///
+/// * `text` - `KEY=VALUE`.
+/// * `options` - The settings.
+///
+/// # Errors
+///
+/// `InvalidInput` for an unknown key or a value of the wrong kind.
+fn read_option(text: &str, options: &mut Options) -> Result<()> {
+    let Some((key, value)) = text.split_once('=') else {
+        return invalid(format!("--option: expected KEY=VALUE, got '{text}'"));
+    };
+    let Some((_, kind)) = options
+        .settings()
+        .into_iter()
+        .find(|&(name, _)| name == key)
+    else {
+        return invalid(format!("--option: no setting '{key}'"));
+    };
+    let setting = match kind {
+        Setting::Flag(_) => match value.trim() {
+            "true" => Setting::Flag(true),
+            "false" => Setting::Flag(false),
+            _ => return invalid(format!("{key}: expected true or false, got '{value}'")),
+        },
+        Setting::Integer(_) => Setting::Integer(integer_of(key, value)?),
+        Setting::Real(_) => match text::number(value) {
+            Some(number) if number.is_finite() => Setting::Real(number),
+            _ => return invalid(format!("{key}: expected a finite number, got '{value}'")),
+        },
+    };
+    options.set(key, setting)
+}
+
+/// Reads one flag's value into the request.
+///
+/// # Arguments
+///
+/// * `out` - The request.
+/// * `flag` - The flag.
+/// * `value` - Its value.
+///
+/// # Errors
+///
+/// `InvalidInput` for an unknown flag or a bad value.
+fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
+    match flag {
+        "--dataset" => value.clone_into(&mut out.dataset),
+        "--sequence" => out.sequence = PathBuf::from(value),
+        "--out" => out.out = PathBuf::from(value),
+        "--mode" => out.mode = mode_named(value)?,
+        "--first" => out.first = integer_of(flag, value)?,
+        "--count" => out.count = Some(integer_of(flag, value)?),
+        "--vocabulary" => out.vocabulary = Some(PathBuf::from(value)),
+        "--option" => read_option(value, &mut out.options)?,
+        _ => return invalid(format!("unknown argument '{flag}'")),
+    }
+    Ok(())
+}
+
+/// Reads the command line: [`USAGE`], flags in any order, each with its value but
+/// `--record-features`, `--threaded` and `--views`, `--option` repeatable and naming a field of
+/// `slam_it.edge.options.Options`.
+///
+/// # Arguments
+///
+/// * `arguments` - The arguments after the program's name.
+///
+/// # Returns
+///
+/// The request.
+///
+/// # Errors
+///
+/// `InvalidInput` for an unknown, repeated or missing flag, a flag without its value, an
+/// unknown mode or setting, or a value that is not a number.
+pub fn parse(arguments: &[String]) -> Result<Request> {
+    let mut out = Request::new("", Path::new(""), Mode::Monocular, Path::new(""));
+    let mut seen: Vec<&str> = Vec::new();
+    let mut rest = arguments;
+    while let Some((flag, after)) = rest.split_first() {
+        let flag = flag.as_str();
+        if flag != "--option" && seen.contains(&flag) {
+            return invalid(format!("{flag}: given twice"));
+        }
+        seen.push(flag);
+        if let Some(set) = switch(&mut out, flag) {
+            *set = true;
+            rest = after;
+            continue;
+        }
+        let Some((value, after)) = after.split_first() else {
+            return invalid(format!("{flag}: expected a value"));
+        };
+        read_flag(&mut out, flag, value)?;
+        rest = after;
+    }
+    for required in ["--dataset", "--sequence", "--mode", "--out"] {
+        if !seen.contains(&required) {
+            return invalid(format!("{required}: missing"));
+        }
+    }
+    Ok(out)
+}
+
+/// The switch a flag without a value sets.
+///
+/// # Arguments
+///
+/// * `request` - The request.
+/// * `flag` - The flag.
+///
+/// # Returns
+///
+/// The request's field it sets, or `None` for a flag with a value.
+fn switch<'a>(request: &'a mut Request, flag: &str) -> Option<&'a mut bool> {
+    match flag {
+        RECORD_FEATURES => Some(&mut request.record_features),
+        THREADED => Some(&mut request.threaded),
+        VIEWS => Some(&mut request.views),
+        _ => None,
+    }
+}
+
+/// Checks a request (`slam_it.orchestration.vo.check`).
+///
+/// # Arguments
+///
+/// * `request` - The request.
+///
+/// # Errors
+///
+/// `InvalidInput` for an unknown dataset, a mode it does not record (TUM has no stereo pairs,
+/// EuRoC no depth maps), a negative `first` or `count`, `views` with `threaded`, or settings
+/// out of range.
+pub fn check(request: &Request) -> Result<()> {
+    if !DATASETS.contains(&request.dataset.as_str()) {
+        return invalid(format!(
+            "dataset: expected tum or euroc, got '{}'",
+            request.dataset
+        ));
+    }
+    if request.dataset == "tum" && request.mode == Mode::Stereo {
+        return invalid("mode: a tum sequence has no stereo pairs".to_owned());
+    }
+    if request.dataset == "euroc" && request.mode == Mode::Rgbd {
+        return invalid("mode: a euroc sequence has no depth maps".to_owned());
+    }
+    if request.first < 0 || request.count.unwrap_or(0) < 0 {
+        return invalid("first, count: must be at least 0".to_owned());
+    }
+    let needed = request.options.keeps_keyframe_database();
+    if needed && request.vocabulary.is_none() {
+        return invalid(
+            "--vocabulary: relocalization.enabled or loops.enabled needs one".to_owned(),
+        );
+    }
+    if !needed && request.vocabulary.is_some() {
+        return invalid(
+            "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
+                .to_owned(),
+        );
+    }
+    if request.views && request.threaded {
+        return invalid("--views: tracks in turn, not with --threaded".to_owned());
+    }
+    check_options(&request.options)
+}
+
+/// Runs a sequence through the pipeline: the run, not yet written, as Python's program builds
+/// it before writing (`slam_it.orchestration.vo.main`). The program records its own process in
+/// it (`slam_it_eval::budgets`) and writes it to `request.out`.
+///
+/// # Arguments
+///
+/// * `request` - The request.
+///
+/// # Returns
+///
+/// The run.
+///
+/// # Errors
+///
+/// The check's, a reader's or the pipeline's.
+pub fn run(request: &Request) -> Result<Run> {
+    check(request)?;
+    let source = if request.dataset == "tum" {
+        tum_source(&request.sequence, request.mode)?
+    } else {
+        euroc_source(&request.sequence, request.mode)?
+    };
+    let (words, record) = match &request.vocabulary {
+        Some(folder) => {
+            let read = vocabularies::read(folder)?;
+            (Some(read.vocabulary), Some(read.header))
+        }
+        None => (None, None),
+    };
+    let mut pipeline = Pipeline::new(
+        request.mode,
+        source.camera.clone(),
+        request.options,
+        words,
+        if request.threaded {
+            Threading::View
+        } else if request.views {
+            Threading::InlineView
+        } else {
+            Threading::Inline
+        },
+    )?;
+    let mut out = Run {
+        dataset: request.dataset.clone(),
+        sequence: sequence_name(&request.sequence),
+        mode: request.mode.name().to_owned(),
+        backend: "rust".to_owned(),
+        settings: settings(&request.options),
+        vocabulary: record,
+        record_features: request.record_features,
+        threaded: request.threaded,
+        ..Run::default()
+    };
+    let mut features = if request.record_features {
+        Some(FeatureWriter::open(&request.out)?)
+    } else {
+        None
+    };
+    track(&source, &mut pipeline, request, &mut out, features.as_mut())?;
+    record_trajectory(&mut out, pipeline.trajectory())?;
+    record_lives(&mut out, pipeline.lifetimes())?;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Native tests of reading the command line, the request's checks, and a run of no frames
+    //! on a fixture folder (the fixtures list images without holding them). The whole room is
+    //! run, through every backend, by `tests/orchestration`.
+
+    use super::*;
+    use slam_it_edge::options::CovisibilityOptions;
+
+    /// A scratch folder, removed when the test ends, failed or not.
+    struct Scratch(std::path::PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A fixture sequence's folder.
+    fn folder(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/eval/sequences")
+            .join(name)
+    }
+
+    /// A command line with its required flags, and more.
+    fn command(more: &[&str]) -> Vec<String> {
+        let sequence = folder("tum_camera");
+        let mut out = vec![
+            "--dataset",
+            "tum",
+            "--sequence",
+            sequence.to_str().unwrap(),
+            "--mode",
+            "rgbd",
+            "--out",
+            "run",
+        ];
+        out.extend_from_slice(more);
+        out.into_iter().map(str::to_owned).collect()
+    }
+
+    /// Each error kind exits with its own code, from `EXIT_FAILED` on (Python's `_ERRORS`).
+    #[test]
+    fn each_error_kind_has_an_exit_code() {
+        assert_eq!(
+            [
+                exit_code(ErrorKind::InvalidInput),
+                exit_code(ErrorKind::Degenerate),
+                exit_code(ErrorKind::NotConverged),
+            ],
+            [3, 4, 5]
+        );
+    }
+
+    /// Every flag is read; the options named are set, the rest default.
+    #[test]
+    fn parses_a_command_line() {
+        let request = parse(&command(&[
+            "--first",
+            "3",
+            "--record-features",
+            "--count",
+            "10",
+            "--option",
+            "covisibility.local_neighbours=7",
+            "--option",
+            "stereo.close_depth=35.5",
+        ]))
+        .unwrap();
+        assert_eq!(
+            (
+                request.dataset.as_str(),
+                request.mode,
+                request.first,
+                request.count
+            ),
+            ("tum", Mode::Rgbd, 3, Some(10))
+        );
+        assert_eq!(
+            (
+                request.options.covisibility.local_neighbours,
+                request.options.features.n_features
+            ),
+            (7, 1000)
+        );
+        assert!((request.options.stereo.close_depth - 35.5).abs() < f64::EPSILON);
+        assert!(request.record_features);
+        let plain = parse(&command(&[])).unwrap();
+        assert_eq!(
+            (plain.first, plain.count, plain.record_features),
+            (0, None, false)
+        );
+    }
+
+    /// A bad flag, value or setting, a repeated flag, or a missing one is refused.
+    #[test]
+    fn refuses_bad_command_lines() {
+        for more in [
+            &["--mode", "lidar"][..],
+            &["--first", "x"],
+            &["--count"],
+            &["--option", "covisibility.local_neighbourss=7"],
+            &["--option", "covisibility.local_neighbours=7.5"],
+            &["--option", "stereo.close_depth=inf"],
+            &["--option", "stereo.close_depth=+-5"],
+            &["--option", "window"],
+            &["--dataset", "euroc"],
+            &["--verbose", "1"],
+            &["--record-features", "--record-features"],
+        ] {
+            assert_eq!(
+                parse(&command(more)).unwrap_err().kind,
+                ErrorKind::InvalidInput,
+                "{more:?}"
+            );
+        }
+        let short = ["--dataset".to_owned(), "tum".to_owned()];
+        assert_eq!(parse(&short).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+
+    /// Unknown datasets, modes a dataset does not record, negative counts and settings out of
+    /// range are refused.
+    #[test]
+    fn checks_requests() {
+        let mut good = Request::new(
+            "tum",
+            &folder("tum_camera"),
+            Mode::Monocular,
+            Path::new("run"),
+        );
+        good.options.relocalization.enabled = false; // no vocabulary: these check the request alone
+        good.options.loops.enabled = false;
+        check(&good).unwrap();
+        let mut bads = vec![
+            Request {
+                dataset: "kitti".to_owned(),
+                ..good.clone()
+            },
+            Request {
+                mode: Mode::Stereo,
+                ..good.clone()
+            },
+            Request::new("euroc", &folder("euroc"), Mode::Rgbd, Path::new("run")),
+            Request {
+                count: Some(-1),
+                ..good.clone()
+            },
+        ];
+        bads.push(Request {
+            options: Options {
+                covisibility: CovisibilityOptions {
+                    local_neighbours: 0,
+                    ..good.options.covisibility
+                },
+                ..good.options
+            },
+            ..good
+        });
+        for bad in bads {
+            assert_eq!(check(&bad).unwrap_err().kind, ErrorKind::InvalidInput);
+        }
+    }
+
+    /// A run of no frames records the sequence and every setting; a missing image or sequence
+    /// fails the run.
+    #[test]
+    fn runs_the_fixture_folders() {
+        let out = std::env::temp_dir().join(format!("slam_it_test_vo_rust_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
+        let mut request = Request::new("tum", &folder("tum_camera"), Mode::Rgbd, &out);
+        request.options.relocalization.enabled = false;
+        request.options.loops.enabled = false;
+        request.count = Some(0);
+        let empty = run(&request).unwrap();
+        assert_eq!(empty.timestamps, Vec::<f64>::new());
+        assert!(
+            !out.join("run.json").exists(),
+            "the run is the program's to write"
+        );
+        slam_it_eval::runs::write_run(&out, &empty).unwrap();
+        let mut recorded: Vec<&str> = Options::default()
+            .settings()
+            .iter()
+            .map(|&(name, _)| name.split_once('.').map_or(name, |(group, _)| group))
+            .collect();
+        recorded.dedup(); // each group, and the seed
+        assert_eq!(
+            (
+                empty.sequence.as_str(),
+                empty.backend.as_str(),
+                empty.settings.len()
+            ),
+            ("tum_camera", "rust", recorded.len())
+        );
+        let text = std::fs::read_to_string(out.join("run.json")).unwrap();
+        assert!(text.contains("\"mapping\": {") && out.join("trajectory.txt").exists());
+        request.count = Some(1);
+        assert_eq!(run(&request).unwrap_err().kind, ErrorKind::InvalidInput);
+        let mut stereo = Request::new("euroc", &folder("euroc"), Mode::Stereo, &out);
+        stereo.options.relocalization.enabled = false;
+        stereo.options.loops.enabled = false;
+        stereo.count = Some(1);
+        assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
+        stereo.sequence = folder("no_such_sequence");
+        assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
+    }
+}

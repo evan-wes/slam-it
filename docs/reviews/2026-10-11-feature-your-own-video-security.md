@@ -1,0 +1,859 @@
+# Security pass: `feature/your-own-video`
+
+<!-- The security pass on PR 11's upload path (docs/design/2026-10-09-run-viewer.md, section 7,
+decision 5), saved beside the panel's report. Later runs append a "Run N" section. -->
+
+## Run 1 -- 2026-10-11
+
+| | |
+|---|---|
+| **Branch** | `feature/your-own-video` |
+| **Range** | `63b61da...e909a76` (base: `origin/develop`) |
+| **Reviewer** | security (opus), a general-purpose agent with its own brief: the server, the worker, hostile uploads, the pages, the images and the demo, against attackers without a code, with one, with a result link, and with the worker token |
+| **Probes** | the server on 127.0.0.1 with folder storage and staging on, probed with curl; an S3 link signed offline; two process probes on the room's Stray Scanner zip; no images built, no external service contacted |
+| **Panel** | [the panel's report](2026-10-11-feature-your-own-video.md), whose IDs (H*, A*, L*) are named where a finding overlaps one of its own |
+
+### Findings and resolutions
+
+| ID | Severity | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|
+| S1 (H1 / A1) | must-fix | `orchestration/worker.py:317-354, 390-398`; `vo.py:680` | the timeout and a failed heartbeat leave the job's processes running, the C++ program always; the worker is PID 1 in its image, so orphans are never reaped | fix (the panel's row, plus an init in the worker image) | fixed (8bf170f, tini in the worker's image included) -- decided by evan-wes, 2026-10-11 |
+| S2 | should-fix | `server/.../__main__.py`; every route with a token | uvicorn's access log records result tokens and folder storage's signed links, and client addresses | fix (the access log off, the server's own lines keyed by job id; the page says what the host logs); defer the token out of the path (`/r#<token>`) to before going public | fixed (3a6fbdd: the access log off, the server's own lines by id, the page says what the host logs); deferred (the ladder's open items, PR 11's, before going public): the token out of the path -- decided by evan-wes, 2026-10-11 |
+| S3 | should-fix | `eval/video.py:190, 385` | uploads are opened with every FFmpeg input format, reference formats (`hls`, `concat`, `dash`) among them | fix (an allow-list of the mov/mp4 family, anything else refused, tested) | fixed (88190df) -- decided by evan-wes, 2026-10-11 |
+| S4 | should-fix | `worker.py:317-323`; `scripts/serve_demo.py:150-153` | the decoding child inherits the worker token, and on the demo the owner's whole environment | fix (a minimal environment for the child and the demo's worker) | fixed (8bf170f; the demo's worker in 3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| S5 | should-fix | `app.py:325-343, 403-414`; `storage.py:155-161` | the owner's upload link can be replayed for its hour: after the upload is confirmed, and after the import deleted it | fix (on confirmation, the upload moved to a key the owner holds no link for) | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| S6 (H9) | should-fix | `jobs.py:212-232`; `app.py:314-329` | one code holder can fill the queue for an hour with five tiny requests, and a job does not record its code | fix (scope to decide: waiting jobs expire with their link, open jobs per code capped, the code's hash stored) | fixed (98ae08a: a waiting job expires with its 15-minute link; at most 2 jobs open per code, its keyed hash kept) -- decided by evan-wes, 2026-10-11 |
+| S7 (A2) | should-fix | `app.py:121-134, 275-279` | a failed deletion is lost, and the files outlive the 7 days | fix (the panel's A2, plus a bucket lifecycle rule in the staging checklist if Railway supports one) | fixed (98ae08a; the lifecycle rule in the staging checklist, 490b242) -- decided by evan-wes, 2026-10-11 |
+| S8 (H6) | should-fix | `app.py:391-401, 461-483`; `jobs.py:175-189` | synchronous SQLite work blocks the event loop, and every read takes the write lock | fix (the panel's H6) | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| S9 | should-fix | `eval/video.py:120-257`; `worker.py:228-230` | the import bounds memory and time, but not the frame's long side, the frames decoded, or the disk written | fix (the long side and aspect refused past a limit, decoded frames capped, `RLIMIT_FSIZE`) | fixed (88190df; the file-size limit in 8bf170f) -- decided by evan-wes, 2026-10-11 |
+| S10 | should-fix | `docs/notes/your-own-video.md:127`; `docker/server.Dockerfile` | `RAILWAY_RUN_UID=0` runs the internet-facing server as root on Railway | fix (an entrypoint that gives `/data` to the server's user, then drops to it) | fixed (3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| S11 | should-fix | `app.py:83-88`; `viewer/*.html`; `viewer/src/main.js:206` | no Content Security Policy; three.js from a CDN without `integrity`; Google Fonts; `?bundle=` takes any URL; no HSTS | fix now: a CSP, `integrity` on three.js, `?bundle=` same-origin only; defer self-hosted fonts and HSTS to going public | fixed (3a6fbdd: the policy, three.js pinned, the bundle on its own site); deferred (the ladder's open items, PR 11's, before going public): fonts self-hosted, HSTS -- decided by evan-wes, 2026-10-11 |
+| S12 | note | `docs/notes/your-own-video.md:125-135` | the staging check should test the bucket's own guards: a wrong-size PUT refused, an exact CORS origin, HTTPS only | fix (the checklist) | fixed (490b242) -- decided by evan-wes, 2026-10-11 |
+| S13 | note | `config.py:96-100`; `server/settings.template.env` | invite codes are checked for length only; the template does not say to make them at random | fix (the template) | fixed (3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| S14 | note | `storage.py:29-41, 190-192` | storage keys accept `.` parts and a trailing newline; a result path `.` escapes deletion | fix (`fullmatch`, `.` refused) | fixed (98ae08a) -- decided by evan-wes, 2026-10-11 |
+| S15 | note | `app.py:383-445, 485-492` | the worker token is one all-powerful credential; folder storage serves a result's `*.html` from the server's origin | fix: result paths limited to the bake's names, folder files served as attachments; defer a token per worker | fixed (98ae08a: a result's files a bundle's alone, served as downloads); deferred (the ladder's open items, PR 11's, before going public): a token per worker -- decided by evan-wes, 2026-10-11 |
+| S16 (H7) | note | `worker.py:145-150, 207-225` | the worker follows any URL the server gives, `file://` and plain HTTP included | fix (the panel's H7) | fixed (8bf170f) -- decided by evan-wes, 2026-10-11 |
+| S17 | note | `.gitignore`, `.dockerignore` | a filled-in `server/settings.env` would be committed and copied into the image | fix (`*.env` ignored, the template excepted) | fixed (3a6fbdd) -- decided by evan-wes, 2026-10-11 |
+| S18 | note | `eval/video.py:345-353, 485-496`; `worker.py:291` | a hostile zip's CRC, encryption or CSV-field errors reach the owner as "an internal error" | fix (refused with the import's own message) | fixed (88190df) -- decided by evan-wes, 2026-10-11 |
+| S19 | note | `scripts/serve_demo.py` | with `--lan`, every page is open on plain HTTP to the whole network | fix (`--lan` puts every page behind the code; the checklist advises a trusted network) | fixed (3a6fbdd; the demo checklist in 490b242) -- decided by evan-wes, 2026-10-11 |
+| S20 | note | `scripts/locks/slam-it-all.lock` | the lock pins versions without hashes, and only a PyAV bump updates its FFmpeg | defer (to going public) | deferred (the ladder's open items, PR 11's, before going public) -- decided by evan-wes, 2026-10-11 |
+
+### Security review
+
+## Security review
+
+**Scope:** The upload path of PR 11 at `e909a76` against `63b61da` (origin/develop):
+- `server/src/slam_it_all_server/` (all modules) and `server/settings.template.env`
+- `src/slam_it_all/orchestration/worker.py`
+- `src/slam_it_all/eval/video.py` and `lenses.py` (the lens fetch and metadata parts)
+- `vo.run`'s launch of the C++ program
+- `viewer/upload.html`, `status.html`, `index.html`, `src/jobs.js`, `upload_view.js`, `status_view.js`
+- the Dockerfiles, `.dockerignore`, `scripts/serve_demo.py`, and the staging steps in `docs/notes/your-own-video.md`
+
+**How I checked:**
+- Ran the server on 127.0.0.1:8790 with folder storage and staging on, probed it with curl, then stopped it.
+- Signed an S3 link offline with boto3.
+- Ran two process probes on the room's Stray Scanner zip.
+- Built no Docker images and contacted no external service.
+
+**Summary:** The server's core is sound:
+- staging auth leaves open only the paths that carry their own credential;
+- every secret is compared in constant time;
+- tokens and ids carry 128 bits each;
+- every state change is one transaction;
+- signed links cover method, key, expiry and size;
+- the pages set every server string with `textContent`;
+- the zip is never unpacked, and each file is capped on its actual bytes.
+
+The one must-fix is in the worker: the 20-minute timeout, and any failed heartbeat, leave the job's processes running. The C++ program always survives, so "one job at a time" and the timeout do not hold for the most expensive stage. The should-fixes are mostly hardening before going public:
+- result tokens land in the logs;
+- the decoder accepts any FFmpeg input format;
+- the decoding child inherits the worker token;
+- the owner's upload link can be replayed after use;
+- one code can fill the queue;
+- a failed deletion is lost for good;
+- the server runs as root on Railway;
+- there is no CSP.
+
+### Findings
+
+#### [must-fix] The timeout and a failed heartbeat leave the job's processes running
+- **Where:** `src/slam_it_all/orchestration/worker.py:317-354` (`_run_child`), `worker.py:390-398` (`handle`), `src/slam_it_all/orchestration/vo.py:680`
+- **Issue:** There are two paths.
+  - **The timeout** calls `child.kill()`, which signals only the Python child. The C++ program it started (`subprocess.run(argv, capture_output=True, text=True, check=False)`, no timeout, same process group) keeps running.
+  - **A failed report.** Any exception raised by `report(...)` leaves `_run_child` with no clean-up at all, and the child and the C++ program both keep going. That covers a 409 (`AbandonedError`) and a `URLError` while the server redeploys.
+
+  In both cases `handle` then deletes the folder, and `serve` claims the next job while the old pipeline still runs. The worker runs as PID 1 in its image (`exec python ...`), so the orphans are reparented to it and never reaped.
+- **Why it matters:**
+  - The design's guards fail exactly at the C++ stage. One job at a time stops holding: each orphan keeps its own 6 GiB `RLIMIT_AS`, but nothing bounds how many there are. The 20-minute timeout bounds only the Python side.
+  - An invited visitor whose upload drives the pipeline past 20 minutes, or any server redeploy during a job, gets two pipelines running at once on the worker. On Railway that risks killing the container when it runs out of memory.
+  - Neither the timeout test (which kills at 0.5 s, during the import) nor the 409 test (cancelled at "downloading") reaches this path.
+- **Evidence:** Two probes on the room's zip, run on this machine.
+  - **Probe 1:** `report("running")` raises `ConnectionError`, as a heartbeat does during a redeploy. One second after `_run_child` raised, both processes were still alive:
+    ```
+    1536181 1535333 .../python -m slam_it_all.orchestration.worker process .../orphan-job/upload.zip ...
+    1539858 1536181 .../slam_it_all/bin/slam_it_all_vo --dataset tum --sequence .../orphan-job/your-video ...
+    ```
+  - **Probe 2:** SIGKILL to the Python child alone, which is what `child.kill()` does at the deadline. The C++ program was still alive afterwards, reparented, and then finished on its own (the room's run is short):
+    ```
+    killed the Python child 1540647 ; the C++ program is 1544360
+      1 s later, C++ program alive: True 1544360    2731 .../slam_it_all_vo ...
+    ```
+- **Suggested fix:**
+  - Start the child with `start_new_session=True`.
+  - Wrap `_run_child`'s loop in `try/finally` that runs `os.killpg(child.pid, SIGKILL)` and `child.wait()` while the child still runs. Use the same group kill at the deadline.
+  - Add tini (or another init) as the worker image's entrypoint so PID 1 reaps orphans.
+  - Add a test: a report that raises at "running", and a deadline reached during "running", each leave no process of the job behind.
+
+#### [should-fix] Result tokens and signed links are written to the server's log
+- **Where:** `server/src/slam_it_all_server/__main__.py:76-78` (uvicorn's access log on by default); routes `/r/<token>`, `/api/jobs/<token>`, `/r/<token>/bundle/...`, `/storage/<key>?...`
+- **Issue:** Every request line is logged with its path and query string. That includes:
+  - the owner's 128-bit token, which grants 7 days of access to the result;
+  - folder storage's complete signed links, valid for 1 hour.
+
+  Railway's edge also keeps its own HTTP request logs, which by their nature hold the path. Confirm this in the dashboard on staging.
+- **Why it matters:**
+  - The logs become a second, unlisted store of bearer links, kept on the host's retention rather than the 7-day promise.
+  - Client IP addresses are logged too. The page's "What is kept, and who can see it" section does not mention either.
+  - On staging only the owner reads the logs, so this is hardening, not an exposure today.
+- **Evidence:** From the probe server's log:
+  ```
+  "PUT /storage/uploads/069a…eae?expires=1791714309&size=10&signature=62f5237f…7a09 HTTP/1.1" 200 OK
+  "POST /api/jobs/WU-Lo6EakiVG34m1fQ0SfA/uploaded HTTP/1.1" 200 OK
+  "GET /api/jobs/WU-Lo6EakiVG34m1fQ0SfA HTTP/1.1" 200 OK
+  ```
+- **Suggested fix:**
+  - Now: `uvicorn.Config(..., access_log=False)`. Log your own lines keyed by job id, never by token or query string. A logging filter that redacts `/r/<token>`, `/api/jobs/<token>` and query strings also works.
+  - Before going public: consider keeping the token out of every path. Use `/r#<token>`, with the status page reading `location.hash` and sending the token in a header or body. Then neither uvicorn nor the edge ever sees it.
+  - Add a line to the page saying the host keeps request logs, including IP addresses, and for how long.
+
+#### [should-fix] Untrusted uploads are opened with every FFmpeg input format
+- **Where:** `src/slam_it_all/eval/video.py:190` and `:385` (`av.open(str(path))`, with no `format` and no `options`)
+- **Issue:** FFmpeg chooses the demuxer from the file's contents. This PyAV build (av 18.1.0) includes playlist and reference formats that open other files named inside the input: `hls`, `concat`, `dash` and `tee` all report available. No format allow-list is set, and no `protocol_whitelist`.
+- **Why it matters:**
+  - Reference formats are a known FFmpeg risk; it ships safety options (`concat`'s `safe`, `hls`'s `allowed_extensions`) for that reason. Those defaults narrow the risk but are the only barrier.
+  - The upload's worst case is on the LAN demo. There the worker runs as the owner, with the owner's home directory readable, and the frames it decodes are published in the result.
+  - I deliberately did not build a proof file, so whether this exact build can be led to read another file is **untested**.
+- **Evidence:** `av.open(str(path))` at `video.py:190` and `:385`. On this env, `av.formats_available` contains `hls`, `concat`, `dash`, `tee` (checked with `python -I -c "import av; ..."`).
+- **Suggested fix:**
+  - Open with an allow-list, for example `av.open(path, format="mov")` (the mov/mp4 demuxer covers iPhone `.mov` and Android/Stray `.mp4`), or `options={"format_whitelist": "mov,mp4,m4a,3gp,3g2,mj2", "protocol_whitelist": "file"}`.
+  - Refuse any other container with an `InvalidInputError`.
+  - Add a test that a non-mp4 container (for example a Matroska file) is refused.
+  - Do this before the in-person demo.
+
+#### [should-fix] The decoding child inherits the worker token, and on the demo the owner's whole environment
+- **Where:** `worker.py:317-323` (`subprocess.Popen(...)` with no `env=`); `scripts/serve_demo.py:150-153` (`env={**os.environ, **token}`)
+- **Issue:** The child that runs FFmpeg on hostile input, and the C++ program, both inherit `SLAM_IT_ALL_WORKER_TOKEN`. On the laptop demo they also inherit every variable the owner's shell has (API keys, cloud credentials, the SSH agent socket).
+- **Why it matters:** A memory-safety bug in a decoder (FFmpeg has them every year) becomes a stolen worker token. With that token an attacker can download every queued upload, forge results, and fail jobs. On the demo it becomes the owner's credentials.
+- **Evidence:** `child = subprocess.Popen([*command, str(upload_path), kind, str(out)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, preexec_fn=_limit_memory)`, with no `env`.
+- **Suggested fix:**
+  - Pass the child an explicit minimal environment: `PATH`, `HOME`, `SLAM_IT_ALL_LENS_PROFILES`, the thread caps, and no token.
+  - In `serve_demo.py`, give the worker a minimal environment too.
+  - Running the demo's worker in its Docker image would isolate it from the home directory.
+  - Same-uid processes can still read the parent's `/proc/<pid>/environ`, so this raises the bar rather than closing the hole. Keep PyAV current for FFmpeg fixes.
+
+#### [should-fix] The owner's upload link can be replayed after the upload is confirmed and after the import deleted it
+- **Where:** `server/src/slam_it_all_server/app.py:325-343` and `:403-414`; `storage.py:155-161` (links last `LINK_SECONDS` = 3600)
+- **Issue:** The signed PUT stays valid for an hour, and nothing stops a repeat.
+  - After `uploaded` has checked the size and queued the job, the owner can replace the file the worker is about to download.
+  - After the import ends and the server deletes the upload, the same link writes it back. It then stays until the job is deleted 7 days later.
+- **Why it matters:**
+  - The page says "Your upload is deleted as soon as its frames have been imported". A replayed link breaks that, and up to 500 MB per job sits in the bucket for a week.
+  - It also makes the server's one size check at `uploaded` a time-of-check/time-of-use check. This is a weakness in how the decided signed PUT was built, not in the decision itself.
+- **Evidence:** On the probe server:
+  - PUT 200, then `uploaded` gave `{"state":"queued"}`;
+  - the same link was accepted again: `PUT again after queued: 200`;
+  - after the worker's `importing` and `running` reports, the uploads folder was empty;
+  - `owner re-PUT after the import ended: 200` recreated `uploads/069a…eae` (10 bytes).
+- **Suggested fix:**
+  - On `uploaded`, move or copy the object server-side to a key the owner holds no link for (S3 `CopyObject` plus delete, or a rename in folder storage), and give the worker that key.
+  - Alternatively, shorten the upload link's life and delete `uploads/<id>` again once the link has expired.
+
+#### [should-fix] One code holder can fill the queue for an hour with five tiny requests
+- **Where:** `server/src/slam_it_all_server/jobs.py:212-232` (`waiting` jobs count toward `QUEUE`, `UPLOAD_WAIT` = 1 h); `app.py:314-329`
+- **Issue:** A job that never receives its upload holds one of the 5 open places for an hour. No limit applies per invite code, and the job does not record which code made it.
+- **Why it matters:**
+  - Anyone who holds or learns a code shuts everyone out for an hour, repeatably, at 5 requests an hour.
+  - Without the code on the job, a leaked code's abuse cannot be traced or cut off short of redeploying.
+- **Evidence:** On the probe server, `POST /api/jobs` with `"bytes":1` five times gave `201` each time; the sixth gave `503`.
+- **Suggested fix:**
+  - Give waiting jobs their own short limit (for example 15 minutes, or the link's life) and a separate cap.
+  - Cap open jobs per code, storing a hash of the code on the job.
+  - Log the code's hash, not the code, with each job.
+
+#### [should-fix] A deletion that fails is lost, and the files outlive the 7 days
+- **Where:** `server/src/slam_it_all_server/app.py:121-134` (`sweep`), `:275-279` (`contextlib.suppress(Exception)`)
+- **Issue:** `Jobs.sweep` commits the deletion of the rows first; the files are deleted afterwards. If a storage call raises (an S3 hiccup, or the server stopping mid-sweep), the rest of that sweep's files are skipped. Their jobs are already gone from the list, so no later sweep retries them. The error is swallowed silently.
+- **Why it matters:** Results and uploads can stay in the bucket indefinitely, contrary to the page's "kept for 7 days, then deleted", and nothing records that it happened.
+- **Evidence:** `swept = job_list.sweep()` (committed) precedes the `for job in swept.deleted: store.delete(...); store.delete_prefix(...)` loop; the background task wraps it in `with contextlib.suppress(Exception):`.
+- **Suggested fix:**
+  - Delete the files first, then the row, or keep a "deleting" state that is retried.
+  - Log failures.
+  - Add a bucket lifecycle rule as a backstop (for example `uploads/` after 2 days, `results/` after 8). Add it to the staging checklist if Railway's buckets support one.
+
+#### [should-fix] Synchronous SQLite work blocks the event loop, and every read takes the write lock
+- **Where:** `app.py:391-401` (`async def claim` calls `server.jobs.claim(...)` directly, once a second for up to 60 s); `jobs.py:175-189` (`BEGIN IMMEDIATE`, `timeout=10.0`, also used by `by_token`, `by_id`, `ahead`); `app.py:461-483` (sync file writes in `async def put_file`)
+- **Issue:**
+  - `claim` runs in the event loop. While another thread holds SQLite's write lock (the sweep, a status poll), every request on the server waits, for up to the 10 s busy timeout.
+  - Every status read, including one for a made-up token (unauthenticated once staging auth is off), takes that write lock.
+- **Why it matters:** A flood of `GET /api/jobs/<random>` turns into stalls of the whole server whenever the worker's long-poll contends with it. Contention from normal status polling causes the same stalls on a smaller scale.
+- **Evidence:** The quoted lines. `while (job := server.jobs.claim(request.kinds)) is None:` sits inside `async def claim`.
+- **Suggested fix:**
+  - Use `await asyncio.to_thread(server.jobs.claim, request.kinds)`.
+  - Do reads without `BEGIN IMMEDIATE` (a plain connection, WAL mode).
+  - In `put_file`, write the file through `asyncio.to_thread` or anyio's file API.
+
+#### [should-fix] The import bounds memory and time, but not frame size, frame count or disk
+- **Where:** `src/slam_it_all/eval/video.py:120-137` (`output_size`), `:187-207` (`_decode`), `:218-257`; `worker.py:228-230` (only `RLIMIT_AS`)
+- **Issue:**
+  - A frame whose short side is 480 or less is kept at its stored size, so the long side is bounded only by FFmpeg's own limits.
+  - Frames closer together than 1/40 s, or not increasing in time, are decoded and skipped without limit.
+  - The PNGs are written with no `RLIMIT_FSIZE` and no free-disk check.
+- **Why it matters:** An upload of very wide, high-entropy frames can write tens of GB of PNGs within the 20 minutes and fill the worker's disk. It also feeds the C++ program huge frames, which feeds the must-fix above. The job's folder is removed afterwards, so this is a denial of service of bounded length.
+- **Evidence:** `if short <= SHORT_SIDE: return width, height`, and there is no check on `stream.width`/`stream.height` in `probe`.
+- **Suggested fix:**
+  - At `probe`, refuse a stored long side over 4096 (or an aspect ratio over about 3:1).
+  - Cap decoded frames (for example `MAX_SECONDS` × 240).
+  - Set `RLIMIT_FSIZE` in `_limit_memory`, or check free space before the import.
+
+#### [should-fix] The server runs as root on Railway
+- **Where:** `docs/notes/your-own-video.md:127` (`RAILWAY_RUN_UID=0`); `docker/server.Dockerfile:24-25`
+- **Issue:** The image drops to uid 10001, but the staging step overrides that with uid 0 so the server can write to the volume. The internet-facing process that holds the bucket keys then runs as root in its container.
+- **Why it matters:** It removes the protection the image's `USER server` was there to give.
+- **Suggested fix:**
+  - Keep the image's user and add a small entrypoint that runs as root only to `chown 10001 /data`, then `exec setpriv --reuid=10001 --regid=10001 --init-groups python -m slam_it_all_server --host ::`.
+  - `setpriv` is in util-linux, which the Debian base image already has.
+
+#### [should-fix] No Content Security Policy, an unpinned third-party script, and Google Fonts
+- **Where:** `app.py:83-88` (`_HEADERS`); `viewer/index.html:13-20` (three.js from jsDelivr with no `integrity`); `upload.html:8-12`, `status.html:112-116`, `index.html:7-11` (Google Fonts); `viewer/src/main.js:206` (any `?bundle=` URL)
+- **Issue:**
+  - A compromised CDN response runs as the server's origin. That origin includes the page where invite codes are typed, and on staging the browser's cached Basic-auth access.
+  - The viewer fetches a bundle from any URL given in `?bundle=`, so anyone can make a link on the server's origin show an attacker's frames and numbers. This is content spoofing, not XSS: everything is set as text.
+  - Every page sends visitors' IP addresses to Google, and the privacy section does not say so.
+  - There is no HSTS header for the future custom domain.
+- **Suggested fix:**
+  - Send a CSP: `default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'sha256-<importmap>'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src 'self' <bucket origin>; img-src 'self' blob: data:; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`.
+  - Add `integrity` to the import map, or vendor three.js. Self-host the two fonts.
+  - Restrict `?bundle=` to same-origin paths.
+  - Add `Strict-Transport-Security` once on a domain served only over HTTPS.
+
+#### [note] The staging checklist should verify the bucket's own guards
+- **Where:** `docs/notes/your-own-video.md:125-135`
+- **Issue:** boto3 does sign the size into the upload link, so enforcing it rests with the bucket. Offline: `X-Amz-SignedHeaders: ['content-length;host']`. Whether Railway's S3-compatible bucket rejects a PUT of a different size is untested here.
+- **Suggested fix:** Add to "The check":
+  - a PUT of a wrong size through a fresh link must fail;
+  - the CORS origin must be the exact server address, never `*`;
+  - the lifecycle rule above;
+  - `curl -I http://<app>.up.railway.app/` should redirect to HTTPS, since a 401 over plain HTTP would invite Basic credentials in clear text.
+
+#### [note] Invite codes are checked for length only
+- **Where:** `server/src/slam_it_all_server/config.py:96-100`; `server/settings.template.env:3-7`
+- **Issue:** Nothing makes a code random, and with no rate limit (as decided) a human-chosen 12-character code is guessable. The template's "make the secrets with `secrets.token_urlsafe(32)`" does not clearly cover the codes.
+- **Suggested fix:** State in the template that codes are generated randomly (for example `secrets.token_urlsafe(9)`, 72 bits, as `serve_demo.py` does).
+
+#### [note] Storage keys accept `.` parts and a trailing newline; a result path `.` escapes deletion
+- **Where:** `server/src/slam_it_all_server/storage.py:29-41` (`$` matches before a final `\n`; `.` parts are allowed), `:190-192` (`rmtree(..., ignore_errors=True)`); `app.py:59` (`PAGES` also uses `$`, harmless behind its `is_file` check)
+- **Issue:** A worker path `.` gets a link to `results/<id>/.`. pathlib turns that into the file `results/<id>`, which `delete_prefix`'s `rmtree` then silently fails to remove. Only a buggy or compromised worker can do this.
+- **Evidence:** In-process, `check_key('uploads/abc\n')` and `check_key('results/x/.')` are accepted. On the probe server, a PUT to the `.` link wrote `results/069a…eae`, and the file was still there after `/failed`.
+- **Suggested fix:** Use `\Z` (or `re.fullmatch`) and refuse `.` parts, as well as `..`.
+
+#### [note] The worker token is one all-powerful credential
+- **Where:** `app.py:383-445`; `app.py:485-492` (`FileResponse(path)` guesses the media type from the key)
+- **Issue:** The holder of the token can:
+  - claim and download every queued upload;
+  - re-request result links, including after `done`, since earlier links stay valid for an hour;
+  - in folder storage, upload a `*.html` result that `/storage/` serves from the server's own origin as `text/html`.
+- **Suggested fix:**
+  - Restrict result paths to the bake's names and extensions.
+  - Serve folder storage files as `application/octet-stream` with `Content-Disposition: attachment`.
+  - Later, consider a token per worker.
+
+#### [note] The worker trusts the server's URLs
+- **Where:** `worker.py:207-225`, `:145-150`
+- **Issue:** `urllib.request.urlopen` accepts `file://`, so a malicious or compromised server could hand the worker a local file as the "upload". The `--server` address may also be plain HTTP. That is fine on Railway's private network, but not for a later GPU worker elsewhere.
+- **Suggested fix:** Require `https` for links and the server, allowing `http` only for loopback and `*.railway.internal`.
+
+#### [note] Filled-in settings files are not ignored
+- **Where:** `.dockerignore`, `.gitignore`, `docker/server.Dockerfile:13-17`
+- **Issue:** `COPY server /opt/slam-it-all-server` keeps whatever is in `server/` in that image layer; the later `rm -rf` does not remove it. A filled-in `server/settings.env` would therefore ship in the image, and it is also not git-ignored. Railway builds from git, so this concerns local builds and accidental commits.
+- **Suggested fix:** Add `*.env` with `!server/settings.template.env` to both files.
+
+#### [note] Some refusals of hostile zips surface as "an internal error"
+- **Where:** `video.py:345-353`, `:485-496`; `worker.py:291`
+- **Issue:** A CRC failure, an encrypted entry, an unsupported compression method or an over-long CSV field raises `zipfile.BadZipFile`, `RuntimeError`, `NotImplementedError` or `csv.Error`. None of these is wrapped, so the owner sees "an internal error". Clean-up still happens, so this is safe; it belongs to the hygiene reviewer.
+- **Evidence:** A zip with one byte corrupted inside `camera_matrix.csv` raised `zipfile BadZipFile - Bad CRC-32 for file '2026-10-10--12-00-00/camera_matrix.csv'`, which `process()` does not catch.
+
+#### [note] `serve_demo.py --lan` exposure
+- **Where:** `scripts/serve_demo.py:75`, `:133-136`
+- **Issue:** With `--lan`:
+  - the demo serves plain HTTP on `0.0.0.0`, so every interface is reachable, a VPN's included;
+  - staging is off, so every page is open to the network, and the invite code and result links cross the Wi-Fi in clear text;
+  - together with the decoder findings above, the worker parses strangers' files as the owner.
+- **Suggested fix:**
+  - Use a phone hotspot or another trusted network.
+  - Consider `SLAM_IT_ALL_STAGING=1` with `--lan`.
+  - Run the worker in its image.
+
+#### [note] Supply chain
+- **Where:** `scripts/locks/slam-it-all.lock`
+- **Issue:** The lock pins versions without hashes (0 `--hash` lines). PyAV bundles its own FFmpeg, which only a PyAV bump updates.
+- **Suggested fix:** Consider `--require-hashes` for the images, and a periodic PyAV bump for FFmpeg's security fixes.
+
+### Checked and fine
+- **Staging Basic auth:** only `/healthz`, `/storage/` (signature checked) and `/api/worker/` (Bearer token) are open. Probed: `/`, `/index.html`, `/r/…`, `/api/jobs/…` and `/robots.txt` all give 401. `/healthz/../upload.html`, `/storage/../upload.html`, `/api/worker/../jobs/abc` and the `%2e%2e` form give 404 or 403.
+- **Constant-time comparisons:** `hmac.compare_digest` for invite codes (each code compared), the worker token and folder-storage signatures.
+- **Names:** the token is `token_urlsafe(16)` and the id `token_hex(16)`, 128 bits each; neither is made from the other, and the worker never learns the token.
+- **Job state machine:** every change runs in one `BEGIN IMMEDIATE` transaction that re-checks the state. Queueing, one-at-a-time claims, monotonic stages, and done/failed only from a worker's stage all hold.
+- **Folder-storage links:** the HMAC covers method, key, expiry and size; expiry is checked; the key is validated before any path is built.
+- **Folder-storage uploads:** writes go to a staged file with exact length, then an atomic replace. Probed: 11 bytes gave 400, chunked encoding 400, and the 64 KiB body cap 413.
+- **S3 upload link:** the size is signed in; the size is re-checked at `uploaded` and for each result file at `done`.
+- **Bundle files:** only for done jobs and exactly the recorded paths, redirected to storage (307), never proxied. The `PAGES` allow-list is strict.
+- **Response headers:** `noindex`, `no-referrer`, `nosniff` and `DENY` on every response, `no-store` on `/api/` (probed). The docs and OpenAPI routes are off, and the server header is off.
+- **Pages:** every reason, summary and error is set with `textContent`. The viewer link is relative. The invite code is a password field, sent only in a JSON body and never stored.
+- **Zip reading:** never extracted and names never used as paths. Each entry is capped on its declared size and on the bytes actually read, so a zip bomb stops at its cap. Repeated names and absolute or climbing names are refused, and symlink entries are only read as bytes.
+- **CSVs:** numbers only, finite, frames in order and one row per frame.
+- **Metadata:** only `METADATA_KEYS` are copied, never a location. `source.json` is not part of the bundle, and the bake re-encodes frames from pixels with Pillow, so no file metadata is carried.
+- **Lens profiles:** fetched over HTTPS at a pinned commit, the size capped, members never extracted under their own names, `..` refused.
+- **What owners see:** the worker's paths are stripped from reasons; anything unexpected becomes "an internal error"; the child's stderr is discarded. The download cap is enforced while streaming.
+- **Images:** the base image is pinned by digest, Eigen is checked by its commit, both run as non-root users, the server image holds no decoder, and the worker image holds no secret.
+- **Retention:** the upload is deleted when the import ends, fails or expires, and results after 7 days, apart from the cases above.
+
+Scratch files from the probes are in `/tmp/scratch/review-security/` (`orphan_probe.py`, `timeout_probe.py`, `server.log`). The probe server on 127.0.0.1:8790 is stopped, and no process from the probes was left running. The repository was not modified.
+
+## Run 2 -- 2026-10-11
+
+| | |
+|---|---|
+| **Branch** | `feature/your-own-video` |
+| **Range** | `e909a76...d056110`, run 1's fixes, read against the whole PR `63b61da...d056110` |
+| **Reviewer** | security (opus), a general-purpose agent with its own brief, as in run 1 |
+| **Probes** | the server on 127.0.0.1 with folder storage and staging on, its upload wait cut to 30 s and its sweep to 2 s; a real `worker serve` and three `serve_demo.py` runs on local ports; the locally built images with no network; in-process probes of `check_url`, the demuxer and the key rules; no image built, no external service contacted |
+| **Panel** | [the panel's report](2026-10-11-feature-your-own-video.md), run 2, whose IDs (H*, A*, L*) are named where a finding overlaps one of its own |
+
+### Findings and resolutions
+
+| ID | Severity | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|
+| S22 (A13) | should-fix | `orchestration/worker.py:462-474, 652-655`; `scripts/serve_demo.py:176-180` | a SIGTERM to the worker, or the demo's Ctrl-C, can leave a job running with no deadline and its folder on disk; on Railway, tini and the container's teardown cover it | fix (the panel's row, a must-fix there) | fixed (92699e7, as the panel's row) -- decided by evan-wes, 2026-10-11 |
+| S21 (A15) | should-fix | `server/.../jobs.py:425-428`; `app.py:184-187, 608-630`; `storage.py:179-191` | an upload still arriving when its link expires lands after the link's only clean-up and stays 7 days, whether an honest slow upload or one sent late on purpose | fix (the panel's row) | fixed (1f976e0, as the panel's row) -- decided by evan-wes, 2026-10-11 |
+| S23 | should-fix | `server/.../app.py:99-100, 315` | the content policy allows any script on jsDelivr, not only three.js | fix (`script-src` narrowed to `https://cdn.jsdelivr.net/npm/three@0.186.0/`; a test) | fixed (1f976e0) -- decided by evan-wes, 2026-10-11 |
+| S24 | note | `orchestration/worker.py:205-211, 243, 321` | `check_url` passes numeric one-label hosts (`http://134744072/` is 8.8.8.8) and never checks a redirect, which urllib follows with the worker's token | fix (a host the C library reads as a number refused; redirects refused on the API calls and checked on downloads; tests) | fixed (92699e7: a one-label name still accepted, a container's) -- decided by evan-wes, 2026-10-11 |
+| S25 | note | `docker/server-entrypoint.sh:7-10`; `server/.../__main__.py` | the entrypoint's `chown -R` follows the database setting, `/` included; `setpriv` leaves `no_new_privs` off; a bypassed entrypoint would run the server as root unnoticed | fix (a root or relative database folder refused; `--no-new-privs`; the server refusing uid 0; the staging check names uid 10001) | fixed (1f976e0; the staging check in 985781b) -- decided by evan-wes, 2026-10-11 |
+| S26 | note | `orchestration/worker.py:412-413` | any FileNotFoundError in a job reaches the owner verbatim, worker paths included | fix (caught only around the upload's own check; any other one "an internal error", logged) | fixed (92699e7) -- decided by evan-wes, 2026-10-11 |
+
+### Security review
+
+## Security review
+
+**Run 1's findings:**
+- **S1:** resolved. I reran both probes. A 409 raised at "running", and a deadline reached while the C++ program was held stopped, each left no process of the job 1 s later. tini is PID 1 in the worker image. One gap remains: the fix's guarantee fails on SIGTERM (new should-fix below).
+- **S2:** resolved. The probe server's log holds no token, signature or query string, only job ids and an 8-hex prefix of the owner hash. The token out of the path is deferred as decided.
+- **S3:** resolved. Matroska, AVI, ffconcat and m3u8 files are refused; MP4 opens. The open options are `protocol_whitelist=file` and `enable_drefs=0`.
+- **S4:** resolved. The child gets only `CHILD_ENVIRONMENT`; the demo's worker gets the same plus its token. Run 1's caveat stands as recorded: the same uid can still read `/proc/<ppid>/environ`.
+- **S5:** resolved for replays. A replayed PUT after confirmation returned 200 and wrote `uploads/<id>`, but `imports/<id>` was unchanged. `uploads/<id>` was deleted at the link's expiry, and a PUT after that got 403. **Still wrong for a PUT already in flight at the expiry** (should-fix 1).
+- **S6:** resolved. The third job on one code got 429. A waiting job expired at `UPLOAD_WAIT`, which freed its place. The code itself is not stored, only its HMAC.
+- **S7, S8:** resolved. Files are deleted before rows, a failed deletion is logged and retried, the database is in WAL mode with lock-free reads, and claims and writes run in threads.
+- **S9:** resolved. Limits: long side 7680, aspect 3:1, 14,400 decoded frames, `RLIMIT_FSIZE` 2 GiB.
+- **S10:** resolved. I ran the locally built `slam-it-all-server:pr11` with `--user 0`: `uid=10001(server)`, and CapPrm, CapEff and CapAmb are all 0.
+- **S11:** resolved. The policy carries the import map's hash, and my own recomputation matches the header. three.js's three files have integrity values, and `bundleAddress` keeps bundles same-origin. Fonts and HSTS are deferred as decided. One part is still too wide: the policy allows all of jsDelivr (should-fix 3).
+- **S12, S13, S14, S17, S18, S19:** resolved.
+- **S15:** resolved. Every bad result path I tried was refused, and folder files are served as `application/octet-stream` attachments. A token per worker is deferred as decided.
+- **S16:** resolved for schemes and named public hosts. The one-label rule still lets numeric hosts through to public addresses (note).
+- **S20:** deferred as decided.
+
+**Scope:** the fixes `e909a76...d056110` (88190df, 8bf170f, 98ae08a, 3a6fbdd, c4911aa, 490b242). That covers `server/src/slam_it_all_server/*`, `src/slam_it_all/orchestration/worker.py`, `src/slam_it_all/eval/video.py` and `lenses.py`, `docker/*`, `scripts/serve_demo.py`, `viewer/index.html` and `src/bundle.js`, read against the whole PR `63b61da...d056110`.
+
+**How I checked:**
+- Reran run 1's orphan and timeout probes, rewritten for the new `_run_child`.
+- Ran the server on 127.0.0.1:8790 with folder storage and staging on, through `launch_server.py`, which shortens `UPLOAD_WAIT` to 30 s and the sweep to 2 s.
+- Ran a real `worker serve` and three `serve_demo.py` instances on ports 8771-8773.
+- Ran the locally built `pr11` images with `--rm --pull never --network none`.
+- Ran in-process probes of `check_url`, the demuxer and the key rules.
+- Ran `tests/server`, `tests/orchestration/test_worker.py` and `tests/test_serve_demo.py`: 145 passed.
+- Built no image and contacted no external service. The repository is unchanged.
+
+**Summary:** The fixes hold. Every run-1 finding is resolved or deferred as decided, and there is no must-fix. The fixes leave or introduce three should-fixes:
+1. An upload still arriving when its link expires escapes the link's clean-up and stays 7 days.
+2. Moving the job into its own session took it out of Ctrl-C's reach, while SIGTERM still skips the worker's clean-up.
+3. The new Content Security Policy allows any script on jsDelivr.
+
+### Findings
+
+#### [should-fix] An upload still arriving when its link expires lands after the sweep has closed the link, and stays 7 days
+- **Where:**
+  - `server/src/slam_it_all_server/jobs.py:425-428` (`links_to_close`: `created <= now - UPLOAD_WAIT`)
+  - `app.py:184-187` (`_close_link`)
+  - `app.py:608-630` (`put_file` checks the link once, before reading the body)
+  - `storage.py:179-191`
+- **Issue:** The sweep deletes `uploads/<id>` once, at the link's expiry, and sets `link_open = 0`. But a link is checked when a PUT starts, not when it ends:
+  - folder storage verifies the link before streaming the body;
+  - S3 checks a presigned URL's expiry when the request arrives (whether Railway's bucket does the same is untested here).
+
+  So a PUT that starts before the expiry and finishes after the sweep writes `uploads/<id>` after its only deletion. Nothing deletes it again until `_delete`, 7 days after the job ended.
+- **Why it matters:**
+  - **Honest owners.** A 500 MB upload needs about 4.4 Mbit/s sustained to finish within 15 minutes (estimate: 500e6 × 8 / 900 s). A slower phone upload runs past the window. The job expires ("the upload did not arrive in time"), and then the video lands and stays in the bucket for 7 days, against the page's promise.
+  - **Abuse.** A code holder can do the same on purpose, 500 MB per job. Expired jobs no longer count toward the per-code cap, so that is 2 such jobs every 15 minutes per code.
+  - **Bound.** The 7-day deletion limits it, as does the bucket's lifecycle rule if Railway's buckets support one. It is a broken retention promise, not an exposure: no one else can read the file.
+- **Evidence:** `flow_probe.py` against `launch_server.py` (`UPLOAD_WAIT` 30 s, sweep 2 s, folder storage), with the PUT trickled at 1 byte/s:
+  ```
+  [27.1s] job 4: trickled PUT started; link expires at +30 s after creation
+  [42.1s] job 4: trickled PUT (started before expiry) finished -> 200 {}
+  [45.1s] job 4 (trickled): expired link_open 0 ; uploads/ there after the link was closed: True
+  [50.1s] job 4 after more sweeps: uploads/ there: True size 15
+  ```
+- **Suggested fix:**
+  - Close the link only after a grace period past its expiry that covers the longest PUT storage lets run (for example `created + UPLOAD_WAIT + 1 h`). The waiting job's own 15-minute expiry stays as it is.
+  - In folder storage, check the link's expiry again before `staged.replace(target)`.
+  - Add a test: a PUT that finishes after the link's expiry leaves nothing behind once the sweep has run.
+
+#### [should-fix] Stopping the worker with SIGTERM, or the demo with Ctrl-C, can leave a job running unsupervised
+- **Where:**
+  - `src/slam_it_all/orchestration/worker.py:462-474` (`start_new_session=True`)
+  - `worker.py:652-655` (only `KeyboardInterrupt` is handled; there is no SIGTERM handler)
+  - `scripts/serve_demo.py:176-180` (`child.terminate()` right after its own Ctrl-C)
+- **Issue:** S1's fix gives the job its own session, which is what makes the group kill work. It also takes the job out of the terminal's process group, so Ctrl-C no longer reaches it. The job's only clean-up is now the worker's `finally` blocks: `killpg`, then `rmtree`.
+  - The worker turns SIGINT into `KeyboardInterrupt`, but SIGTERM's default action kills it without running any `finally`.
+  - `serve_demo.py` sends SIGTERM to the worker as soon as its own Ctrl-C arrives, which races the worker's own unwinding.
+- **Why it matters:**
+  - Any SIGTERM to the worker orphans its job: serve_demo's `terminate()`, `kill`, a systemd stop, or the later GPU worker outside a container.
+  - The import and the C++ program then run on with no deadline; only the inherited rlimits still apply.
+  - The job's folder, with the upload in it, stays on disk.
+  - Before the fix, Ctrl-C reached the job's processes directly, so the demo's Ctrl-C path is a regression.
+  - On Railway this is covered: tini forwards SIGTERM, and once the worker exits, the container's teardown kills the rest.
+- **Evidence:**
+  - **SIGTERM to `worker serve` while the C++ program ran** (`sigterm_probe.sh`): the worker died. 1 s later the child (reparented to pid 2731) and `slam_it_all_vo` were still running, and `work/job-ed051681-98a7pihb/{upload.zip,run,your-video}` remained.
+  - **Ctrl-C to serve_demo's process group** (`/bin/kill -INT -- -PGID`) as the C++ program started, three runs (`ctrlc_probe.sh`):
+    - In run 3, the child (ppid 2731) and `slam_it_all_vo` were still alive 1 s later. The orphaned child later died on `BrokenPipeError` when it printed "baking".
+    - All three runs left the job's folder, with `upload.zip`, in `data/work`.
+- **Suggested fix:**
+  - In the worker's `main`, make SIGTERM unwind the same way as Ctrl-C: a handler that raises `KeyboardInterrupt` or `SystemExit`, as `serve_demo._stop` does. Then `_run_child`'s `killpg` and `handle`'s `rmtree` run however the worker is stopped.
+  - In `serve_demo.py`, give the worker a few seconds to exit on its own SIGINT before terminating it.
+  - Add a test: SIGTERM to `serve` during a job leaves no process of the job and no job folder.
+
+#### [should-fix] The Content Security Policy allows any script on jsDelivr
+- **Where:** `server/src/slam_it_all_server/app.py:99-100` (`CDN = "https://cdn.jsdelivr.net"`) and `:315`
+- **Issue:**
+  - `script-src` names the whole jsDelivr host, which serves every npm package and GitHub repository. The import map pins three.js's path and its sha384 values, but the policy itself would let any `https://cdn.jsdelivr.net/npm/<anything>` run on the origin where invite codes are typed.
+  - The import map's `integrity` is honoured only by browsers that implement import-map integrity; other browsers load the modules unchecked.
+- **Why it matters:**
+  - The policy is the second line of defence against script injection. No injection is known: every server string is set as text. But if one appeared, this policy would not stop it from loading an attacker's package from the allowed CDN.
+  - This is hardening before going public.
+- **Evidence:** The header the probe server sent: `script-src 'self' https://cdn.jsdelivr.net 'sha256-xRXsj6h8WM4LThHv+2yd/VWRcHXQNR5O0ot1D7veDuM='`.
+- **Suggested fix:**
+  - Narrow the source to `https://cdn.jsdelivr.net/npm/three@0.186.0/` (a source path ending in `/` matches as a prefix).
+  - Or vendor three.js under `src/`, which also ends the third-party request the page has to disclose.
+  - Add a test that the policy names no wider script source.
+
+#### [note] `check_url`'s one-label rule lets numeric hosts through to public addresses, and redirects are never checked
+- **Where:** `worker.py:205-211` (`"." not in host`), `:243` and `:321` (`urllib.request.urlopen`)
+- **Issue:**
+  - `ipaddress.ip_address` refuses `134744072` and `0x8080808`, so they pass as one-label names. The C library then reads them as IPv4 addresses, so both resolve to 8.8.8.8. `http://0/` passes too.
+  - The resolver's search domains can also turn a one-label name into a public name.
+  - `check_url` checks only the first URL. urllib follows redirects to http, https or ftp and keeps every header except the content ones. A 301, 302 or 303 on a worker's POST would therefore carry `Authorization: Bearer <token>` wherever it points, plain http included.
+- **Why it matters:** Exploiting either needs a server, or something in front of it, that gives out or redirects to such a URL. So the worker's "plain http only to a host that cannot be on the public internet" does not hold as written. It matters for the later GPU worker, which will connect over the internet.
+- **Evidence:**
+  - `url_probe.py` on the env's Python 3.11.17: `http://134744072/ ACCEPTED 8.8.8.8`, `http://0x8080808/ ACCEPTED 8.8.8.8`, `http://0/ ACCEPTED 0.0.0.0`.
+  - Named and IP-literal public hosts are refused.
+  - The redirect behaviour is in `urllib/request.py:680-681` (only content headers dropped) and `:707` (http, https, ftp allowed).
+- **Suggested fix:**
+  - Allow plain http only to loopback or private IP literals, `localhost` and `*.railway.internal`, and drop the bare one-label rule.
+  - Give the worker an opener that refuses redirects on its API calls and re-runs `check_url` on a download's redirect.
+
+#### [note] The server entrypoint's root step could be hardened
+- **Where:** `docker/server-entrypoint.sh:7-10`; `server/src/slam_it_all_server/__main__.py`
+- **Issue:**
+  - **`chown -R` follows a setting.** Its target is the folder of `SLAM_IT_ALL_DATABASE`. A database at `/`, or a relative path (the working directory is `/`), makes it run `chown -R server:server /` until `set -e` stops it at `/sys`. A path under `/opt` would give the server's user the pages it serves. The operator sets this value, so it is a configuration hazard, not an attack.
+  - **`setpriv` leaves room.** It leaves `no_new_privs` off and the bounding set full, and the image has 11 setuid or setgid programs (`su`, `mount`, `passwd`, ...).
+  - **Nothing would notice a bypassed entrypoint.** For example, a start command set in Railway's service settings might replace it; how such a command interacts with `ENTRYPOINT` is not checked here. The server would then run as root (`RAILWAY_RUN_UID=0`) without a word.
+- **Evidence:** In `slam-it-all-server:pr11`:
+  - Run with `--user 0`: `uid=10001(server) gid=999(server)`, `CapPrm/CapEff/CapAmb 0`, `NoNewPrivs: 0`, `CapBnd 00000000a80425fb`.
+  - With `SLAM_IT_ALL_DATABASE=/jobs.sqlite3`, the entrypoint ran `chown -R` over `/` and stopped at `chown: changing ownership of '/sys': Read-only file system`.
+- **Suggested fix:**
+  - Refuse a database folder that is `/` or relative.
+  - Add `--no-new-privs` to `setpriv`.
+  - Make the server refuse to start as uid 0.
+  - Add "the server runs as uid 10001" to the staging check.
+
+#### [note] A FileNotFoundError's message reaches the owner verbatim
+- **Where:** `worker.py:412-413` (`except (SlamItAllError, FileNotFoundError)`); `_safe` strips only the job's folder and the upload's path.
+- **Issue:** This catch is meant for a missing upload. But any FileNotFoundError in the job, such as a missing program of the worker's own, becomes the owner's reason, worker paths included. It is mainly the hygiene reviewer's area.
+- **Evidence:** I first ran the worker without its env on `PATH`. That job ended `"reason":"[Errno 2] No such file or directory: 'cmake'"`, from the editable install's rebuild.
+- **Suggested fix:** Catch FileNotFoundError only around the import's own check. Map any other one to "an internal error" and log it.
+
+### Checked and fine
+- **S1 supervision:** after a 409 at "running", and after a deadline with `slam_it_all_vo` held stopped, the whole group (child and C++ program, one pgid) was gone 1 s later. The worker image runs `/usr/bin/tini --` as PID 1, as uid 10001.
+- **Confirmation's move:**
+  - The size is checked before the move.
+  - A failed S3 copy or delete leaves the job waiting and retriable, and its expiry deletes both keys.
+  - A second `uploaded` gets 409.
+  - Concurrent confirmations can only move the owner's own bytes, of the signed size.
+  - `uploads/` and `imports/` share one filesystem, so `os.replace` holds.
+- **Owner hash:** HMAC-SHA256 with the signing key, over a code that has already matched. The API never returns it, and the log shows 8 hex characters. Its message never overlaps folder storage's signatures in a way that exposes either.
+- **Sweep flags:** `link_open` and `files_open` each change in their own transaction. A failure is logged and retried. The cap counts only jobs that have not ended, inside the creating transaction.
+- **Logs:** with the access log off, the server writes only "job <id>: ..." lines and uvicorn's lifecycle lines.
+- **Content Security Policy:**
+  - It is on every response, and its import-map hash matches my recomputation.
+  - `connect-src` covers storage's origin, including the 307 redirects for bundles, and `media-src blob:` covers the upload page's length check.
+  - The pages have no inline script, style or event handlers.
+  - The three integrity values are well-formed sha384 hashes. I could not compare them with the CDN's files offline.
+- **`bundleAddress`:** cross-origin, protocol-relative, `javascript:` and `data:` addresses are refused (their origin is "null"). Same-origin paths lead only to routes guarded by a token or a signature.
+- **Import bounds:**
+  - A mid-stream change of frame size is decoded within `RLIMIT_AS` and the deadline, then rescaled to the first frame's output size.
+  - At most 2,401 frames are kept (60 s at 1/40 s), each at most 1440×480. In the worst case that is about 5 GB of PNGs (estimate, for incompressible frames), plus C++ files under 2 GiB each. Worth comparing with the worker's disk on Railway.
+- **Transient reports:** an HTTP error (401 and 5xx included) or a network error is logged and the job runs on to its deadline, and a 409 ends it. A 401 never loops hot: claims retry every 5 s, and failed `done`/`failed` reports are logged.
+- **Key and path rules:**
+  - Keys use `fullmatch` and refuse `.`, `..` and a trailing newline.
+  - `RESULT_PATH` refused `index.html`, `cpp/x.html`, `a/b/c.json`, `../x.json`, `X.json`, `cpp/./x.json` and `info.json\n`.
+  - Folder downloads are sent as octet-stream attachments.
+  - Staging auth and path tricks behave as in run 1.
+- **`serve_demo --lan`:** staging is on, and the worker inherits only `CHILD_ENVIRONMENT` and its token.
+- **Settings files:** `*.env` is ignored by both git and Docker, except the template.
+- **Tests:** 145 passed. The repository is unchanged.
+
+Scratch files are in `/tmp/scratch/review2-security/`:
+- probes: `orphan_probe.py`, `timeout_probe.py`, `flow_probe.py`, `url_probe.py`, `container_probe.py`, `sigterm_probe.sh`, `ctrlc_probe.sh`;
+- the server: `launch_server.py`, `server.env`, `server.log`;
+- the demo runs: `demo-877*/`, `demo-877*.log`, `work/`.
+
+The probe server on 8790 and the three demos on 8771-8773 are stopped, no process of any job is left, and no container is running. The probes would be worth keeping in a private scripts folder if wanted; I left them in the scratch folder, as my brief said.
+
+## Run 3 -- 2026-10-11
+
+| | |
+|---|---|
+| **Branch** | `feature/your-own-video` |
+| **Range** | `d056110...0966cd8`, run 2's fixes, read against the whole PR `63b61da...0966cd8` |
+| **Reviewer** | security (opus), a general-purpose agent with its own brief, as in runs 1 and 2 |
+| **Probes** | the server on 127.0.0.1 with folder storage and staging on, its upload wait cut to 30 s, its grace to 20 s and its sweep to 2 s; a real `worker serve` and two `serve_demo.py` runs on local ports, stopped by signals; the URL rule in the env and in `slam-it-all-worker:run3`, every connection intercepted; the entrypoint in `slam-it-all-server:run3` with `chown` stood in for; no image built, no external service contacted |
+| **Panel** | [the panel's report](2026-10-11-feature-your-own-video.md), run 3, whose IDs (H*, A*, L*) are named where a finding overlaps one of its own |
+
+### Findings and resolutions
+
+| ID | Severity | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|
+| S27 | should-fix | `orchestration/worker.py:203-224, 252` | `check_url` judges the host before urllib unescapes it: `http://8%2e8%2e8%2e8/` and a scoped IPv6 literal pass and connect to public addresses over plain http, a download's redirect included | fix (the host judged as urllib will use it; a one-label name only as a DNS label; scope ids refused; tests) | fixed (e5a3cca: the host as urllib connects to it; names as DNS labels; a separate scope-id rule dropped, the others refusing every scoped public or link-local host; a private address with a numeric scope id is accepted, as the private address it is) -- decided by evan-wes, 2026-10-11 |
+| S28 | note | `orchestration/worker.py:220, 224` | `is_private` admits link-local (169.254.169.254), 6to4 and NAT64 ranges; a host IDNA cannot encode raises UnicodeError, not a refusal | fix (an allow-list: loopback, RFC 1918, `fc00::/7`; any parse error a refusal) | fixed (e5a3cca: PRIVATE_NETWORKS) -- decided by evan-wes, 2026-10-11 |
+| S29 | note | `docker/server-entrypoint.sh:12-19` | a `:` in the database path gets past the joined pattern: `/x:/../jobs.sqlite3` would chown `/` | fix (the path and its folder tested apart) | fixed (eb57a26) -- decided by evan-wes, 2026-10-11 |
+| S30 | note | `server/.../config.py:37-40`; the note's staging check | on S3 the grace assumes the bucket ends a PUT begun in time within the hour; untested | fix (a step in the staging check; the residual recorded in the note) | fixed (fae65c1: the staging check's step and what follows) -- decided by evan-wes, 2026-10-11 |
+
+### Security review
+
+## Security review
+
+**Run 2's findings:**
+- **S21:** resolved for folder storage. A PUT trickled from 27 s to 42 s after its job was made (the link expires at 30 s) got `403 "the link expired before the upload arrived whole"`. Nothing was kept and no staged part was left. A replayed write was deleted when its job ended. A replay sent after the job ended was deleted again at created + wait + grace, with `link_open` going to 0. On S3, an upload trickled on purpose for longer than the grace still lands (note 3).
+- **S22:** resolved. I sent SIGTERM, SIGTERM twice, and SIGINT then SIGTERM to `worker serve` while `slam_it_all_vo` ran:
+  - the worker exited 0 within 0.03–0.05 s;
+  - 1 s later no process of the job and no job folder was left.
+
+  Two Ctrl-Cs to serve_demo's process group (ports 8771 and 8772) left no job process, no folder and no demo process. Nothing in the worker's own process catches the `KeyboardInterrupt`, so it cannot be left running with both signals ignored.
+- **S23:** resolved. The header is `script-src 'self' https://cdn.jsdelivr.net/npm/three@0.186.0/ 'sha256-xRXsj6h8WM4LThHv+2yd/VWRcHXQNR5O0ot1D7veDuM='`, and every script URL in `viewer/` is under that prefix.
+- **S24:** **not resolved.** The parts that hold:
+  - the API and upload requests follow no redirect;
+  - a download's redirect is checked;
+  - decimal, hex and IPv4-mapped forms are judged by their address.
+
+  The gap: `check_url` judges the host as written, percent-escapes included, while urllib unescapes it before connecting. So `http://8%2e8%2e8%2e8/` and `http://[2001:4860:4860::8888%25lo]/` pass and connect to public addresses over plain http (should-fix below).
+- **S25:** resolved for the cases it names, in `slam-it-all-server:run3`. Refused: `jobs.sqlite3`, `/jobs.sqlite3`, `//jobs.sqlite3`, and a symlink to `/`. The server ran as uid 10001 with `NoNewPrivs: 1`. `python -m slam_it_all_server` run as root prints `refusing to run as root`. A `:` in the setting slips past the check (note 2).
+- **S26:** resolved. A missing upload gives the reason `{"reason": "the upload is missing"}`. A `FileNotFoundError` raised inside the job (`/opt/worker/secret/cmake`) propagates and is never printed as a reason; the worker reports it as "an internal error".
+
+**Scope:** run 2's fixes `d056110...0966cd8`:
+- 92699e7: `orchestration/worker.py`;
+- 1f976e0: `server/src/slam_it_all_server/{app,jobs,storage,config,__main__}.py`, `docker/server-entrypoint.sh`, `viewer/upload.html`;
+- the parts of 13aa4dd that touch security: `eval/video.py`'s frame-size check;
+- `scripts/serve_demo.py`; 985781b's notes.
+
+I read these against the whole PR `63b61da...0966cd8`.
+
+**How I checked:**
+- **Probe server:** on 127.0.0.1:8790, with folder storage and staging on, `UPLOAD_WAIT` 30 s, `UPLOAD_GRACE` 20 s and the sweep every 2 s (`launch_server.py`).
+- **Probes run against it:**
+  - `flow_probe3.py` (S21);
+  - `sigterm_probe3.sh` (three modes) and `ctrlc_probe.sh` (two runs) with a real `worker serve` and `serve_demo.py` on the room's Stray zip;
+  - `s26_probe.py` in-process.
+- **URLs and redirects:** run 2's `url_probe.py`, and the new `url_probe3.py`, both in the conda env and in `slam-it-all-worker:run3` (`--network none`). `socket.create_connection` was intercepted, so nothing left the machine and no name was looked up.
+- **Server image:** `entrypoint_probe.sh` in `slam-it-all-server:run3` (`--network none --rm`), with `chown` replaced by a stand-in that only prints.
+- **Format check:** the server started against run 2's job list and against a misshapen one.
+- **Tests:** `tests/server`, `tests/orchestration/test_worker.py`, `tests/test_serve_demo.py`: 168 passed.
+- I built no image and contacted no external service. The repository is unchanged (`git status` is empty).
+
+**Summary:** The run-2 fixes hold, except the numeric-host rule, and there is no must-fix:
+- signals now take the job with them;
+- a late upload is refused or cleared;
+- the policy is narrowed;
+- the entrypoint drops privileges for good, and the server refuses root;
+- reasons are only the pipeline's own.
+
+The one should-fix is that `check_url` checks the host before urllib unescapes it. Escaped dots and IPv6 scope ids defeat the "plain http only off the public internet" rule, including on a download's redirect, the gate S24's fix added. Three notes follow: smaller edges of `check_url`, a `:` that gets past the entrypoint's check, and the S3 side of the late-upload grace.
+
+### Findings
+
+#### [should-fix] `check_url` judges the host before urllib unescapes it: escaped and scoped hosts reach public addresses over plain http
+- **Where:** `src/slam_it_all/orchestration/worker.py:203-209` (`check_url`: `urllib.parse.urlsplit(url).hostname`), `:212-224` (`_private_host`: `"." not in host` for anything the numeric parse rejects), `:252` (the download redirect's only gate); CPython `Lib/urllib/request.py:380` (`self.host = unquote(self.host)`).
+- **Issue:** `urlsplit` keeps percent-escapes in `hostname`; `urllib.request.Request` unescapes the host before connecting. Two cases follow:
+  - **Escaped dots:** a host whose dots are written `%2e` has no `.` as checked, so the one-label rule accepts it. urllib then connects to the dotted name or address.
+  - **IPv6 scope ids:** an IPv6 literal has no dots either. When its scope id is written `%25<name>`, the numeric parse sees the scope `25lo`, rejects it, and the one-label rule accepts the host. urllib connects to `…%lo`. Linux uses a scope id only for link-local and multicast destinations (`tcp_v6_connect`, `__ipv6_addr_needs_scope_id`), so a global address is reached as usual.
+- **Why it matters:**
+  - The property the fix states does not hold: the module docstring says "plain `http` to a host that may be on the public internet" is refused, and the notes add "an address written as a number judged as the address it is".
+  - The download redirect handler relies on `check_url` alone, so the hole carries over to redirects.
+  - Exploiting it needs a server, or a download host, that hands out or redirects to such a URL, as with S24. The token is not exposed: the API never follows a redirect, and downloads and uploads carry no `Authorization`. What is exposed is the transfer itself, in clear text over the internet. That matters for the later GPU worker.
+- **Evidence:** `url_probe3.py`, the same output in the conda env (Python 3.11.17) and in `slam-it-all-worker:run3`:
+  ```
+  'http://8%2e8%2e8%2e8/'               ACCEPTED   '8.8.8.8'          -> the worker's opener tried to connect to ('8.8.8.8', 80)
+  'http://example%2ecom/'               ACCEPTED   'example.com'      -> ... ('example.com', 80)
+  'http://[2001:4860:4860::8888%25lo]/' ACCEPTED   '[2001:4860:4860::8888%lo]' -> ... ('2001:4860:4860::8888%lo', 80)
+  'http://134744072/'                   refused    (8.8.8.8: the run-2 form, now fixed)
+  download /r-encoded (302 -> http://8%2e8%2e8%2e8/x) -> tried ('8.8.8.8', 80)
+  download /r-scope   (302 -> http://[2001:4860:4860::8888%25lo]/x) -> tried ('2001:4860:4860::8888%lo', 80)
+  download /r-public-http (302 -> http://example.com/x) -> refused by check_url
+  ```
+- **Suggested fix:**
+  - Judge the host urllib will use (`urllib.request.Request(url).host`, or `urllib.parse.unquote(hostname)`), or refuse any `%` in a host outright.
+  - Accept a one-label name only if it is a DNS label (`re.fullmatch(r"[a-z0-9-]{1,63}", host)`). That keeps `sia-e2e-server` and drops `%`, `:` and non-ASCII.
+  - Judge an IPv6 literal without its scope id, or refuse scope ids.
+  - Add `http://8%2e8%2e8%2e8/` and `http://[2001:4860:4860::8888%25lo]/` to `test_only_safe_urls_are_followed`, and an escaped redirect to `test_a_downloads_redirect_goes_only_where_a_link_may`.
+
+#### [note] `check_url`: smaller edges
+- **Where:** `worker.py:224` (`address.is_loopback or address.is_private`), `:220` (`except socket.gaierror` only).
+- **Issue:**
+  - **`is_private` is wider than "cannot be on the public internet".** On 3.11.17 it accepts:
+    - `http://169.254.169.254/`: link-local, where clouds put their metadata service;
+    - `http://[2002:808:808::1]/`: 6to4 for 8.8.8.8;
+    - `http://[64:ff9b:1::808:808]/`: local-use NAT64.
+
+    The last two reach public IPv4 only through a 6to4 relay or a local NAT64 translator, which is rare. The first URL has been accepted this way since run 1. Redirects went anywhere before, so this is not worse.
+  - **A non-`gaierror` escapes.** A host IDNA cannot encode raises `UnicodeError`, not `InvalidInputError`: `http://\u00ad/` gives `UnicodeError: ... label empty or too long`.
+    - In `claim` it is caught as a `ValueError`. The job just claimed then waits out `SILENCE` (2 min) and fails with "the worker stopped answering".
+    - In `--server` it is a traceback rather than `worker: ...` and exit 2.
+- **Why it matters:** each needs a hostile server or a mistyped setting. They are listed so the fix above can close them in the same pass.
+- **Suggested fix:**
+  - Consider `not address.is_global`, or an explicit allow-list (loopback, RFC 1918, `fc00::/7`), in place of `is_private`.
+  - Catch `(socket.gaierror, UnicodeError, ValueError)` and refuse.
+
+#### [note] A `:` in the database path gets past the entrypoint's check
+- **Where:** `docker/server-entrypoint.sh:12-19` (`case "$database:$folder" in /*:/?*) ;;`)
+- **Issue:** The two values are joined with `:` and matched by one pattern. `*` also matches `:`, so any database path containing `:/` and then a character matches, whatever the folder is. For example, `/x:/../jobs.sqlite3` resolves (`realpath -m`) to the folder `/` and still passes.
+- **Why it matters:**
+  - The setting is the operator's, so as in run 2 this is a configuration hazard, not an attack, and no one would type it by accident.
+  - Still, the documented rule ("absolute, below /") does not hold as written, and what it guards is `chown -R` as root.
+- **Evidence:** in `slam-it-all-server:run3`, with `chown` replaced by a stand-in that prints:
+  ```
+  SLAM_IT_ALL_DATABASE=/x:/../jobs.sqlite3     ->  WOULD RUN: chown -R server:server /   ; ran as uid 10001, NoNewPrivs: 1
+  SLAM_IT_ALL_DATABASE=/a:/../../jobs.sqlite3  ->  WOULD RUN: chown -R server:server /
+  SLAM_IT_ALL_DATABASE=/tmp/rootlink/jobs.sqlite3 (symlink to /) -> refused
+  ```
+- **Suggested fix:** Test the two separately: `case "$database" in /*) ;; *) refuse ;; esac` and `[ "$folder" != / ] || refuse`.
+
+#### [note] On S3, the late-upload grace is an assumption about the bucket
+- **Where:** `server/src/slam_it_all_server/config.py:37-40` (`UPLOAD_GRACE`); `jobs.py:446-453`; `docs/notes/your-own-video.md`, "The check".
+- **Issue:** Folder storage now refuses a PUT that completes after its link expired. S3 checks a presigned link when the request arrives (run 2's reading), so the server's only remedy there is clearing `uploads/<id>` again at created + 15 min + 1 h.
+  - A PUT trickled past that point lands after the last clearing: 500 MB over more than 75 minutes.
+  - It then stays until `_delete`, 7 days after the job ended, or until the bucket's lifecycle rule removes it, if Railway supports one.
+  - Whether Railway's bucket lets a PUT run that long, or checks expiry at completion, is untested.
+- **Why it matters:** Honest uploads at about 0.9 Mbit/s or faster are covered. The abuse half of S21 is closed for folder storage, but on S3 it is bounded only by the bucket's own limits and the 7-day deletion.
+- **Suggested fix:**
+  - Add to the staging check: a PUT through a fresh link, begun before its expiry and finished after it, with a look at whether the bucket kept it.
+  - If it does, record the residual and its 7-day or lifecycle bound in the notes.
+
+### Checked and fine
+- **Redirects:**
+  - The API's POSTs (302 and 307) and the upload PUT (302) are not followed. The 3xx is raised, and the probe's server saw exactly one request, with the token only on it. `build_opener` replaces urllib's default redirect handler with the subclass.
+  - Download redirects:
+    - plain http to a public name is refused by `check_url`;
+    - `file:` is refused by urllib;
+    - a same-origin redirect is followed;
+    - downloads carry no `Authorization`, and GET stays GET on 301-308.
+- **Numeric hosts, the forms fixed:** `134744072`, `0x8080808`, `[::ffff:8.8.8.8]`, `[64:ff9b::808:808]` and fullwidth `８．８．８．８` are judged by their address and refused. `0177.0.0.1` and `127.1` are read as loopback. `AI_NUMERICHOST` never looks anything up.
+- **Signals:**
+  - **How a stop unwinds:** `_stop` raises in the main thread, and every blocking call the worker makes is interrupted (select, readline, waitpid, sleep, socket I/O). The only two `except BaseException` handlers on the in-process path (`video._staged`, the `lenses` fetch) re-raise, so a stopped worker cannot go on serving with signals ignored.
+  - **Inheritance:** no child can start after `_stop` sets `SIG_IGN`, since the handler raises at once. The job's child (`process`) never installs the handler.
+  - **A signal during the fork:** the parent closes the child's output pipe. The child dies at its first stage line, before writing anything, and the job's folder is still removed.
+  - **Timing:** `serve_demo._end` gives each child 10 s, then SIGKILL; the worker's measured unwinding took 0.03-0.05 s.
+- **S26's reasons:** the pipeline's own messages are unchanged. PyAV 18's FFmpeg logging is off (`av.logging.get_level()` is `None`), so the child's stderr, now the worker's log, carries no decoder text from a hostile file.
+- **Late-upload clearing:**
+  - No job can be deleted before its grace ends: jobs go only 7 days after ending, and there is no owner deletion route. `_delete` removes `uploads/<id>` too.
+  - A job still queued or running at created + 75 min has only its owner's replays cleared, never `imports/<id>`.
+  - Folder storage checks the expiry again after the whole body and before the atomic replace. A refusal leaves no staged part.
+- **Job list format:** run 2's job list (`user_version` 0) is refused at startup with exit 2, naming the file. The version pragma is set from an int constant, inside the transaction that creates the table.
+- **Content Security Policy:**
+  - `connect-src` comes from `Storage.origin`: for folder storage, the public URL's origin; for S3, the origin of the same client's presigned links.
+  - Residual: CSP ignores a source's path after a redirect (CSP3, "Does url match expression in origin with redirect count?"). The narrowing therefore assumes nothing under the three.js prefix redirects elsewhere on jsDelivr; I could not check that offline. Vendoring three.js would end it.
+- **`uploaded`'s new error paths:** a racing confirmation gets 409. A storage error gets 503 and leaves the job waiting; storage's message is logged, never returned.
+- **Import:** every decoded frame, kept or skipped, is held to the first frame's size, so the first frame's long-side and aspect caps hold for all.
+- **Logs:** the probe server's 23 lines hold no token, invite code, signature, expiry or token path; jobs appear by id only.
+- **Tests:** 168 passed. The repository is unchanged.
+
+Scratch files are in `/tmp/scratch/review3-security/`:
+- `probes/`: `url_probe3.py`, `flow_probe3.py`, `sigterm_probe3.sh`, `entrypoint_probe.sh`, `s26_probe.py`, `launch_server.py` (now with the grace), and run 2's probes retargeted;
+- the server's `server.env` and `server.log`;
+- the worker logs, `demo-877{1,2}*`, `data/`, `schema/`.
+
+The probe server on 8790 is stopped, and both format-check servers on 8791 exited. No job process, demo or container is left, and the repository is unchanged. The probes would be worth keeping in a private scripts folder if wanted; I left them in the scratch folder, as the brief said.
+
+## Commit messages corrected -- 2026-10-11
+
+Every commit message on the branch was audited after run 3, and 21 were reworded, the files
+unchanged: every SHA in this report, the review's included, names the reworded commit. The
+corrections are listed in [the panel's report](2026-10-11-feature-your-own-video.md); here, run 3's
+S27 now says which scoped hosts the other rules refuse.
+
+## Run 4 -- 2026-10-12
+
+| | |
+|---|---|
+| **Branch** | `feature/your-own-video` |
+| **Range** | `f51e1f6...88c4151`: a job's files in one folder of storage, and the demo's kept uploads (`4799172`, its docs `88c4151`), made after run 3 at the owner's request; read against the whole server |
+| **Reviewer** | security (opus), a general-purpose agent with its own brief, as in runs 1 to 3; a focused check of this change alone, decided with the owner |
+| **Probes** | in-process, with the test client, folder storage and one fake clock; a model of S3's copy-then-delete; a live server on 127.0.0.1:8790 with folder storage, stopped by its PID; no image built, no external service contacted. The probes are kept outside the repo |
+
+### Findings and resolutions
+
+| ID | Severity | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|
+| S31 | must-fix | `viewer/src/jobs.js` (`uploadFate`); `scripts/serve_demo.py` (a new temporary folder each run, the terminal line); `app.py` (the sweep, in the server's lifespan alone) | the page promises the demo deletes an upload and its result after 7 days, but only a demo still running on that folder deletes anything, and each run makes a new folder | fix (a lasting default folder, so a demo's every start sweeps what is past 7 days; the page and the terminal say deletion happens while the demo runs) | fixed (99cf1d6: the demo's folder the same every run, `serve_demo.default_data`; the page and the terminal say deletion happens while the demo runs) -- decided by evan-wes, 2026-10-12 |
+| S32 | should-fix | `app.py` (`_clear_files`, the worker's reports, `create`) | kept uploads have no bound on disk: anyone with the code can fill the disk under the demo's folder, 500 MB an upload, for 7 days | fix (with uploads kept, a new job refused, 503, when the storage's free space is under 10 x `MAX_BYTES`) | fixed (99cf1d6: `KEEP_FREE`, 5 GB) -- decided by evan-wes, 2026-10-12 |
+| S33 | should-fix | `viewer/upload.html`, `viewer/src/upload_view.js` (`showFate`) | the deployment's sentence shows until `/api/kept` answers, and stays if it fails: on the demo, the stronger promise, and false | fix (the item hidden until the server answers; on a failure, the demo's sentence, which says more is kept) | fixed (99cf1d6) -- decided by evan-wes, 2026-10-12 |
+| S34 | note | `app.py` (the claim's download link) | with uploads kept, the worker's download link still fetches the upload after its job ended, for the rest of its hour | waive (the demo's: the link goes over loopback, the access log is off, the worker logs no link, and it expires within the hour) | waived: the demo's alone; its link goes over loopback, the access log is off, the worker logs no link, and it expires within the hour -- decided by evan-wes, 2026-10-12 |
+| S35 | note | `jobs.py` (`SCHEMA_VERSION` unchanged) | a job list of the old layout is adopted silently, and its files, under `uploads/`, `imports/` and `results/`, are never deleted | fix (`SCHEMA_VERSION` 2: an old list refused, "delete it to start a new one") | fixed (99cf1d6: `SCHEMA_VERSION` 2) -- decided by evan-wes, 2026-10-12 |
+| S36 | note | `config.py`; `make_app` | the gate stands folder storage for the demo: a folder-storage deployment could keep uploads, and settings made in code are not checked | waive (no folder-storage deployment is planned, the template says `s3` and `0`, the page would say uploads are kept, and a mistyped value reads as off) | waived: no folder-storage deployment is planned, the template says `s3` and `0`, the page would say uploads are kept, and a mistyped value reads as off -- decided by evan-wes, 2026-10-12 |
+| S37 | note | `scripts/serve_demo.py` | a `--data` folder takes the umask: kept uploads readable by other local accounts | fix (the demo's folder made 0700) | fixed (99cf1d6) -- decided by evan-wes, 2026-10-12 |
+| S38 | note | `app.py` (`uploaded`), `storage.py` (S3's copy then delete) | pre-existing: on S3, a confirmation racing the waiting job's expiry leaves an upload never imported until the job's deletion | fix (on the job's refusal after the move, the copy deleted, best effort, unless uploads are kept) | fixed (99cf1d6: `_confirm`) -- decided by evan-wes, 2026-10-12 |
+
+### Security review
+
+## Security review
+
+**Scope:** `f51e1f6...88c4151` (4799172: each job's files in `jobs/<id>/`, `SLAM_IT_ALL_KEEP_UPLOADS`, `GET /api/kept`; 88c4151: its docs). I read it against `server/src/slam_it_all_server/{app,config,jobs,storage,__main__}.py`, `viewer/upload.html`, `viewer/src/{upload_view,jobs}.js`, `scripts/serve_demo.py` and the worker's link and log handling.
+
+Evidence comes from three sources:
+- **In-process probes:** test client, folder storage, and one fake clock shared by the job list and the store.
+- **A model of S3's move order.**
+- **A live server on 127.0.0.1:8790:** folder storage in scratch, then stopped by its PID; the port is confirmed free.
+
+The probe scripts are saved in a private scripts folder: `pr11_kept_uploads_probes.py` and `pr11_s3_confirm_race_model.py`. The repository is untouched (`git status` is clean).
+
+**Summary:** The storage mechanics are sound:
+- No link, bundle path or result path reaches `jobs/<id>/import`, except the worker's own download link.
+- Deleting a job removes its folder whole and nothing beside it, on folder storage and on S3.
+- The S3 refusal works at startup.
+
+The weak point is what the page promises. The demo deletes a kept upload only if a demo is still running on that folder 7 days later. By default each run makes a new temporary folder, so the demo's sentence "then deletes both" is false for any demo that stops sooner. Kept uploads also remove the old bound on disk use: before, at most 5 uploads were on disk at once.
+
+### Findings
+
+#### [must-fix] The demo's page promises deletion after 7 days, but only a demo still running on that folder deletes anything
+- **Where:** `viewer/src/jobs.js:21-26` (`uploadFate`); `scripts/serve_demo.py:253` (a new `mkdtemp` folder each run), `:280-284` (the terminal line); `server/src/slam_it_all_server/app.py:463-479` (the sweep runs only in the server's lifespan).
+- **Issue:** The page tells the uploader: "This demo keeps your upload with its result for 7 days, then deletes both."
+  - Deletion is done only by `sweep`, inside the running server.
+  - `serve_demo.py` uses a new temporary folder per run unless `--data` is given, so once a demo stops, nothing ever sweeps that folder again.
+  - The note admits this ("only while a demo runs on that folder", `docs/notes/your-own-video.md:182`), and so does the module docstring. The page does not, and neither does the line printed to the operator ("Each job's upload and result are kept for 7 days in …").
+- **Why it matters:**
+  - In the default use (start the demo, upload, Ctrl-C the same day), the raw recording stays on disk until the machine reboots or `systemd-tmpfiles` ages it out. This machine's `/usr/lib/tmpfiles.d/tmp.conf` has `D /tmp 1777 root root 30d`, so that is up to 30 days.
+  - With `--data`, it stays forever unless a demo is run on that folder again.
+  - With `--lan`, the person reading the promise may be a guest whose recording it is.
+  - The result's sentence ("kept for 7 days, then deleted") already had this gap. This change extends it to the raw upload, which is the more sensitive file.
+- **Evidence:** `serve_demo.py:253`: `data = args.data or Path(tempfile.mkdtemp(prefix="slam-it-all-demo-"))`. `app.py:467-475`: the only caller of `sweep` is the `sweeping()` task of the app's lifespan. Probe 2 shows that deletion happens only when `sweep` runs after RETENTION.
+- **Suggested fix (owner's choice):**
+  - (a) Make the page and the terminal line say the condition. For example: "This demo keeps your upload with its result on the computer running it, so that it can be run again. It deletes both 7 days after the run ends, if it is still running then."
+  - (b) And/or remove the default temporary folder when the demo exits, so a default run never strands anything; `--data` stays the way to keep things.
+
+#### [should-fix] Kept uploads have no bound on disk: a code holder's upload bandwidth becomes a week of disk on the owner's machine
+- **Where:** `app.py:209-216` (`_clear_files` keeps the import), `:641`, `:661`, `:672` (no deletion when uploads are kept); `app.py:516-536` (`create`: no check of kept bytes or free space).
+- **Issue:**
+  - Before: every confirmed upload was deleted when its import ended, so the demo held at most `QUEUE` = 5 uploads (2.5 GB) at a time.
+  - Now: every confirmed upload stays for 7 days after its job ends, whether the job is done, failed, failed for silence, or expired while queued (probe 2). Nothing caps the total.
+  - A non-video file passes the size check, is confirmed, and fails at the import, so each one keeps up to 500 MB. The limit is the uploader's bandwidth, plus the worker's download and the import's refusal (an estimate; not timed).
+- **Why it matters:**
+  - Anyone with the code can fill the disk that holds the demo's folder. By default that is `/` on this machine (192 GB free, so about 384 uploads of 500 MB), which affects every other session and GPU run on it.
+  - On `--lan`, "anyone with the code" includes a guesser. On the live server, 300 wrong codes took one sequential connection at 3,568 per second over loopback. That is about 78 minutes for all 256³ codes, given the owner's decision not to rate-limit.
+  - Kept uploads are not readable over the network (see below). The exposure is disk exhaustion.
+- **Evidence:** Probe 2, with uploads kept, after clearing and link closing:
+  ```
+  failed           state=failed   after clear+close: ['jobs/0683…/import']
+  silent           state=failed   after clear+close: ['jobs/45b1…/import']
+  expired queued   state=expired  after clear+close: ['jobs/fe11…/import']
+  ```
+  `grep -rn "disk_usage\|free" server/src/slam_it_all_server/` finds nothing.
+- **Suggested fix:** When uploads are kept, refuse a new job (503) in either case:
+  - free space under the storage root (`shutil.disk_usage`) is below a margin, for example 10 × `MAX_BYTES`;
+  - or the sizes of jobs still holding a kept upload (the job list has `size`) pass a budget.
+
+  Alternatively, keep only the N most recent uploads. Whichever is chosen, the page's sentence must say "up to".
+
+#### [should-fix] If `/api/kept` fails, the demo's page keeps the deployment's sentence, which is the stronger promise and false there
+- **Where:** `viewer/upload.html:87-89` (the static text); `viewer/src/upload_view.js:76-82` (`showFate` changes the text only on success).
+- **Issue:** The text before the fetch, and after a failed one, is "Your upload is deleted as soon as its frames have been imported." On the demo that is false. Failure is unlikely: the call is same-origin to the server that just served the page, and the route only reads a boolean. But the default is the more private claim, and it also shows until the fetch resolves.
+- **Why it matters:** A promise about deletion should fail toward saying more is kept, not less.
+- **Evidence:** `if (response !== null && response.ok) { … textContent = uploadFate(…) }`; there is no `else`.
+- **Suggested fix:** Ship a neutral or conservative default (or hide the item until the answer arrives), and set the deployment's sentence only on `{"uploads": false}`.
+
+#### [note] With uploads kept, the worker's download link still fetches the upload after its job ended, until an hour after the claim
+- **Where:** `app.py:629` (the only GET ever signed for `jobs/<id>/import`, for `LINK_SECONDS`); `storage.py:197-199`.
+- **Issue:** Before, the import was deleted when the import ended, so a leaked worker link returned 404 from then on. With uploads kept, the same link returns the recording for the rest of its hour (probe 3):
+  ```
+  keep=False: job failed, 30 min after claim: GET -> 404
+  keep=True:  job failed, 30 min after claim: GET -> 200, body=b"the recording's bytes"
+  keep=True:  60 min after claim: GET -> 403
+  ```
+  The live server gave the same result: a 200 after the job was reported failed.
+- **Why it matters:** The risk is small. The access log is off, the worker logs no URLs, and on the demo the claim and download both go over loopback.
+- **Suggested fix (optional):** When the import ends and uploads are kept, move the copy to a key no link was ever signed for (for example `jobs/<id>/kept`).
+
+#### [note] Old-layout demo folders: the old job list is adopted silently, and its files are never deleted
+- **Where:** `jobs.py:82` (`SCHEMA_VERSION = 1`, unchanged); `app.py:219-223` (`_delete` removes only `jobs/<id>`).
+- **Issue:** The owner decided against migration, and this note does not reopen that. The problem is that the old list is not refused either:
+  - A pre-change `jobs.sqlite3` in a lasting `--data` folder opens without complaint.
+  - Its rows are swept on schedule, but `files/results/<id>/`, `files/imports/<id>` and `files/uploads/<id>` are left with no row pointing at them, permanently.
+  - Meanwhile, old done jobs' bundle links return 404.
+- **Evidence:** Probe 7: `SCHEMA_VERSION: 1 … sweep failures: 0 | row gone: True | left on disk: ['imports/de12…', 'results/de12…/bundle.json']`.
+- **Why it matters:** It affects only the owner's own lasting demo folders. Results hold the recordings' frames, and those frames would outlive the 7 days the page promised.
+- **Suggested fix:** Bump `SCHEMA_VERSION`, since the storage layout is part of what a row means. Then the old list is refused ("delete it to start a new one"), matching the module's own rule. This is a refusal, not a shim.
+
+#### [note] The keep gate is a proxy: "folder storage" stands for "the demo"
+- **Where:** `config.py:127-132`; `make_app` does not check.
+- **Issue:**
+  - A folder-storage deployment, such as one on a Railway volume, would accept `KEEP_UPLOADS=1`.
+  - A `Settings` built in code with `storage="s3", keep_uploads=True` is accepted, because only `from_environment` refuses it (probe 1).
+  - Parsing is exact `== "1"`, so `"true"`, `"yes"` and `" 1"` all read as off (probe 1). Typos fail safe.
+- **Why it matters:** Little in practice. The template sets `STORAGE=s3` and `KEEP_UPLOADS=0`, the planned deployment is S3, and the page would still say uploads are kept.
+- **Suggested fix (optional):** Also require that `public_url`'s host is loopback or private (the demo's `127.0.0.1` or LAN address), or repeat the check in `make_app`.
+
+#### [note] Kept uploads in a `--data` folder are readable by other local accounts
+- **Where:** `scripts/serve_demo.py:254` (`data.mkdir(...)` with the umask); `storage.py` writes with default modes.
+- **Issue:** On the live run (umask 002), `files/jobs/<id>/import` was `-rw-rw-r--` and its folders `drwxrwxr-x`. The default `mkdtemp` folder is 0700, so it is safe. A `--data` folder is not.
+- **Why it matters:** The same was already true of results. Raw recordings now sit there for 7 days.
+- **Suggested fix (optional):** `chmod 0700` the data folder in `serve_demo.py`.
+
+#### [note] Pre-existing, not this change: on S3, a confirmation racing the expiry keeps an upload that was never imported for 7 days
+- **Where:** `app.py:547` (`move`), `:553-556` (`queue` raises StateError, and the server answers 409); `storage.py:129-133` (copy, then delete).
+- **Issue:** Suppose the sweep expires a waiting job (at 15 minutes) while S3's `copy_object` is in flight:
+  - `_clear_files` finds no import yet;
+  - the copy then lands;
+  - `uploaded` answers 409;
+  - `_close_link` never deletes `import`.
+
+  The upload stays until RETENTION, or until the 8-day lifecycle rule. That breaks the deployment's "deleted as soon as its frames have been imported" for a slow upload confirmed right at the deadline. Folder storage's atomic rename closes this window: probe 6 gives a 409 and no import left.
+- **Evidence:** The model: `confirm -> 409 … state: expired` / `after clear and close (2 h): import there: True` / `after RETENTION: import there: False`.
+- **Suggested fix:** On the StateError after the move, delete the import (best effort), or have `_close_link` delete `import_key` when uploads are not kept.
+
+### Checked and fine
+- **S3 refusal at startup** (live): `STORAGE=s3` with `KEEP_UPLOADS=1` exits with code 2 and one line, and no job list is made.
+- **Result paths cannot reach the import:** `import`, `../import`, `x/../../import`, `.upload.x.part`, `a/b/c.json` and four other variants all get 400. `sub/x.bin` signs `jobs/<id>/result/sub/x.bin`. `RESULT_PATH` cannot name `import` or leave `result/`.
+- **Bundle paths:** `../import`, `..%2fimport`, `%2e%2e/import` and `bundle.json/../../import` all get 404, because a path must be in `job.files` and pass `RESULT_PATH`.
+- **Signatures are bound to their key and method:** the upload link's signature fails as a PUT on `…/import` (403) and as a GET (403).
+- **`delete_prefix`:**
+  - Folder: removes `jobs/<A>` only; B's import and `jobs/` itself remain.
+  - S3: lists `Prefix='jobs/<id>/'` with the trailing slash, so no sibling is touched.
+  - Ids are `token_hex(16)`.
+- **Every ending with uploads kept:**
+  - done: import and result kept;
+  - failed, or failed for silence: import kept, result deleted;
+  - expired while queued: import kept;
+  - expired while waiting: nothing kept.
+
+  At RETENTION every folder is gone, `jobs/` is empty, and the sweep reports 0 failures.
+- **`_close_link` and `_clear_files`, setting on and off:** no link ever writes `import` (only the server's `move` does), so `_close_link` correctly leaves it alone. With the setting off, the import is deleted at the import's end, at done, at failure and when files are cleared (probe 3, `keep=False`: 404). The sweep's lists are taken at its start; a failed deletion keeps the row, and the next sweep retries it.
+- **Folder storage's `.part` staging:** the temporary file sits in the job's own folder and is unlinked in `finally`. One left by a crash now goes with the folder at RETENTION; before this change it stayed in `uploads/` forever.
+- **`/api/kept`:** on staging and `--lan`, it is behind Basic auth (401 without; 200 `{"uploads":true}` with the code, live) and marked `no-store`. It reveals one boolean.
+- **`--lan`:** no route serves a kept upload without a signed link, and only the worker gets one, over loopback. The demo's printed line names the folder, not tokens or links. The access log stays off.
+- **The worker:** it removes its own job folder in `finally` (`worker.py:720`), so the demo holds no second copy of an upload.

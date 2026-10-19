@@ -1,0 +1,771 @@
+/// @file
+/// @brief Implementation of the run writer declared in slam_it/eval/runs.hpp.
+#include "slam_it/eval/runs.hpp"
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <charconv>
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <memory>
+#include <string_view>
+#include <system_error>
+#include <tuple>
+
+#include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/so3.hpp"
+
+namespace slam_it::eval::runs {
+
+namespace {
+
+using foundations::ErrorKind;
+using foundations::fail;
+using foundations::Result;
+namespace fs = std::filesystem;
+
+/// @brief The modes a run may have.
+constexpr std::array<const char*, 3> kModes = {"monocular", "stereo", "rgbd"};
+
+/// @brief The backends a run may come from.
+constexpr std::array<const char*, 3> kBackends = {"python", "cpp", "rust"};
+
+/// @brief numpy leaves room for the first dimension to grow to this many digits.
+constexpr std::size_t kGrowthDigits = 21;
+
+/// @brief numpy aligns the data to this many bytes.
+constexpr std::size_t kAlign = 64;
+
+/// @brief A string as JSON: quoted, escaped.
+/// @param value The string.
+/// @return Its text.
+std::string json_string(const std::string& value) {
+  std::string out = "\"";
+  for (const char c : value) {
+    switch (c) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      default:
+        if (static_cast<unsigned char>(c) < 0x20) {
+          constexpr std::string_view kHex = "0123456789abcdef";
+          const auto code = static_cast<unsigned char>(c);
+          out += "\\u00";
+          out += kHex[code >> 4U];
+          out += kHex[code & 0xFU];
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out + "\"";
+}
+
+/// @brief A JSON value's text, as Python's `json.dumps` writes it; nested JSON as written.
+/// @param value The value.
+/// @return Its text.
+std::string json_value(const JsonValue& value) {
+  if (std::holds_alternative<std::nullptr_t>(value)) {
+    return "null";
+  }
+  if (const auto* integer = std::get_if<std::int64_t>(&value)) {
+    return std::to_string(*integer);
+  }
+  if (const auto* number = std::get_if<double>(&value)) {
+    return json_number(*number);
+  }
+  if (const auto* flag = std::get_if<bool>(&value)) {
+    return *flag ? "true" : "false";
+  }
+  if (const auto* text = std::get_if<std::string>(&value)) {
+    return json_string(*text);
+  }
+  return std::get<JsonText>(value).text;
+}
+
+/// @brief An object's text (`", "` and `": "` between items, as `json.dumps`).
+/// @param object The object.
+/// @return Its text.
+std::string object_text(const JsonObject& object) {
+  std::string out = "{";
+  for (std::size_t k = 0; k < object.size(); ++k) {
+    out += (k > 0 ? ", " : "") + json_string(object[k].first) + ": " + json_value(object[k].second);
+  }
+  return out + "}";
+}
+
+/// @brief Whether a value is not a number that is not finite (nested JSON was checked when it
+///        was written).
+/// @param value The value.
+/// @return Whether it is.
+bool finite(const JsonValue& value) {
+  const auto* number = std::get_if<double>(&value);
+  return number == nullptr || std::isfinite(*number);
+}
+
+/// @brief Whether an object's numbers are all finite.
+/// @param object The object.
+/// @return Whether they are.
+bool finite(const JsonObject& object) {
+  return std::ranges::all_of(object, [](const auto& item) { return finite(item.second); });
+}
+
+/// @brief Check stamped poses: finite, strictly ascending times, one rigid transform each.
+/// @param times The times.
+/// @param poses The poses.
+/// @param name Their name, for messages.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_stamped(const std::vector<double>& times,
+                           const std::vector<Eigen::Matrix4d>& poses, const char* name) {
+  if (times.size() != poses.size()) {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(name) + ": expected (F,) timestamps and (F, 4, 4) poses");
+  }
+  for (std::size_t k = 0; k < times.size(); ++k) {
+    if (!std::isfinite(times[k]) || (k > 0 && !(times[k] > times[k - 1]))) {
+      return fail(ErrorKind::kInvalidInput,
+                  std::string(name) + " timestamps: must be finite and ascend strictly");
+    }
+    if (auto ok = foundations::se3::check_transform(poses[k]); !ok) {
+      return ok;
+    }
+  }
+  return {};
+}
+
+/// @brief Check maps: one per row, numbers from 0, never descending.
+/// @param maps The maps.
+/// @param rows The rows they are for.
+/// @param name Their name, for messages.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_maps(const std::vector<std::int64_t>& maps, std::size_t rows, const char* name) {
+  if (maps.size() != rows) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected one map per row, " +
+                                              std::to_string(rows) + ", got " +
+                                              std::to_string(maps.size()));
+  }
+  for (std::size_t row = 0; row < maps.size(); ++row) {
+    if (maps[row] < 0 || (row > 0 && maps[row] < maps[row - 1])) {
+      return fail(ErrorKind::kInvalidInput,
+                  std::string(name) + ": maps must be numbers from 0, never descending; row " +
+                      std::to_string(row) + " is " + std::to_string(maps[row]) +
+                      (row > 0 ? ", after " + std::to_string(maps[row - 1]) : ""));
+    }
+  }
+  return {};
+}
+
+/// @brief Check parents, one per keyframe: -1, or another keyframe of its map
+///        (`slam_it.eval.runs._check_parents`).
+/// @param parents The parents.
+/// @param maps Each keyframe's map, checked.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_parents(const std::vector<std::int64_t>& parents,
+                           const std::vector<std::int64_t>& maps) {
+  if (parents.size() != maps.size()) {
+    return fail(ErrorKind::kInvalidInput, "keyframe_parents: expected one per keyframe, " +
+                                              std::to_string(maps.size()) + ", got " +
+                                              std::to_string(parents.size()));
+  }
+  for (std::size_t k = 0; k < parents.size(); ++k) {
+    const std::int64_t parent = parents[k];
+    if (parent == -1) {
+      continue;
+    }
+    if (parent < 0 || std::cmp_greater_equal(parent, parents.size()) || std::cmp_equal(parent, k)) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_parents: a parent must be -1 or another keyframe's id");
+    }
+    if (maps[static_cast<std::size_t>(parent)] != maps[k]) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_parents: a parent must be in its keyframe's map");
+    }
+  }
+  return {};
+}
+
+/// @brief Check strong links: two keyframes of one map, the lower first, a weight, the rows
+///        ascending (`slam_it.eval.runs._check_links`).
+/// @param links The links.
+/// @param maps Each keyframe's map, checked.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_links(const std::vector<std::array<std::int64_t, 3>>& links,
+                         const std::vector<std::int64_t>& maps) {
+  for (std::size_t i = 0; i < links.size(); ++i) {
+    const auto [first, second, weight] = links[i];
+    if (first < 0 || first >= second || std::cmp_greater_equal(second, maps.size()) || weight < 1) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_links: a link must join two keyframes, the lower first, by its points");
+    }
+    if (maps[static_cast<std::size_t>(first)] != maps[static_cast<std::size_t>(second)]) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_links: a link's keyframes must be in one map");
+    }
+    if (i > 0 && std::pair{links[i - 1][0], links[i - 1][1]} >= std::pair{first, second}) {
+      return fail(ErrorKind::kInvalidInput, "keyframe_links: the links must ascend, each once");
+    }
+  }
+  return {};
+}
+
+/// @brief Check loop edges: two keyframes of one map, the lower first, each pair once
+///        (`slam_it.eval.runs._check_loops`).
+/// @param loops The loops.
+/// @param maps Each keyframe's map, checked.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_loops(const std::vector<std::array<std::int64_t, 2>>& loops,
+                         const std::vector<std::int64_t>& maps) {
+  for (std::size_t i = 0; i < loops.size(); ++i) {
+    const auto [first, second] = loops[i];
+    if (first < 0 || first >= second || std::cmp_greater_equal(second, maps.size())) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_loops: a loop must join two keyframes, the lower first");
+    }
+    if (maps[static_cast<std::size_t>(first)] != maps[static_cast<std::size_t>(second)]) {
+      return fail(ErrorKind::kInvalidInput,
+                  "keyframe_loops: a loop's keyframes must be in one map");
+    }
+    if (std::find(loops.begin(), loops.begin() + static_cast<std::ptrdiff_t>(i), loops[i]) !=
+        loops.begin() + static_cast<std::ptrdiff_t>(i)) {
+      return fail(ErrorKind::kInvalidInput, "keyframe_loops: a loop must close once");
+    }
+  }
+  return {};
+}
+
+/// @brief Check a run before anything is written.
+/// @param run The run.
+/// @return Nothing, or `InvalidInput`.
+/// @brief Check lives: one per row; made in one of the run's frames, removed in that frame or a
+///        later one or never, and why exactly when removed.
+/// @param lives The lives.
+/// @param rows The rows they are for.
+/// @param frames The run's frames.
+/// @param name Their name, for messages.
+/// @return Nothing, or `InvalidInput`.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (rows, frames), as Python's (count, frames)
+Result<void> check_lives(const std::vector<Life>& lives, std::size_t rows, std::size_t frames,
+                         const char* name) {
+  if (lives.size() != rows) {
+    return fail(ErrorKind::kInvalidInput, std::string(name) + ": expected one life per row");
+  }
+  const auto count = static_cast<std::int64_t>(frames);
+  const bool ok = std::ranges::all_of(lives, [count](const Life& life) {
+    const auto [made, removed, how] = life;
+    const bool alive = removed == -1;
+    return made >= 0 && made < count && (alive || (removed >= made && removed < count)) &&
+           (alive ? how == -1 : (how >= 0 && how < kRemovals));
+  });
+  if (!ok) {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(name) + ": expected lives of the run's frames, removal codes");
+  }
+  return {};
+}
+
+/// @brief Check the diagnostics' `map` keys against the run's maps (those of its keyframes): each
+///        null or a map number, never descending, and every map named on a frame, so that its
+///        frames can be found (Python's `_check_frame_maps`).
+/// @param run The run.
+/// @return Nothing, or `InvalidInput`.
+Result<void> check_frame_maps(const Run& run) {
+  std::vector<std::int64_t> named;
+  for (std::size_t k = 0; k < run.diagnostics.size(); ++k) {
+    const auto& entry = run.diagnostics[k];
+    const auto found =
+        std::ranges::find_if(entry, [](const auto& item) { return item.first == "map"; });
+    if (found == entry.end() || std::holds_alternative<std::nullptr_t>(found->second)) {
+      continue;
+    }
+    const std::string where = "diagnostics[" + std::to_string(k) + "]";
+    const auto* value = std::get_if<std::int64_t>(&found->second);
+    if (value == nullptr || *value < 0) {
+      return fail(ErrorKind::kInvalidInput, where + ": map: expected a map number or null");
+    }
+    if (!named.empty() && *value < named.back()) {
+      return fail(ErrorKind::kInvalidInput, where + ": map " + std::to_string(*value) +
+                                                " after map " + std::to_string(named.back()) +
+                                                ": maps never descend");
+    }
+    named.push_back(*value);
+  }
+  for (const std::int64_t map : run.keyframe_maps) {  // ascending, as checked
+    if (!std::ranges::binary_search(named, map)) {
+      return fail(ErrorKind::kInvalidInput, "diagnostics: no frame names map " +
+                                                std::to_string(map) + ", which has keyframes");
+    }
+  }
+  return {};
+}
+
+namespace {
+
+/// @brief Check what a run says ran: its mode, its backend, and how its steps ran.
+/// @param run The run.
+/// @return Nothing; `InvalidInput` for an unknown mode or backend, or locks without threads.
+Result<void> check_what_ran(const Run& run) {
+  if (std::ranges::find(kModes, run.mode) == kModes.end()) {
+    return fail(ErrorKind::kInvalidInput, "mode: unknown '" + run.mode + "'");
+  }
+  if (std::ranges::find(kBackends, run.backend) == kBackends.end()) {
+    return fail(ErrorKind::kInvalidInput, "backend: unknown '" + run.backend + "'");
+  }
+  if (run.locks && !run.threaded) {
+    return fail(ErrorKind::kInvalidInput, "locks: only a threaded run shares the map by locks");
+  }
+  return {};
+}
+
+}  // namespace
+
+Result<void> check(const Run& run) {
+  if (auto ok = check_what_ran(run); !ok) {
+    return ok;
+  }
+  if (auto ok = check_stamped(run.timestamps, run.poses, "trajectory"); !ok) {
+    return ok;
+  }
+  if (auto ok = check_stamped(run.timestamps, run.tracked_poses, "tracked trajectory"); !ok) {
+    return ok;
+  }
+  if (auto ok = check_stamped(run.keyframe_timestamps, run.keyframe_poses, "keyframes"); !ok) {
+    return ok;
+  }
+  if (!std::ranges::all_of(run.points, [](const Eigen::Vector3d& p) { return p.allFinite(); })) {
+    return fail(ErrorKind::kInvalidInput, "points: expected finite values");
+  }
+  const std::size_t frames = run.diagnostics.size();
+  if (auto ok = check_lives(run.point_lives, run.points.size(), frames, "point_lives"); !ok) {
+    return ok;
+  }
+  if (auto ok =
+          check_lives(run.keyframe_lives, run.keyframe_timestamps.size(), frames, "keyframe_lives");
+      !ok) {
+    return ok;
+  }
+  for (const auto& [maps, rows, name] :
+       {std::tuple{&run.pose_maps, run.timestamps.size(), "pose_maps"},
+        std::tuple{&run.keyframe_maps, run.keyframe_timestamps.size(), "keyframe_maps"},
+        std::tuple{&run.point_maps, run.points.size(), "point_maps"}}) {
+    if (auto ok = check_maps(*maps, rows, name); !ok) {
+      return ok;
+    }
+  }
+  if (auto ok = check_parents(run.keyframe_parents, run.keyframe_maps); !ok) {
+    return ok;
+  }
+  if (auto ok = check_links(run.keyframe_links, run.keyframe_maps); !ok) {
+    return ok;
+  }
+  if (auto ok = check_loops(run.keyframe_loops, run.keyframe_maps); !ok) {
+    return ok;
+  }
+  if (!finite(run.settings)) {
+    return fail(ErrorKind::kInvalidInput, "settings: not JSON (a number is not finite)");
+  }
+  if (run.peak_memory.value_or(0) < 0) {
+    return fail(ErrorKind::kInvalidInput, "peak_memory: expected a whole number of bytes");
+  }
+  if (run.cpus &&
+      (run.cpus->empty() || run.cpus->front() < 0 ||
+       std::ranges::adjacent_find(*run.cpus, std::greater_equal<>()) != run.cpus->end())) {
+    return fail(ErrorKind::kInvalidInput, "cpus: expected CPU numbers, ascending");
+  }
+  if (run.memory_cap.value_or(1) < 1) {
+    return fail(ErrorKind::kInvalidInput, "memory_cap: expected a positive number of bytes");
+  }
+  for (std::size_t k = 0; k < run.diagnostics.size(); ++k) {
+    const auto& entry = run.diagnostics[k];
+    const bool stamped =
+        std::ranges::any_of(entry, [](const auto& item) { return item.first == "timestamp"; });
+    if (!stamped || !finite(entry)) {
+      return fail(ErrorKind::kInvalidInput, "diagnostics[" + std::to_string(k) +
+                                                "]: expected an object with a timestamp, its "
+                                                "numbers finite");
+    }
+  }
+  return check_frame_maps(run);
+}
+
+/// @brief Stamped poses as TUM-format lines, each number round-tripping, a `# map <n>` line
+///        before each map's first pose.
+/// @param times The times.
+/// @param poses The poses.
+/// @param maps Their maps.
+/// @return The text, or the quaternion conversion's error.
+Result<std::string> trajectory_text(const std::vector<double>& times,
+                                    const std::vector<Eigen::Matrix4d>& poses,
+                                    const std::vector<std::int64_t>& maps) {
+  std::string out = "# timestamp tx ty tz qx qy qz qw\n";
+  for (std::size_t k = 0; k < times.size(); ++k) {
+    if (k == 0 || maps[k] != maps[k - 1]) {
+      out += "# map " + std::to_string(maps[k]) + "\n";
+    }
+    auto q = foundations::so3::to_quaternion(poses[k].topLeftCorner<3, 3>());
+    if (!q) {
+      return std::unexpected(std::move(q.error()));
+    }
+    const std::array<double, 8> values = {times[k], poses[k](0, 3), poses[k](1, 3), poses[k](2, 3),
+                                          (*q)(0),  (*q)(1),        (*q)(2),        (*q)(3)};
+    for (std::size_t i = 0; i < values.size(); ++i) {
+      out += (i > 0 ? " " : "") + json_number(values[i]);
+    }
+    out += '\n';
+  }
+  return out;
+}
+
+/// @brief Poses' values, row-major.
+/// @param poses The poses.
+/// @return 16 values each.
+std::vector<double> flatten(const std::vector<Eigen::Matrix4d>& poses) {
+  std::vector<double> out;
+  out.reserve(16 * poses.size());
+  for (const Eigen::Matrix4d& pose : poses) {
+    for (Eigen::Index r = 0; r < 4; ++r) {
+      for (Eigen::Index c = 0; c < 4; ++c) {
+        out.push_back(pose(r, c));
+      }
+    }
+  }
+  return out;
+}
+
+/// @brief Create a run's folder, if it is not there.
+/// @param folder The folder.
+/// @return Nothing, or `InvalidInput` naming the folder.
+Result<void> create_folder(const fs::path& folder) {
+  std::error_code error;
+  fs::create_directories(folder, error);
+  if (error) {
+    return fail(ErrorKind::kInvalidInput, folder.string() + ": " + error.message());
+  }
+  return {};
+}
+
+/// @brief Write a file whole: to a temporary sibling, then renamed over it.
+/// @param path The file.
+/// @param data Its bytes.
+/// @return Nothing, or `InvalidInput` naming the file.
+Result<void> replace(const fs::path& path, const std::string& data) {
+  const fs::path temporary = path.parent_path() / ("." + path.filename().string() + ".tmp");
+  {
+    std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+    file.write(data.data(), static_cast<std::streamsize>(data.size()));
+    if (!file) {
+      return fail(ErrorKind::kInvalidInput, temporary.string() + ": could not be written");
+    }
+  }
+  std::error_code error;
+  fs::rename(temporary, path, error);
+  if (error) {
+    return fail(ErrorKind::kInvalidInput, path.string() + ": " + error.message());
+  }
+  return {};
+}
+
+/// @brief A `.npy` file's header, as numpy writes it.
+/// @param shape The array's shape.
+/// @param descr The dtype's descriptor (`<f8`, `<i8`).
+/// @return The magic, version, header length and header.
+std::string npy_header(const std::vector<std::size_t>& shape, const char* descr) {
+  std::string dims;
+  for (std::size_t k = 0; k < shape.size(); ++k) {
+    dims += (k > 0 ? ", " : "") + std::to_string(shape[k]);
+  }
+  if (shape.size() == 1) {
+    dims += ',';
+  }
+  std::string header =
+      std::string("{'descr': '") + descr + "', 'fortran_order': False, 'shape': (" + dims + "), }";
+  if (!shape.empty()) {
+    header.append(kGrowthDigits - std::to_string(shape[0]).size(), ' ');
+  }
+  constexpr std::size_t kPrefix = 10;  // magic, version, header length
+  header.append(kAlign - ((kPrefix + header.size() + 1) % kAlign), ' ');
+  header += '\n';
+  std::string out = "\x93NUMPY";
+  out += '\x01';
+  out += '\x00';
+  out += static_cast<char>(header.size() & 0xFFU);
+  out += static_cast<char>((header.size() >> 8U) & 0xFFU);
+  return out + header;
+}
+
+/// @brief A `.npy` file's bytes: its header, then its values little-endian.
+/// @tparam T The values' type (8 bytes).
+/// @param shape The array's shape.
+/// @param descr The dtype's descriptor.
+/// @param values Its values, row-major.
+/// @return The bytes.
+template <typename T>
+std::string npy_bytes(const std::vector<std::size_t>& shape, const char* descr,
+                      const std::vector<T>& values) {
+  static_assert(std::endian::native == std::endian::little, "npy is written little-endian");
+  std::string out = npy_header(shape, descr);
+  out.reserve(out.size() + (values.size() * sizeof(T)));
+  for (const T value : values) {
+    const auto raw = std::bit_cast<std::array<char, sizeof(T)>>(value);
+    out.append(raw.data(), raw.size());
+  }
+  return out;
+}
+
+/// @brief A vocabulary's header and checksums as JSON (`slam_it.eval.vocabularies.record`):
+///        its numbers, then each array's SHA-256 in hex, by name.
+/// @param header The header.
+/// @return The object's text.
+std::string vocabulary_text(const vocabularies::Header& header) {
+  const JsonObject numbers = {{"version", header.version},
+                              {"descriptor_version", header.descriptor_version},
+                              {"k", header.k},
+                              {"levels", header.levels},
+                              {"words", header.words}};
+  JsonObject sums;
+  for (std::size_t i = 0; i < vocabularies::kArrays.size(); ++i) {
+    std::string hex;
+    for (const std::uint8_t byte : header.sha256.at(i)) {
+      constexpr std::string_view kDigits = "0123456789abcdef";
+      hex += kDigits[byte >> 4U];
+      hex += kDigits[byte & 0xFU];
+    }
+    sums.emplace_back(vocabularies::kArrays.at(i), hex);
+  }
+  std::string out = object_text(numbers);
+  out.pop_back();
+  return out + ", \"sha256\": " + object_text(sums) + "}";
+}
+
+/// @brief Pairs of ids, row-major.
+/// @param pairs The pairs.
+/// @return Their numbers.
+std::vector<std::int64_t> flatten(const std::vector<std::array<std::int64_t, 2>>& pairs) {
+  std::vector<std::int64_t> out;
+  out.reserve(2 * pairs.size());
+  for (const auto& [first, second] : pairs) {
+    out.insert(out.end(), {first, second});
+  }
+  return out;
+}
+
+/// @brief Lives, row-major.
+/// @param lives The lives.
+/// @return Their numbers.
+std::vector<std::int64_t> flatten(const std::vector<Life>& lives) {
+  std::vector<std::int64_t> out;
+  out.reserve(3 * lives.size());
+  for (const Life& life : lives) {
+    out.insert(out.end(), life.begin(), life.end());
+  }
+  return out;
+}
+
+}  // namespace
+
+std::string npy(const std::vector<std::size_t>& shape, const std::vector<double>& values) {
+  return npy_bytes(shape, "<f8", values);
+}
+
+std::string npy(const std::vector<std::size_t>& shape, const std::vector<std::int64_t>& values) {
+  return npy_bytes(shape, "<i8", values);
+}
+
+std::string json_number(double value) {
+  std::array<char, 32> buffer{};
+  const auto [end, error] = std::to_chars(buffer.data(), std::to_address(buffer.end()), value);
+  std::string out(buffer.data(), end);
+  if (out.find_first_of(".en") == std::string::npos) {
+    out += ".0";
+  }
+  return out;
+}
+
+Result<JsonText> json_object(const JsonObject& object) {
+  if (!finite(object)) {
+    return fail(ErrorKind::kInvalidInput, "json_object: expected finite numbers");
+  }
+  return JsonText{.text = object_text(object)};
+}
+
+Result<JsonText> json_array(std::span<const JsonValue> values) {
+  if (!std::ranges::all_of(values, [](const JsonValue& value) { return finite(value); })) {
+    return fail(ErrorKind::kInvalidInput, "json_array: expected finite numbers");
+  }
+  std::string out = "[";
+  for (std::size_t k = 0; k < values.size(); ++k) {
+    out += (k > 0 ? ", " : "") + json_value(values[k]);
+  }
+  return JsonText{.text = out + "]"};
+}
+
+Result<void> write_run(const std::string& folder, const Run& run) {
+  if (auto ok = check(run); !ok) {
+    return ok;
+  }
+  auto trajectory = trajectory_text(run.timestamps, run.poses, run.pose_maps);
+  if (!trajectory) {
+    return std::unexpected(std::move(trajectory.error()));
+  }
+  auto tracked = trajectory_text(run.timestamps, run.tracked_poses, run.pose_maps);
+  if (!tracked) {
+    return std::unexpected(std::move(tracked.error()));
+  }
+  const JsonObject info = {
+      {"format", std::string(kFormat)}, {"version", kVersion}, {"dataset", run.dataset},
+      {"sequence", run.sequence},       {"mode", run.mode},    {"backend", run.backend}};
+  std::string info_text = object_text(info);
+  info_text.pop_back();
+  info_text += ", \"settings\": " + object_text(run.settings);
+  info_text += ", \"vocabulary\": " + (run.vocabulary ? vocabulary_text(*run.vocabulary) : "null");
+  info_text += std::string(", \"record_features\": ") + (run.record_features ? "true" : "false");
+  info_text += std::string(", \"threaded\": ") + (run.threaded ? "true" : "false");
+  info_text += std::string(", \"locks\": ") + (run.locks ? "true" : "false");
+  const auto integer_or_null = [](const std::optional<std::int64_t>& value) {
+    return value ? std::to_string(*value) : std::string("null");
+  };
+  info_text += ", \"peak_memory\": " + integer_or_null(run.peak_memory);
+  info_text += ", \"cpus\": ";
+  if (run.cpus) {
+    info_text += '[';
+    for (std::size_t k = 0; k < run.cpus->size(); ++k) {
+      info_text += (k == 0 ? "" : ", ") + std::to_string((*run.cpus)[k]);
+    }
+    info_text += ']';
+  } else {
+    info_text += "null";
+  }
+  info_text += ", \"memory_cap\": " + integer_or_null(run.memory_cap) + "}\n";
+  std::string diagnostics;
+  for (const JsonObject& entry : run.diagnostics) {
+    diagnostics += object_text(entry) + "\n";
+  }
+  std::vector<double> points;
+  points.reserve(3 * run.points.size());
+  for (const Eigen::Vector3d& p : run.points) {
+    points.insert(points.end(), {p.x(), p.y(), p.z()});
+  }
+  const fs::path out(folder);
+  if (auto ok = create_folder(out); !ok) {
+    return ok;
+  }
+  const std::array<std::pair<const char*, std::string>, 15> files = {{
+      {"run.json", info_text},
+      {"trajectory.txt", *trajectory},
+      {"trajectory_tracked.txt", *tracked},
+      {"keyframes.npy", npy({run.keyframe_timestamps.size()}, run.keyframe_timestamps)},
+      {"keyframe_poses.npy", npy({run.keyframe_poses.size(), 4, 4}, flatten(run.keyframe_poses))},
+      {"keyframe_lives.npy", npy({run.keyframe_lives.size(), 3}, flatten(run.keyframe_lives))},
+      {"keyframe_parents.npy", npy({run.keyframe_parents.size()}, run.keyframe_parents)},
+      {"keyframe_links.npy", npy({run.keyframe_links.size(), 3}, flatten(run.keyframe_links))},
+      {"keyframe_loops.npy", npy({run.keyframe_loops.size(), 2}, flatten(run.keyframe_loops))},
+      {"points.npy", npy({run.points.size(), 3}, points)},
+      {"point_lives.npy", npy({run.point_lives.size(), 3}, flatten(run.point_lives))},
+      {"pose_maps.npy", npy({run.pose_maps.size()}, run.pose_maps)},
+      {"keyframe_maps.npy", npy({run.keyframe_maps.size()}, run.keyframe_maps)},
+      {"point_maps.npy", npy({run.point_maps.size()}, run.point_maps)},
+      {"diagnostics.jsonl", diagnostics},
+  }};
+  for (const auto& [name, data] : files) {
+    if (auto ok = replace(out / name, data); !ok) {
+      return ok;
+    }
+  }
+  return {};
+}
+
+Result<FeatureWriter> FeatureWriter::open(const std::string& folder) {
+  const fs::path out(folder);
+  if (auto ok = create_folder(out); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  const auto mode = std::ios::binary | std::ios::trunc | std::ios::out;
+  FeatureWriter writer(std::ofstream(out / kPixels, mode), std::ofstream(out / kRecords, mode));
+  if (!writer.pixels_ || !writer.records_) {
+    return fail(ErrorKind::kInvalidInput, folder + ": its feature files could not be written");
+  }
+  if (auto ok = writer.count(); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return writer;
+}
+
+Result<void> FeatureWriter::write(std::span<const std::array<double, 2>> xy,
+                                  std::span<const std::int64_t> level,
+                                  std::span<const std::int64_t> fate,
+                                  std::span<const std::int64_t> point) {
+  const std::string name = "features of frame " + std::to_string(frames_);
+  const std::size_t n = xy.size();
+  if (level.size() != n || fate.size() != n || point.size() != n) {
+    return fail(ErrorKind::kInvalidInput,
+                name + ": expected xy (N, 2) and level, fate, point (N,)");
+  }
+  if (!std::ranges::all_of(xy, [](const std::array<double, 2>& p) {
+        return std::isfinite(p[0]) && std::isfinite(p[1]);
+      })) {
+    return fail(ErrorKind::kInvalidInput, name + ": pixels must be finite");
+  }
+  if (std::ranges::any_of(level, [](std::int64_t l) { return l < 0; })) {
+    return fail(ErrorKind::kInvalidInput, name + ": a level must be at least 0");
+  }
+  if (std::ranges::any_of(fate, [](std::int64_t f) { return f < 0 || f >= kFates; })) {
+    return fail(ErrorKind::kInvalidInput, name + ": a fate must be a code of FATES");
+  }
+  for (std::size_t j = 0; j < n; ++j) {
+    if (point[j] < -1 || (point[j] == -1) != (fate[j] == 0)) {
+      return fail(ErrorKind::kInvalidInput,
+                  name + ": a point must be an id, -1 exactly when unmatched");
+    }
+  }
+  std::string pixels;
+  std::string records;
+  pixels.reserve(n * 2 * sizeof(float));
+  records.reserve(n * 4 * sizeof(std::int32_t));
+  const auto append = [](std::string& out, auto value) {
+    const auto raw = std::bit_cast<std::array<char, sizeof(value)>>(value);
+    out.append(raw.data(), raw.size());
+  };
+  for (std::size_t j = 0; j < n; ++j) {
+    append(pixels, static_cast<float>(xy[j][0]));
+    append(pixels, static_cast<float>(xy[j][1]));
+    for (const std::int64_t value : {frames_, level[j], fate[j], point[j]}) {
+      append(records, static_cast<std::int32_t>(value));
+    }
+  }
+  pixels_.write(pixels.data(), static_cast<std::streamsize>(pixels.size()));
+  records_.write(records.data(), static_cast<std::streamsize>(records.size()));
+  ++frames_;
+  rows_ += n;
+  return count();
+}
+
+Result<void> FeatureWriter::count() {
+  for (auto [file, columns, descr] : {std::tuple{&pixels_, std::size_t{2}, "<f4"},
+                                      std::tuple{&records_, std::size_t{4}, "<i4"}}) {
+    const std::string header = npy_header({rows_, columns}, descr);
+    file->seekp(0);
+    file->write(header.data(), static_cast<std::streamsize>(header.size()));
+    file->seekp(0, std::ios::end);
+    file->flush();
+    if (!*file) {
+      return fail(ErrorKind::kInvalidInput, std::string("a feature file could not be written"));
+    }
+  }
+  return {};
+}
+
+}  // namespace slam_it::eval::runs

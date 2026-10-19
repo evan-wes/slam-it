@@ -1,0 +1,1613 @@
+"""The map: keyframes, their keypoints and the map points, as one struct of arrays.
+
+A :class:`Map` holds three tables, each a set of arrays row for row:
+
+- **keyframes** (K rows): an id, a time, the pose ``T_cam_world``, and where its keypoints
+  start in the keypoint table (``kf_start``, K + 1 offsets);
+- **keypoints** (T rows, keyframe after keyframe): what tracking and mapping read of each
+  keyframe's features, and the id of the map point each observes (-1 for none);
+- **points** (P rows): an id, the position in the world, and what matching a point needs:
+  its distinctive descriptor, its mean viewing direction and the distances over which its
+  scale stays invariant (ORB-SLAM's ``MapPoint``), and how often it was visible and found.
+
+Points and keyframes are referred to by **id**, never by row: an id is given once, in
+increasing order, so the id columns stay sorted and :meth:`Map.point_rows` finds rows by
+binary search. Erasing a point therefore only clears the keypoints that observed it; erasing
+a keyframe removes its rows. Every operation returns a new map and leaves its input as it was.
+
+**What was removed** is kept aside, in the ``gone_*`` arrays, until the pipeline takes it
+(:func:`clear_gone`): each erased point's id, last position and why it went (:class:`Removal`),
+and each erased keyframe's id, time, pose, parent and pose relative to that parent. A run
+records from them when each point and keyframe was removed (:mod:`slam_it.eval.runs`), and
+places the frames tracked from a culled keyframe through its parents.
+
+**The loops closed** are the map's loop edges (``loop_edges``), each a pair of keyframe ids: a
+keyframe with one is never culled, as ORB-SLAM's ``AddLoopEdge`` marks it not to be erased.
+
+**A point's descriptor, normal and distances** follow ORB-SLAM's ``MapPoint``:
+
+- the descriptor is the observation whose median Hamming distance to the others is least
+  (``ComputeDistinctiveDescriptors``; ties: the earliest);
+- the normal is the mean of the unit directions from each observing keyframe's centre to the
+  point, normalised (ORB-SLAM keeps it unnormalised);
+- with ``d`` the distance from the reference keyframe's centre and ``l`` the level of the
+  keypoint observing it there, the point stays matchable from ``d_min = d_max / s^(L - 1)``
+  to ``d_max = d s^l`` (``UpdateNormalAndDepth``), and :func:`predict_level` predicts the
+  level it appears at from a distance (``PredictScale``).
+"""
+
+from __future__ import annotations
+
+import enum
+import math
+from dataclasses import dataclass, fields, replace
+from typing import Any, Protocol
+
+import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
+from slam_it import backends
+from slam_it.edge.frames import Frame
+from slam_it.edge.options import Options
+from slam_it.foundations import matching, orb
+from slam_it.foundations.arrays import as_count, as_mask, as_real, holds_integers
+from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.orb import DESCRIPTOR_BYTES
+
+Array = NDArray[np.float64]
+IntArray = NDArray[np.int64]
+Mask = NDArray[np.bool_]
+
+
+class Removal(enum.IntEnum):
+    """Why a point or keyframe left the map, with the codes a run records."""
+
+    CULLED = 0
+    """Culled: a recent point tracking rarely found (``MapPointCulling``), or a redundant
+    keyframe (``KeyFrameCulling``)."""
+    FUSED = 1
+    """Fused into another point (``SearchInNeighbors``)."""
+    WEAK = 2
+    """Erased with its views: the observations dropped (by a bundle adjustment, or with a culled
+    keyframe) left it seen too little (``EraseObservation``)."""
+    RESET = 3
+    """Its map was reset: the track was lost while the map was too small to keep (ORB-SLAM3's
+    ``ResetActiveMap``; :class:`slam_it.edge.pipeline.Pipeline`)."""
+
+
+@dataclass(frozen=True)
+class Map:
+    """Keyframes, their keypoints and the map points (see the module docstring).
+
+    Attributes
+    ----------
+    levels : int
+        The pyramid's levels.
+    scale_factor : float
+        Its scale factor.
+    kf_id : ndarray of int64, shape (K,)
+        Each keyframe's id, ascending.
+    kf_time : ndarray of float64, shape (K,)
+        Its time, in seconds.
+    kf_pose : ndarray of float64, shape (K, 4, 4)
+        Its pose ``T_cam_world``.
+    kf_parent : ndarray of int64, shape (K,)
+        Its parent in the spanning tree, another keyframe's id, or -1: the map's first
+        keyframe, and one that has shared no point yet (:mod:`slam_it.edge.covisibility`).
+    kf_start : ndarray of int64, shape (K + 1,)
+        Where each keyframe's keypoints start in the keypoint table; the last is T.
+    kp_xy : ndarray of float64, shape (T, 2)
+        Each keypoint's pixel.
+    kp_level : ndarray of int64, shape (T,)
+        Its pyramid level.
+    kp_angle : ndarray of int64, shape (T,)
+        Its orientation bin.
+    kp_descriptor : ndarray of uint8, shape (T, DESCRIPTOR_BYTES)
+        Its descriptor.
+    kp_bearing : ndarray of float64, shape (T, 3)
+        Its unit bearing (NaN where it has none).
+    kp_depth : ndarray of float64, shape (T,)
+        Its depth in metres (NaN for none).
+    kp_right : ndarray of float64, shape (T,)
+        Its right-image column (NaN for none).
+    kp_point : ndarray of int64, shape (T,)
+        The id of the map point it observes, or -1.
+    pt_id : ndarray of int64, shape (P,)
+        Each point's id, ascending.
+    pt_xyz : ndarray of float64, shape (P, 3)
+        Its position in the world.
+    pt_descriptor : ndarray of uint8, shape (P, DESCRIPTOR_BYTES)
+        Its distinctive descriptor.
+    pt_normal : ndarray of float64, shape (P, 3)
+        Its mean viewing direction, a unit vector (from the cameras to the point).
+    pt_min_distance, pt_max_distance : ndarray of float64, shape (P,)
+        The distances over which it is matchable.
+    pt_visible, pt_found : ndarray of int64, shape (P,)
+        How many frames had it in view, and how many matched it.
+    pt_first_kf : ndarray of int64, shape (P,)
+        The id of the keyframe that created it.
+    pt_reference_kf : ndarray of int64, shape (P,)
+        The id of its reference keyframe (where its distances are measured from).
+    next_kf_id, next_pt_id : int
+        The next ids to give.
+    gone_pt_id : ndarray of int64, shape (G,)
+        The ids of the points erased since the archive was last cleared, in erasing order.
+    gone_pt_xyz : ndarray of float64, shape (G, 3)
+        Their last positions.
+    gone_pt_how : ndarray of int64, shape (G,)
+        Why each went (:class:`Removal`).
+    gone_kf_id : ndarray of int64, shape (H,)
+        The ids of the keyframes erased since then (culled).
+    gone_kf_time : ndarray of float64, shape (H,)
+        Their times.
+    gone_kf_pose : ndarray of float64, shape (H, 4, 4)
+        Their last poses ``T_cam_world``.
+    gone_kf_parent : ndarray of int64, shape (H,)
+        Their last parents.
+    gone_kf_relative : ndarray of float64, shape (H, 4, 4)
+        Each one's pose relative to its parent when it went, ``T_cam_parent`` (ORB-SLAM's
+        ``mTcp``): the identity for one without a parent.
+    loop_edges : ndarray of int64, shape (E, 2)
+        The loops closed in the map, each the two keyframes' ids, the older first, in the order
+        they were closed.
+    """
+
+    levels: int
+    scale_factor: float
+    kf_id: IntArray
+    kf_time: Array
+    kf_pose: Array
+    kf_parent: IntArray
+    kf_start: IntArray
+    kp_xy: Array
+    kp_level: IntArray
+    kp_angle: IntArray
+    kp_descriptor: NDArray[np.uint8]
+    kp_bearing: Array
+    kp_depth: Array
+    kp_right: Array
+    kp_point: IntArray
+    pt_id: IntArray
+    pt_xyz: Array
+    pt_descriptor: NDArray[np.uint8]
+    pt_normal: Array
+    pt_min_distance: Array
+    pt_max_distance: Array
+    pt_visible: IntArray
+    pt_found: IntArray
+    pt_first_kf: IntArray
+    pt_reference_kf: IntArray
+    next_kf_id: int
+    next_pt_id: int
+    gone_pt_id: IntArray
+    gone_pt_xyz: Array
+    gone_pt_how: IntArray
+    gone_kf_id: IntArray
+    gone_kf_time: Array
+    gone_kf_pose: Array
+    gone_kf_parent: IntArray
+    gone_kf_relative: Array
+    loop_edges: IntArray
+
+    def __post_init__(self) -> None:
+        """Check the tables' shapes, types and links (not copied: maps are built by this module).
+
+        Raises
+        ------
+        slam_it.foundations.errors.InvalidInputError
+            If an array has the wrong type or length, the keypoint offsets do not run from 0
+            to the keypoint count, an id column is not strictly ascending or reaches its next
+            id, a keypoint observes a point that is not in the map, a keyframe's parent is
+            neither -1 nor another of its keyframes, the archive holds an id the map still
+            has, one it never gave, or an unknown removal, or a loop edge joins a keyframe the
+            map does not hold, or one to itself, or lists the newer first.
+        """
+        _check(self)
+
+    @property
+    def keyframes(self) -> int:
+        """The number of keyframes."""
+        return len(self.kf_id)
+
+    @property
+    def points(self) -> int:
+        """The number of map points."""
+        return len(self.pt_id)
+
+    def keypoint_rows(self, k: int) -> slice:
+        """Return the rows of keyframe `k`'s keypoints.
+
+        Parameters
+        ----------
+        k : int
+            The keyframe's row.
+
+        Returns
+        -------
+        slice
+            Its rows in the keypoint table.
+        """
+        return slice(int(self.kf_start[k]), int(self.kf_start[k + 1]))
+
+    def keypoint_keyframe(self) -> IntArray:
+        """Each keypoint's keyframe row.
+
+        Returns
+        -------
+        ndarray of int64, shape (T,)
+            The rows.
+        """
+        return np.repeat(np.arange(self.keyframes), np.diff(self.kf_start)).astype(np.int64)
+
+    def point_rows(self, ids: IntArray) -> IntArray:
+        """Find points by id.
+
+        Parameters
+        ----------
+        ids : ndarray of int64
+            Point ids (-1 allowed).
+
+        Returns
+        -------
+        ndarray of int64
+            Each one's row, -1 where it is -1 or no longer in the map.
+        """
+        return _rows(self.pt_id, ids)
+
+    def keyframe_rows(self, ids: IntArray) -> IntArray:
+        """Find keyframes by id.
+
+        Parameters
+        ----------
+        ids : ndarray of int64
+            Keyframe ids.
+
+        Returns
+        -------
+        ndarray of int64
+            Each one's row, -1 where it is no longer in the map.
+        """
+        return _rows(self.kf_id, ids)
+
+    def centres(self) -> Array:
+        """Each keyframe's camera centre in the world.
+
+        Returns
+        -------
+        ndarray of float64, shape (K, 3)
+            ``-Rᵀ t`` for each pose.
+        """
+        rotation, translation = self.kf_pose[:, :3, :3], self.kf_pose[:, :3, 3]
+        return np.asarray(-np.einsum("kji,kj->ki", rotation, translation))
+
+    def observed_by(self, keyframes: IntArray) -> IntArray:
+        """Return the points the given keyframes observe.
+
+        Parameters
+        ----------
+        keyframes : ndarray of int64
+            Keyframe rows.
+
+        Returns
+        -------
+        ndarray of int64
+            The points' rows, ascending, each once.
+        """
+        rows = [self.kp_point[self.keypoint_rows(int(k))] for k in keyframes]
+        ids = np.concatenate(rows) if rows else np.zeros(0, dtype=np.int64)
+        found = self.point_rows(np.unique(ids[ids >= 0]))
+        return np.sort(found[found >= 0])
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return every field, as the map crosses the bindings.
+
+        Returns
+        -------
+        dict
+            Field name to array (or scalar).
+        """
+        return {
+            item.name: (np.ascontiguousarray(value) if isinstance(value, np.ndarray) else value)
+            for item in fields(self)
+            for value in [getattr(self, item.name)]
+        }
+
+
+def _rows(ids: IntArray, wanted: IntArray) -> IntArray:
+    """Find ids in an ascending id column: each one's row, or -1."""
+    wanted = np.asarray(wanted, dtype=np.int64)
+    at = np.searchsorted(ids, wanted)
+    inside = at < len(ids)
+    found = np.zeros(wanted.shape, dtype=bool)
+    found[inside] = ids[at[inside]] == wanted[inside]
+    return np.where(found & (wanted >= 0), at, -1).astype(np.int64)
+
+
+def empty(levels: int, scale_factor: float) -> Map:
+    """Return a map with no keyframes and no points.
+
+    Parameters
+    ----------
+    levels : int
+        The pyramid's levels.
+    scale_factor : float
+        Its scale factor.
+
+    Returns
+    -------
+    Map
+        The empty map.
+    """
+    no_int = np.zeros(0, dtype=np.int64)
+    no_real = np.zeros(0)
+    return Map(
+        levels=int(levels),
+        scale_factor=float(scale_factor),
+        kf_id=no_int,
+        kf_time=no_real,
+        kf_pose=np.zeros((0, 4, 4)),
+        kf_parent=no_int,
+        kf_start=np.zeros(1, dtype=np.int64),
+        kp_xy=np.zeros((0, 2)),
+        kp_level=no_int,
+        kp_angle=no_int,
+        kp_descriptor=np.zeros((0, DESCRIPTOR_BYTES), dtype=np.uint8),
+        kp_bearing=np.zeros((0, 3)),
+        kp_depth=no_real,
+        kp_right=no_real,
+        kp_point=no_int,
+        pt_id=no_int,
+        pt_xyz=np.zeros((0, 3)),
+        pt_descriptor=np.zeros((0, DESCRIPTOR_BYTES), dtype=np.uint8),
+        pt_normal=np.zeros((0, 3)),
+        pt_min_distance=no_real,
+        pt_max_distance=no_real,
+        pt_visible=no_int,
+        pt_found=no_int,
+        pt_first_kf=no_int,
+        pt_reference_kf=no_int,
+        next_kf_id=0,
+        next_pt_id=0,
+        gone_pt_id=no_int,
+        gone_pt_xyz=np.zeros((0, 3)),
+        gone_pt_how=no_int,
+        gone_kf_id=no_int,
+        gone_kf_time=no_real,
+        gone_kf_pose=np.zeros((0, 4, 4)),
+        gone_kf_parent=no_int,
+        gone_kf_relative=np.zeros((0, 4, 4)),
+        loop_edges=np.zeros((0, 2), dtype=np.int64),
+    )
+
+
+def clear_gone(m: Map) -> Map:
+    """Return the map with its archive of removed points and keyframes emptied.
+
+    The pipeline takes the archive after every frame (:mod:`slam_it.edge.pipeline`), so
+    each removal is dated by the frame it happened in.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+
+    Returns
+    -------
+    Map
+        The same map, its ``gone_*`` arrays empty.
+    """
+    blank = empty(m.levels, m.scale_factor)
+    gone = [item.name for item in fields(m) if item.name.startswith("gone_")]
+    return replace(m, **{name: getattr(blank, name) for name in gone})
+
+
+def has_loop(m: Map, k: int) -> bool:
+    """Return whether keyframe row `k` has a loop edge.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    k : int
+        The keyframe's row.
+
+    Returns
+    -------
+    bool
+        Whether a loop closed in the map joins it.
+    """
+    return bool(np.any(m.loop_edges == m.kf_id[k]))
+
+
+def add_loop_edge(m: Map, first: int, second: int) -> Map:
+    """Return the map with a loop edge joining two of its keyframes (``AddLoopEdge``, both ways).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    first, second : int
+        The two keyframes' ids, in either order.
+
+    Returns
+    -------
+    Map
+        The map, the edge last in ``loop_edges``, the older keyframe first.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either is not a keyframe of the map, or they are the same.
+    """
+    edge = np.array([[min(first, second), max(first, second)]], dtype=np.int64)
+    if first == second or np.any(m.keyframe_rows(edge[0]) < 0):
+        raise InvalidInputError(f"loop edge {first}-{second}: expected two of the map's keyframes")
+    return replace(m, loop_edges=np.concatenate([m.loop_edges, edge]))
+
+
+def replace_point(m: Map, *, lose: int, keep: int) -> Map:
+    """Return the map with one point replaced by another (ORB-SLAM's ``MapPoint::Replace``).
+
+    The lost point's observations pass to the kept one, except in keyframes that already see
+    the kept one, where they are dropped; its visible and found counts are added to the kept
+    one's; it is erased (:attr:`Removal.FUSED`), and the kept one refreshed. Local mapping's
+    fusion and loop closing replace points through it.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    lose, keep : int
+        The two points' ids, both in the map, different.
+
+    Returns
+    -------
+    Map
+        The map without the lost point.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either point is not in the map, or they are the same.
+    """
+    p_lose, p_keep = (int(r) for r in m.point_rows(np.array([lose, keep], dtype=np.int64)))
+    if lose == keep or p_lose < 0 or p_keep < 0:
+        raise InvalidInputError(f"replace {lose} by {keep}: expected two of the map's points")
+    keyframe_of = m.keypoint_keyframe()
+    kp_point = m.kp_point.copy()
+    kept_in = set(keyframe_of[kp_point == keep].tolist())
+    for row in np.flatnonzero(kp_point == lose):
+        kp_point[row] = -1 if int(keyframe_of[row]) in kept_in else keep
+    visible, found = m.pt_visible.copy(), m.pt_found.copy()
+    visible[p_keep] += visible[p_lose]
+    found[p_keep] += found[p_lose]
+    merged = replace(m, kp_point=kp_point, pt_visible=visible, pt_found=found)
+    erase = np.zeros(merged.points, dtype=bool)
+    erase[p_lose] = True
+    merged = erase_points(merged, erase, Removal.FUSED)
+    return refresh_points(merged, merged.point_rows(np.array([keep], dtype=np.int64)))
+
+
+def _predict_level(m: Map, rows: IntArray, distance: Array) -> IntArray:
+    """Predict points' levels from their distances (reference)."""
+    ratio = m.pt_max_distance[rows] / distance
+    level = np.ceil(np.log(ratio) / math.log(m.scale_factor))
+    return np.clip(level, 0, m.levels - 1).astype(np.int64)
+
+
+def _insert_keyframe(m: Map, frame: Frame, pose: Array, points: IntArray) -> Map:
+    """Add a keyframe (reference)."""
+    keypoints = frame.features.keypoints
+    total = int(m.kf_start[-1])
+    grown = replace(
+        m,
+        kf_id=np.append(m.kf_id, m.next_kf_id),
+        kf_time=np.append(m.kf_time, frame.timestamp),
+        kf_pose=np.concatenate([m.kf_pose, np.asarray(pose, dtype=np.float64)[None]]),
+        kf_parent=np.append(m.kf_parent, -1),
+        kf_start=np.append(m.kf_start, total + frame.size),
+        kp_xy=np.concatenate([m.kp_xy, keypoints.xy]),
+        kp_level=np.concatenate([m.kp_level, keypoints.level]),
+        kp_angle=np.concatenate([m.kp_angle, keypoints.angle]),
+        kp_descriptor=np.concatenate([m.kp_descriptor, frame.features.descriptors]),
+        kp_bearing=np.concatenate([m.kp_bearing, frame.bearings]),
+        kp_depth=np.concatenate([m.kp_depth, frame.depth]),
+        kp_right=np.concatenate([m.kp_right, frame.right]),
+        kp_point=np.concatenate([m.kp_point, np.asarray(points, dtype=np.int64)]),
+        next_kf_id=m.next_kf_id + 1,
+    )
+    observed = grown.point_rows(np.unique(points[points >= 0]))
+    return _refresh_points(grown, observed[observed >= 0])
+
+
+def _add_points(m: Map, xyz: Array, observers: IntArray) -> Map:
+    """Create map points (reference)."""
+    q = len(xyz)
+    if q == 0:
+        return m
+    ids = np.arange(m.next_pt_id, m.next_pt_id + q, dtype=np.int64)
+    kp_point = m.kp_point.copy()
+    for i in range(q):
+        rows = observers[i][observers[i] >= 0]
+        kp_point[rows] = ids[i]
+    keyframe_of = m.keypoint_keyframe()
+    last = np.array([observers[i][observers[i] >= 0].max() for i in range(q)])
+    creator = m.kf_id[keyframe_of[last]]
+    grown = replace(
+        m,
+        kp_point=kp_point,
+        pt_id=np.concatenate([m.pt_id, ids]),
+        pt_xyz=np.concatenate([m.pt_xyz, np.asarray(xyz, dtype=np.float64)]),
+        pt_descriptor=np.concatenate(
+            [m.pt_descriptor, np.zeros((q, DESCRIPTOR_BYTES), dtype=np.uint8)]
+        ),
+        pt_normal=np.concatenate([m.pt_normal, np.zeros((q, 3))]),
+        pt_min_distance=np.concatenate([m.pt_min_distance, np.zeros(q)]),
+        pt_max_distance=np.concatenate([m.pt_max_distance, np.zeros(q)]),
+        pt_visible=np.concatenate([m.pt_visible, np.ones(q, dtype=np.int64)]),
+        pt_found=np.concatenate([m.pt_found, np.ones(q, dtype=np.int64)]),
+        pt_first_kf=np.concatenate([m.pt_first_kf, creator]),
+        pt_reference_kf=np.concatenate([m.pt_reference_kf, creator]),
+        next_pt_id=m.next_pt_id + q,
+    )
+    return _refresh_points(grown, np.arange(m.points, m.points + q, dtype=np.int64))
+
+
+def _observations(m: Map) -> dict[int, IntArray]:
+    """Each point id's observing keypoint rows, ascending."""
+    rows = np.flatnonzero(m.kp_point >= 0)
+    ids = m.kp_point[rows]
+    order = np.argsort(ids, kind="stable")
+    rows, ids = rows[order], ids[order]
+    starts = np.flatnonzero(np.r_[True, ids[1:] != ids[:-1]]) if len(ids) else np.zeros(0, int)
+    ends = np.r_[starts[1:], len(ids)]
+    return {int(ids[s]): rows[s:e] for s, e in zip(starts, ends, strict=True)}
+
+
+def _distinctive_descriptor(descriptors: NDArray[np.uint8]) -> int:
+    """Pick the most central descriptor (reference)."""
+    distances = np.sort(matching.distances(descriptors, descriptors), axis=1)
+    median = distances[:, (len(descriptors) - 1) // 2]
+    return int(np.argmin(median))
+
+
+def _refresh_points(m: Map, rows: IntArray) -> Map:
+    """Recompute points' descriptors, normals and distances (reference)."""
+    if len(rows) == 0:
+        return m
+    observations = _observations(m)
+    keyframe_of = m.keypoint_keyframe()
+    centres = m.centres()
+    descriptor = m.pt_descriptor.copy()
+    normal = m.pt_normal.copy()
+    near, far = m.pt_min_distance.copy(), m.pt_max_distance.copy()
+    reference = m.pt_reference_kf.copy()
+    for p in rows:
+        seen = observations[int(m.pt_id[p])]
+        descriptor[p] = m.kp_descriptor[seen[_distinctive_descriptor(m.kp_descriptor[seen])]]
+        directions = m.pt_xyz[p] - centres[keyframe_of[seen]]
+        directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+        mean = directions.mean(axis=0)
+        normal[p] = mean / np.linalg.norm(mean)
+        observers = m.kf_id[keyframe_of[seen]]
+        if reference[p] not in observers:
+            reference[p] = observers.min()
+        at = seen[observers == reference[p]][0]
+        distance = float(np.linalg.norm(m.pt_xyz[p] - centres[keyframe_of[at]]))
+        far[p] = distance * m.scale_factor ** int(m.kp_level[at])
+        near[p] = far[p] / m.scale_factor ** (m.levels - 1)
+    return replace(
+        m,
+        pt_descriptor=descriptor,
+        pt_normal=normal,
+        pt_min_distance=near,
+        pt_max_distance=far,
+        pt_reference_kf=reference,
+    )
+
+
+def _erase_points(m: Map, erase: Mask, how: Removal) -> Map:
+    """Remove points, keeping them aside (reference)."""
+    if not np.any(erase):
+        return m
+    keep = ~erase
+    gone = np.isin(m.kp_point, m.pt_id[erase])
+    return replace(
+        m,
+        kp_point=np.where(gone, -1, m.kp_point),
+        gone_pt_id=np.concatenate([m.gone_pt_id, m.pt_id[erase]]),
+        gone_pt_xyz=np.concatenate([m.gone_pt_xyz, m.pt_xyz[erase]]),
+        gone_pt_how=np.concatenate(
+            [m.gone_pt_how, np.full(np.count_nonzero(erase), int(how), dtype=np.int64)]
+        ),
+        **{
+            item.name: getattr(m, item.name)[keep]
+            for item in fields(m)
+            if item.name.startswith("pt_")
+        },
+    )
+
+
+def _observation_weight(m: Map, rows: IntArray) -> IntArray:
+    """Weigh points' observations (reference)."""
+    observing = m.kp_point >= 0
+    weight = np.where(np.isnan(m.kp_right), 1, 2)[observing]
+    counts = dict(
+        zip(*np.unique(np.repeat(m.kp_point[observing], weight), return_counts=True), strict=True)
+    )
+    return np.array([counts.get(int(m.pt_id[p]), 0) for p in rows], dtype=np.int64)
+
+
+def _forget_observations(m: Map, rows: IntArray) -> Map:
+    """Remove keypoints' observations (reference)."""
+    touched = np.unique(m.kp_point[rows][m.kp_point[rows] >= 0])
+    if len(touched) == 0:
+        return m
+    kp_point = m.kp_point.copy()
+    kp_point[rows] = -1
+    cleared = replace(m, kp_point=kp_point)
+    points = cleared.point_rows(touched)
+    points = points[points >= 0]
+    weak = np.zeros(cleared.points, dtype=bool)
+    weak[points] = _observation_weight(cleared, points) <= 2
+    remaining = points[~weak[points]]
+    return _erase_points(_refresh_points(cleared, remaining), weak, Removal.WEAK)
+
+
+def _relative_to_parent(m: Map, k: int) -> Array:
+    """Return keyframe row `k`'s pose relative to its parent, ``T_cam_parent``, or the identity."""
+    parent = int(m.keyframe_rows(m.kf_parent[k : k + 1])[0])
+    if parent < 0:
+        return np.eye(4)
+    pose, of_parent = m.kf_pose[k], m.kf_pose[parent]
+    out = np.eye(4)
+    out[:3, :3] = pose[:3, :3] @ of_parent[:3, :3].T
+    out[:3, 3] = pose[:3, 3] - out[:3, :3] @ of_parent[:3, 3]
+    return out
+
+
+def _erase_keyframe(m: Map, k: int) -> Map:
+    """Remove a keyframe (reference)."""
+    relative = _relative_to_parent(m, k)
+    rows = np.arange(m.kf_start[k], m.kf_start[k + 1])
+    forgotten = _forget_observations(m, rows)
+    keep_rows = np.ones(len(forgotten.kp_point), dtype=bool)
+    keep_rows[rows] = False
+    counts = np.diff(forgotten.kf_start)
+    counts = np.delete(counts, k)
+    keep_kf = np.ones(forgotten.keyframes, dtype=bool)
+    keep_kf[k] = False
+    return replace(
+        forgotten,
+        gone_kf_id=np.append(forgotten.gone_kf_id, forgotten.kf_id[k]),
+        gone_kf_time=np.append(forgotten.gone_kf_time, forgotten.kf_time[k]),
+        gone_kf_pose=np.concatenate([forgotten.gone_kf_pose, forgotten.kf_pose[k][None]]),
+        gone_kf_parent=np.append(forgotten.gone_kf_parent, forgotten.kf_parent[k]),
+        gone_kf_relative=np.concatenate([forgotten.gone_kf_relative, relative[None]]),
+        kf_id=forgotten.kf_id[keep_kf],
+        kf_time=forgotten.kf_time[keep_kf],
+        kf_pose=forgotten.kf_pose[keep_kf],
+        kf_parent=forgotten.kf_parent[keep_kf],
+        kf_start=np.concatenate([[0], np.cumsum(counts)]).astype(np.int64),
+        **{
+            item.name: getattr(forgotten, item.name)[keep_rows]
+            for item in fields(forgotten)
+            if item.name.startswith("kp_")
+        },
+    )
+
+
+def _sub_map(m: Map, rows: IntArray) -> Map:
+    """Return the part of a map some of its keyframes make (reference)."""
+    keypoints = np.flatnonzero(np.isin(m.keypoint_keyframe(), rows))
+    taken = {"K": rows, "T": keypoints, "P": m.observed_by(rows)}
+    arrays = {
+        name: getattr(m, name)[taken[group]] if group in taken else getattr(m, name)
+        for name, (group, _, _) in _SHAPES.items()
+        if group != "E"
+    }
+    for name, (group, _, _) in _SHAPES.items():
+        if group in ("G", "H"):  # the archive of removals: none in a view
+            arrays[name] = getattr(m, name)[:0]
+    parents = arrays["kf_parent"]
+    arrays["kf_parent"] = np.where(np.isin(parents, arrays["kf_id"]), parents, -1)
+    counts = np.diff(m.kf_start)[rows]
+    starts = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
+    return replace(m, kf_start=starts, **arrays)
+
+
+def _count(m: Map, ids: IntArray, visible: IntArray, found: IntArray) -> Map:
+    """Add to points' visible and found counts (reference)."""
+    rows = m.point_rows(ids)
+    ok = rows >= 0
+    seen, matched = m.pt_visible.copy(), m.pt_found.copy()
+    np.add.at(seen, rows[ok], visible[ok])
+    np.add.at(matched, rows[ok], found[ok])
+    return replace(m, pt_visible=seen, pt_found=matched)
+
+
+# --- checks and dispatch ------------------------------------------------------------------
+
+_SHAPES: dict[str, tuple[str, type[np.generic], tuple[int, ...]]] = {
+    "kf_id": ("K", np.int64, ()),
+    "kf_time": ("K", np.float64, ()),
+    "kf_pose": ("K", np.float64, (4, 4)),
+    "kf_parent": ("K", np.int64, ()),
+    "kp_xy": ("T", np.float64, (2,)),
+    "kp_level": ("T", np.int64, ()),
+    "kp_angle": ("T", np.int64, ()),
+    "kp_descriptor": ("T", np.uint8, (DESCRIPTOR_BYTES,)),
+    "kp_bearing": ("T", np.float64, (3,)),
+    "kp_depth": ("T", np.float64, ()),
+    "kp_right": ("T", np.float64, ()),
+    "kp_point": ("T", np.int64, ()),
+    "pt_id": ("P", np.int64, ()),
+    "pt_xyz": ("P", np.float64, (3,)),
+    "pt_descriptor": ("P", np.uint8, (DESCRIPTOR_BYTES,)),
+    "pt_normal": ("P", np.float64, (3,)),
+    "pt_min_distance": ("P", np.float64, ()),
+    "pt_max_distance": ("P", np.float64, ()),
+    "pt_visible": ("P", np.int64, ()),
+    "pt_found": ("P", np.int64, ()),
+    "pt_first_kf": ("P", np.int64, ()),
+    "pt_reference_kf": ("P", np.int64, ()),
+    "gone_pt_id": ("G", np.int64, ()),
+    "gone_pt_xyz": ("G", np.float64, (3,)),
+    "gone_pt_how": ("G", np.int64, ()),
+    "gone_kf_id": ("H", np.int64, ()),
+    "gone_kf_time": ("H", np.float64, ()),
+    "gone_kf_pose": ("H", np.float64, (4, 4)),
+    "gone_kf_parent": ("H", np.int64, ()),
+    "gone_kf_relative": ("H", np.float64, (4, 4)),
+    "loop_edges": ("E", np.int64, (2,)),
+}
+"""Each table array's row count (keyframes, keypoints, points, erased points and keyframes, or
+loop edges), dtype and item shape."""
+
+
+def _check(m: Map) -> None:
+    """Check a map's structure (see :meth:`Map.__post_init__`)."""
+    as_count(m.levels, "map.levels", 1, orb.MAX_LEVELS)
+    if not (np.isfinite(m.scale_factor) and m.scale_factor > 1.0):
+        raise InvalidInputError("map.scale_factor: must be finite and above 1")
+    starts = np.asarray(m.kf_start)
+    if starts.dtype != np.int64 or starts.ndim != 1 or len(starts) < 1 or starts[0] != 0:
+        raise InvalidInputError("map.kf_start: expected int64 offsets starting at 0")
+    if np.any(np.diff(starts) < 0):
+        raise InvalidInputError("map.kf_start: offsets must not decrease")
+    counts = {
+        "K": len(starts) - 1,
+        "T": int(starts[-1]),
+        "P": len(np.asarray(m.pt_id)),
+        "G": len(np.asarray(m.gone_pt_id)),
+        "H": len(np.asarray(m.gone_kf_id)),
+        "E": len(np.asarray(m.loop_edges)),
+    }
+    for name, (rows, dtype, item) in _SHAPES.items():
+        value = np.asarray(getattr(m, name))
+        if value.dtype != dtype or value.shape != (counts[rows], *item):
+            raise InvalidInputError(
+                f"map.{name}: expected {np.dtype(dtype).name} {(counts[rows], *item)}, "
+                f"got {value.dtype} {value.shape}"
+            )
+    for name, last in (("kf_id", m.next_kf_id), ("pt_id", m.next_pt_id)):
+        ids = np.asarray(getattr(m, name))
+        if np.any(np.diff(ids) <= 0) or (len(ids) and (ids[0] < 0 or ids[-1] >= last)):
+            raise InvalidInputError(f"map.{name}: ids must be ascending, from 0, below the next id")
+    observed = np.asarray(m.kp_point)
+    observed = observed[observed >= 0]
+    if np.any(np.asarray(m.kp_point) < -1) or np.any(_rows(m.pt_id, observed) < 0):
+        raise InvalidInputError("map.kp_point: every observed point must be in the map")
+    for gone, live, last in (
+        (m.gone_pt_id, m.pt_id, m.next_pt_id),
+        (m.gone_kf_id, m.kf_id, m.next_kf_id),
+    ):
+        ids = np.asarray(gone)
+        if (
+            len(np.unique(ids)) != len(ids)
+            or np.any((ids < 0) | (ids >= last))
+            or np.any(np.isin(ids, live))
+        ):
+            raise InvalidInputError(
+                "map.gone_*: an erased id must be one the map gave, once, and no longer holds"
+            )
+    if not np.all(np.isin(m.gone_pt_how, [int(r) for r in Removal])):
+        raise InvalidInputError("map.gone_pt_how: expected Removal codes")
+    _check_links(m)
+
+
+def _check_links(m: Map) -> None:
+    """Check the keyframes' links: each parent, and each loop edge (see :func:`_check`)."""
+    parents = np.asarray(m.kf_parent)
+    if np.any(parents == m.kf_id) or not np.all((parents == -1) | np.isin(parents, m.kf_id)):
+        raise InvalidInputError("map.kf_parent: a parent must be -1 or another of its keyframes")
+    edges = np.asarray(m.loop_edges)
+    if not np.all(np.isin(edges, m.kf_id)) or np.any(edges[:, 0] >= edges[:, 1]):
+        raise InvalidInputError(
+            "map.loop_edges: each joins two of its keyframes, the older (lower id) first"
+        )
+
+
+class Implementation(Protocol):
+    """The functions a compiled backend's ``edge.map`` submodule provides.
+
+    Each takes the map as a dict of :class:`Map`'s fields and returns the new one the same
+    way; a frame crosses as :meth:`slam_it.edge.frames.Frame.as_dict` builds it.
+    """
+
+    def predict_level(
+        self, m: dict[str, Any], rows: NDArray[np.int64], distance: NDArray[np.float64]
+    ) -> NDArray[np.int64]:
+        """Predict points' levels from their distances."""
+        ...
+
+    def insert_keyframe(
+        self,
+        m: dict[str, Any],
+        frame: dict[str, Any],
+        pose: NDArray[np.float64],
+        points: NDArray[np.int64],
+    ) -> dict[str, Any]:
+        """Add a keyframe."""
+        ...
+
+    def add_points(
+        self, m: dict[str, Any], xyz: NDArray[np.float64], observers: NDArray[np.int64]
+    ) -> dict[str, Any]:
+        """Create map points."""
+        ...
+
+    def distinctive_descriptor(self, descriptors: NDArray[np.uint8]) -> int:
+        """Pick the most central descriptor."""
+        ...
+
+    def refresh_points(self, m: dict[str, Any], rows: NDArray[np.int64]) -> dict[str, Any]:
+        """Recompute points' descriptors, normals and distances."""
+        ...
+
+    def erase_points(self, m: dict[str, Any], erase: NDArray[np.bool_], how: int) -> dict[str, Any]:
+        """Remove points, keeping them aside with why they went."""
+        ...
+
+    def observation_weight(self, m: dict[str, Any], rows: NDArray[np.int64]) -> NDArray[np.int64]:
+        """Weigh points' observations."""
+        ...
+
+    def forget_observations(self, m: dict[str, Any], rows: NDArray[np.int64]) -> dict[str, Any]:
+        """Remove keypoints' observations."""
+        ...
+
+    def erase_keyframe(self, m: dict[str, Any], k: int) -> dict[str, Any]:
+        """Remove a keyframe."""
+        ...
+
+    def sub_map(self, m: dict[str, Any], rows: NDArray[np.int64]) -> dict[str, Any]:
+        """Return the part of a map some of its keyframes make."""
+        ...
+
+    def count(
+        self,
+        m: dict[str, Any],
+        ids: NDArray[np.int64],
+        visible: NDArray[np.int64],
+        found: NDArray[np.int64],
+    ) -> dict[str, Any]:
+        """Add to points' visible and found counts."""
+        ...
+
+
+def decode(raw: dict[str, Any], codes: backends.Codes) -> Map:
+    """Rebuild a map from a compiled backend's dict, its arrays checked (never cast).
+
+    Parameters
+    ----------
+    raw : dict
+        The map's fields, as :meth:`Map.as_dict` gives them.
+    codes : dict
+        The backend module's code tables (the map crosses none).
+
+    Returns
+    -------
+    Map
+        The map, checked.
+    """
+    del codes  # the map crosses no codes
+    arrays = {
+        name: backends.checked_array(raw[name], dtype, 1 + len(item), f"map.{name}")
+        for name, (_, dtype, item) in _SHAPES.items()
+    }
+    arrays["kf_start"] = backends.checked_array(raw["kf_start"], np.int64, 1, "map.kf_start")
+    return Map(
+        levels=int(raw["levels"]),
+        scale_factor=float(raw["scale_factor"]),
+        next_kf_id=int(raw["next_kf_id"]),
+        next_pt_id=int(raw["next_pt_id"]),
+        **arrays,
+    )
+
+
+def _decode_int64(raw: Any, codes: backends.Codes) -> NDArray[np.int64]:  # noqa: ANN401 -- a backend's array
+    """Return a compiled backend's int64 vector, checked (never cast)."""
+    del codes
+    out: NDArray[np.int64] = backends.checked_array(raw, np.int64, 1, "map result")
+    return out
+
+
+def as_keyframe_row(m: Map, k: object, name: str = "k") -> int:
+    """Check a keyframe row: an integer in ``[0, K)`` (a boolean refused).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    k : object
+        The row.
+    name : str, optional
+        The argument's name, for messages.
+
+    Returns
+    -------
+    int
+        The row.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If it is not an integer in range.
+    """
+    return as_count(k, name, 0, m.keyframes - 1)
+
+
+def keyframe_row(m: Map, keyframe: int) -> int:
+    """Return the row of the keyframe with an id; refuse one the map does not hold.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    keyframe : int
+        The keyframe's id.
+
+    Returns
+    -------
+    int
+        Its row.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the map holds no keyframe with that id.
+    """
+    k = int(m.keyframe_rows(np.array([keyframe], dtype=np.int64))[0])
+    if k < 0:
+        raise InvalidInputError(f"keyframe {keyframe} is not in the map")
+    return k
+
+
+def as_point_rows(m: Map, rows: ArrayLike, name: str = "rows") -> IntArray:
+    """Check point rows: a vector of integers in ``[0, P)`` (booleans refused).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : array_like of int
+        The rows.
+    name : str, optional
+        The argument's name, for messages.
+
+    Returns
+    -------
+    ndarray of int64
+        The rows, contiguous.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If they are not integers, or one is out of range.
+    """
+    return _as_rows(rows, m.points, name)
+
+
+def _as_rows(rows: ArrayLike, bound: int, name: str) -> IntArray:
+    """Check rows: a vector of integers in ``[0, bound)`` (booleans refused)."""
+    arr = np.asarray(rows)
+    if arr.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    if arr.ndim != 1 or not holds_integers(arr):
+        raise InvalidInputError(
+            f"{name}: expected a vector of integers, got {arr.dtype} {arr.shape}"
+        )
+    if arr.min() < 0 or arr.max() >= bound:
+        raise InvalidInputError(f"{name}: rows must lie in [0, {bound})")
+    return np.ascontiguousarray(arr, dtype=np.int64)
+
+
+def _as_ids(ids: ArrayLike, name: str) -> IntArray:
+    """Check ids: a vector of integers, -1 or more."""
+    arr = np.asarray(ids)
+    if arr.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    if arr.ndim != 1 or not holds_integers(arr) or arr.min() < -1:
+        raise InvalidInputError(f"{name}: expected a vector of ids (-1 or more)")
+    return np.ascontiguousarray(arr, dtype=np.int64)
+
+
+def to_camera(pose: Array, xyz: Array) -> Array:
+    """Move world points into a camera's frame: ``R X + t``.
+
+    Parameters
+    ----------
+    pose : ndarray of float64, shape (4, 4)
+        The camera's ``T_cam_world``.
+    xyz : ndarray of float64, shape (N, 3)
+        World points.
+
+    Returns
+    -------
+    ndarray of float64, shape (N, 3)
+        The points in the camera's frame.
+    """
+    return np.asarray(xyz @ pose[:3, :3].T + pose[:3, 3], dtype=np.float64)
+
+
+def camera_centre(pose: Array) -> Array:
+    """Return a camera's centre in the world, ``-Rᵀ t``.
+
+    Parameters
+    ----------
+    pose : ndarray of float64, shape (4, 4)
+        The camera's ``T_cam_world``.
+
+    Returns
+    -------
+    ndarray of float64, shape (3,)
+        Its centre.
+    """
+    return np.asarray(-pose[:3, :3].T @ pose[:3, 3], dtype=np.float64)
+
+
+def viewing_cos(
+    m: Map, rows: NDArray[np.int64], offset: Array, distance: NDArray[np.float64]
+) -> NDArray[np.float64]:
+    """Return the cosine between each point's mean viewing direction and a view of it.
+
+    The one viewing-angle test of tracking's in-view check and fusion (``isInFrustum``'s
+    ``viewCos``), compared with ``tracking.view_cos_limit``.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : ndarray of int64, shape (N,)
+        The points' rows.
+    offset : ndarray of float64, shape (N, 3)
+        Each point minus the viewing camera's centre.
+    distance : ndarray of float64, shape (N,)
+        The offsets' lengths, positive.
+
+    Returns
+    -------
+    ndarray of float64, shape (N,)
+        The cosines.
+    """
+    return np.asarray(np.sum(offset * m.pt_normal[rows], axis=1) / distance, dtype=np.float64)
+
+
+def in_distance_range(
+    m: Map, rows: NDArray[np.int64], distance: NDArray[np.float64], options: Options
+) -> NDArray[np.bool_]:
+    """Return which points lie within the distances they are matchable from.
+
+    From ``tracking.min_distance_margin`` of a point's minimum distance to
+    ``tracking.max_distance_margin`` of its maximum (``isInFrustum``'s and ``Fuse``'s 0.8 and 1.2).
+    Unchecked: `rows` are the map's point rows and `distance` holds one distance per row.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : ndarray of int64, shape (N,)
+        The points' rows.
+    distance : ndarray of float64, shape (N,)
+        Each point's distance from the camera centre.
+    options : slam_it.edge.options.Options
+        The margins.
+
+    Returns
+    -------
+    ndarray of bool, shape (N,)
+        Which are in range.
+    """
+    near = distance >= options.tracking.min_distance_margin * m.pt_min_distance[rows]
+    return np.asarray(
+        near & (distance <= options.tracking.max_distance_margin * m.pt_max_distance[rows])
+    )
+
+
+def predict_level(
+    m: Map, rows: ArrayLike, distance: ArrayLike, *, backend: str = "python"
+) -> IntArray:
+    """Predict the pyramid level points appear at from a distance (``PredictScale``).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : array_like of int
+        The points' rows.
+    distance : array_like of float
+        Their distances from the camera, finite and positive.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64
+        ``ceil(log(d_max / d) / log s)``, clamped to the pyramid.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a row is out of range, or a distance is not finite and positive, or there is not
+        one per row.
+    """
+    chosen = as_point_rows(m, rows)
+    distances = as_real(distance, "distance")
+    if distances.shape != chosen.shape or np.any(distances <= 0.0):
+        raise InvalidInputError("distance: expected one positive distance per row")
+    return backends.call(
+        backend,
+        __name__,
+        "predict_level",
+        reference=lambda: _predict_level(m, chosen, distances),
+        arguments={"m": m.as_dict(), "rows": chosen, "distance": distances},
+        decode=_decode_int64,
+    )
+
+
+def insert_keyframe(
+    m: Map, frame: Frame, pose: ArrayLike, points: ArrayLike, *, backend: str = "python"
+) -> Map:
+    """Add a keyframe: the frame, its pose, and the points its keypoints observe.
+
+    The observed points' descriptors, normals and distances are refreshed.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    frame : slam_it.edge.frames.Frame
+        The frame (its pyramid must be the map's).
+    pose : array_like, shape (4, 4)
+        Its pose ``T_cam_world``.
+    points : array_like of int, shape (N,)
+        The id of the point each keypoint observes (each in the map, each at most once), or
+        -1.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map with the keyframe last.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the frame's pyramid differs from the map's, the pose is not finite, or the point
+        ids are not one per keypoint, in the map, and distinct.
+    """
+    if frame.features.levels != m.levels or frame.features.scale_factor != m.scale_factor:
+        raise InvalidInputError("frame: its pyramid must be the map's")
+    matrix = as_real(pose, "pose")
+    if matrix.shape != (4, 4):
+        raise InvalidInputError(f"pose: expected shape (4, 4), got {matrix.shape}")
+    ids = _as_ids(points, "points")
+    if ids.shape != (frame.size,):
+        raise InvalidInputError(f"points: expected {frame.size} ids, got {ids.shape}")
+    observed = ids[ids >= 0]
+    if len(np.unique(observed)) != len(observed) or np.any(m.point_rows(observed) < 0):
+        raise InvalidInputError("points: each must be in the map, and observed once")
+    return backends.call(
+        backend,
+        __name__,
+        "insert_keyframe",
+        reference=lambda: _insert_keyframe(m, frame, matrix, ids),
+        arguments={"m": m.as_dict(), "frame": frame.as_dict(), "pose": matrix, "points": ids},
+        decode=decode,
+    )
+
+
+def add_points(m: Map, xyz: ArrayLike, observers: ArrayLike, *, backend: str = "python") -> Map:
+    """Create map points, each observed by keyframe keypoints.
+
+    A new point's reference and creating keyframe is its last observer's; it counts as
+    visible and found once (as ORB-SLAM's ``MapPoint`` starts).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    xyz : array_like, shape (Q, 3)
+        The points in the world, finite.
+    observers : array_like of int, shape (Q, V)
+        Each point's observing keypoint rows, -1 padded, at least one: every row free
+        (observing no point), used once, and each point's from different keyframes.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map with the points last, their descriptors, normals and distances set.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the points are not finite, or the observers break a rule above.
+    """
+    points = as_real(xyz, "xyz").reshape(-1, 3) if np.size(xyz) else np.zeros((0, 3))
+    rows = np.asarray(observers)
+    if rows.size == 0 and len(points) == 0:
+        rows = np.zeros((0, 1), dtype=np.int64)
+    if rows.ndim != 2 or rows.shape[0] != len(points) or not holds_integers(rows):
+        raise InvalidInputError("observers: expected one row of keypoint rows per point")
+    rows = np.ascontiguousarray(rows, dtype=np.int64)
+    used = rows[rows >= 0]
+    keyframe_of = m.keypoint_keyframe()
+    if (
+        np.any(rows < -1)
+        or np.any(used >= len(m.kp_point))
+        or np.any(np.count_nonzero(rows >= 0, axis=1) == 0)
+        or len(np.unique(used)) != len(used)
+        or np.any(m.kp_point[used] >= 0)
+        or any(len(np.unique(keyframe_of[r[r >= 0]])) != np.count_nonzero(r >= 0) for r in rows)
+    ):
+        raise InvalidInputError(
+            "observers: each point needs free keypoint rows, used once, from different keyframes"
+        )
+    return backends.call(
+        backend,
+        __name__,
+        "add_points",
+        reference=lambda: _add_points(m, points, rows),
+        arguments={"m": m.as_dict(), "xyz": points, "observers": rows},
+        decode=decode,
+    )
+
+
+def distinctive_descriptor(descriptors: ArrayLike, *, backend: str = "python") -> int:
+    """Pick the descriptor with the least median distance to the others.
+
+    Parameters
+    ----------
+    descriptors : array_like of uint8, shape (n, DESCRIPTOR_BYTES)
+        A point's observations' descriptors, n >= 1.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    int
+        The chosen row (ties: the earliest). The median of n sorted distances is the
+        ``(n - 1) // 2``-th, ORB-SLAM's ``vDists[0.5 * (N - 1)]``.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the descriptors are not an (n, DESCRIPTOR_BYTES) uint8 array with n >= 1.
+    """
+    rows = np.asarray(descriptors)
+    if (
+        rows.dtype != np.uint8
+        or rows.ndim != 2
+        or rows.shape[1] != DESCRIPTOR_BYTES
+        or len(rows) < 1
+    ):
+        raise InvalidInputError(
+            f"descriptors: expected an (n, {DESCRIPTOR_BYTES}) uint8 array, n >= 1"
+        )
+    chosen = np.ascontiguousarray(rows)
+    return backends.call(
+        backend,
+        __name__,
+        "distinctive_descriptor",
+        reference=lambda: _distinctive_descriptor(chosen),
+        arguments={"descriptors": chosen},
+        decode=lambda raw, codes: int(raw),
+    )
+
+
+def refresh_points(m: Map, rows: ArrayLike, *, backend: str = "python") -> Map:
+    """Recompute points' descriptors, normals and distances from their observations.
+
+    A point whose reference keyframe no longer observes it takes its earliest remaining
+    observer (the lowest keyframe id) as the reference (ORB-SLAM takes another observer too).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : array_like of int
+        The points' rows; each must have at least one observation.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map with those points refreshed.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a row is out of range or its point has no observation.
+    """
+    chosen = as_point_rows(m, rows)
+    if np.any(~np.isin(m.pt_id[chosen], m.kp_point)):
+        raise InvalidInputError("rows: every point must have an observation")
+    return backends.call(
+        backend,
+        __name__,
+        "refresh_points",
+        reference=lambda: _refresh_points(m, chosen),
+        arguments={"m": m.as_dict(), "rows": chosen},
+        decode=decode,
+    )
+
+
+def erase_points(m: Map, erase: ArrayLike, how: Removal, *, backend: str = "python") -> Map:
+    """Remove points; the keypoints that observed them observe nothing.
+
+    The points are kept aside in the map's archive (``gone_*``), with their last positions and
+    why they went.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    erase : array_like of bool, shape (P,)
+        Which points to remove.
+    how : Removal
+        Why they go.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map without them.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `erase` is not one boolean per point, or `how` is not a :class:`Removal`.
+    """
+    mask = as_mask(erase, (m.points,), "erase")
+    if not isinstance(how, Removal):
+        raise InvalidInputError(f"how: expected a Removal, got {how!r}")
+    return backends.call(
+        backend,
+        __name__,
+        "erase_points",
+        reference=lambda: _erase_points(m, mask, how),
+        arguments={"m": m.as_dict(), "erase": mask, "how": int(how)},
+        decode=decode,
+    )
+
+
+def observation_weight(m: Map, rows: ArrayLike, *, backend: str = "python") -> IntArray:
+    """Each point's observation weight: 1 per keypoint, 2 for one with depth (ORB-SLAM's).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : array_like of int
+        The points' rows.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64
+        The weights.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a row is out of range.
+    """
+    chosen = as_point_rows(m, rows)
+    return backends.call(
+        backend,
+        __name__,
+        "observation_weight",
+        reference=lambda: _observation_weight(m, chosen),
+        arguments={"m": m.as_dict(), "rows": chosen},
+        decode=_decode_int64,
+    )
+
+
+def forget_observations(m: Map, rows: ArrayLike, *, backend: str = "python") -> Map:
+    """Remove keypoints' observations; points left observed with weight 2 or less go too.
+
+    As ORB-SLAM's ``EraseObservation``: a point that only one keyframe sees (once, or twice
+    with depth) is erased. The others are refreshed.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : array_like of int
+        Keypoint rows whose observations to remove.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If a row is out of range.
+    """
+    chosen = _as_rows(rows, len(m.kp_point), "rows")
+    return backends.call(
+        backend,
+        __name__,
+        "forget_observations",
+        reference=lambda: _forget_observations(m, chosen),
+        arguments={"m": m.as_dict(), "rows": chosen},
+        decode=decode,
+    )
+
+
+def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
+    """Remove a keyframe and its keypoints; its points lose an observation each.
+
+    A keyframe that is still another's parent is refused, so every parent stays a keyframe of
+    the map: :func:`slam_it.edge.covisibility.cull` gives its children new parents first. It
+    guards the parents, not the root: a childless first keyframe is erased; callers above the map
+    go through ``cull``, which refuses it. A keyframe with a loop edge is refused too: the loops
+    closed keep theirs (``cull`` spares it). The erased keyframe's pose relative to its parent
+    is archived, for the final trajectory.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    k : int
+        The keyframe's row.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map without it.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `k` is not a keyframe's row, or the keyframe is still another's parent, or has a loop
+        edge.
+    """
+    if m.keyframes == 0:
+        raise InvalidInputError("k: the map has no keyframes")
+    row = as_count(k, "k", 0, m.keyframes - 1)
+    children = np.flatnonzero(m.kf_parent == m.kf_id[row])
+    if len(children):
+        raise InvalidInputError(
+            f"k: keyframe {m.kf_id[row]} is still keyframe {m.kf_id[children[0]]}'s parent "
+            "(covisibility's cull gives its children new parents first)"
+        )
+    if has_loop(m, row):
+        raise InvalidInputError(f"k: keyframe {m.kf_id[row]} has a loop edge, and is kept")
+    return backends.call(
+        backend,
+        __name__,
+        "erase_keyframe",
+        reference=lambda: _erase_keyframe(m, row),
+        arguments={"m": m.as_dict(), "k": row},
+        decode=decode,
+    )
+
+
+def sub_map(m: Map, rows: ArrayLike, *, backend: str = "python") -> Map:
+    """Return the part of a map some of its keyframes make: a view of it.
+
+    Those keyframes, every keypoint of theirs, and the points they observe, ids kept and in the
+    same order (so a point's observations are those keyframes'); a parent not among them -1, as
+    for a keyframe without one; the archive of removals empty, the loops and the next ids the
+    map's. What a native pipeline's writer publishes for tracking
+    (:func:`slam_it.edge.covisibility.view_keyframes`).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : array_like of int
+        The keyframes' rows, ascending, each once.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map of them.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `rows` are not ascending keyframe rows of the map.
+    """
+    chosen = np.asarray(rows)
+    if chosen.ndim != 1 or (len(chosen) and not np.issubdtype(chosen.dtype, np.integer)):
+        raise InvalidInputError("rows: expected keyframe rows")
+    chosen = chosen.astype(np.int64)
+    if len(chosen) and (chosen[0] < 0 or chosen[-1] >= m.keyframes or np.any(np.diff(chosen) <= 0)):
+        raise InvalidInputError("rows: expected ascending keyframe rows of the map, each once")
+    return backends.call(
+        backend,
+        __name__,
+        "sub_map",
+        reference=lambda: _sub_map(m, chosen),
+        arguments={"m": m.as_dict(), "rows": chosen},
+        decode=decode,
+    )
+
+
+def count(
+    m: Map,
+    ids: ArrayLike,
+    visible: ArrayLike | None = None,
+    found: ArrayLike | None = None,
+    *,
+    backend: str = "python",
+) -> Map:
+    """Add to points' visible and found counts.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    ids : array_like of int
+        Point ids (those no longer in the map are skipped; repeats add again).
+    visible, found : array_like of int, optional
+        Each id's non-negative increments (default: none).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map with the counts added.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the ids are malformed, or an increment is negative or not one per id.
+    """
+    chosen = _as_ids(ids, "ids")
+    increments = []
+    for name, value in (("visible", visible), ("found", found)):
+        if value is None:
+            increments.append(np.zeros(len(chosen), dtype=np.int64))
+            continue
+        arr = _as_ids(value, name)
+        if arr.shape != chosen.shape or np.any(arr < 0):
+            raise InvalidInputError(f"{name}: expected one non-negative increment per id")
+        increments.append(arr)
+    seen, matched = increments
+    return backends.call(
+        backend,
+        __name__,
+        "count",
+        reference=lambda: _count(m, chosen, seen, matched),
+        arguments={"m": m.as_dict(), "ids": chosen, "visible": seen, "found": matched},
+        decode=decode,
+    )

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SLAM It! run viewer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="app.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/"
+        },
+        "integrity": {
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.module.js": "sha384-m8JoFX52V6NGv2usipnlLJKnJfL7IE8dbniPDDCSGSQv3Hm4n6PjfV6syVwfuoRc",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/build/three.core.js": "sha384-mdKeCwPEcbDvzaxwhm+MVuLoMou+E7jQqrs4tmu/n8HBYPGI1kZt0MkJxlMR4zFM",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/controls/OrbitControls.js": "sha384-LSqANrugPGTgf0eYsQTloqKWy926dOOXo2iZ9y6wLMIDEQoU9AaCLJF1Vcc7oJXr",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/lines/Line2.js": "sha384-xiuCWMi3I6Dqmq35yDQbSYL9YSiySpd2S2ZR1RGzS4pXWbqoxkFbjDtC4rt+hxga",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/lines/LineGeometry.js": "sha384-RFOtykvFicnRc9DG2LAoFjWqQVs8eexRCumqVy3bDY1/HYokOzBQid3hJuUdILqv",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/lines/LineMaterial.js": "sha384-ijlzWpc1yHwTvvgLgdhkrcd5RQTKG/twLNwGumhKSFZHITTXMnzRdHIrw8fmvM3o",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/lines/LineSegments2.js": "sha384-PodS3f4Ob57FETbMdk39akLP+W9/ScGjH/bBDerYOTsUt6dZc/i2Cbx7GW47tr5u",
+          "https://cdn.jsdelivr.net/npm/three@0.186.0/examples/jsm/lines/LineSegmentsGeometry.js": "sha384-c1W/XWY1D45CznDDaXT87QmzD1YKNwYHvQegG8dXjCyf5ZaKzaWqEUwHZTYfBw64"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <header class="bar">
+      <div class="brand">SLAM It!</div>
+      <span class="meta" id="sequence">loading…</span>
+      <div class="seg" id="backends" role="group" aria-label="backend"></div>
+      <span class="meta agreement" id="agreement"></span>
+      <span class="spacer"></span>
+      <dl class="numbers" id="numbers" aria-label="the run's numbers"></dl>
+    </header>
+
+    <div class="transport">
+      <button type="button" class="ghost" id="play" aria-label="play">▶ play</button>
+      <button type="button" class="ghost" id="prev" aria-label="previous frame">◀</button>
+      <button type="button" class="ghost" id="next" aria-label="next frame">▶</button>
+      <button
+        type="button"
+        class="ghost"
+        id="prev-loop"
+        aria-label="previous loop closed"
+        title="the last loop the run closed before this frame"
+        disabled
+      >
+        ◀ loop
+      </button>
+      <button
+        type="button"
+        class="ghost"
+        id="next-loop"
+        aria-label="next loop closed"
+        title="the next loop the run closed after this frame"
+        disabled
+      >
+        loop ▶
+      </button>
+      <div class="scrub">
+        <div class="timeline">
+          <div class="not-run" id="not-run-before" hidden></div>
+          <div class="ran" id="ran">
+            <input type="range" id="scrubber" min="0" max="0" value="0" aria-label="frame" />
+            <div class="spans" id="spans"></div>
+          </div>
+          <div class="not-run" id="not-run-after" hidden></div>
+        </div>
+        <div class="legend states" aria-label="what the frame slider shows">
+          <span title="a backend's frames in its colour, where it was tracking"
+            ><i class="swatch tracking"></i>tracking</span
+          >
+          <span title="faded: before its first map, or between a lost one and the next"
+            ><i class="swatch starting"></i>no map yet</span
+          >
+          <span
+            title="broken: a map lost with too few keyframes to keep, reset: its frames' poses dropped"
+            ><i class="swatch reset"></i>reset</span
+          >
+          <span
+            title="the frame it lost the track: its map closed, and the next frame starts a new one"
+            ><i class="swatch lost"></i>lost</span
+          >
+          <span
+            title="a frame found again: its track failed, and relocalisation placed it in its map"
+            ><i class="swatch found"></i>found again</span
+          >
+          <span
+            title="each loop the chosen run closed, at the frame that corrected it, in a row under the backends'"
+            ><i class="swatch loop"></i>loop closed</span
+          >
+          <span title="the part of the sequence no run reached"
+            ><i class="swatch not-run"></i>not run</span
+          >
+        </div>
+      </div>
+      <span class="meta" id="frame-label">–</span>
+      <label class="field"
+        >speed
+        <select id="speed" aria-label="playback speed">
+          <option value="0.25">¼×</option>
+          <option value="0.5">½×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </label>
+    </div>
+
+    <p class="message" id="message" hidden></p>
+
+    <main class="layout">
+      <section class="panel image-panel" aria-label="the frame as the pipeline saw it">
+        <div class="panel-head">
+          <h2>Frame</h2>
+          <button
+            type="button"
+            class="ghost toggle"
+            id="seen-before"
+            aria-pressed="true"
+            title="around each loop the run closed, the earlier pass at the same place, in the frame's corner"
+            hidden
+          >
+            seen before
+          </button>
+          <span class="spacer"></span>
+          <div class="legend" id="legend" aria-label="keypoint fates"></div>
+        </div>
+        <div class="image-box">
+          <canvas id="image" role="img" aria-label="the frame and its keypoints"></canvas>
+          <span class="tag" id="image-tag"></span>
+          <button
+            type="button"
+            class="inset"
+            id="inset"
+            aria-pressed="false"
+            aria-label="the earlier pass at this place, larger or smaller"
+            title="the earlier pass at this place, around a loop closed: click to enlarge or shrink it"
+            hidden
+          >
+            <canvas id="inset-image"></canvas>
+            <span id="inset-label"></span>
+          </button>
+        </div>
+      </section>
+
+      <section class="panel scene-panel" aria-label="the map in 3D">
+        <div class="panel-head">
+          <h2>Map</h2>
+          <span class="meta" id="map-counts"></span>
+          <span class="spacer"></span>
+          <label
+            class="field slider"
+            title="how deep the keyframes' and the camera's frustums are drawn, against each map's own depth: smaller where they crowd, larger where they are hard to see"
+            >keyframe size
+            <input type="range" id="keyframe-size" aria-label="keyframe size" />
+            <output id="keyframe-size-value" for="keyframe-size">×1</output>
+          </label>
+          <label
+            class="field slider"
+            title="how opaque the map points are drawn: fainter, to see the keyframes and the trajectory through them"
+            >point opacity
+            <input type="range" id="point-opacity" aria-label="map point opacity" />
+            <output id="point-opacity-value" for="point-opacity">100%</output>
+          </label>
+          <button
+            type="button"
+            class="ghost toggle"
+            id="whole-truth"
+            aria-pressed="false"
+            title="the ground truth over the whole sequence, not only as far as the trajectory"
+          >
+            whole truth
+          </button>
+          <button
+            type="button"
+            class="ghost toggle"
+            id="graph"
+            aria-pressed="false"
+            title="the covisibility graph as each map ended: each keyframe's line to its last parent, the strong links, and the loops closed"
+          >
+            graph
+          </button>
+          <button type="button" class="ghost toggle" id="follow" aria-pressed="true">
+            follow camera
+          </button>
+          <button type="button" class="ghost" id="fit">fit</button>
+        </div>
+        <div class="scene-box" id="scene"></div>
+        <div class="legend scene-legend" aria-label="what the map shows">
+          <span title="each in its backend's colour: the chosen one's solid, the others' faded"
+            ><i class="swatch backends"></i>trajectories</span
+          >
+          <span title="as far as the trajectory shown, or all of it with whole truth"
+            ><i class="swatch truth"></i>ground truth</span
+          >
+          <span><i class="swatch keyframe"></i>keyframes</span>
+          <span><i class="swatch point"></i>map points</span>
+          <span><i class="swatch camera"></i>camera</span>
+        </div>
+      </section>
+
+      <section class="panel solver-panel" aria-label="how the solvers went">
+        <div class="panel-head">
+          <h2>Solver</h2>
+          <span class="meta" id="placed-by"></span>
+        </div>
+        <figure class="plot">
+          <figcaption class="meta">tracked points · matched in the local map</figcaption>
+          <canvas id="plot-tracked" role="img" aria-label="tracked points per frame"></canvas>
+        </figure>
+        <figure class="plot">
+          <figcaption class="meta">latency (build + track) against the frame deadline</figcaption>
+          <canvas id="plot-latency" role="img" aria-label="latency per frame"></canvas>
+        </figure>
+        <div class="steps" id="steps" aria-label="each backend's step times at the frame"></div>
+        <div class="summary" id="summary"></div>
+      </section>
+    </main>
+
+    <script type="module" src="src/main.js"></script>
+  </body>
+</html>

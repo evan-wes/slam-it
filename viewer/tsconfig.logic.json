@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2022"]
+  },
+  "include": ["logic.d.ts", "src/*.js"],
+  "exclude": ["src/main.js", "src/*_view.js"]
+}

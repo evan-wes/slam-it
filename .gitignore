@@ -11,6 +11,9 @@ dist/
 target/
 *.so
 
+# The run viewer's development tools (npm ci --prefix viewer)
+viewer/node_modules/
+
 # Data lives outside the repo (../datasets, ../runs)
 datasets/
 runs/
@@ -18,4 +21,11 @@ runs/
 # IDE / tooling
 .vscode/
 .idea/
-.claude/
+# Claude Code: the review panel (agents, skills) is versioned; local settings are not.
+.claude/*
+!.claude/agents/
+!.claude/skills/
+
+# Filled-in server settings stay on their machine; the template is the repository's.
+*.env
+!server/settings.template.env

@@ -1,0 +1,38 @@
+{
+  "format": [
+    "python",
+    "cpp",
+    "c-header",
+    "rust",
+    "javascript"
+  ],
+  "path": [
+    "src",
+    "tests",
+    "cpp",
+    "rust",
+    "viewer",
+    "server"
+  ],
+  "ignore": [
+    "**/build/**",
+    "**/target/**",
+    "**/fixtures/**",
+    "**/node_modules/**",
+    "**/__pycache__/**"
+  ],
+  "minTokens": 50,
+  "threshold": 0,
+  "reporters": [
+    "console"
+  ],
+  "absolute": false,
+  "ignorePattern": [
+    "\"\"\"[\\s\\S]*?\"\"\"",
+    "^\\s*///.*$",
+    "^\\s*//!.*$",
+    "/\\*\\*[\\s\\S]*?\\*/",
+    "#include [<\"][^>\"\\n]*[>\"]",
+    "(?:^|\\n)use [^;]*;"
+  ]
+}

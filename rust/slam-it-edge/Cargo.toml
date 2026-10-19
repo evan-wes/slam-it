@@ -1,0 +1,18 @@
+[package]
+name = "slam-it-edge"
+version = "0.1.0"
+description = "SLAM It!'s edge rung in Rust: sparse visual odometry, ORB-SLAM-lite."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+slam-it-foundations = { path = "../slam-it-foundations" }
+
+[dev-dependencies]
+# The covisibility fixture's cases (tests/covisibility.rs).
+serde_json = "1.0.151"
+
+[lints]
+workspace = true

@@ -1,0 +1,328 @@
+// The upload and status pages' logic: checking a file before it is sent, and saying how a job
+// is going. No page, no network: upload_view.js and status_view.js do those.
+
+import { seconds } from "./format.js";
+
+/** The largest upload, in bytes (slam_it_server.config.MAX_BYTES). */
+export const MAX_BYTES = 500e6;
+
+/** The longest video, in seconds (slam_it.eval.video.MAX_SECONDS). */
+export const MAX_SECONDS = 60;
+
+/** How long a result is kept, in days (slam_it_server.config.RETENTION). */
+export const RETENTION_DAYS = 7;
+
+/**
+ * What the upload page says becomes of an upload.
+ * @param {boolean} kept Whether the server keeps uploads with their results (the demo's,
+ *     slam_it_server.config.Settings.keep_uploads).
+ * @returns {string} The words.
+ */
+export function uploadFate(kept) {
+  return kept
+    ? "This demo keeps your upload with its result on the computer it runs on, so that it can " +
+        `be run again; it is never shown. Both are deleted once ${RETENTION_DAYS} days old, ` +
+        "while the demo is running."
+    : "Your upload is deleted as soon as its frames have been imported. It is never shown.";
+}
+
+/** What may be uploaded, and the files each one is (an `accept` attribute's value). */
+export const UPLOADS = {
+  video: "video/*",
+  stray: ".zip,application/zip",
+};
+
+/** The worker's stages, in order (slam_it_server.jobs.STAGES), each as the page says it. */
+export const STAGES = [
+  ["downloading", "fetching the upload"],
+  ["importing", "importing the frames"],
+  ["running", "tracking the camera"],
+  ["baking", "baking the result"],
+  ["uploading", "saving the result"],
+];
+
+/** Where a run's intrinsics came from (slam_it.orchestration.worker), as the page says it. */
+export const INTRINSICS = {
+  "stray-scanner": "Stray Scanner's camera matrix: exact",
+  profile: "a Gyroflow lens profile of this phone",
+  "35mm": "the video's 35mm-equivalent focal length",
+  nominal: "a typical phone's field of view: a guess",
+};
+
+/** The short side frames are imported at, in pixels (slam_it.eval.video.SHORT_SIDE). */
+export const SHORT_SIDE = 480;
+
+/** How a run used the recording (slam_it.orchestration.worker), as the page says it. */
+export const MODES = {
+  monocular: "monocular: the video alone",
+  rgbd: "RGB-D: the video with its LiDAR depth",
+};
+
+/**
+ * Why a file cannot be uploaded, or null if it can.
+ * @param {string} upload What it is: "video" or "stray".
+ * @param {{name: string, size: number}} file The file.
+ * @param {number | null} seconds A video's length, if the browser could read it.
+ * @returns {string | null} The reason, fit to show.
+ */
+export function refusal(upload, file, seconds) {
+  if (file.size <= 0) {
+    return "the file is empty";
+  }
+  if (file.size > MAX_BYTES) {
+    return `the file is over ${MAX_BYTES / 1e6} MB`;
+  }
+  if (upload === "stray" && !file.name.toLowerCase().endsWith(".zip")) {
+    return "a Stray Scanner recording is a .zip, from its Share button";
+  }
+  if (upload === "video" && seconds !== null && seconds > MAX_SECONDS) {
+    return `the video is over ${MAX_SECONDS} seconds: trim it first`;
+  }
+  return null;
+}
+
+/**
+ * A job's status, as the server gives it (GET /api/jobs/<token>).
+ * @typedef {object} Status
+ * @property {string} state Where the job is.
+ * @property {string} upload What was uploaded.
+ * @property {number} created When it was made, in seconds since the epoch.
+ * @property {string | null} reason Why it failed or expired.
+ * @property {number} [ahead] For a queued job, how many go first.
+ * @property {number} [deleted] For an ended job, when it is deleted, in seconds since the epoch.
+ * @property {Record<string, unknown>} [summary] For a done job, the worker's summary.
+ * @property {string} [bundle] For a done job, its bundle's address.
+ */
+
+/**
+ * What the status page says of a job.
+ * @param {Status} status The job's status.
+ * @returns {{headline: string, detail: string, step: number, ended: boolean, failed: boolean}}
+ *     A headline and a line under it; the stage reached, -1 before the first and the number of
+ *     stages once done; whether the job has ended, and whether badly.
+ */
+export function describe(status) {
+  const step = STAGES.findIndex(([state]) => state === status.state);
+  if (step >= 0) {
+    return {
+      headline: `${STAGES[step][1]}…`,
+      detail: `step ${step + 1} of ${STAGES.length}`,
+      step,
+      ended: false,
+      failed: false,
+    };
+  }
+  switch (status.state) {
+    case "waiting":
+      return {
+        headline: "waiting for the upload…",
+        detail: "if the upload was stopped, start again from the upload page",
+        step: -1,
+        ended: false,
+        failed: false,
+      };
+    case "queued": {
+      const ahead = status.ahead ?? 0;
+      return {
+        headline: "queued…",
+        detail: ahead === 0 ? "next in line" : `${ahead} ${ahead === 1 ? "job" : "jobs"} ahead`,
+        step: -1,
+        ended: false,
+        failed: false,
+      };
+    }
+    case "done":
+      return { headline: "done", detail: "", step: STAGES.length, ended: true, failed: false };
+    default:
+      return {
+        headline: status.state === "expired" ? "expired" : "failed",
+        detail: status.reason ?? "",
+        step: -1,
+        ended: true,
+        failed: true,
+      };
+  }
+}
+
+/**
+ * The run viewer's address for a done job's bundle.
+ * @param {string} bundle The bundle's address.
+ * @returns {string} The viewer's.
+ */
+export function viewerLink(bundle) {
+  return `/index.html?bundle=${encodeURIComponent(bundle)}`;
+}
+
+/**
+ * How long until an ended job is deleted, as the page says it, to the nearest day or hour.
+ * @param {number} deleted When it is deleted, in seconds since the epoch.
+ * @param {number} now The time, in seconds since the epoch.
+ * @returns {string} The words.
+ */
+export function keptFor(deleted, now) {
+  const days = Math.round((deleted - now) / 86400);
+  if (days >= 2) {
+    return `kept for about ${days} more days`;
+  }
+  const hours = Math.round((deleted - now) / 3600);
+  if (hours >= 1) {
+    return `kept for about ${hours} more ${hours === 1 ? "hour" : "hours"}`;
+  }
+  return "deleted soon";
+}
+
+/**
+ * The stretches a run tracked, in words: one span, a few listed, or how many there were.
+ * @param {Record<string, unknown>} summary The worker's summary.
+ * @returns {string} "from 2.5 s to 4.9 s", "2.9–15.9 s and 17.0–27.1 s", or "in 7 stretches,
+ *     from 1.0 s to 59.2 s", say.
+ */
+function stretches(summary) {
+  const listed = /** @type {[number, number][]} */ (
+    Array.isArray(summary.segments) ? summary.segments : []
+  );
+  const count = Number(summary.segment_count ?? listed.length);
+  const from = Number(summary.tracked_from);
+  const to = Number(summary.tracked_to);
+  if (count <= 1) {
+    return `from ${seconds(from)} to ${seconds(to)}`;
+  }
+  if (count > 3 || listed.length < count) {
+    return `in ${count} stretches, from ${seconds(from)} to ${seconds(to)}`;
+  }
+  const spans = listed.map(([a, b]) => `${Number(a).toFixed(1)}–${seconds(Number(b))}`);
+  return `${spans.slice(0, -1).join(", ")} and ${spans.at(-1)}`;
+}
+
+/**
+ * How many times, in words.
+ * @param {number} count The count.
+ * @returns {string} "once", "twice", or "3 times".
+ */
+function times(count) {
+  return count === 1 ? "once" : count === 2 ? "twice" : `${count} times`;
+}
+
+/**
+ * What of the clip a done job ran and tracked, in words. A run tracks nothing until it has made
+ * its first map, and a lost track closes its map, the next frame starting a new one, so the
+ * clip can be tracked in stretches: this says why, so that a result is not taken for a cropped
+ * video. Frames that tracking failed and relocalisation found again in their map are said too.
+ * @param {Record<string, unknown>} summary The worker's summary
+ *     (slam_it.orchestration.worker.summarize).
+ * @returns {string} The words.
+ */
+export function trackingText(summary) {
+  const clip = Number(summary.clip_seconds);
+  const losses = Number(summary.losses ?? 0);
+  const resets = Number(summary.resets ?? 0);
+  const found = Number(summary.relocalizations);
+  /** @type {string[]} */
+  const said = [];
+  // An RGB-D run makes its first map from one frame's depth; a monocular one, from two views.
+  const rgbd = summary.mode === "rgbd";
+  if (summary.tracked_from === null) {
+    if (resets > 0) {
+      said.push(
+        `Maps were started in your ${seconds(clip)} clip, but each lost the track too soon to ` +
+          "keep, so nothing was tracked. Moving more slowly, with something textured in view, " +
+          "helps a map last.",
+      );
+    } else {
+      said.push(
+        rgbd
+          ? `No first map was made in your ${seconds(clip)} clip, so nothing was tracked: no ` +
+              "frame had enough textured points with LiDAR depth. Starting within a few " +
+              "metres of something textured helps make one."
+          : `No first map was made in your ${seconds(clip)} clip, so nothing was tracked. ` +
+              "Moving sideways at the start, with something textured in view, helps make one.",
+      );
+    }
+    return said.join(" ");
+  }
+  const from = Number(summary.tracked_from);
+  said.push(`Tracked ${stretches(summary)} of your ${seconds(clip)} clip.`);
+  if (found > 0) {
+    const frames = found === 1 ? "one frame and found it" : `${found} frames and found each`;
+    said.push(
+      `Tracking failed on ${frames} again in the same map, by recognising a place it had ` +
+        "seen.",
+    );
+  }
+  if (losses > 0) {
+    const dropped =
+      resets === 0
+        ? ""
+        : `; ${resets === 1 ? "one map was" : `${resets} maps were`} lost too soon to keep`;
+    said.push(
+      `The track was lost ${times(losses)}, and each time a new map was started, so the rest ` +
+        `of the clip was still processed${dropped}.`,
+    );
+  }
+  if (from >= 0.05) {
+    said.push(
+      `The first ${seconds(from)} went to finding a first map; ` +
+        (rgbd
+          ? "starting within a few metres of something textured shortens it."
+          : "moving sideways at the start shortens it."),
+    );
+  }
+  return said.join(" ");
+}
+
+/**
+ * A warning when a done job's frames arrived under the import's short side, or null. A browser
+ * that records a video for a page may send a smaller one than the phone's camera records; the
+ * import never scales frames up, so they reach the pipeline that small.
+ * @param {Record<string, unknown>} summary The worker's summary.
+ * @returns {string | null} The warning, fit to show.
+ */
+export function sizeWarning(summary) {
+  const size = summary.size;
+  if (!Array.isArray(size) || size.length !== 2) {
+    return null;
+  }
+  const [width, height] = size.map(Number);
+  if (Math.min(width, height) >= SHORT_SIDE) {
+    return null;
+  }
+  return (
+    `Your video arrived at ${width}x${height}, under the ${SHORT_SIDE} pixels on its short ` +
+    "side the pipeline is set for: smaller frames give it less detail to track. A browser " +
+    "recording for a page can send a smaller video than the camera records; recording with " +
+    "the Camera app, then choosing the file here, keeps its full size."
+  );
+}
+
+/**
+ * A done job's summary, as label and value pairs.
+ * @param {Record<string, unknown>} summary The worker's summary.
+ * @returns {[string, string][]} The pairs, in the page's order.
+ */
+export function summaryRows(summary) {
+  /** @type {[string, string][]} */
+  const rows = [];
+  const frames = Number(summary.frames ?? 0);
+  const tracked = Number(summary.tracked ?? 0);
+  rows.push(["frames", String(frames)]);
+  rows.push([
+    "tracked",
+    frames > 0 ? `${tracked} (${Math.round((100 * tracked) / frames)}%)` : "0",
+  ]);
+  const maps = Number(summary.segment_count ?? 0);
+  const resets = Number(summary.resets ?? 0);
+  if (maps > 1 || resets > 0) {
+    rows.push(["maps", resets > 0 ? `${maps} kept, ${resets} reset` : String(maps)]);
+  }
+  const found = Number(summary.relocalizations);
+  if (found > 0) {
+    rows.push(["frames found again", String(found)]);
+  }
+  rows.push(["keyframes", String(summary.keyframes ?? 0)]);
+  rows.push(["map points", String(summary.points ?? 0)]);
+  const mode = String(summary.mode ?? "");
+  rows.push(["mode", MODES[/** @type {keyof typeof MODES} */ (mode)] ?? mode]);
+  const source = String(summary.intrinsics ?? "");
+  rows.push(["intrinsics", INTRINSICS[/** @type {keyof typeof INTRINSICS} */ (source)] ?? source]);
+  return rows;
+}

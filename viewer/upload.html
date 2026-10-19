@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>SLAM It! on your own video</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body class="sheet">
+    <header class="bar">
+      <div class="brand">SLAM It!</div>
+      <span class="meta">visual odometry on your own video</span>
+    </header>
+
+    <main class="column">
+      <section class="panel card" aria-labelledby="upload-title">
+        <h1 id="upload-title">Run it on your own video</h1>
+        <p>
+          Upload a phone video and the C++ pipeline tracks the camera through it. You get a link to
+          the run viewer: every frame as the pipeline saw it, its keypoints, and the map it built.
+        </p>
+        <form id="form" class="form">
+          <fieldset class="choices">
+            <legend>What are you uploading?</legend>
+            <label
+              ><input type="radio" name="upload" value="video" checked /> A video, from any
+              phone</label
+            >
+            <label
+              ><input type="radio" name="upload" value="stray" /> A Stray Scanner recording (a .zip
+              from its Share button): exact intrinsics, and ARKit's trajectory to compare
+              with</label
+            >
+          </fieldset>
+          <label class="field-row"
+            >File
+            <input type="file" id="file" accept="video/*" required />
+          </label>
+          <p class="meta" id="file-note">
+            On a phone, this offers to record a video now, or to choose one you have.
+          </p>
+          <label class="field-row"
+            >Invite code
+            <input type="password" id="code" autocomplete="off" required />
+          </label>
+          <button type="submit" class="primary" id="send">Upload and run</button>
+          <progress id="progress" max="1" value="0" hidden></progress>
+          <p class="meta" id="state" aria-live="polite"></p>
+          <p class="message" id="message" hidden></p>
+        </form>
+      </section>
+
+      <section class="panel card" aria-labelledby="expect-title">
+        <h2 id="expect-title">What to expect</h2>
+        <ul>
+          <li>
+            Up to 60 seconds and 500 MB, uploaded within 15 minutes: 500 MB needs about 4.5 Mbit/s.
+          </li>
+          <li>
+            <strong>A video runs monocular:</strong> one camera cannot tell size, so the scale is
+            unknown, and there is no ground truth to compare with.
+          </li>
+          <li>
+            <strong>A Stray Scanner recording with LiDAR depth runs RGB-D,</strong> at true scale,
+            and is compared with ARKit's poses.
+          </li>
+          <li>
+            <strong>Record with the Camera app,</strong> then choose the file here. Recording from
+            this page goes through the browser, which can send a smaller video than the camera
+            records.
+          </li>
+          <li>
+            <strong>Stabilisation</strong> crops and warps every frame, so the camera stops behaving
+            like one fixed lens. Turn it off where the phone allows; apps such as Blackmagic Camera
+            can.
+          </li>
+          <li>
+            <strong>Getting started:</strong> move sideways at first, not only turning. Texture and
+            good light help. A lost track starts a new map, and the viewer shows where and why.
+          </li>
+          <li>
+            <strong>Rolling shutter</strong> is ignored. Moving slowly keeps its effect small.
+          </li>
+        </ul>
+      </section>
+
+      <section class="panel card" aria-labelledby="kept-title">
+        <h2 id="kept-title">What is kept, and who can see it</h2>
+        <ul>
+          <li id="upload-fate" hidden></li>
+          <li>
+            The result (the frames as the pipeline saw them, the camera's path and the map) is kept
+            for 7 days, then deleted.
+          </li>
+          <li>
+            Anyone with the result's link can see it. There is no gallery or listing, and search
+            engines are asked to stay away.
+          </li>
+          <li>
+            The server logs what happens to each run by its number, never by its link. The service
+            it runs on logs requests, with the addresses they come from.
+          </li>
+          <li>
+            The pages load their fonts from Google, and the viewer its 3D library from jsDelivr,
+            which see your address as any site you load from does.
+          </li>
+        </ul>
+      </section>
+    </main>
+
+    <script type="module" src="src/upload_view.js"></script>
+  </body>
+</html>

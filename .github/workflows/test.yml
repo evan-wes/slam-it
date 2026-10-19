@@ -1,0 +1,42 @@
+name: Test
+# On demand and for releases only. PRs and develop are gated by scripts/offline_ci.sh, the
+# same steps on a local machine, since the Actions minutes are shared with other projects.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One job, the same checks as local: build the conda env with scripts/setup_slam_it.sh, then
+# run every layer-1 check with scripts/check.sh. Running the setup script here also proves the
+# env, its lockfile and the three-language build reproduce from scratch.
+jobs:
+  layer1:
+    name: Layer-1 checks (Python, C++, Rust)
+    runs-on: ubuntu-latest
+    # Since B3 a fresh env builds GTSAM and its Python wrapper from source, the wrapper one file
+    # at a time: about 14 min on the owner's machine (the library with 4 jobs, the wrapper with
+    # 1), more on a runner, on top of the 30-40 min offline CI estimates for a fresh env before
+    # it (B3's review panel, A4).
+    timeout-minutes: 120
+    env:
+      MINIFORGE_VERSION: "26.7.2-0"
+      MINIFORGE_SHA256: "281b0ac7d550802efc81af633225a5e6116d29ae72f3ab4eae7168c3931a4c05"
+      CMAKE_BUILD_PARALLEL_LEVEL: "4"
+      CARGO_BUILD_JOBS: "4"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Miniforge (pinned, checksum-verified)
+        run: |
+          installer="Miniforge3-${MINIFORGE_VERSION}-Linux-x86_64.sh"
+          curl -fsSL -o "$installer" \
+            "https://github.com/conda-forge/miniforge/releases/download/${MINIFORGE_VERSION}/${installer}"
+          echo "${MINIFORGE_SHA256}  ${installer}" | sha256sum --check
+          bash "$installer" -b -p "$HOME/miniforge"
+          echo "CONDA_EXE=$HOME/miniforge/bin/conda" >> "$GITHUB_ENV"
+      - name: Build the slam-it env (scripts/setup_slam_it.sh)
+        run: scripts/setup_slam_it.sh
+      - name: Layer-1 checks (scripts/check.sh)
+        run: scripts/check.sh --env slam-it
