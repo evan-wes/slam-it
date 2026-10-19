@@ -112,8 +112,9 @@ this document first.
   burned-in overlay with the Tesseract program (Apache-2.0, from conda-forge), in
   `slam_it.eval.dashcam.overlay` alone; and pycolmap, self-calibrating each camera's lens by
   SfM, in `slam_it.eval.dashcam.calibrate` and the BA reference `slam_it.eval.colmap_reference`
-  alone. Contracts keep each in its module, and the pipelines reach neither. `slam_it.eval.rosbag` reads ROS 1 bags by hand, with no dependency (the
-  calibration side track).
+  alone. Contracts keep each in its module, and the pipelines reach neither.
+  `slam_it.eval.rosbag` reads ROS 1 bags by hand, with no dependency (the calibration side
+  track).
 - **The upload server** (`server/`, the package `slam_it_server`, from PR 11): FastAPI
   with pydantic, which its requests are read with, uvicorn, and boto3 with botocore, with httpx
   for its tests. It never imports `slam_it`.
