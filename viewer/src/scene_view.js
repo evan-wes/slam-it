@@ -203,6 +203,10 @@ export class SceneView {
     this.path = new Float32Array(0);
     /** @type {Map<number, number>} Each map's frustum depth. */
     this.depths = new Map();
+    /** The frustums' depth, as a factor of each map's own (the keyframe size slider's). */
+    this.size = 1;
+    /** @type {THREE.BufferGeometry | null} The run's keyframes' frustums. */
+    this.keyframeGeometry = null;
     new ResizeObserver(() => this.resize()).observe(box);
   }
 
@@ -224,25 +228,20 @@ export class SceneView {
     this.path = centres(run.poses);
     this.trajectory.geometry.setAttribute("position", new THREE.BufferAttribute(this.path, 3));
     this.depths = mapDepths(this.path, run.poseMaps, centres(run.keyframePoses), run.keyframeMaps);
-    const camera = this.bundle.info.camera;
     const keyframes = livingMaterial("--keyframe", 1);
     const points = livingMaterial("--point", 2);
     const tree = livingMaterial("--graph-tree", 1);
     const links = livingMaterial("--graph-link", 1);
     const loops = livingMaterial("--graph-loop", 1);
     this.living = [keyframes, points, tree, links, loops];
-    const frames = mapFrustums(
-      run.keyframePoses,
+    this.keyframeGeometry = livingGeometry(
+      this.keyframeFrustums(run),
+      run.keyframeLives,
       run.keyframeMaps,
-      camera,
-      this.depths,
-      DEFAULT_DEPTH,
+      FRUSTUM_SEGMENTS * 2,
     );
     this.runObjects = [
-      new THREE.LineSegments(
-        livingGeometry(frames, run.keyframeLives, run.keyframeMaps, FRUSTUM_SEGMENTS * 2),
-        keyframes,
-      ),
+      new THREE.LineSegments(this.keyframeGeometry, keyframes),
       new THREE.Points(livingGeometry(run.points, run.pointLives, run.pointMaps, 1), points),
     ];
     this.graphObjects = [
@@ -252,6 +251,40 @@ export class SceneView {
     ];
     this.runObjects.push(...this.graphObjects);
     this.scene.add(...this.runObjects);
+  }
+
+  /**
+   * A run's keyframes' frustums, each as deep as its map's depth times the size factor.
+   * @param {import("./bundle.js").Backend} run The run.
+   * @returns {Float32Array} Their vertices (`mapFrustums`).
+   */
+  keyframeFrustums(run) {
+    const depths = new Map([...this.depths].map(([map, depth]) => [map, depth * this.size]));
+    return mapFrustums(
+      run.keyframePoses,
+      run.keyframeMaps,
+      this.bundle.info.camera,
+      depths,
+      DEFAULT_DEPTH * this.size,
+    );
+  }
+
+  /**
+   * Draw the keyframes' frustums, and the camera's from the next frame shown, at a factor of
+   * each map's own depth: the keyframes' vertices rebuilt in place, their lives and maps kept.
+   * @param {number} factor The factor (the keyframe size slider's).
+   */
+  setKeyframeSize(factor) {
+    this.size = factor;
+    if (this.run === null || this.keyframeGeometry === null) {
+      return;
+    }
+    const position = /** @type {THREE.BufferAttribute} */ (
+      this.keyframeGeometry.getAttribute("position")
+    );
+    position.copyArray(this.keyframeFrustums(this.run));
+    position.needsUpdate = true;
+    this.keyframeGeometry.computeBoundingSphere(); // three.js culls the lines by it
   }
 
   /**
@@ -374,7 +407,8 @@ export class SceneView {
       const at = cameraAt(this.run.poses, this.run.poseFrames, frame, this.rows);
       this.current.visible = at !== null;
       if (at !== null) {
-        const lines = frustums(at.pose, this.bundle.info.camera, this.depth * 1.5);
+        const depth = this.depth * 1.5 * this.size;
+        const lines = frustums(at.pose, this.bundle.info.camera, depth);
         this.current.geometry.setAttribute("position", new THREE.BufferAttribute(lines, 3));
         if (this.follow) {
           const centre = new THREE.Vector3(at.pose[3], at.pose[7], at.pose[11]);

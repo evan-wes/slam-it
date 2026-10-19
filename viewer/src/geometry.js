@@ -76,6 +76,32 @@ export const SPACING_SHARE = 2;
 /** The shallowest frustum, in the trajectory's units. */
 export const MIN_DEPTH = 0.02;
 
+/** The keyframe size slider's steps per doubling of the frustums' depth. */
+export const SIZE_STEPS = 10;
+
+/** The slider's ends, in steps from each map's own depth (step 0): 2^-4.3, about 1/20, and 2. */
+export const SIZE_LIMITS = /** @type {const} */ ([-43, 10]);
+
+/**
+ * A step of the keyframe size slider, from what it or the page's storage holds.
+ * @param {string | null} text The step as text; null if none was stored.
+ * @returns {number} The step, rounded and held to `SIZE_LIMITS`; 0 (each map's own depth) for
+ *     none, or text that is not a number.
+ */
+export function sizeStep(text) {
+  const step = Math.round(Number(text ?? 0));
+  return Number.isFinite(step) ? Math.min(Math.max(step, SIZE_LIMITS[0]), SIZE_LIMITS[1]) : 0;
+}
+
+/**
+ * The frustums' depth at a step of the keyframe size slider, as a factor of each map's own.
+ * @param {number} step The step (`sizeStep`).
+ * @returns {number} The factor, 2^(step / `SIZE_STEPS`): logarithmic, so each step scales alike.
+ */
+export function sizeFactor(step) {
+  return 2 ** (step / SIZE_STEPS);
+}
+
 /**
  * The runs of consecutive equal maps.
  * @param {ArrayLike<number>} maps Each item's map.

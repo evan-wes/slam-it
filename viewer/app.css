@@ -258,6 +258,18 @@ input:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+/* The keyframe size slider, its value in a fixed width so the head holds still as it moves. */
+.size input[type="range"] {
+  width: 90px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.size output {
+  min-width: 6ch;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+}
 select {
   background: var(--surface);
   border: 1px solid var(--line);

@@ -7,8 +7,9 @@ import { BACKENDS, bundleAddress, loadBackend, loadBundle, loadTrack } from "./b
 import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
+import { SIZE_LIMITS, sizeFactor, sizeStep } from "./geometry.js";
 import { ImageView } from "./image_view.js";
-import { element } from "./page_view.js";
+import { element, remember, remembered } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { SolverView } from "./solver_view.js";
@@ -25,6 +26,9 @@ import {
 
 /** The height of each backend's row under the frame slider, in pixels. */
 const SPAN_ROW = 4;
+
+/** Where the browser remembers the keyframe size slider's step. */
+const SIZE_KEY = "slam-it.keyframe-size";
 
 /**
  * How to fetch a bundle's files, from where it is served.
@@ -259,6 +263,35 @@ function bindPlayback(playhead, scrubber) {
 }
 
 /**
+ * Bind the keyframe size slider to the 3D view: its step remembered in this browser where it
+ * can be, else each map's own depth.
+ * @param {SceneView} scene The 3D view.
+ * @param {() => void} redraw Draw the view again at the frame shown.
+ */
+function bindKeyframeSize(scene, redraw) {
+  const slider = element("keyframe-size", HTMLInputElement);
+  const shown = element("keyframe-size-value", HTMLOutputElement);
+  slider.min = String(SIZE_LIMITS[0]);
+  slider.max = String(SIZE_LIMITS[1]);
+  slider.step = "1";
+  /** @param {number} step The slider's step. */
+  function set(step) {
+    const factor = sizeFactor(step);
+    shown.textContent = format.factor(factor);
+    scene.setKeyframeSize(factor);
+  }
+  const step = sizeStep(remembered(SIZE_KEY));
+  slider.value = String(step);
+  set(step);
+  slider.addEventListener("input", () => {
+    const step = sizeStep(slider.value);
+    set(step);
+    remember(SIZE_KEY, String(step));
+    redraw();
+  });
+}
+
+/**
  * Load the bundle and run the page: its views, the backends' buttons and playback.
  * @returns {Promise<void>} Once the first backend is shown.
  */
@@ -404,6 +437,7 @@ async function main() {
     scene.fit();
     scene.render();
   });
+  bindKeyframeSize(scene, () => scene.show(playhead.frame));
 
   /** @param {unknown} error What went wrong. */
   function fail(error) {

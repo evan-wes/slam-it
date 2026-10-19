@@ -21,6 +21,15 @@ export function duration(seconds) {
 }
 
 /**
+ * A scale factor.
+ * @param {number} factor The factor.
+ * @returns {string} "×0.25", say: two significant digits, trailing zeros dropped.
+ */
+export function factor(factor) {
+  return `×${Number(factor.toPrecision(2))}`;
+}
+
+/**
  * A time in a clip or sequence.
  * @param {number} seconds The time, in seconds.
  * @returns {string} In seconds, to a tenth.

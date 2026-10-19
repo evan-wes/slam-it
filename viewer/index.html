@@ -104,6 +104,13 @@
           <h2>Map</h2>
           <span class="meta" id="map-counts"></span>
           <span class="spacer"></span>
+          <label
+            class="field size"
+            title="how deep the keyframes' and the camera's frustums are drawn, against each map's own depth: smaller where they crowd, larger where they are hard to see"
+            >keyframe size
+            <input type="range" id="keyframe-size" aria-label="keyframe size" />
+            <output id="keyframe-size-value" for="keyframe-size">×1</output>
+          </label>
           <button
             type="button"
             class="ghost toggle"
