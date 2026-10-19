@@ -200,3 +200,28 @@ fn a_worker_runs_its_items_in_order_and_keeps_a_failure() {
     assert_eq!(*seen.lock().unwrap(), [0]);
     assert_eq!(failing.check().unwrap_err().message, "bad item");
 }
+
+/// A step that panics fails as one that errs (B3b's review panel, H6): its item is done, the
+/// items after it dropped, so draining ends, and the panic is kept as the worker's error.
+#[test]
+fn a_panicking_step_is_kept_as_an_error_and_draining_ends() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let theirs = Arc::clone(&seen);
+    let mut panicking = Worker::new("test", move |item: i32, _: &_| {
+        assert!(item != 1, "bad item");
+        theirs.lock().unwrap().push(item);
+        Ok(())
+    });
+    for item in 0..4 {
+        panicking.put(item);
+    }
+    assert!(
+        wait_for(WAIT, || panicking.unfinished() == 0),
+        "every item done, the panicking one included"
+    );
+    assert_eq!(*seen.lock().unwrap(), [0]);
+    let error = panicking.check().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::InvalidInput);
+    assert!(error.message.contains("test: panicked: bad item"));
+    panicking.stop();
+}

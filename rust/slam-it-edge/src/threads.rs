@@ -18,12 +18,14 @@
 //! A poisoned lock (a thread that panicked holding it) is taken as it is: every value guarded
 //! here is whole between statements.
 
+use std::any::Any;
 use std::collections::VecDeque;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle, ThreadId};
 
-use slam_it_foundations::error::{Error, Result};
+use slam_it_foundations::error::{Error, ErrorKind, Result};
 use slam_it_foundations::nls::Stop;
 
 /// Takes a lock, poisoned or not: every value the edge rung's threads share is whole between
@@ -59,6 +61,31 @@ fn wait<'a, T>(
     changed
         .wait_while(guard, |state| !until(state))
         .unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The error a panic in one of the edge rung's threads stands for, as the thread keeps it for
+/// whoever gave it work: the shared kinds have none for a bug, so it is `InvalidInput`, an
+/// invariant the step relied on broken, its message naming the thread and the panic's.
+///
+/// # Arguments
+///
+/// * `thread` - The thread, by what it does.
+/// * `payload` - The panic's payload.
+///
+/// # Returns
+///
+/// The error.
+#[must_use]
+pub fn panicked(thread: &str, payload: &(dyn Any + Send)) -> Error {
+    let message = payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "a panic with no message".to_owned());
+    Error::new(
+        ErrorKind::InvalidInput,
+        format!("{thread}: panicked: {message}"),
+    )
 }
 
 /// Who holds the map, and the stops requested ([`Writer`]'s state).
@@ -398,8 +425,8 @@ impl<T> Sender<T> {
 }
 
 /// A thread running a step on each item of its queue, in order (`slam_it.edge.threads.Worker`):
-/// a step that fails keeps its error and drops the items after it, so that draining never
-/// hangs.
+/// a step that fails, or panics, keeps its error and drops the items after it, its item done all
+/// the same, so that draining never hangs.
 pub struct Worker<T: Send + 'static> {
     /// The queue and the error.
     shared: Arc<Shared<T>>,
@@ -432,14 +459,21 @@ impl<T: Send + 'static> Worker<T> {
         });
         let theirs = Arc::clone(&shared);
         let own = Sender(Arc::clone(&shared));
+        let label = name.to_owned();
         let thread = thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
                 while let Some(item) = theirs.queue.get() {
-                    if lock(&theirs.error).is_none()
-                        && let Err(error) = step(item, &own)
-                    {
-                        *lock(&theirs.error) = Some(error);
+                    if lock(&theirs.error).is_none() {
+                        // A step that panics fails as one that errs (B3b's review panel, H6).
+                        let failed =
+                            match panic::catch_unwind(AssertUnwindSafe(|| step(item, &own))) {
+                                Ok(done) => done.err(),
+                                Err(payload) => Some(panicked(&label, payload.as_ref())),
+                            };
+                        if let Some(error) = failed {
+                            *lock(&theirs.error) = Some(error);
+                        }
                     }
                     theirs.queue.done();
                 }
@@ -509,7 +543,7 @@ impl<T: Send + 'static> Worker<T> {
     pub fn stop(&mut self) {
         if let Some(thread) = self.thread.take() {
             self.shared.queue.put(None);
-            // A step that panicked has already reported it; the worker's error stays its own.
+            // The step's panics are caught as its error (`check`); the loop itself cannot panic.
             let _ = thread.join();
         }
     }

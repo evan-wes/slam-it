@@ -33,7 +33,7 @@ use crate::map::{self, Map};
 use crate::mapping::{self, Interrupts, MappingSummary, Schedule};
 use crate::options::{Mode, Options};
 use crate::relocalization::{self, RelocalizationSummary};
-use crate::threads::{Generation, Sender, Turn, Worker, Writer, lock};
+use crate::threads::{Generation, Sender, Turn, Worker, Writer, lock, panicked};
 use crate::tracking::{self, LocalMapSummary, MotionSummary, PnpSummary};
 
 /// Where the pipeline is, with the codes it is written as.
@@ -2206,8 +2206,11 @@ impl Threads {
     fn join_global(&self) {
         let running = std::mem::take(&mut *lock(&self.steps.global));
         for thread in running {
-            // A global BA that panicked has no result to carry; its error is the panic's own.
-            let _ = thread.join();
+            // A global BA that panicked has no result to carry: its panic is kept as an error,
+            // raised as a failed thread's is (B3b's review panel, A4).
+            if let Err(payload) = thread.join() {
+                self.steps.keep(panicked("global BA", payload.as_ref()));
+            }
         }
     }
 
