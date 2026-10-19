@@ -1120,6 +1120,25 @@ shared with the owner's other projects.
   - **A failed loop correction (the 2B design's section 12, item 14; B3's review panel, H17).**
     Still open, with no decision yet: whether a GTSAM failure inside a loop's correction should
     be recorded and the loop skipped.
+- **Deferred from milestone 2B's B3b review panel**
+  ([report](../reviews/2026-10-18-feature-2b-b3b-threads.md); decided by evan-wes on
+  2026-10-18):
+  - **A Python test of a threaded loop (H3).** Python's threaded loop correction, its global
+    BA and `follow` after a correction run in no test (the threaded tests' room has no loop):
+    one that closes a loop threaded, applies a global BA and leaves no thread, once H11 and A10
+    are understood.
+  - **The flaky threaded case of the loop room (H10, L3).** "A flaky threaded run of the loop
+    room", above; the panel's pointer, a global BA that shrank the map (scale 0.276), is in
+    the 2B design's section 12, "Deferred for this PR".
+  - **Python's threaded loop room (H11, A10).** Through `vo.run`, Python's threaded RGB-D run
+    ended at 7.38 cm final ATE against 4.67 cm in order (one run each), above the 7 cm bound
+    the natives are held to; in memory with the tests' settings, its threaded runs closed no
+    loop (RGB-D 263 of 280 frames tracked, stereo 255, monocular in 10 maps). Find why before
+    Python's threaded run is held to the bar.
+  - **The map's owner, a module of its own (A9, with H13's file split).** `MapOwner`, its
+    `View` and the publishing grow inside the pipeline modules (`pipeline.py` 1,655 lines and
+    `pipeline.rs` 2,738 at the review); an `edge` owner module, before B4's merges enter
+    through it, would keep the pipeline the composition.
 - **Deferred from milestone 2B's B3 review panel**
   ([report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md); decided by evan-wes on
   2026-10-17):

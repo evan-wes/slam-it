@@ -68,7 +68,29 @@ are not run for this release (decided by evan-wes on 2026-10-18).
   and the map's keyframes,** where it assumed mapping always idle; `mapping.process` takes what
   its thread is asked between its steps, and says how each step was scheduled.
 - **Layer 1 builds the C++ tests once more with ThreadSanitizer** (`build/tsan`) and runs them
-  with `halt_on_error`; the native threaded tests run both schemes.
+  with `halt_on_error`; the native threaded tests run both schemes. It also runs the loop room
+  threaded, RGB-D, through the instrumented program in both schemes, so that a loop's stop and
+  correction and a global BA's thread run under the sanitizer
+  (`tests/orchestration/test_loop_room_tsan.py`, marked `tsan` and left out of the main pytest
+  step; the review panel's A3).
+- **From B3b's review panel** (`docs/reviews/2026-10-18-feature-2b-b3b-threads.md`):
+  - a view carries the corrections applied to its map, stamped by its writer, and tracking
+    reads it once a frame, so the last frame follows each correction (A1);
+  - a keyframe tracked before a correction, queued while it ran or asked for just after, is
+    placed by its reference keyframe as the map now has it, `T_frame_reference
+    T_reference_world`, through culled ancestors (`Atlas.pose_by`); the design's section 12
+    records why, against ORB-SLAM3's `EmptyQueue` (A2);
+  - Python's threaded owner drops a lost map's waiting counts (H1); its mapping is idle only
+    with no keyframe waiting or in hand (H4); a failed run ends its threads, through
+    `Pipeline.close()` and `vo`'s in-process run, and so does a pipeline dropped without
+    `finish()` (H5);
+  - a panic in a Rust thread is kept as an `InvalidInput` error naming the thread, the item
+    done all the same, so draining never hangs, and a global BA's panic is no longer dropped
+    (H6, A4);
+  - `scripts/measure_sharded.py` checks `--cores` first and names `--jobs x --cores` (H7);
+  - `mapping.need_keyframe`'s new arguments, `budgets.backlog` and
+    `loops.propagate_global_ba` refuse a bad argument by its name (H9);
+  - a view's fallback to the whole map is asserted against in debug builds (H13).
 
 ### Tests
 
@@ -85,6 +107,11 @@ are not run for this release (decided by evan-wes on 2026-10-18).
   `view_keyframes` and `sub_map` on every backend.
 - The run fixture is a threaded run with locks and handshakes, which the C++ and Rust writers
   write value for value; the golden bundles are rebaked.
+- After a correction made under a stop, the next frame is placed by the motion model in the
+  corrected world, and a keyframe queued across it is placed by its reference, in each language
+  and both C++ schemes; a failed or dropped threaded Python run leaves no thread; a panicking
+  Rust step is an error, not a hang; and Python's handshake tests fail when a thread's
+  assertion does (H2).
 
 ## [0.3.13.0] - 2026-10-17
 

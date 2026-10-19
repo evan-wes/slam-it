@@ -783,7 +783,15 @@ the ladder's open items):
   the other three, on a busy machine; threaded runs do not repeat exactly. It was to be run about
   20 times on a quiet machine before and after the commit that publishes a view of what
   tracking reads in place of the whole map (item 3), and the failure rates compared; that was
-  not done, so whether the commit changed it is not known.
+  not done, so whether the commit changed it is not known. B3b's review panel (L3, with H10:
+  the flaky case ships in layer 1) found it is neither of the races the panel confirmed (A1,
+  A2): of 33 repeats, two missed the bound, one at 15.22 cm and one at 2.16 cm (the others
+  1.27 to 1.90 cm), and neither had a keyframe in flight across the correction. In the worse
+  one, a global BA shrank the map: aligning the final positions to those as tracked between the
+  correction and the global BA gives a scale of 0.276 (0.821 in the narrow miss, 0.93 to 1.32
+  in the other 31). The investigation starts from that copy: dump it from such a run, solve it
+  inline, and compare GTSAM's absolute initial damping (`lambdaInitial`) with g2o's,
+  τ·max(diag H), which ORB-SLAM3's global BA starts from.
 - **A failed correction (item 14) is still open,** with no decision yet: whether a GTSAM failure
   inside a loop's correction should be recorded and the loop skipped.
 
