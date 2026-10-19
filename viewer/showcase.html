@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>SLAM It!</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <!-- The showcase's page, at / when SLAM_IT_SHOWCASE names runs: the server reads it once at
+       startup and puts a link to each run in place of the runs' marker (slam_it_server.app's
+       showcase_page). No script and no inline style: the pages' content policy allows neither. -->
+  <body class="sheet">
+    <header class="bar">
+      <div class="brand">SLAM It!</div>
+      <span class="meta">visual SLAM in Python, C++ and Rust</span>
+    </header>
+
+    <main class="column">
+      <section class="panel card" aria-labelledby="runs-title">
+        <h1 id="runs-title">Runs to explore</h1>
+        <p>
+          Recordings we ran through SLAM It!, each in the run viewer: every frame as the pipeline
+          saw it, its keypoints, and the map it built.
+        </p>
+        <!-- runs -->
+      </section>
+
+      <section class="panel card" aria-labelledby="own-title">
+        <h2 id="own-title">Your own video</h2>
+        <p>
+          With an invite code, upload a phone video and the C++ pipeline tracks the camera through
+          it.
+        </p>
+        <a class="primary" href="/upload">Run it on your own video</a>
+      </section>
+    </main>
+  </body>
+</html>

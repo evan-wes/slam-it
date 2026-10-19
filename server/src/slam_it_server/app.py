@@ -9,10 +9,10 @@ and the run viewer (``/index.html``), which reads a done job's bundle from
 
 **The showcase** (:attr:`~slam_it_server.config.Settings.showcase`): runs baked by us, each a
 bundle in storage under ``showcase/<name>/`` (:func:`showcase_prefix`), shown to anyone. Its page
-(:func:`showcase_page`) is the home page, linking each run's ``/s/<name>/``, which opens it in the
-run viewer, its bundle read from ``/s/<name>/bundle/``. ``/s/<name>/<file>`` is one of the files
-kept beside the bundle, its calibration page and the images it shows (:data:`SHOWCASE_FILE`),
-redirected with its content type (:data:`SHOWCASE_TYPES`).
+(:func:`showcase_page`, from the viewer's ``showcase.html``) is the home page, linking each run's
+``/s/<name>/``, which opens it in the run viewer, its bundle read from ``/s/<name>/bundle/``.
+``/s/<name>/calibration.html`` is the run's calibration page, kept beside the bundle
+(:data:`CALIBRATION_PAGE`), redirected to be answered as a page (:data:`CALIBRATION_TYPE`).
 
 **The owner's API:**
 
@@ -47,7 +47,7 @@ token checked on every request.
 - results reachable only through their token, pages marked ``noindex``, and no ``Referer``
   sent, so a token never leaves in one; the log names jobs by their id alone;
 - the showcase's runs reachable only by the names the settings list, and its files only of a
-  bundle's names and kinds, or :data:`SHOWCASE_FILE`'s; the showcase never reads the job list,
+  bundle's names and kinds, or its calibration page; the showcase never reads the job list,
   and nothing lists storage;
 - a Content Security Policy (:func:`content_policy`): scripts from this site, the import map
   by its hash and three.js's CDN alone, connections to this site and storage alone;
@@ -71,7 +71,7 @@ import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import boto3
@@ -98,19 +98,15 @@ RESULT_PATH = re.compile(r"([a-z]+/)?[a-z0-9_]+\.(json|npy|bin)")
 """A result's file, matched whole: a bundle's files are JSON, numpy arrays and image chunks, at
 most one folder deep (``slam_it.orchestration.bundles``)."""
 
-SHOWCASE_FILE = re.compile(
-    r"calibration\.html|(calibration/)?[a-z0-9][a-z0-9_-]{0,63}\.(png|jpg|svg)"
-)
-"""A file kept beside a showcase run's bundle, matched whole: its calibration page, and images,
-named in lowercase letters, digits, ``_`` and ``-``, beside the bundle or in ``calibration/``."""
+CALIBRATION_PAGE = "calibration.html"
+"""The one file kept beside a showcase run's bundle that is served: its calibration page, a
+static page of the owner's, self-contained (its images embedded) and with no script."""
 
-SHOWCASE_TYPES = {
-    ".html": "text/html; charset=utf-8",
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".svg": "image/svg+xml",
-}
-"""The content type storage answers each of :data:`SHOWCASE_FILE`'s kinds with."""
+CALIBRATION_TYPE = "text/html; charset=utf-8"
+"""The content type storage is asked to answer the calibration page with."""
+
+SHOWCASE_MARKER = "<!-- runs -->"
+"""Where the viewer's ``showcase.html`` takes the runs' links, once (:func:`showcase_page`)."""
 
 VIEWER_PAGE = "/index.html?bundle="
 """The run viewer's address, to be followed by a bundle's, escaped: the status page's link to it
@@ -145,6 +141,9 @@ _HEADERS = {
     "X-Frame-Options": "DENY",
 }
 """Headers on every response."""
+
+_PAGE_HEADERS = {"Cache-Control": "no-cache"}
+"""Headers on the pages themselves: checked again on each visit, so a redeploy's page shows."""
 
 _OPEN = ("/api/worker/", "/storage/", "/healthz")
 """Paths staging's Basic auth leaves open: they carry their own token or signature."""
@@ -184,59 +183,17 @@ def showcase_prefix(name: str) -> str:
     return f"showcase/{name}"
 
 
-_SHOWCASE_PAGE = """<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="robots" content="noindex, nofollow" />
-    <title>SLAM It!</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
-    />
-    <link rel="stylesheet" href="app.css" />
-  </head>
-  <body class="sheet">
-    <header class="bar">
-      <div class="brand">SLAM It!</div>
-      <span class="meta">visual SLAM in Python, C++ and Rust</span>
-    </header>
+def showcase_page(viewer: Path, names: tuple[str, ...]) -> str:
+    """Return the showcase's page: the viewer's ``showcase.html``, its runs linked in the marker.
 
-    <main class="column">
-      <section class="panel card" aria-labelledby="runs-title">
-        <h1 id="runs-title">Runs to explore</h1>
-        <p>
-          Recordings we ran through SLAM It!, each in the run viewer: every frame as the pipeline
-          saw it, its keypoints, and the map it built.
-        </p>
-<!-- runs -->
-      </section>
-
-      <section class="panel card" aria-labelledby="own-title">
-        <h2 id="own-title">Your own video</h2>
-        <p>
-          With an invite code, upload a phone video and the C++ pipeline tracks the camera through
-          it.
-        </p>
-        <a class="primary" href="/upload">Run it on your own video</a>
-      </section>
-    </main>
-  </body>
-</html>
-"""
-"""The showcase's page, its runs' links in place of ``<!-- runs -->`` (:func:`showcase_page`)."""
-
-
-def showcase_page(names: tuple[str, ...]) -> str:
-    """Return the showcase's page: each run by its name, linked to it in the run viewer.
-
-    In the upload page's style, with its stylesheet and fonts alone: no script and no inline
-    style, which the pages' content policy would refuse (:func:`content_policy`).
+    Each run is its name, escaped, linked to ``/s/<name>/``, in the marker's indentation. The page
+    holds no script and no inline style, which the pages' content policy would refuse
+    (:func:`content_policy`); ``tests/server/test_showcase.py`` holds it to that.
 
     Parameters
     ----------
+    viewer : pathlib.Path
+        The viewer's folder (``SLAM_IT_VIEWER``).
     names : tuple of str
         The runs' names (:attr:`~slam_it_server.config.Settings.showcase`).
 
@@ -244,12 +201,28 @@ def showcase_page(names: tuple[str, ...]) -> str:
     -------
     str
         The page, as HTML.
+
+    Raises
+    ------
+    slam_it_server.config.SettingsError
+        If the folder has no ``showcase.html``, or one without :data:`SHOWCASE_MARKER` exactly
+        once: the home page would list no run.
     """
-    runs = "\n".join(
-        f'        <a class="primary" href="/s/{html.escape(name)}/">{html.escape(name)}</a>'
+    template = viewer / "showcase.html"
+    if not template.is_file():
+        raise config.SettingsError(f"SLAM_IT_VIEWER: {template} is not there, the showcase's page")
+    text = template.read_text()
+    if text.count(SHOWCASE_MARKER) != 1:
+        raise config.SettingsError(
+            f"SLAM_IT_VIEWER: {template} needs {SHOWCASE_MARKER} once, where the runs go"
+        )
+    before, _, after = text.partition(SHOWCASE_MARKER)
+    indent = before[before.rfind("\n") + 1 :]
+    runs = f"\n{indent}".join(
+        f'<a class="primary" href="/s/{html.escape(name)}/">{html.escape(name)}</a>'
         for name in names
     )
-    return _SHOWCASE_PAGE.replace("<!-- runs -->", runs)
+    return before + runs + after
 
 
 def make_storage(settings: Settings) -> Storage:
@@ -523,7 +496,7 @@ class _Server:
 
     def page(self, name: str) -> FileResponse:
         """Return one of the viewer folder's files."""
-        return FileResponse(self.settings.viewer / name, headers={"Cache-Control": "no-cache"})
+        return FileResponse(self.settings.viewer / name, headers=_PAGE_HEADERS)
 
 
 def _working(call: Callable[[], Job]) -> Job:
@@ -556,11 +529,13 @@ def make_app(
     Raises
     ------
     slam_it_server.config.SettingsError
-        If the viewer cannot be served (:func:`import_maps`), before anything is made.
+        If the viewer cannot be served (:func:`import_maps`), or, with a showcase, its page
+        cannot be filled (:func:`showcase_page`), before anything is made.
     slam_it_server.jobs.SchemaError
         If the job list is of another format.
     """
     maps = import_maps(settings.viewer)  # a viewer without its page is refused first
+    showcase_html = showcase_page(settings.viewer, settings.showcase) if settings.showcase else None
     server = _Server(
         settings,
         make_storage(settings) if store is None else store,
@@ -609,7 +584,7 @@ def make_app(
     if isinstance(server.store, FolderStorage):
         _folder_storage(app, server.store)
     _showcase(app, server)
-    _pages(app, server)  # last: its catch-all would shadow the routes after it
+    _pages(app, server, showcase_html)  # last: its catch-all would shadow the routes after it
     return app
 
 
@@ -864,7 +839,7 @@ def _stored(store: Storage, key: str, content_type: str | None = None) -> Redire
 
 
 def _showcase(app: FastAPI, server: _Server) -> None:
-    """Add the showcase's routes: a run in the run viewer, its bundle's files, the files beside it.
+    """Add the showcase's routes: a run in the run viewer, its bundle's files, its calibration page.
 
     Read-only, and as public as the pages (behind staging's Basic auth, on staging). A run is
     found by its name among the settings' alone: no job, no token, and storage is never listed.
@@ -892,26 +867,26 @@ def _showcase(app: FastAPI, server: _Server) -> None:
             raise HTTPException(404)
         return _stored(server.store, f"{prefix}/{path}")
 
-    @app.get("/s/{name}/{path:path}")
-    def showcase_file(name: str, path: str) -> RedirectResponse:
-        """Redirect to a file kept beside a showcase run's bundle, answered as its kind."""
+    @app.get(f"/s/{{name}}/{CALIBRATION_PAGE}")
+    def showcase_calibration(name: str) -> RedirectResponse:
+        """Redirect to a showcase run's calibration page in storage, to be answered as a page."""
         prefix = listed(name)
-        if not SHOWCASE_FILE.fullmatch(path):
-            raise HTTPException(404)
-        kind = SHOWCASE_TYPES[PurePosixPath(path).suffix]
-        return _stored(server.store, f"{prefix}/{path}", kind)
+        return _stored(server.store, f"{prefix}/{CALIBRATION_PAGE}", CALIBRATION_TYPE)
 
 
-def _pages(app: FastAPI, server: _Server) -> None:
-    """Add the pages, a done job's bundle, robots.txt and the health check."""
-    showcase = showcase_page(server.settings.showcase) if server.settings.showcase else None
+def _pages(app: FastAPI, server: _Server, showcase_html: str | None) -> None:
+    """Add the pages, a done job's bundle, robots.txt and the health check.
+
+    The home page is the showcase's (:func:`showcase_page`), where there is one, else the upload
+    page.
+    """
 
     @app.get("/")
     def home_page() -> Response:
         """Serve the showcase's page, where there is a showcase; else the upload page."""
-        if showcase is None:
+        if showcase_html is None:
             return server.page("upload.html")
-        return HTMLResponse(showcase, headers={"Cache-Control": "no-cache"})
+        return HTMLResponse(showcase_html, headers=_PAGE_HEADERS)
 
     @app.get("/upload")
     def upload_page() -> FileResponse:

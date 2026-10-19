@@ -16,8 +16,10 @@ RUN python -m pip install --no-cache-dir --constraint /tmp/slam-it.lock \
         /opt/slam-it-server \
     && rm -rf /tmp/slam-it.lock /opt/slam-it-server
 
-# Only the files the server serves (slam_it_server.app.PAGES).
-COPY viewer/index.html viewer/upload.html viewer/status.html viewer/app.css /opt/viewer/
+# Only the files the server serves (slam_it_server.app.PAGES), and the showcase's page, which it
+# fills in at startup (slam_it_server.app.showcase_page).
+COPY viewer/index.html viewer/upload.html viewer/status.html viewer/app.css viewer/showcase.html \
+     /opt/viewer/
 COPY viewer/src /opt/viewer/src
 
 ENV SLAM_IT_VIEWER=/opt/viewer PYTHONUNBUFFERED=1

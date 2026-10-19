@@ -128,8 +128,8 @@ def test_an_s3_download_link_signs_the_content_type_it_is_given(tmp_path: Path) 
     assert int(query["X-Amz-Expires"]) == LINK_SECONDS
     assert "response-content-type" not in _query(make_s3().download_link("results/j/a.npy"))[1]
     folder = FolderStorage(tmp_path, "http://here", b"k" * 32, Clock())
-    typed = folder.download_link("showcase/room/a.png", "image/png")
-    assert typed == folder.download_link("showcase/room/a.png")
+    typed = folder.download_link("showcase/room/calibration.html", page)
+    assert typed == folder.download_link("showcase/room/calibration.html")
 
 
 def test_s3_reads_only_a_404_as_absent_and_raises_the_rest() -> None:

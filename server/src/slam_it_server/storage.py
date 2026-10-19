@@ -7,7 +7,8 @@ never through the server's own process:
   refuses anything else: the size cap is checked when the job is made, against the size the
   browser declares;
 - a **download link** (GET) for one key, for :data:`slam_it_server.config.LINK_SECONDS`; S3's,
-  given a content type, signed so that the bucket answers with it (a showcase's page and images).
+  given a content type, signed so that the bucket answers with it (a showcase run's calibration
+  page, answered as a page).
 
 :class:`S3Storage` signs them with the bucket's keys (boto3); :class:`FolderStorage` with an HMAC
 of its own key, the server serving them (``/storage/<key>``), every file as a download. A key is

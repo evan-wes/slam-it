@@ -1,24 +1,31 @@
 """The showcase: runs baked by us, listed on the home page and opened in the run viewer by name.
 
 Folder storage stands in for the bucket, as in the rest of the server's tests; S3's links, which
-carry a file's content type, are signed offline (:func:`tests.server.conftest.make_s3`).
+carry the calibration page's content type, are signed offline
+(:func:`tests.server.conftest.make_s3`).
 """
 
 from __future__ import annotations
 
 import base64
+import re
+import shutil
 import urllib.parse
 from dataclasses import replace
+from pathlib import Path
 from typing import NoReturn, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
-from slam_it_server.app import import_maps, make_app, showcase_prefix
-from slam_it_server.config import LINK_SECONDS
+from slam_it_server.app import SHOWCASE_MARKER, import_maps, make_app, showcase_prefix
+from slam_it_server.config import LINK_SECONDS, SettingsError
 from slam_it_server.jobs import Jobs
 from slam_it_server.storage import FolderStorage
-from tests.server.conftest import CODE, Server, make_s3
+from tests.server.conftest import CODE, VIEWER, Server, make_s3
+
+REPO = Path(__file__).resolve().parents[2]
+"""The repository, whose server image's recipe copies the viewer's pages."""
 
 NAMES = ("kitti-05", "room")
 """The showcase's runs: the room's bundle is in storage, the other's is not."""
@@ -30,13 +37,15 @@ BUNDLE = {
 }
 """The room's bundle: its description, an array and an image chunk."""
 
-BESIDE = {
-    "calibration.html": b"<!doctype html><title>calibration</title>",
+CALIBRATION = b"<!doctype html><title>calibration</title>"
+"""The room's calibration page, kept beside its bundle."""
+
+UNSERVED = {
     "calibration/rig.png": b"\x89PNG",
     "track.jpg": b"\xff\xd8\xff",
-    "calibration/plot.svg": b"<svg/>",
+    "plot.svg": b"<svg/>",
 }
-"""The files kept beside the room's bundle, for its calibration page."""
+"""Files beside the room's bundle that are never served: its calibration page embeds its own."""
 
 
 @pytest.fixture
@@ -48,7 +57,7 @@ def showcase(server: Server) -> Server:
     store = FolderStorage(
         server.store.root, server.store.public_url, server.store.key, server.clock
     )
-    for path, data in {**BUNDLE, **BESIDE}.items():
+    for path, data in {**BUNDLE, "calibration.html": CALIBRATION, **UNSERVED}.items():
         file = store.path(f"{showcase_prefix('room')}/{path}")
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_bytes(data)
@@ -84,6 +93,61 @@ def test_the_home_page_lists_the_showcase_and_the_upload_page_moves(showcase: Se
     policy = answer.headers["content-security-policy"]
     assert policy == upload.headers["content-security-policy"]
     assert answer.headers["x-robots-tag"] == "noindex, nofollow"
+
+
+def _head(page: str) -> str:
+    """Return a page's ``<head>``, its title left out."""
+    head = page.split("<head>", 1)[1].split("</head>", 1)[0]
+    return re.sub(r"\s*<title>.*?</title>", "", head)
+
+
+def test_the_showcase_page_is_the_upload_pages_kind_and_holds_its_marker_once() -> None:
+    """``viewer/showcase.html``: the upload page's head, no script or inline style, one marker.
+
+    Its title aside, its head is the upload page's. It is read by the server, never served by
+    its own name.
+    """
+    page = (VIEWER / "showcase.html").read_text()
+    assert _head(page) == _head((VIEWER / "upload.html").read_text())
+    assert "<title>SLAM It!</title>" in page
+    assert re.search(r"<script|<style|\sstyle=", page) is None
+    assert page.count(SHOWCASE_MARKER) == 1
+
+
+@pytest.mark.parametrize(
+    ("page", "message"),
+    [
+        (None, "is not there, the showcase's page"),
+        ("<main></main>", "needs <!-- runs --> once"),
+        ("<!-- runs --><!-- runs -->", "needs <!-- runs --> once"),
+    ],
+)
+def test_a_showcase_page_that_cannot_be_filled_stops_the_server(
+    server: Server, tmp_path: Path, page: str | None, message: str
+) -> None:
+    """With a showcase, no page, or a marker missing or repeated: refused before anything is made.
+
+    Without a showcase, the page is not read.
+    """
+    viewer = tmp_path / "viewer"
+    viewer.mkdir()
+    shutil.copy(VIEWER / "index.html", viewer / "index.html")
+    if page is not None:
+        (viewer / "showcase.html").write_text(page)
+    database = tmp_path / "never.sqlite3"
+    settings = replace(server.settings, viewer=viewer, database=database, showcase=NAMES)
+    with pytest.raises(SettingsError, match=rf"SLAM_IT_VIEWER: .*{re.escape(message)}"):
+        make_app(settings, server.store)
+    assert not database.exists()
+    make_app(replace(settings, showcase=()), server.store)
+
+
+def test_the_servers_image_holds_the_showcase_page() -> None:
+    """The image copies the viewer's files one by one: the showcase's page among them."""
+    recipe = (REPO / "docker" / "server.Dockerfile").read_text()
+    copied = re.search(r"^COPY (viewer/.*?) /opt/viewer/$", recipe, re.MULTILINE | re.DOTALL)
+    assert copied is not None
+    assert "viewer/showcase.html" in copied.group(1).split()
 
 
 def test_without_a_showcase_the_home_page_is_the_upload_page(server: Server) -> None:
@@ -135,27 +199,21 @@ def test_a_showcase_runs_bundle_is_redirected_by_a_link_made_each_time(showcase:
     assert showcase.client.get(missing).status_code == 404
 
 
-def test_the_files_beside_a_bundle_are_redirected_as_their_kind(showcase: Server) -> None:
-    """S3's link asks the bucket to answer with the file's content type; a bundle's file, none.
+def test_the_calibration_page_is_redirected_to_be_answered_as_a_page(showcase: Server) -> None:
+    """S3's link asks the bucket to answer it as HTML; a bundle's file, as stored.
 
     Folder storage serves the calibration page as it serves every file, as a download.
     """
     client = TestClient(make_app(showcase.settings, make_s3(), showcase.jobs))
-    kinds = {
-        "calibration.html": "text/html; charset=utf-8",
-        "calibration/rig.png": "image/png",
-        "track.jpg": "image/jpeg",
-        "calibration/plot.svg": "image/svg+xml",
-    }
-    for path, kind in kinds.items():
-        link = urllib.parse.urlsplit(_redirect(client, f"/s/room/{path}"))
-        assert link.path.endswith(f"/showcase/room/{path}")
-        assert urllib.parse.parse_qs(link.query)["response-content-type"] == [kind]
+    link = urllib.parse.urlsplit(_redirect(client, "/s/room/calibration.html"))
+    assert link.path.endswith("/showcase/room/calibration.html")
+    query = urllib.parse.parse_qs(link.query)
+    assert query["response-content-type"] == ["text/html; charset=utf-8"]
     bundle = urllib.parse.urlsplit(_redirect(client, "/s/room/bundle/cpp/poses.npy"))
     assert bundle.path.endswith("/showcase/room/cpp/poses.npy")
     assert "response-content-type" not in urllib.parse.parse_qs(bundle.query)
     stored = showcase.client.get(_redirect(showcase.client, "/s/room/calibration.html"))
-    assert stored.content == BESIDE["calibration.html"]
+    assert stored.content == CALIBRATION
     assert stored.headers["content-disposition"] == "attachment"
 
 
@@ -174,19 +232,21 @@ def test_the_files_beside_a_bundle_are_redirected_as_their_kind(showcase: Server
         "/s/room/bundle.json",
         "/s/room/index.html",
         "/s/room/notes.txt",
+        "/s/room/track.jpg",
+        "/s/room/plot.svg",
+        "/s/room/calibration/rig.png",
         "/s/room/calibration.htm",
-        "/s/room/calibration/page.html",
-        "/s/room/calibration/deep/x.png",
-        "/s/room/other/x.png",
-        "/s/room/calibration/X.PNG",
-        "/s/room/calibration/.png",
+        "/s/room/Calibration.html",
+        "/s/room/calibration/calibration.html",
+        "/s/room/calibration.html/x",
+        "/showcase.html",
         "/s/room/bundle/%2e%2e/%2e%2e/jobs/j/result/bundle.json",
         "/s/room/bundle/..%2f..%2fjobs/j/import",
         "/s/room/bundle/%2fetc/passwd.json",
         "/s/room/bundle//etc/x.json",
         "/s/%2e%2e/bundle/bundle.json",
         "/s/room%2f..%2fjobs/bundle/bundle.json",
-        "/s/room/calibration%2f..%2f..%2fx.png",
+        "/s/room/calibration.html%2f..%2f..%2fjobs/j/import",
         "/s/room/%2e%2e/%2e%2e/jobs/j/import",
         "/s/room/bundle/bundle.json%00.png",
     ],
@@ -194,8 +254,9 @@ def test_the_files_beside_a_bundle_are_redirected_as_their_kind(showcase: Server
 def test_a_run_or_file_outside_the_showcase_answers_404(showcase: Server, path: str) -> None:
     """A name not listed; a file of another name, kind or folder; or a path that climbs.
 
-    The escaped paths reach the routes with their ``..``, slashes and bytes decoded, so it is
-    the routes that refuse them, never a redirect.
+    Images kept beside the bundle are among them, and the showcase's page by its own name. The
+    escaped paths reach the server with their ``..``, slashes and bytes decoded, and are refused
+    there, never redirected.
     """
     answer = showcase.client.get(path, follow_redirects=False)
     assert answer.status_code == 404
@@ -213,8 +274,15 @@ class _NoJobs:
 def test_the_showcase_never_reads_the_job_list(showcase: Server) -> None:
     """Its pages and links come from the settings and storage alone, so they hold no job token."""
     client = TestClient(make_app(showcase.settings, showcase.store, cast(Jobs, _NoJobs())))
-    for path in ("/", "/upload", "/s/room/", "/s/other/", "/s/room/calibration.html"):
-        assert client.get(path, follow_redirects=False).status_code in (200, 307, 404)
+    answers = {
+        "/": 200,
+        "/upload": 200,
+        "/s/room/": 307,
+        "/s/other/": 404,
+        "/s/room/calibration.html": 307,
+    }
+    for path, status in answers.items():
+        assert (path, client.get(path, follow_redirects=False).status_code) == (path, status)
     assert client.get(_redirect(client, "/s/room/bundle/bundle.json")).status_code == 200
 
 
@@ -223,6 +291,14 @@ def test_staging_puts_the_showcase_behind_a_code(showcase: Server) -> None:
     staging = replace(showcase.settings, staging=True)
     client = TestClient(make_app(staging, showcase.store, showcase.jobs))
     code = {"Authorization": "Basic " + base64.b64encode(f"anyone:{CODE}".encode()).decode()}
-    for path in ("/", "/upload", "/s/room/", "/s/room/bundle/bundle.json", "/s/room/track.jpg"):
-        assert client.get(path, follow_redirects=False).status_code == 401
-        assert client.get(path, headers=code, follow_redirects=False).status_code in (200, 307)
+    answers = {
+        "/": 200,
+        "/upload": 200,
+        "/s/room/": 307,
+        "/s/room/bundle/bundle.json": 307,
+        "/s/room/calibration.html": 307,
+    }
+    for path, status in answers.items():
+        assert (path, client.get(path, follow_redirects=False).status_code) == (path, 401)
+        answer = client.get(path, headers=code, follow_redirects=False)
+        assert (path, answer.status_code) == (path, status)
