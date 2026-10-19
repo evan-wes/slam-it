@@ -11,7 +11,8 @@ them from these parts:
   and loop closing read the map and its database with mapping held off (:meth:`Writer.held`),
   aborting nothing, and loop closing stops mapping there once it finds a loop to correct.
 - :class:`Queue`: the keyframes waiting between two threads, their count readable
-  (``mlNewKeyFrames``, ``KeyframesInQueue``), and a wait for the work given to be done.
+  (``mlNewKeyFrames``, ``KeyframesInQueue``) and with the one being handled
+  (:meth:`Queue.unfinished`), and a wait for the work given to be done.
 - :class:`Generation`: the count each global BA started takes; a run whose count has moved on
   was superseded, and its result is dropped (ORB-SLAM's ``mnFullBAIdx``).
 - :class:`Worker`: a thread running a step on each item of its queue, its failure kept for the
@@ -177,6 +178,17 @@ class Queue(Generic[T]):
             The count.
         """
         return self._items.qsize()
+
+    def unfinished(self) -> int:
+        """Return the items not yet handled: those waiting and one being handled.
+
+        Returns
+        -------
+        int
+            The count, which a step's thread lowers only once the item is done (:meth:`done`).
+        """
+        with self._items.mutex:
+            return self._items.unfinished_tasks
 
     def drain(self) -> None:
         """Wait until every item queued is handled."""

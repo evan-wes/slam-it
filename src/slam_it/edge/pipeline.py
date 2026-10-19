@@ -1211,13 +1211,16 @@ class _Threads:
         self._completions: list[Completion] = []
         self._global: list[threading.Thread] = []
         self._errors: list[BaseException] = []
-        self._busy = False
         self.loop_closing: Worker[tuple[int, int]] = Worker("loop closing", self._close_loops)
         self.mapping: Worker[_Request] = Worker("local mapping", self._map)
 
     def idle(self) -> bool:
-        """Return whether local mapping takes a keyframe at once: none in hand, none waiting."""
-        return not self._busy and self.mapping.queue.waiting() == 0
+        """Return whether local mapping takes a keyframe at once: none in hand, none waiting.
+
+        Counted by the queue, the keyframe in hand from when it is taken until it is mapped, as
+        the native cores count it (``unfinished``; B3b's review panel, H4).
+        """
+        return self.mapping.queue.unfinished() == 0
 
     def stopping(self) -> bool:
         """Return whether local mapping is stopped or being stopped."""
@@ -1307,27 +1310,23 @@ class _Threads:
 
     def _map(self, request: _Request) -> None:
         """Local mapping's thread: map a keyframe, the one writer while it does."""
-        self._busy = True
-        try:
-            with self.owner.writing():
-                self.writer.abort.clear()
-                self.owner.apply_counts()
-                start = time.perf_counter()
-                tracked = _still_mapped(self._placed(request), self.owner.read())
-                mapped = mapping.process(
-                    self.owner.read(), self.camera, request.frame, tracked,
-                    mode=self.mode, options=self.options, held=self.closing.held(),
-                    interrupts=_Interrupts(self),
-                )  # fmt: skip
-                self.owner.apply_mapping(mapped.map)
-                seconds = time.perf_counter() - start
-                m = self.owner.read()
-                self.atlas.resolve(request.index, m)
-                self.atlas.record(m)
-                self.owner.clear_gone()
-                keyframe, base = int(m.kf_id[-1]), self.atlas.point_base
-        finally:
-            self._busy = False
+        with self.owner.writing():
+            self.writer.abort.clear()
+            self.owner.apply_counts()
+            start = time.perf_counter()
+            tracked = _still_mapped(self._placed(request), self.owner.read())
+            mapped = mapping.process(
+                self.owner.read(), self.camera, request.frame, tracked,
+                mode=self.mode, options=self.options, held=self.closing.held(),
+                interrupts=_Interrupts(self),
+            )  # fmt: skip
+            self.owner.apply_mapping(mapped.map)
+            seconds = time.perf_counter() - start
+            m = self.owner.read()
+            self.atlas.resolve(request.index, m)
+            self.atlas.record(m)
+            self.owner.clear_gone()
+            keyframe, base = int(m.kf_id[-1]), self.atlas.point_base
         entries = {
             "map_seconds": seconds,
             "mapping": mapped.summary.as_dict(),

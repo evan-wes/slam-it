@@ -127,10 +127,12 @@ def test_the_queue_counts_what_waits_and_drains() -> None:
     items: Queue[int] = Queue()
     items.put(1)
     items.put(2)
-    assert items.waiting() == 2
+    assert items.waiting() == items.unfinished() == 2
     assert items.get() == 1
     assert items.waiting() == 1  # one handled now, one waiting
+    assert items.unfinished() == 2  # mapping is not idle with one in hand
     items.done()
+    assert items.unfinished() == 1
     assert items.get() == 2
     drained = threading.Event()
 
