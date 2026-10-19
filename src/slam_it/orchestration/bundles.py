@@ -92,7 +92,10 @@ FORMAT = "slam-it-bundle"
 
 VERSION = 4
 """``bundle.json``'s ``version``: this module's layout (2 added the maps; 3 the spanning tree and
-the strong links; 4 the loops closed, and the trajectory the run format's final one)."""
+the strong links; 4 the loops closed, and the trajectory the run format's final one).
+
+A new version means baking the upload server's showcase runs again and uploading them again
+(``showcase/<name>/`` in its storage): the viewer reads only its own version."""
 
 CHUNK = 100
 """The frames whose JPEGs share a chunk file."""

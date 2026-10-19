@@ -366,7 +366,8 @@ an on-demand cloud GPU.
 - The upload, video or zip, is deleted when its import ends. A result is deleted after 7 days
   (decision 6 of section 7).
 - A result is reachable only through an unguessable link (a 128-bit token). There is no gallery
-  or listing, and pages are marked `noindex`.
+  or listing of uploaded results, and pages are marked `noindex`. The showcase's runs, which we
+  bake, are listed (section 10).
 - Uploads are never served back; only the frames the bake makes are.
 - The upload page says what is kept, for how long, and who can see it.
 
@@ -537,3 +538,22 @@ PR 11's review panel and its security pass, and how each of their findings was r
 evan-wes on 2026-10-11: every must-fix fixed; the should-fix findings and notes as recommended,
 a few parts deferred to before going public (the ladder's open items); and an invite code
 capped at two open jobs, a waiting job expiring with its 15-minute upload link.
+
+## 10. Decisions of 2026-10-19
+
+Decided with evan-wes: the server shows runs we baked ourselves, a **showcase**, beside "your own
+video" (the note's [section](../notes/your-own-video.md#the-showcase)).
+1. **The routes:** `SLAM_IT_SHOWCASE` names the runs. With it set, the home page (`/`) lists them,
+   each linked to `/s/<name>/`, and the upload page moves to `/upload`; `/s/<name>/` opens the
+   run viewer on `/s/<name>/bundle/`, whose files are redirected to storage as a result's are;
+   `/s/<name>/calibration.html` is the run's calibration page. Unset, `/` is the upload page.
+2. **The layout:** each run's bundle is in storage under `showcase/<name>/`, its folder's files as
+   the bake wrote them, with its calibration page beside them. They are put there by hand: nothing
+   the server does writes or deletes there.
+3. **The calibration page's origin:** it is redirected to storage, so it renders at storage's own
+   address, without the site's headers. Accepted, because it is the owner's own static file,
+   self-contained (its images embedded) and with no script; no other file beside the bundle is
+   served.
+4. **Not the ladder's showcase page:** the ladder's "Public presentation" plans a static showcase
+   page that walks through the SLAM process on one sequence, stage by stage. This listing is not
+   that walkthrough: it opens baked runs in the run viewer. The walkthrough stays a later item.

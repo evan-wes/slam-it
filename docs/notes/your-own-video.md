@@ -143,8 +143,9 @@ folder named `your-video`, which is the name the viewer shows.
 ## The pages
 
 The upload page (`/upload`, and `/` unless there is a showcase, below) checks a file against the
-caps, sends it straight to storage with a progress bar, and says what to expect, what is kept, and who sees what: the service the server
-runs on logs requests, and the fonts' and three.js's CDNs see each visitor's address. The status
+caps, sends it straight to storage with a progress bar, and says what to expect, what is kept, and
+who sees what: the service the server runs on logs requests, and the fonts' and three.js's CDNs
+see each visitor's address. The status
 page (`/r/<token>`) follows the job's stages, then shows its summary with the intrinsics' source
 and the viewer's link, or why it failed. Both sit in `viewer/` beside the run viewer, under its
 checks, and share its style; their logic is `viewer/src/jobs.js`. The viewer reads a bundle from
@@ -177,33 +178,37 @@ Runs we baked ourselves, shown to anyone: `SLAM_IT_SHOWCASE` names them, comma-s
 name of lowercase letters and digits joined by single hyphens, at most 40 characters (a name
 malformed or listed twice stops the server at startup). Each run's bundle is in storage under
 `showcase/<name>/`, its folder's files as the bake wrote them (`showcase/<name>/bundle.json`,
-`showcase/<name>/cpp/poses.npy`, ...), put there by hand with any S3 client; nothing the server
-does writes or deletes there, and a bucket's lifecycle rule for `jobs/` leaves it alone. Unset or
-empty, nothing changes: `/` is the upload page.
+`showcase/<name>/cpp/poses.npy`, ...), beside its calibration page
+(`showcase/<name>/calibration.html`), put there by hand with any S3 client; nothing the server
+does writes or deletes there, and a bucket's lifecycle rule for `jobs/` leaves it alone. A new
+bundle format (`slam_it.orchestration.bundles.VERSION`) means baking the showcase's runs again and
+uploading them again: the viewer reads only its own format. Unset or empty, `/` is the upload page,
+as before.
 
 - **`/`** lists the runs, each by its name, linked to `/s/<name>/`, and links the upload page,
-  which moves to `/upload`, its invite code as before. The page is built by the server in the
-  upload page's style, with no script, so the content policy holds it as it is. The titles are
-  the names: `bundle.json`'s sequence would mean the server reading a file from storage, which it
-  never does.
+  which moves to `/upload`, its invite code as before. The page is `viewer/showcase.html`, in the
+  upload page's style and with its head, which the server reads once at startup and fills with
+  each run's link in place of its `<!-- runs -->` marker; a page missing, or its marker missing or
+  repeated, stops the server. It has no script and no inline style, so the content policy holds
+  it as it is, and it is not served by its own name. The titles are the names: `bundle.json`'s
+  sequence would mean the server reading a file from storage, which it never does.
 - **`/s/<name>/`** (or without the slash) opens the run viewer on the run's bundle, as the status
   page's link does: `/index.html?bundle=%2Fs%2F<name>%2Fbundle%2F`.
 - **`/s/<name>/bundle/<path>`** is redirected to storage's link for `showcase/<name>/<path>`,
   only for a bundle's names and kinds of file, as a job's result is (`RESULT_PATH`). Each link is
   made for its request, so a page left open never holds one expired.
-- **`/s/<name>/<file>`** is one of the files kept beside the bundle, for its calibration page:
-  `calibration.html`, and images (`.png`, `.jpg`, `.svg`) named in lowercase letters, digits, `_`
-  and `-`, up to 64 characters before the extension, beside the bundle or in `calibration/`
-  (`SHOWCASE_FILE`). It is redirected to a link that asks the bucket to answer with the file's
-  type (`text/html; charset=utf-8`, `image/png`, `image/jpeg`, `image/svg+xml`). The page then
-  opens at the bucket's address, so it must link its images by the site's whole address
-  (`https://<site>/s/<name>/calibration/<image>`) or hold them inline: a relative link would
-  reach the bucket unsigned. Folder storage serves every file as a download, the calibration page
-  too, so the page shows only from a bucket.
+- **`/s/<name>/calibration.html`**, the run's calibration page, is redirected to a link that asks
+  the bucket to answer it as a page (`text/html; charset=utf-8`). It is the only file beside the
+  bundle that is served: the page is self-contained, its images embedded, and has no script. It
+  renders at storage's own address, which its address bar shows, without the site's headers (its
+  content policy among them): accepted, because the page is the owner's own static file with no
+  script. Folder storage serves every file as a download, this page too, so it shows only from a
+  bucket.
 - **Anything else** answers 404: a name not listed (matched exactly), a file of another name,
-  kind or folder, and a path that climbs or is absolute, escaped or not. The routes read the
-  settings and storage's links alone: never the job list, so never a token, and nothing lists
-  storage. On staging, they are behind its Basic auth, as every page is.
+  kind or folder (images kept beside the bundle among them), and a path that climbs or is
+  absolute, escaped or not. The routes read the settings and storage's links alone: never the job
+  list, so never a token, and nothing lists storage. On staging, they are behind its Basic auth,
+  as every page is.
 
 ## Running it
 
