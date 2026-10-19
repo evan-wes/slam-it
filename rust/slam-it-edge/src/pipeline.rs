@@ -735,9 +735,14 @@ impl MapOwner {
     ///
     /// The view.
     fn view_of(&self, m: &Map, points: &[i64], reference: i64) -> View {
-        // Tracking's points are ids, -1 where none, which view_keyframes takes: it cannot fail.
-        let rows = covisibility::view_keyframes(m, points, reference, &self.options)
-            .unwrap_or_else(|_| (0..m.keyframes()).collect());
+        // Tracking's points are ids, -1 where none, which view_keyframes takes: it cannot fail,
+        // and a debug build says so if it did, rather than fall back to the whole map silently.
+        let rows = covisibility::view_keyframes(m, points, reference, &self.options);
+        debug_assert!(
+            rows.is_ok(),
+            "view_keyframes failed on tracking's points: {rows:?}"
+        );
+        let rows = rows.unwrap_or_else(|_| (0..m.keyframes()).collect());
         // Made in a writer's turn or under a hold, where no correction runs: the count is the
         // map's.
         View {

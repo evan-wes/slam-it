@@ -3,6 +3,7 @@
 #include "slam_it/edge/pipeline.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <iterator>
@@ -1032,7 +1033,9 @@ View MapOwner::view_of(std::span<const std::int64_t> points, std::int64_t refere
   }
   const Map& m = *map_;
   const auto rows = view_keyframes(m, points, reference, options_);
-  // Tracking's points are ids, -1 where none, which view_keyframes takes: it cannot fail here.
+  // Tracking's points are ids, -1 where none, which view_keyframes takes: it cannot fail here,
+  // and a debug build says so if it did, rather than fall back to the whole map silently.
+  assert(rows.has_value() && "view_keyframes failed on tracking's points");
   return {.map = std::make_shared<const Map>(rows ? sub_map(m, *rows) : m),
           .keyframes = static_cast<std::int64_t>(keyframe_count(m)),
           .corrections = corrections_.load()};
@@ -1113,6 +1116,7 @@ void MapOwner::publish(const Map& m) {
     reference = anchor_reference_;
   }
   const auto rows = view_keyframes(m, points, reference, options_);
+  assert(rows.has_value() && "view_keyframes failed on tracking's points");  // as in view_of
   // A writer publishes in its turn, where no correction runs: the count is the map's.
   View made{.map = std::make_shared<const Map>(rows ? sub_map(m, *rows) : m),
             .keyframes = static_cast<std::int64_t>(keyframe_count(m)),
