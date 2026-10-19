@@ -1,5 +1,7 @@
 """The upload server's fixtures: settings for a folder on this machine, a clock, and the app.
 
+S3 storage is made with made-up keys too, its links signed offline (:func:`make_s3`).
+
 The server is tested as the design asks (docs/design/2026-10-09-run-viewer.md, section 6): with
 FastAPI's test client and folder storage, its links signed and served by the app itself.
 """
@@ -9,13 +11,15 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import boto3
 import pytest
+from botocore.config import Config
 from fastapi.testclient import TestClient
 
 from slam_it_server.app import make_app
 from slam_it_server.config import Settings
 from slam_it_server.jobs import Jobs
-from slam_it_server.storage import FolderStorage
+from slam_it_server.storage import FolderStorage, S3Storage
 
 VIEWER = Path(__file__).resolve().parents[2] / "viewer"
 """The repository's viewer folder, which holds the pages."""
@@ -89,3 +93,19 @@ def staging(server: Server) -> TestClient:
 
 WORKER = {"Authorization": f"Bearer {TOKEN}"}
 """The worker's headers."""
+
+BUCKET = "uploads-bucket"
+"""The made-up bucket's name."""
+
+
+def make_s3() -> S3Storage:
+    """Return S3 storage with made-up keys: boto3 signs without a network."""
+    client = boto3.client(
+        "s3",
+        endpoint_url="https://bucket.example.invalid",
+        aws_access_key_id="AKIDEXAMPLE",
+        aws_secret_access_key="a-made-up-secret",
+        region_name="auto",
+        config=Config(signature_version="s3v4"),
+    )
+    return S3Storage(client, BUCKET)

@@ -132,8 +132,8 @@ check "tsc --checkJs (viewer)" viewer/node_modules/.bin/tsc -p viewer
 check "tsc --checkJs, logic without the DOM (viewer)" \
   viewer/node_modules/.bin/tsc -p viewer/tsconfig.logic.json
 check "prettier (viewer)" viewer/node_modules/.bin/prettier --check \
-  viewer/src viewer/tests viewer/index.html viewer/upload.html viewer/status.html viewer/app.css \
-  viewer/logic.d.ts
+  viewer/src viewer/tests viewer/index.html viewer/upload.html viewer/status.html \
+  viewer/showcase.html viewer/app.css viewer/logic.d.ts
 
 # All languages
 # Docstrings, doc comments, `#include`s and Rust `use`s are not counted (.jscpd.json): files

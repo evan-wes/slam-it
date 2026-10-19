@@ -6,7 +6,9 @@ never through the server's own process:
 - an **upload link** (PUT) signed for one key, an exact size and a life of its own, so the store
   refuses anything else: the size cap is checked when the job is made, against the size the
   browser declares;
-- a **download link** (GET) for one key, for :data:`slam_it_server.config.LINK_SECONDS`.
+- a **download link** (GET) for one key, for :data:`slam_it_server.config.LINK_SECONDS`; S3's,
+  given a content type, signed so that the bucket answers with it (a showcase run's calibration
+  page, answered as a page).
 
 :class:`S3Storage` signs them with the bucket's keys (boto3); :class:`FolderStorage` with an HMAC
 of its own key, the server serving them (``/storage/<key>``), every file as a download. A key is
@@ -60,8 +62,8 @@ class Storage(Protocol):
         """Return a PUT link for a key, signed for exactly `size` bytes, for `seconds`."""
         ...
 
-    def download_link(self, key: str) -> str:
-        """Return a GET link for a key."""
+    def download_link(self, key: str, content_type: str | None = None) -> str:
+        """Return a GET link for a key, answered with a content type where the store can."""
         ...
 
     def size(self, key: str) -> int | None:
@@ -109,9 +111,11 @@ class S3Storage:
             self.client.generate_presigned_url("put_object", Params=params, ExpiresIn=seconds)
         )
 
-    def download_link(self, key: str) -> str:
-        """Return a GET link."""
+    def download_link(self, key: str, content_type: str | None = None) -> str:
+        """Return a GET link; with a content type, signed so the bucket answers with that type."""
         params = {"Bucket": self.bucket, "Key": check_key(key)}
+        if content_type is not None:
+            params["ResponseContentType"] = content_type
         return str(
             self.client.generate_presigned_url("get_object", Params=params, ExpiresIn=LINK_SECONDS)
         )
@@ -194,8 +198,13 @@ class FolderStorage:
         """Return a signed PUT link for exactly `size` bytes, for `seconds`."""
         return self._link("PUT", key, size, seconds)
 
-    def download_link(self, key: str) -> str:
-        """Return a signed GET link."""
+    def download_link(self, key: str, content_type: str | None = None) -> str:
+        """Return a signed GET link.
+
+        A content type is not used: folder storage serves every file as a download, never as a
+        page of the server's own site (``/storage/<key>``).
+        """
+        del content_type
         return self._link("GET", key, -1, LINK_SECONDS)
 
     def verify(self, method: str, key: str, expires: int, size: int, signature: str) -> None:

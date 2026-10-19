@@ -590,6 +590,7 @@ def test_robots_are_asked_to_stay_away(server: Server) -> None:
     ("path", "kind"),
     [
         ("/", "SLAM It! on your own video"),
+        ("/upload", "SLAM It! on your own video"),
         ("/r/some-token", "SLAM It! run"),
         ("/index.html", "SLAM It! run viewer"),
         ("/upload.html", "SLAM It! on your own video"),
@@ -599,7 +600,7 @@ def test_robots_are_asked_to_stay_away(server: Server) -> None:
     ],
 )
 def test_the_pages_are_served(server: Server, path: str, kind: str) -> None:
-    """The upload page at the root, the status page at a job's link, the viewer and its files."""
+    """The upload page at the root and /upload, a job's status page, the viewer and its files."""
     answer = server.client.get(path)
     assert answer.status_code == 200
     assert kind in answer.text

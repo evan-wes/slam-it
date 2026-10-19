@@ -16,11 +16,17 @@
   deleted, :data:`RETENTION` after it ends, rather than deleting it once imported: the demo's
   (``scripts/serve_demo.py``), so that its recordings can be run again. With folder storage
   only, so that a deployment, on S3, never keeps one.
+- ``SLAM_IT_SHOWCASE``: runs baked by us, shown to anyone: their names, comma-separated, each
+  of lowercase letters and digits, joined by single hyphens, at most :data:`SHOWCASE_LENGTH`
+  characters (:data:`SHOWCASE_NAME`). Each run's bundle is in storage under
+  ``showcase/<name>/``. Set, the home page lists them and the upload page moves to ``/upload``;
+  unset or empty, the home page is the upload page.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +68,13 @@ CODE_LENGTH = 12
 SECRET_LENGTH = 32
 """The shortest worker token and signing key, in characters."""
 
+SHOWCASE_NAME = re.compile(r"[a-z0-9]+(-[a-z0-9]+)*")
+"""A showcase run's name, matched whole: one segment of its address (``/s/<name>/``) and of its
+storage key, so nothing that could climb, part a path or need escaping."""
+
+SHOWCASE_LENGTH = 40
+"""The longest showcase run's name, in characters."""
+
 
 class SettingsError(Exception):
     """A setting is missing or malformed."""
@@ -81,6 +94,7 @@ class Settings:
     staging: bool
     s3: Mapping[str, str]
     keep_uploads: bool = False
+    showcase: tuple[str, ...] = ()
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -143,4 +157,19 @@ def from_environment(env: Mapping[str, str] | None = None) -> Settings:
         staging=env.get("SLAM_IT_STAGING", "0") == "1",
         s3=s3,
         keep_uploads=keep_uploads,
+        showcase=_showcase(env),
     )
+
+
+def _showcase(env: Mapping[str, str]) -> tuple[str, ...]:
+    """Return the showcase runs' names (``SLAM_IT_SHOWCASE``), refusing a bad or repeated one."""
+    names = tuple(n.strip() for n in env.get("SLAM_IT_SHOWCASE", "").split(",") if n.strip())
+    for name in names:
+        if len(name) > SHOWCASE_LENGTH or not SHOWCASE_NAME.fullmatch(name):
+            raise SettingsError(
+                f"SLAM_IT_SHOWCASE: {name!r} is not a name of lowercase letters and digits, "
+                f"joined by single hyphens, at most {SHOWCASE_LENGTH} characters"
+            )
+    if len(set(names)) != len(names):
+        raise SettingsError("SLAM_IT_SHOWCASE: a name is listed twice")
+    return names

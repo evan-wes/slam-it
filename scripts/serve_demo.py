@@ -167,7 +167,8 @@ def environment(data: Path, code: str, url: str, *, staging: bool = False) -> di
     -------
     dict of str to str
         The ``SLAM_IT_*`` variables (:mod:`slam_it_server.config`), its secrets new,
-        uploads kept with their results.
+        uploads kept with their results, and no showcase: ``SLAM_IT_SHOWCASE`` set empty, so
+        that the shell's own never reaches the server and its home page is the upload page.
     """
     return {
         "SLAM_IT_INVITE_CODES": code,
@@ -179,6 +180,7 @@ def environment(data: Path, code: str, url: str, *, staging: bool = False) -> di
         "SLAM_IT_VIEWER": str(REPO / "viewer"),
         "SLAM_IT_STAGING": "1" if staging else "0",
         "SLAM_IT_KEEP_UPLOADS": "1",
+        "SLAM_IT_SHOWCASE": "",
     }
 
 

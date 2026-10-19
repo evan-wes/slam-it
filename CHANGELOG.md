@@ -4,6 +4,69 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.16.0] - 2026-10-19
+
+The upload server shows runs we baked ourselves: a showcase, named by `SLAM_IT_SHOWCASE`, each
+run's bundle kept in storage under `showcase/<name>/`. With one, the home page lists its runs,
+each opened in the run viewer by its name, and the upload page moves to `/upload`; without one,
+the server behaves as before (`docs/notes/your-own-video.md`, "The showcase";
+`docs/design/2026-10-09-run-viewer.md`, section 10).
+
+### Added
+
+- **The showcase setting** (`SLAM_IT_SHOWCASE`, `Settings.showcase`): the runs' names,
+  comma-separated, each of lowercase letters and digits joined by single hyphens, at most 40
+  characters (`config.SHOWCASE_NAME`, `SHOWCASE_LENGTH`); a name malformed or listed twice stops
+  the server at startup. `server/settings.template.env` lists it, empty, and
+  `scripts/serve_demo.py` sets it empty, so the demo never takes one from its shell.
+- **The showcase's page at `/`** (`viewer/showcase.html`, `app.showcase_page`): each run by its
+  name, linked to `/s/<name>/`, and a link to the upload page. In the upload page's style and with
+  its head, with no script and no inline style, under the pages' content policy as it is. The
+  server reads it once at startup and puts the links in place of its `<!-- runs -->` marker
+  (`app.SHOWCASE_MARKER`); a page missing, or its marker missing or repeated, stops it. It is not
+  served by its own name; the server's image copies it, and layer 1's prettier checks it.
+- **`/s/<name>/`** (and `/s/<name>`): the run viewer on the run's bundle,
+  `/index.html?bundle=%2Fs%2F<name>%2Fbundle%2F`, the link the status page makes
+  (`app.VIEWER_PAGE`, held equal to `viewerLink` in `viewer/src/jobs.js`).
+- **`/s/<name>/bundle/<path>`:** redirected to storage's link for `showcase/<name>/<path>`
+  (`app.showcase_prefix`), for a bundle's names and kinds of file alone (`RESULT_PATH`, as a
+  job's result), by a link made for each request.
+- **`/s/<name>/calibration.html`:** the run's calibration page, kept beside its bundle
+  (`app.CALIBRATION_PAGE`), redirected by a link that asks the bucket to answer it as a page
+  (`app.CALIBRATION_TYPE`, `text/html; charset=utf-8`). It is self-contained, its images
+  embedded, and has no script; it renders at storage's address, without the site's headers. No
+  other file beside the bundle is served.
+- **The upload page at `/upload`,** with a showcase or without.
+
+### Changed
+
+- **Storage's download links take a content type** (`Storage.download_link(key,
+  content_type)`), for the calibration page: S3's asks the bucket to answer with it
+  (`ResponseContentType`); folder storage, which serves every file as a download, leaves it out.
+- A done job's bundle files and a showcase run's are redirected by one function
+  (`app._stored`); the pages' `Cache-Control: no-cache` is one constant (`app._PAGE_HEADERS`).
+- `make_s3`, the tests' S3 storage signed offline, moves from `tests/server/test_storage.py` to
+  `tests/server/conftest.py`, so the showcase's tests use it too.
+- `bundles.VERSION`'s docstring says that a new bundle version means baking the showcase's runs
+  again and uploading them again.
+
+### Tests
+
+- The server's tests go from 131 to 188.
+- `tests/server/test_showcase.py` (41): the home page with a showcase and without, and the upload
+  page at `/upload`; the showcase's page with the upload page's head, no script or inline style,
+  and one marker; a page that cannot be filled refused before the job list is made (3); the
+  server's image copying it; a run opened in the viewer, under the content policy; its bundle's
+  files redirected, a new link made after the first expired; the calibration page redirected to
+  be answered as HTML (S3) and served as a download (folder storage); 29 addresses answered 404
+  (a name not listed, a file of another name, kind or folder, images kept beside the bundle, the
+  showcase's page by name, and paths that climb or are absolute, escaped or not); the job list
+  never used; staging's Basic auth over the showcase.
+- `tests/server/test_config.py` gains 13 (the names read, and 12 refused),
+  `tests/server/test_storage.py` 1 (S3's content type), `tests/server/test_shared_names.py` 1 (the
+  viewer's link) and `tests/server/test_app.py` 1 (`/upload`); `tests/test_serve_demo.py`'s
+  settings test checks the demo's showcase is empty.
+
 ## [0.3.15.0] - 2026-10-19
 
 The run viewer's controls, and the loops a run closed made visible: sliders for the 3D panel's

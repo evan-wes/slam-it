@@ -36,7 +36,11 @@ def _script() -> ModuleType:
 
 
 def test_the_demos_settings_are_the_servers(tmp_path: Path) -> None:
-    """The server reads them; everything is kept in the data folder; the secrets are new."""
+    """The server reads them; everything is kept in the data folder; the secrets are new.
+
+    The showcase is set empty, so that the shell's own SLAM_IT_SHOWCASE, which the server's
+    environment otherwise inherits, never gives the demo one.
+    """
     demo = _script()
     env = demo.environment(tmp_path, "a-demo-invite-code", "http://127.0.0.1:1")
     settings = from_environment(env)
@@ -45,6 +49,8 @@ def test_the_demos_settings_are_the_servers(tmp_path: Path) -> None:
     assert (settings.viewer / "upload.html").is_file()
     assert not settings.staging
     assert settings.keep_uploads  # so that a recording can be run again
+    assert env["SLAM_IT_SHOWCASE"] == ""
+    assert settings.showcase == ()
     again = demo.environment(tmp_path, "a-demo-invite-code", "http://127.0.0.1:1")
     assert again["SLAM_IT_WORKER_TOKEN"] != env["SLAM_IT_WORKER_TOKEN"]
 
