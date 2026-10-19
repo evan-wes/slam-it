@@ -1,5 +1,5 @@
-// The numbers the pages show, as text: lengths, durations, deadlines, scale factors, times, sizes
-// and angles. No drawing.
+// The numbers the pages show, as text: lengths, durations, deadlines, scale factors, shares,
+// times, sizes and angles. No drawing.
 
 /**
  * A length.
@@ -49,6 +49,15 @@ export function deadline(seconds) {
  */
 export function factor(factor) {
   return `×${Number(factor.toPrecision(2))}`;
+}
+
+/**
+ * A share, as a percentage.
+ * @param {number} fraction The share, from 0 to 1.
+ * @returns {string} "80%", say: to a whole percent.
+ */
+export function percent(fraction) {
+  return `${Math.round(fraction * 100)}%`;
 }
 
 /**

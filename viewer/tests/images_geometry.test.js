@@ -10,7 +10,6 @@ import {
   FRUSTUM_SEGMENTS,
   MIN_DEPTH,
   NEVER,
-  SIZE_LIMITS,
   centres,
   frustums,
   keyframeSegments,
@@ -19,8 +18,6 @@ import {
   mapAttribute,
   mapDepths,
   mapFrustums,
-  sizeFactor,
-  sizeStep,
   treePairs,
   truthSegments,
 } from "../src/geometry.js";
@@ -199,30 +196,6 @@ test("sparse keyframes, one keyframe or none apart keep the extent's share", () 
       [3, DEPTH_SHARE],
     ],
   );
-});
-
-test("the keyframe size slider spans about 1/20 to 2 of a map's own depth, logarithmically", () => {
-  assert.equal(sizeFactor(0), 1);
-  assert.equal(sizeFactor(SIZE_LIMITS[1]), 2);
-  assert.ok(
-    Math.abs(sizeFactor(SIZE_LIMITS[0]) - 1 / 20) < 0.002,
-    String(sizeFactor(SIZE_LIMITS[0])),
-  );
-  // Each step scales alike: ten steps are a doubling, wherever they start.
-  assert.equal(sizeFactor(-20), 0.25);
-  assert.ok(Math.abs(sizeFactor(-17) / sizeFactor(-27) - 2) < 1e-12);
-  // What storage or the slider holds: rounded, held to the ends, and 0 for nothing usable.
-  assert.equal(sizeStep("-20"), -20);
-  assert.equal(sizeStep("3.6"), 4);
-  assert.equal(sizeStep("-99"), SIZE_LIMITS[0]);
-  assert.equal(sizeStep("99"), SIZE_LIMITS[1]);
-  for (const nothing of [null, "", "large", "Infinity"]) {
-    assert.equal(sizeStep(nothing), 0, String(nothing));
-  }
-  assert.equal(format.factor(sizeFactor(0)), "×1");
-  assert.equal(format.factor(sizeFactor(-20)), "×0.25");
-  assert.equal(format.factor(sizeFactor(SIZE_LIMITS[0])), "×0.051");
-  assert.equal(format.factor(sizeFactor(5)), "×1.4");
 });
 
 test("the header's numbers read in their units", () => {

@@ -48,10 +48,11 @@ void main() {
 
 const FRAGMENT = `
 uniform vec3 colour;
+uniform float alpha;
 varying float shown;
 void main() {
   if (shown < 0.5) discard;
-  gl_FragColor = vec4(colour, 1.0);
+  gl_FragColor = vec4(colour, alpha);
 }`;
 
 /**
@@ -64,7 +65,8 @@ function colour(name) {
 }
 
 /**
- * A material that draws only what is alive at its `frame` uniform, of its `shownMap`.
+ * A material that draws only what is alive at its `frame` uniform, of its `shownMap`, opaque
+ * until its `alpha` uniform is set lower (`SceneView.setPointOpacity`).
  * @param {string} token The colour's CSS property.
  * @param {number} size A point's size, in pixels.
  * @returns {THREE.ShaderMaterial} The material.
@@ -76,6 +78,7 @@ function livingMaterial(token, size) {
       shownMap: { value: -1 },
       size: { value: size },
       colour: { value: colour(token) },
+      alpha: { value: 1 },
     },
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,
@@ -207,6 +210,10 @@ export class SceneView {
     this.size = 1;
     /** @type {THREE.BufferGeometry | null} The run's keyframes' frustums. */
     this.keyframeGeometry = null;
+    /** The map points' opacity (the point opacity slider's), from 0 to 1. */
+    this.pointOpacity = 1;
+    /** @type {THREE.ShaderMaterial | null} The run's map points' material. */
+    this.pointMaterial = null;
     new ResizeObserver(() => this.resize()).observe(box);
   }
 
@@ -234,6 +241,8 @@ export class SceneView {
     const links = livingMaterial("--graph-link", 1);
     const loops = livingMaterial("--graph-loop", 1);
     this.living = [keyframes, points, tree, links, loops];
+    this.pointMaterial = points;
+    this.setPointOpacity(this.pointOpacity);
     this.keyframeGeometry = livingGeometry(
       this.keyframeFrustums(run),
       run.keyframeLives,
@@ -285,6 +294,26 @@ export class SceneView {
     position.copyArray(this.keyframeFrustums(this.run));
     position.needsUpdate = true;
     this.keyframeGeometry.computeBoundingSphere(); // three.js culls the lines by it
+  }
+
+  /**
+   * Draw the map points at an opacity: below 1 they blend over what is behind them, and write no
+   * depth, so that a faint point never hides another or what is drawn after it.
+   * @param {number} opacity The opacity, from 0 to 1 (the point opacity slider's).
+   */
+  setPointOpacity(opacity) {
+    this.pointOpacity = opacity;
+    const material = this.pointMaterial;
+    if (material === null) {
+      return;
+    }
+    material.uniforms.alpha.value = opacity;
+    const transparent = opacity < 1;
+    if (material.transparent !== transparent) {
+      material.transparent = transparent;
+      material.depthWrite = !transparent;
+      material.needsUpdate = true;
+    }
   }
 
   /**

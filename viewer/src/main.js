@@ -7,11 +7,11 @@ import { BACKENDS, bundleAddress, loadBackend, loadBundle, loadTrack } from "./b
 import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
-import { SIZE_LIMITS, sizeFactor, sizeStep } from "./geometry.js";
 import { ImageView } from "./image_view.js";
 import { element, remember, remembered } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
+import { OPACITY_RANGE, SIZE_RANGE, opacityPercent, sizeFactor, sizeStep } from "./settings.js";
 import { SolverView } from "./solver_view.js";
 import {
   LOST,
@@ -29,6 +29,22 @@ const SPAN_ROW = 4;
 
 /** Where the browser remembers the keyframe size slider's step. */
 const SIZE_KEY = "slam-it.keyframe-size";
+
+/** Where the browser remembers the point opacity slider's percentage. */
+const OPACITY_KEY = "slam-it.point-opacity";
+
+/**
+ * One of the 3D panel's sliders: its input's id (its value shown in `<id>-value`), where the
+ * browser remembers it, its range, its value from text, the text it is shown as, and what it
+ * sets.
+ * @typedef {object} Slider
+ * @property {string} id The input's id.
+ * @property {string} key Its storage key.
+ * @property {import("./settings.js").Range} range Its least and greatest values, and its step.
+ * @property {(text: string | null) => number} read Its value from text (`settings.js`).
+ * @property {(value: number) => string} text Its value as shown.
+ * @property {(value: number) => void} apply What a value sets.
+ */
 
 /**
  * How to fetch a bundle's files, from where it is served.
@@ -263,30 +279,27 @@ function bindPlayback(playhead, scrubber) {
 }
 
 /**
- * Bind the keyframe size slider to the 3D view: its step remembered in this browser where it
- * can be, else each map's own depth.
- * @param {SceneView} scene The 3D view.
- * @param {() => void} redraw Draw the view again at the frame shown.
+ * Bind one of the 3D panel's sliders: its range, its value shown beside it and remembered in
+ * this browser where it can be (else its default), and what moving it sets.
+ * @param {Slider} slider The slider.
+ * @param {() => void} redraw Draw the 3D view again at the frame shown.
  */
-function bindKeyframeSize(scene, redraw) {
-  const slider = element("keyframe-size", HTMLInputElement);
-  const shown = element("keyframe-size-value", HTMLOutputElement);
-  slider.min = String(SIZE_LIMITS[0]);
-  slider.max = String(SIZE_LIMITS[1]);
-  slider.step = "1";
-  /** @param {number} step The slider's step. */
-  function set(step) {
-    const factor = sizeFactor(step);
-    shown.textContent = format.factor(factor);
-    scene.setKeyframeSize(factor);
+function bindSlider({ id, key, range, read, text, apply }, redraw) {
+  const input = element(id, HTMLInputElement);
+  const shown = element(`${id}-value`, HTMLOutputElement);
+  [input.min, input.max, input.step] = range.map(String);
+  /** @param {number} value The slider's value. */
+  function set(value) {
+    shown.textContent = text(value);
+    apply(value);
   }
-  const step = sizeStep(remembered(SIZE_KEY));
-  slider.value = String(step);
-  set(step);
-  slider.addEventListener("input", () => {
-    const step = sizeStep(slider.value);
-    set(step);
-    remember(SIZE_KEY, String(step));
+  const value = read(remembered(key));
+  input.value = String(value);
+  set(value);
+  input.addEventListener("input", () => {
+    const value = read(input.value);
+    set(value);
+    remember(key, String(value));
     redraw();
   });
 }
@@ -437,7 +450,30 @@ async function main() {
     scene.fit();
     scene.render();
   });
-  bindKeyframeSize(scene, () => scene.show(playhead.frame));
+  /** Draw the 3D view again, alone, at the frame shown. */
+  const redrawScene = () => scene.show(playhead.frame);
+  bindSlider(
+    {
+      id: "keyframe-size",
+      key: SIZE_KEY,
+      range: SIZE_RANGE,
+      read: sizeStep,
+      text: (step) => format.factor(sizeFactor(step)),
+      apply: (step) => scene.setKeyframeSize(sizeFactor(step)),
+    },
+    redrawScene,
+  );
+  bindSlider(
+    {
+      id: "point-opacity",
+      key: OPACITY_KEY,
+      range: OPACITY_RANGE,
+      read: opacityPercent,
+      text: (percent) => format.percent(percent / 100),
+      apply: (percent) => scene.setPointOpacity(percent / 100),
+    },
+    redrawScene,
+  );
 
   /** @param {unknown} error What went wrong. */
   function fail(error) {

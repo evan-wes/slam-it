@@ -258,17 +258,20 @@ input:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
-/* The keyframe size slider, its value in a fixed width so the head holds still as it moves. */
-.size input[type="range"] {
+/* The 3D panel's sliders, each value in a fixed width so the head holds still as they move. */
+.slider input[type="range"] {
   width: 90px;
   margin: 0;
   accent-color: var(--accent);
 }
-.size output {
-  min-width: 6ch;
+.slider output {
+  min-width: 4ch;
   text-transform: none;
   letter-spacing: 0;
   color: var(--ink);
+}
+#keyframe-size-value {
+  min-width: 6ch;
 }
 select {
   background: var(--surface);
