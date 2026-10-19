@@ -408,6 +408,43 @@ select {
 .tag:empty {
   display: none;
 }
+/* The "seen before" inset: around a loop closed, the earlier pass at the same place, in the
+   frame's bottom-right corner, clear of its tag (top left), its label above it; twice as tall on
+   a click. */
+.inset {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  height: 30%;
+  padding: 0;
+  border: 2px solid var(--graph-loop);
+  background: var(--ground);
+  cursor: zoom-in;
+}
+.inset[aria-pressed="true"] {
+  height: 60%;
+  cursor: zoom-out;
+}
+.inset[hidden] {
+  display: none;
+}
+.inset canvas {
+  display: block;
+  height: 100%;
+  width: auto;
+}
+.inset span {
+  position: absolute;
+  right: -2px;
+  bottom: 100%;
+  padding: 1px 6px;
+  font-family: var(--mono);
+  font-size: 0.64rem;
+  white-space: nowrap;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--graph-loop);
+}
 
 .scene-box {
   position: relative;

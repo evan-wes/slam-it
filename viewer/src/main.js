@@ -360,9 +360,15 @@ async function main() {
       top: tracks.length * SPAN_ROW,
       previous: element("prev-loop", HTMLButtonElement),
       next: element("next-loop", HTMLButtonElement),
+      toggle: element("seen-before", HTMLButtonElement),
+      inset: element("inset", HTMLButtonElement),
+      picture: element("inset-image", HTMLCanvasElement),
+      label: element("inset-label", HTMLElement),
     },
     bundle,
+    fetchFile,
     (frame) => playhead.seek(frame),
+    (error) => fail(error),
   );
 
   /** Show the playhead's frame, for the run chosen. */
@@ -373,7 +379,7 @@ async function main() {
     for (const button of backends.querySelectorAll("button")) {
       button.disabled = !ran(trackOf(button.dataset.backend), frame);
     }
-    loops.show(frame);
+    loops.show(frame).catch((error) => fail(error));
     if (run === null) {
       return;
     }

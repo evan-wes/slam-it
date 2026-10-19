@@ -114,12 +114,34 @@
       <section class="panel image-panel" aria-label="the frame as the pipeline saw it">
         <div class="panel-head">
           <h2>Frame</h2>
+          <button
+            type="button"
+            class="ghost toggle"
+            id="seen-before"
+            aria-pressed="true"
+            title="around each loop the run closed, the earlier pass at the same place, in the frame's corner"
+            hidden
+          >
+            seen before
+          </button>
           <span class="spacer"></span>
           <div class="legend" id="legend" aria-label="keypoint fates"></div>
         </div>
         <div class="image-box">
           <canvas id="image" role="img" aria-label="the frame and its keypoints"></canvas>
           <span class="tag" id="image-tag"></span>
+          <button
+            type="button"
+            class="inset"
+            id="inset"
+            aria-pressed="false"
+            aria-label="the earlier pass at this place, larger or smaller"
+            title="the earlier pass at this place, around a loop closed: click to enlarge or shrink it"
+            hidden
+          >
+            <canvas id="inset-image"></canvas>
+            <span id="inset-label"></span>
+          </button>
         </div>
       </section>
 

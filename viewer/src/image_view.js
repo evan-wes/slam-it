@@ -1,5 +1,6 @@
 // The image panel: the frame as the pipeline saw it, its keypoints drawn over it in the colour of
-// their fate. Frames are decoded once and kept while near the playhead.
+// their fate. Frames are decoded once and kept while near the playhead (`FrameImages`, which the
+// "seen before" inset loads its own frames through).
 
 import { FATES, FATE_HINTS } from "./frames.js";
 import { ChunkCache, chunkOf, chunksAround, frameBytes, onCanvas } from "./images.js";
@@ -19,37 +20,35 @@ function token(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-/** The frame as the pipeline saw it, its keypoints in their fates' colours, and the fates'
- *  counts in the legend. */
-export class ImageView {
+/** A bundle's frames' images: each fetched with its chunk and decoded once, kept while near the
+ *  frame last asked for. */
+export class FrameImages {
   /**
-   * @param {HTMLCanvasElement} canvas Where the frame is drawn.
-   * @param {HTMLElement} legend Where the fates' colours are listed.
-   * @param {HTMLElement} tag The label over the frame.
    * @param {import("./bundle.js").Bundle} bundle The bundle.
    * @param {import("./bundle.js").Fetch} fetch How to fetch one of its files.
+   * @param {number} chunks The chunks kept.
+   * @param {number} kept The decoded frames kept.
    */
-  constructor(canvas, legend, tag, bundle, fetch) {
-    this.canvas = canvas;
-    this.tag = tag;
+  constructor(bundle, fetch, chunks, kept) {
     this.bundle = bundle;
-    this.chunks = new ChunkCache(fetch, CHUNKS);
+    this.chunks = new ChunkCache(fetch, chunks);
+    this.kept = kept;
     /** @type {Map<number, Promise<ImageBitmap>>} */
     this.decoded = new Map();
-    this.shown = -1; // the frame last asked for: an older one's late decode is not drawn
-    canvas.width = bundle.info.camera.width;
-    canvas.height = bundle.info.camera.height;
-    /** @type {HTMLElement[]} */
-    this.counts = FATES.map((fate) => {
-      const item = document.createElement("span");
-      item.title = FATE_HINTS[fate];
-      const swatch = document.createElement("i");
-      swatch.style.background = `var(--fate-${fate})`;
-      const count = document.createElement("b");
-      item.append(swatch, fate, " ", count);
-      legend.append(item);
-      return count;
-    });
+  }
+
+  /**
+   * Fetch a frame's chunk, and the next, ahead of drawing it.
+   * @param {number} frame The frame.
+   */
+  ahead(frame) {
+    for (const chunk of chunksAround(
+      frame,
+      this.bundle.info.frames,
+      this.bundle.info.images.chunk,
+    )) {
+      this.chunks.get(chunk).catch(() => {}); // fetched ahead; a failure shows when drawn
+    }
   }
 
   /**
@@ -71,16 +70,47 @@ export class ImageView {
       held.catch(() => this.decoded.delete(frame));
       this.decoded.set(frame, held);
       for (const [old] of this.decoded) {
-        if (this.decoded.size <= DECODED) {
+        if (this.decoded.size <= this.kept) {
           break;
         }
-        if (Math.abs(old - frame) > DECODED / 2) {
+        if (Math.abs(old - frame) > this.kept / 2) {
           this.decoded.get(old)?.then((bitmap) => bitmap.close());
           this.decoded.delete(old);
         }
       }
     }
     return held;
+  }
+}
+
+/** The frame as the pipeline saw it, its keypoints in their fates' colours, and the fates'
+ *  counts in the legend. */
+export class ImageView {
+  /**
+   * @param {HTMLCanvasElement} canvas Where the frame is drawn.
+   * @param {HTMLElement} legend Where the fates' colours are listed.
+   * @param {HTMLElement} tag The label over the frame.
+   * @param {import("./bundle.js").Bundle} bundle The bundle.
+   * @param {import("./bundle.js").Fetch} fetch How to fetch one of its files.
+   */
+  constructor(canvas, legend, tag, bundle, fetch) {
+    this.canvas = canvas;
+    this.tag = tag;
+    this.images = new FrameImages(bundle, fetch, CHUNKS, DECODED);
+    this.shown = -1; // the frame last asked for: an older one's late decode is not drawn
+    canvas.width = bundle.info.camera.width;
+    canvas.height = bundle.info.camera.height;
+    /** @type {HTMLElement[]} */
+    this.counts = FATES.map((fate) => {
+      const item = document.createElement("span");
+      item.title = FATE_HINTS[fate];
+      const swatch = document.createElement("i");
+      swatch.style.background = `var(--fate-${fate})`;
+      const count = document.createElement("b");
+      item.append(swatch, fate, " ", count);
+      legend.append(item);
+      return count;
+    });
   }
 
   /**
@@ -93,14 +123,8 @@ export class ImageView {
    */
   async show(frame, keypoints, note) {
     this.shown = frame;
-    for (const chunk of chunksAround(
-      frame,
-      this.bundle.info.frames,
-      this.bundle.info.images.chunk,
-    )) {
-      this.chunks.get(chunk).catch(() => {}); // fetched ahead; a failure shows when drawn
-    }
-    const bitmap = await this.image(frame);
+    this.images.ahead(frame);
+    const bitmap = await this.images.image(frame);
     if (this.shown !== frame) {
       return;
     }
