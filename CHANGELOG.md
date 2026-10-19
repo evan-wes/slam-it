@@ -27,7 +27,10 @@ template is `docs/dashcam.template.toml`.
   The D016's formats are a built-in profile (`dashcam.d016`), its data stream's GPS records
   read for their time, speed and course (`dashcam.stream`). Every step skips a damaged
   segment (`eval.video.DamagedSegmentError`: one that cannot be read through) with a
-  warning and goes on, `overlay` and `import` listing those skipped.
+  warning and goes on, `overlay` and `import` listing those skipped. `mask`, `overlay` and
+  `calibrate` refuse to replace what they wrote before, and each step checks everything it
+  would write, and the earlier steps' outputs it reads, before it writes anything, so a
+  refusal leaves nothing half done.
 - **`slam_it.eval.gnss`**: a gated constant-velocity Kalman filter with an RTS smoother over
   GNSS fixes, and a run's maps scored against the track in their plane of motion, in metres.
 - **The `dashcam` extra** (PyAV, pytesseract, pycolmap) and Tesseract in the conda layer;
@@ -45,7 +48,9 @@ template is `docs/dashcam.template.toml`.
   with Tesseract (skipped without it) and the lag from reads; the filter's gating, restart
   and smoothing and the planar scoring; each calibration stage on a synthetic rig drive; a
   damaged segment skipped by each step, one failing partway taken back, all damaged refused,
-  and a segment with concealed corrupt frames kept.
+  and a segment with concealed corrupt frames kept; and `mask`, `overlay` and `calibrate` each
+  refusing before they write: a preview left from before, the rear's overlay already read, the
+  rear's overlay not yet read.
 - The guard against local paths and personal details (`tests/test_no_local_paths.py`) holds
   the folders the project lived in and the personal tools' folders as SHA-256 digests, as it
   holds the owner's name, so it no longer spells them out; it finds them whatever joins their

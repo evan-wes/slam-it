@@ -13,9 +13,11 @@ named by the drive's id (its first front segment's start, ``YYYYMMDD_HHMMSS``):
 - ``import``: import one camera's share of a drive, or a window of it, as a TUM-format sequence
   (:mod:`.ingest`), with the config's lens and mask and the overlay's lag.
 
-``mask``, ``overlay`` and ``calibrate`` refuse to replace what they wrote before. Every step
-skips a damaged segment with a warning and goes on (:func:`.drives.skip`); ``overlay`` and
-``import`` list those skipped in what they write and print.
+``mask``, ``overlay`` and ``calibrate`` refuse to replace what they wrote before. Each step
+checks everything it would write, and the earlier steps' outputs it reads, before it writes
+anything, so a refusal leaves nothing half done. Every step skips a damaged segment with a
+warning and goes on (:func:`.drives.skip`); ``overlay`` and ``import`` list those skipped in
+what they write and print.
 """
 
 from __future__ import annotations
@@ -77,12 +79,16 @@ def _skipped(skipped: Sequence[tuple[str, str]]) -> str:
     )
 
 
-def _fresh(path: Path) -> Path:
-    """Return a path to write, refusing one that exists."""
-    if path.exists():
-        raise InvalidInputError(f"{path}: exists; move it aside to write it again")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
+def _fresh(*paths: Path) -> None:
+    """Refuse if any of a step's outputs exists, then make the folders they go in.
+
+    A step passes every output it writes, before it writes the first.
+    """
+    for path in paths:
+        if path.exists():
+            raise InvalidInputError(f"{path}: exists; move it aside to write it again")
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _read_overlay(folder: Path, camera: str) -> dict[str, Any]:
@@ -116,15 +122,17 @@ def _mask(settings: config.Config, args: argparse.Namespace) -> None:
     name, drive = _drive(settings, args.drive)
     camera = settings.camera(args.camera)
     segments = _segments(drive, args.camera, args.start, args.end)
-    target = _fresh(camera.mask)
+    target = camera.mask
+    shown = settings.work / name / f"mask_{args.camera}_preview.png"
+    _fresh(target, shown)
     static = mask.measure([s.path for s in segments], every=args.every, share=args.share)
     first, (width, height) = _sized(segments)
     finished = mask.finish(static, width, height, bottom=camera.bottom, lines=camera.lines)
-    images.write_png(target, finished)
     _, frame = next(video.sample_frames(first.path, every=1.0, width=960))
     small = mask.scaled(finished, frame.shape[1], frame.shape[0])
     preview = np.where((small == 0)[..., None], frame // 3, frame).astype(np.uint8)
-    images.write_png(_fresh(settings.work / name / f"mask_{args.camera}_preview.png"), preview)
+    images.write_png(target, finished)
+    images.write_png(shown, preview)
     share = float((finished == 0).mean())
     print(f"{target}: {width}x{height}, {share:.1%} dropped, from {len(segments)} segments")
 
@@ -132,9 +140,11 @@ def _mask(settings: config.Config, args: argparse.Namespace) -> None:
 def _overlay(settings: config.Config, args: argparse.Namespace) -> None:
     """Read each camera's overlay over a drive, and write its fixes and lag."""
     name, drive = _drive(settings, args.drive)
-    for camera in args.cameras:
-        target = _fresh(settings.work / name / f"overlay_{camera}.json")
-        segments = _segments(drive, camera, args.start, args.end)
+    chosen = {camera: _segments(drive, camera, args.start, args.end) for camera in args.cameras}
+    targets = {camera: settings.work / name / f"overlay_{camera}.json" for camera in chosen}
+    _fresh(*targets.values())
+    for camera, segments in chosen.items():
+        target = targets[camera]
         read = overlay.read(segments, every=args.every, jobs=args.jobs)
         record = {
             "camera": camera,
@@ -156,16 +166,16 @@ def _calibrate(settings: config.Config, args: argparse.Namespace) -> None:
     """Calibrate the rig over a drive, or a window of it."""
     name, drive = _drive(settings, args.drive)
     folder = settings.work / name
-    target = _fresh(folder / "calibration.json")
+    target = folder / "calibration.json"
     work = folder / "calibration"
-    if work.exists():
-        raise InvalidInputError(f"{work}: exists; move it aside to calibrate again")
+    chosen = {camera: _segments(drive, camera, args.start, args.end) for camera in ("F", "R")}
+    sizes = {camera: _sized(segments)[1] for camera, segments in chosen.items()}
+    overlays = {camera: _read_overlay(folder, camera) for camera in chosen}
+    track = _track(overlays["F"]["fixes"])
+    _fresh(target, work)
     found: dict[str, tuple[dict[float, calibrate.Array], calibrate.Lens]] = {}
-    sizes: dict[str, tuple[int, int]] = {}
-    for camera in ("F", "R"):
-        segments = _segments(drive, camera, args.start, args.end)
-        sizes[camera] = _sized(segments)[1]
-        lag = float(_read_overlay(folder, camera)["lag"])
+    for camera, segments in chosen.items():
+        lag = float(overlays[camera]["lag"])
         frames = work / camera / "frames"
         clocks = calibrate.extract_frames(segments, frames, lag=lag, fps=args.fps, width=args.width)
         width, height = images.size(frames / next(iter(clocks)))
@@ -181,7 +191,6 @@ def _calibrate(settings: config.Config, args: argparse.Namespace) -> None:
             f"{camera}: {lens.registered} of {lens.frames} frames placed, "
             f"{lens.error:.2f} px reprojection error, fx/fy {lens.aspect:.4f}"
         )
-    track = _track(_read_overlay(folder, "F")["fixes"])
     report = calibrate.solve(
         found["F"][0],
         found["R"][0],

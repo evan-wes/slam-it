@@ -318,3 +318,49 @@ def test_the_steps_list_mask_and_import_a_drive(
         main(["import", str(path), "--drive", drive, "--camera", "R", str(tmp_path / "r")])
     with pytest.raises(InvalidInputError, match="not on the card"):
         main(["mask", str(path), "--drive", "20000101_000000", "--camera", "R"])
+
+
+def _one_drive(tmp_path: Path) -> tuple[Path, str]:
+    """Write a card of one drive, front and rear, and its config; return the config and drive."""
+    root = tmp_path / "card"
+    card(root, "F", [START], frames=10, rate=5)
+    card(root, "R", [START + dt.timedelta(seconds=1)], frames=10, rate=5)
+    return _config(tmp_path, FRONT_LENS), START.strftime("%Y%m%d_%H%M%S")
+
+
+def test_the_mask_step_refuses_before_writing_if_its_preview_exists(tmp_path: Path) -> None:
+    """A preview left from before refuses the mask step before it writes the mask."""
+    path, drive = _one_drive(tmp_path)
+    preview = tmp_path / "work" / drive / "mask_F_preview.png"
+    preview.parent.mkdir(parents=True)
+    preview.write_bytes(b"")
+    with pytest.raises(InvalidInputError, match=r"mask_F_preview\.png: exists"):
+        main(["mask", str(path), "--drive", drive, "--camera", "F"])
+    assert not (tmp_path / "masks").exists()
+
+
+def test_the_overlay_step_refuses_before_reading_if_any_cameras_output_exists(
+    tmp_path: Path,
+) -> None:
+    """The rear's output left from before refuses the overlay step before it reads the front."""
+    path, drive = _one_drive(tmp_path)
+    folder = tmp_path / "work" / drive
+    folder.mkdir(parents=True)
+    (folder / "overlay_R.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(InvalidInputError, match=r"overlay_R\.json: exists"):
+        main(["overlay", str(path), "--drive", drive])
+    assert [p.name for p in folder.iterdir()] == ["overlay_R.json"]
+
+
+def test_the_calibrate_step_refuses_before_writing_if_an_overlay_is_missing(
+    tmp_path: Path,
+) -> None:
+    """A rear overlay not yet read refuses the calibration before it extracts the front's frames."""
+    path, drive = _one_drive(tmp_path)
+    folder = tmp_path / "work" / drive
+    folder.mkdir(parents=True)
+    overlay = {"camera": "F", "lag": 0.0, "reads": 0, "kept": 0, "segments": [], "fixes": []}
+    (folder / "overlay_F.json").write_text(json.dumps(overlay), encoding="utf-8")
+    with pytest.raises(InvalidInputError, match=r"overlay_R\.json: missing"):
+        main(["calibrate", str(path), "--drive", drive])
+    assert [p.name for p in folder.iterdir()] == ["overlay_F.json"]
