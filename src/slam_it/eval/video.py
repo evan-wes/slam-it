@@ -20,6 +20,9 @@ shares).
 **Frames.**
 
 - Decoded with PyAV (FFmpeg): this is the one module that imports it, by a contract.
+- Read and decoded packet by packet, to the last frame (:func:`_decoded`): a read that says
+  "try again" (EAGAIN) is read again, not taken for damage, and the decoder is flushed at the
+  end, so a decoder working on several frames at once gives up those it holds.
 - Turned upright: the rotation the file declares (a phone stores a portrait video on its side)
   is applied, and the intrinsics are turned with it.
 - Timed by each frame's presentation time, since a phone's frame rate varies. A frame closer
@@ -36,6 +39,15 @@ written is then at most :data:`MAX_ASPECT` times :data:`SHORT_SIDE` long.
 **A dataset's video** (:mod:`slam_it.eval.advio`) is imported by :func:`import_video` with its
 own :class:`Limits`, a longer video and another short side, and may give each frame's time
 from the dataset's own clock, so that its ground truth's times match.
+
+**A dashcam's segments** (:mod:`slam_it.eval.dashcam`), local recordings, never uploads, are
+MPEG-TS files, opened with FFmpeg's MPEG-TS demuxer alone and files as the only protocol
+(:data:`_SEGMENT_DEMUXER`). They are sampled in
+time (:func:`sample_frames`), their data stream's packets read (:func:`data_packets`), or
+joined, in order, into one sequence (:func:`import_segments`): each frame timed by its
+segment's start on the caller's clock plus its time in the segment, and written as a video's
+are, within the caller's :class:`Limits` and with no upload cap. A card holds the odd damaged
+segment (:class:`DamagedSegmentError`), which the join skips whole, with a warning.
 
 **Containers.** An upload is opened with FFmpeg's mov/mp4 demuxer alone, which phones' videos
 and Stray Scanner's are in, and with files as its only protocol. Any other container is
@@ -107,10 +119,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import io
 import json
 import re
 import sys
+import warnings
 import zipfile
 import zlib
 from collections.abc import Iterator, Mapping, Sequence
@@ -176,6 +190,10 @@ class Limits:
 UPLOAD = Limits()
 """An upload's limits: :data:`MAX_SECONDS`, :data:`MAX_DECODED` and :data:`SHORT_SIDE`."""
 
+SEGMENT_SECONDS = 600.0
+"""The longest recorded segment sampled (:func:`sample_frames`), in seconds: a dashcam records
+a few minutes a segment."""
+
 MIN_SPACING = 1.0 / 40.0
 """The least time between two frames kept, in seconds: a 60 fps video keeps every other frame,
 and a 30 fps one, its frame times jittering by a few milliseconds, keeps every frame."""
@@ -208,6 +226,38 @@ _DEMUXER = "mov"
 
 _OPEN_OPTIONS = {"protocol_whitelist": "file", "enable_drefs": "0"}
 """How an upload is opened: as a file alone, never following the references a MOV may hold."""
+
+_SEGMENT_DEMUXER = "mpegts"
+"""The demuxer a dashcam's segments are opened with (:func:`import_segments`): MPEG-TS, the
+local recordings of :mod:`slam_it.eval.dashcam`, never an upload."""
+
+_SEGMENT_OPTIONS = {"protocol_whitelist": "file"}
+"""How a segment is opened: as a file alone."""
+
+_READ_RETRIES = 64
+"""The most times in a row a read may say "try again" (EAGAIN), no packet between, before the
+error stands (:func:`_packets`). FFmpeg's MPEG-TS demuxer says it where it finds no sync byte
+within its resync window (64 KiB by default) or before the file ends, and moves on each time:
+this many in a row is some 4 MiB holding no packet, a read going nowhere."""
+
+
+class DamagedSegmentError(InvalidInputError):
+    """A recorded segment that cannot be read through: a damaged file.
+
+    Raised when the segment does not open as MPEG-TS, has no video stream or no stated frame
+    size, its demuxing or decoding raises, a frame has no presentation time, or it holds no
+    frame at all. A decoder that conceals a corrupt frame and goes on raises nothing, and a
+    file cut short decodes the frames it holds: neither is damage. Nor is a read that says "try
+    again" (EAGAIN), as FFmpeg's MPEG-TS demuxer does in the bytes a camera may leave after a
+    segment's last packet: it is read again, a bounded number of times (:func:`_packets`). A
+    missing file, or one over the caller's limits, is the caller's to fix, not damage. The
+    dashcam's steps skip a damaged segment (:func:`import_segments`).
+    """
+
+
+class SkippedSegmentWarning(UserWarning):
+    """A damaged segment skipped (:class:`DamagedSegmentError`), with its name and why."""
+
 
 _ZIP_ERRORS = (zipfile.BadZipFile, zlib.error, EOFError, RuntimeError, NotImplementedError)
 """What reading a zip's entry raises when the zip is corrupt, encrypted or compressed in a way
@@ -308,6 +358,53 @@ def _open(path: Path, *, edits: bool = True) -> av.container.InputContainer:
     return container
 
 
+def _packets(
+    container: av.container.InputContainer, *streams: av.stream.Stream
+) -> Iterator[av.Packet[av.stream.Stream]]:
+    """Yield the streams' packets in file order, a read that says "try again" read again.
+
+    A read's EAGAIN (:class:`av.error.BlockingIOError`) is not damage. FFmpeg's MPEG-TS demuxer
+    says it where it finds no TS packet's sync byte, as in the bytes a camera may leave after a
+    segment's last packet, and says it before its parser has given up the last frame, which the
+    next read gives; FFmpeg's own ``ffmpeg`` reads again after it (``fftools/ffmpeg_demux.c``).
+    PyAV's demuxing ends at it, so it is started again where the file was left, up to
+    :data:`_READ_RETRIES` times in a row; then the error stands, as any other does. The last
+    packets are PyAV's empty ones, one a stream, which flush its decoder.
+    """
+    packets = container.demux(*streams)
+    again = 0
+    while True:
+        try:
+            packet = next(packets)
+        except StopIteration:
+            return
+        except av.error.BlockingIOError as error:
+            again += 1
+            if error.errno != errno.EAGAIN or again > _READ_RETRIES:
+                raise
+            packets = container.demux(*streams)
+            continue
+        again = 0
+        yield packet
+
+
+def _decoded(
+    container: av.container.InputContainer, stream: av.VideoStream
+) -> Iterator[av.VideoFrame]:
+    """Yield a video stream's frames, decoded packet by packet, every one to the last.
+
+    Each packet read (:func:`_packets`) is sent to the decoder and the frames it has ready are
+    taken. PyAV's empty packet at the end flushes it, so a decoder working on several frames at
+    once (frame threading) gives up those it holds; that packet carries the stream's time base,
+    so the frames it gives are timed, where ``decode(None)``'s come with no time (NaN). A decode
+    that raises stands, EAGAIN included: FFmpeg's decoder says it to a packet only while the one
+    sent before is still waiting (``avcodec_send_packet``), and PyAV, taking every frame ready
+    after each packet it sends, leaves none waiting.
+    """
+    for packet in _packets(container, stream):
+        yield from stream.decode(packet)
+
+
 def _decode(
     path: Path, *, edits: bool = True, limits: Limits = UPLOAD
 ) -> Iterator[tuple[float, av.VideoFrame]]:
@@ -315,7 +412,7 @@ def _decode(
     with _open(path, edits=edits) as container:
         first = None
         try:
-            for index, frame in enumerate(container.decode(video=0)):
+            for index, frame in enumerate(_decoded(container, container.streams.video[0])):
                 if index >= limits.max_frames:
                     raise InvalidInputError(f"{path.name}: more than {limits.max_frames} frames")
                 if frame.time is None:
@@ -433,60 +530,116 @@ def _write_frames(  # noqa: PLR0913 -- the video, the folder, the lens; how, key
     A `mask` at the frames' stored size is written as ``mask.png``, carried through their
     geometry (the module docstring).
     """
-    times: list[float] = []
-    decoded: list[int] = []
-    listed: list[tuple[str, str]] = []
-    geometry: _Geometry | None = None
+    writer = _Writer(out, video.name, lens, limits=limits)
+    for index, time, frame in _clocked(video, edits=edits, limits=limits, clock=clock):
+        writer.add(index, time, frame)
+    return writer.finish(mask)
+
+
+def _clocked(
+    video: Path, *, edits: bool, limits: Limits, clock: Sequence[float] | None
+) -> Iterator[tuple[int, float, av.VideoFrame]]:
+    """Yield each decoded frame's index, its time (the video's, or `clock`'s) and the frame."""
     count = 0
     for index, (elapsed, frame) in enumerate(_decode(video, edits=edits, limits=limits)):
         count = index + 1
         if clock is not None and index >= len(clock):
             raise InvalidInputError(f"{video.name}: more frames than the {len(clock)} timed")
-        time = elapsed if clock is None else clock[index]
-        geometry = geometry or _geometry(frame, lens, limits.short_side)
+        yield index, (elapsed if clock is None else clock[index]), frame
+    if clock is not None and count and count != len(clock):  # none at all: "no frames"
+        raise InvalidInputError(f"{video.name}: {count} frames, {len(clock)} timed")
+
+
+class _Writer:
+    """Writes timed frames into a TUM-format folder, as :func:`_write_frames` describes.
+
+    The frames added since a :meth:`mark` can be taken back, the files written for them
+    removed: a damaged segment's (:func:`import_segments`). `name` is what an error calls the
+    frames.
+    """
+
+    def __init__(
+        self,
+        out: Path,
+        name: str,
+        lens: lenses.Pinhole | lenses.Fisheye | lenses.RadTan,
+        *,
+        limits: Limits,
+    ) -> None:
+        """Start writing into `out`, nothing written yet."""
+        self.out, self.name, self.lens, self.limits = out, name, lens, limits
+        self.times: list[float] = []
+        self.decoded: list[int] = []
+        self.listed: list[tuple[str, str]] = []
+        self.geometry: _Geometry | None = None
+        self.count = 0
+
+    def add(self, index: int, time: float, frame: av.VideoFrame) -> None:
+        """Write a decoded frame, its index among the decoded frames, if it is kept."""
+        self.count = index + 1
+        geometry = self.geometry or _geometry(frame, self.lens, self.limits.short_side)
+        self.geometry = geometry
         if (frame.width, frame.height) != geometry.stored:
             width, height = geometry.stored
             raise InvalidInputError(
-                f"{video.name}: frame {index} is {frame.width}x{frame.height}, the first "
+                f"{self.name}: frame {index} is {frame.width}x{frame.height}, the first "
                 f"{width}x{height}: a video's frames must all be one size"
             )
-        if not _kept(time, times):
-            continue
+        if not _kept(time, self.times):
+            return
         stamp = f"{time:.6f}"
-        images.write_png(out / "rgb" / f"{stamp}.png", _picture(frame, geometry))
-        listed.append((stamp, f"rgb/{stamp}.png"))
-        times.append(float(stamp))  # as rgb.txt has it, for the ground truth to match
-        decoded.append(index)
-    if geometry is None:
-        raise InvalidInputError(f"{video.name}: no frames")
-    if clock is not None and count != len(clock):
-        raise InvalidInputError(f"{video.name}: {count} frames, {len(clock)} timed")
-    if mask is not None:
-        width, height = geometry.stored
-        if mask.shape != (height, width):
-            raise InvalidInputError(
-                f"mask: expected the video's stored size {width}x{height}, got "
-                f"{mask.shape[1]}x{mask.shape[0]}"
-            )
-        images.write_png(out / tum.MASK_FILE, _mask_picture(mask, geometry))
-    camera = geometry.camera
-    matrix = _matrix(camera)
-    tum.write_list(out / "rgb.txt", listed)
-    tum.write_camera(
-        out,
-        tum.Camera(
-            "radtan" if isinstance(camera, lenses.RadTan) else "pinhole",
-            camera.intrinsics()
-            if isinstance(camera, lenses.RadTan)
-            else np.array([matrix.fx, matrix.fy, matrix.cx, matrix.cy]),
-            matrix.width,
-            matrix.height,
-            tum.UNUSED_DEPTH_SCALE,  # no depth maps
-            None,
-        ),
-        note="imported by slam_it.eval.video (source.json says from what)",
-    )
-    return _Frames(times, decoded, count, camera, 90 * geometry.turns)
+        images.write_png(self.out / "rgb" / f"{stamp}.png", _picture(frame, geometry))
+        self.listed.append((stamp, f"rgb/{stamp}.png"))
+        self.times.append(float(stamp))  # as rgb.txt has it, for the ground truth to match
+        self.decoded.append(index)
+
+    def mark(self) -> tuple[int, int, _Geometry | None]:
+        """Return where the writing stands, for :meth:`rollback`."""
+        return len(self.listed), self.count, self.geometry
+
+    def rollback(self, mark: tuple[int, int, _Geometry | None]) -> None:
+        """Take back the frames added since `mark`, removing the files written for them.
+
+        Each file is one this writer wrote since the mark: kept frames' times increase, so no
+        two share a name.
+        """
+        kept, count, geometry = mark
+        for _, file in self.listed[kept:]:
+            (self.out / file).unlink()
+        del self.listed[kept:], self.times[kept:], self.decoded[kept:]
+        self.count, self.geometry = count, geometry
+
+    def finish(self, mask: NDArray[np.uint8] | None) -> _Frames:
+        """Write ``rgb.txt``, ``camera.txt`` and the mask, if any; return the frames written."""
+        geometry = self.geometry
+        if geometry is None:
+            raise InvalidInputError(f"{self.name}: no frames")
+        if mask is not None:
+            width, height = geometry.stored
+            if mask.shape != (height, width):
+                raise InvalidInputError(
+                    f"mask: expected the video's stored size {width}x{height}, got "
+                    f"{mask.shape[1]}x{mask.shape[0]}"
+                )
+            images.write_png(self.out / tum.MASK_FILE, _mask_picture(mask, geometry))
+        camera = geometry.camera
+        matrix = _matrix(camera)
+        tum.write_list(self.out / "rgb.txt", self.listed)
+        tum.write_camera(
+            self.out,
+            tum.Camera(
+                "radtan" if isinstance(camera, lenses.RadTan) else "pinhole",
+                camera.intrinsics()
+                if isinstance(camera, lenses.RadTan)
+                else np.array([matrix.fx, matrix.fy, matrix.cx, matrix.cy]),
+                matrix.width,
+                matrix.height,
+                tum.UNUSED_DEPTH_SCALE,  # no depth maps
+                None,
+            ),
+            note="imported by slam_it.eval.video (source.json says from what)",
+        )
+        return _Frames(self.times, self.decoded, self.count, camera, 90 * geometry.turns)
 
 
 def _write_source(
@@ -583,6 +736,283 @@ def import_video(  # noqa: PLR0913 -- the video, the folder, the lens; a dataset
         kind = str(named.pop("kind", "video"))
         read = {**named, "metadata": metadata, "depth": None, "mask": keep is not None}
         _write_source(folder, kind, chosen, frames, read)
+
+
+def _open_segment(path: Path) -> av.container.InputContainer:
+    """Open a recorded segment, MPEG-TS, as a file alone; refuse one with no video stream."""
+    if not path.is_file():
+        raise FileNotFoundError(f"no segment at {path}")
+    try:
+        container = av.open(str(path), format=_SEGMENT_DEMUXER, options=dict(_SEGMENT_OPTIONS))
+    except av.error.FFmpegError as error:
+        raise DamagedSegmentError(
+            f"{path.name}: not a readable MPEG-TS segment ({error})"
+        ) from None
+    if not container.streams.video:
+        container.close()
+        raise DamagedSegmentError(f"{path.name}: no video stream")
+    return container
+
+
+def segment_size(segment: str | Path) -> tuple[int, int]:
+    """Return a recorded segment's frame size, ``(width, height)``, from its stream.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the segment does not exist.
+    DamagedSegmentError
+        If it is not a readable MPEG-TS video or does not state its size.
+    """
+    path = Path(segment)
+    with _open_segment(path) as container:
+        stream = container.streams.video[0]
+        width, height = stream.codec_context.width, stream.codec_context.height
+    if not (width and height):
+        raise DamagedSegmentError(f"{path.name}: its frame size is not stated")
+    return int(width), int(height)
+
+
+def _decode_segment(path: Path, limits: Limits) -> Iterator[tuple[float, av.VideoFrame]]:
+    """Yield a segment's frames, decoded straight through, with each one's time since its first.
+
+    Straight through: seeking into a segment whose recording dropped data decodes garbage until
+    the next intact keyframe. On several threads, and to the last frame (:func:`_decoded`).
+    """
+    with _open_segment(path) as container:
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        first = None
+        try:
+            for frame in _decoded(container, stream):
+                if frame.time is None:
+                    raise DamagedSegmentError(f"{path.name}: a frame without a presentation time")
+                first = frame.time if first is None else first
+                elapsed = frame.time - first
+                if elapsed > limits.max_seconds:
+                    raise InvalidInputError(f"{path.name}: longer than {limits.max_seconds:g} s")
+                yield elapsed, frame
+        except av.error.FFmpegError as error:
+            raise DamagedSegmentError(f"{path.name}: undecodable ({error})") from None
+
+
+def sample_frames(  # noqa: PLR0913 -- the segment; how it is sampled, keyword-only
+    segment: str | Path,
+    *,
+    every: float,
+    width: int | None = None,
+    box: tuple[int, int, int, int] | None = None,
+    gray: bool = False,
+    max_seconds: float = SEGMENT_SECONDS,
+) -> Iterator[tuple[float, NDArray[np.uint8]]]:
+    """Yield a segment's frames sampled in time, decoded straight through.
+
+    Parameters
+    ----------
+    segment : str or pathlib.Path
+        A recorded MPEG-TS segment (a dashcam's).
+    every : float
+        The time between samples, in seconds: the first frame at or after each multiple of it,
+        counted from the segment's first frame, is kept; 0 keeps every frame.
+    width : int, optional
+        The width each frame is scaled to, its aspect kept, before `box`; the stored width if
+        None.
+    box : tuple of int, optional
+        ``(x, y, w, h)``, the part of each (scaled) frame kept, in pixels.
+    gray : bool, optional
+        Gray (H, W) frames in place of RGB (H, W, 3).
+    max_seconds : float, optional
+        The longest segment, in seconds.
+
+    Yields
+    ------
+    tuple
+        The frame's time since the segment's first frame, in seconds, and the frame, uint8.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the segment does not exist.
+    DamagedSegmentError
+        If the segment cannot be read through (:class:`DamagedSegmentError`).
+    slam_it.foundations.errors.InvalidInputError
+        If `every` is negative or not finite, `width` is not positive, `box` is not inside the
+        frame, or the segment is longer than `max_seconds`.
+    """
+    if not (np.isfinite(every) and every >= 0.0):
+        raise InvalidInputError(f"every: expected a finite time >= 0, got {every}")
+    if width is not None and width <= 0:
+        raise InvalidInputError(f"width: expected a positive width, got {width}")
+    path = Path(segment)
+    due = 0.0
+    for elapsed, frame in _decode_segment(path, Limits(max_seconds=max_seconds)):
+        if elapsed + 1e-9 < due:
+            continue
+        due = (np.floor(elapsed / every + 1e-9) + 1.0) * every if every > 0 else 0.0
+        out_w = frame.width if width is None else width
+        out_h = frame.height if width is None else 2 * round(frame.height * width / frame.width / 2)
+        picture = frame.reformat(
+            width=out_w, height=out_h, format="gray" if gray else "rgb24", interpolation="AREA"
+        ).to_ndarray()
+        if box is not None:
+            x, y, w, h = box
+            if not (x >= 0 and y >= 0 and w > 0 and h > 0 and x + w <= out_w and y + h <= out_h):
+                raise InvalidInputError(f"box: {box} is not inside the {out_w}x{out_h} frame")
+            picture = picture[y : y + h, x : x + w]
+        yield float(elapsed), np.ascontiguousarray(picture, dtype=np.uint8)
+
+
+def data_packets(segment: str | Path) -> list[tuple[float, bytes]]:
+    """Return a segment's data-stream packets, each with the video's time where it lies.
+
+    A data packet (a dashcam's GPS records) carries no presentation time of its own, so it is
+    given the time of the last video packet before it in the file, since the segment's first
+    (0 before any).
+
+    Parameters
+    ----------
+    segment : str or pathlib.Path
+        A recorded MPEG-TS segment.
+
+    Returns
+    -------
+    list of tuple
+        Each data packet's video time, in seconds, and its bytes, in file order.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the segment does not exist.
+    DamagedSegmentError
+        If it is not a readable MPEG-TS video, or its demuxing raises (a read that says "try
+        again" is read again, :func:`_packets`).
+    """
+    path = Path(segment)
+    out: list[tuple[float, bytes]] = []
+    with _open_segment(path) as container:
+        video = container.streams.video[0]
+        data = [s for s in container.streams if s.type == "data"]
+        first: float | None = None
+        last = 0.0
+        try:
+            for packet in _packets(container, video, *data):
+                base = video.time_base
+                if packet.stream.type == "video" and packet.pts is not None and base:
+                    time = float(packet.pts * base)
+                    first = time if first is None else first
+                    last = max(last, time - first)
+                elif packet.stream.type == "data" and packet.size:
+                    out.append((last, bytes(packet)))
+        except av.error.FFmpegError as error:
+            raise DamagedSegmentError(f"{path.name}: unreadable ({error})") from None
+    return out
+
+
+def import_segments(  # noqa: PLR0913 -- the segments, their starts, the folder, the lens; how
+    segments: Sequence[str | Path],
+    starts: Sequence[float],
+    out: str | Path,
+    chosen: lenses.Chosen,
+    *,
+    limits: Limits,
+    mask: ArrayLike | None = None,
+    source: Mapping[str, Any] | None = None,
+) -> list[tuple[str, str]]:
+    """Import recorded segments, in order, as one sequence into a TUM-format folder.
+
+    A dashcam records a drive as short MPEG-TS segments (:mod:`slam_it.eval.dashcam`). Each is
+    decoded straight through, and each frame timed on one clock: its segment's start plus its
+    time since the segment's first frame. A gap between segments stays a gap. Frames are
+    resampled, kept and written as :func:`import_video` writes them, with the lens, the mask and
+    ``source.json``; no upload cap applies (a local recording), only `limits`.
+
+    A damaged segment (:class:`DamagedSegmentError`) is skipped whole, the frames it gave
+    before failing taken back, with a :class:`SkippedSegmentWarning`; ``source.json`` lists
+    each skipped, and why, under ``skipped``.
+
+    Parameters
+    ----------
+    segments : sequence of str or pathlib.Path
+        The segments, in time order, all one frame size.
+    starts : sequence of float
+        Each segment's first frame's time on the run's clock, in seconds, increasing.
+    out : str or pathlib.Path
+        The folder written: new or empty.
+    chosen : slam_it.eval.lenses.Chosen
+        The intrinsics, at the segments' stored size, and their source.
+    limits : Limits
+        The longest segment, the most frames in all, and the frames' short side.
+    mask : array_like of uint8, shape (H, W), optional
+        The features a run drops, those on a 0, at the stored size.
+    source : mapping, optional
+        What ``source.json`` names the drive by: its ``kind`` (default ``"segments"``) and the
+        fields that identify it.
+
+    Returns
+    -------
+    list of tuple of str
+        Each damaged segment skipped: its file name, and why.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a segment does not exist.
+    slam_it.foundations.errors.InvalidInputError
+        If there are no segments, `starts` does not give one increasing time a segment, every
+        segment is damaged, one is over `limits`, the frames are of more than one size or not
+        the intrinsics', or the mask is not uint8 of the stored size.
+    """
+    paths = [Path(s) for s in segments]
+    begin = np.asarray(starts, dtype=np.float64)
+    if not paths:
+        raise InvalidInputError("segments: none given")
+    if begin.shape != (len(paths),) or not np.all(np.isfinite(begin)):
+        raise InvalidInputError(f"starts: expected {len(paths)} finite times, got {begin.shape}")
+    if np.any(np.diff(begin) <= 0.0):
+        raise InvalidInputError("starts: the segments' starts must increase")
+    keep = None if mask is None else as_image(mask, "mask")
+    skipped: list[tuple[str, str]] = []
+    with tum.staged(out) as folder:
+        writer = _Writer(folder, f"{paths[0].name}..{paths[-1].name}", chosen.lens, limits=limits)
+        for path, start in zip(paths, begin, strict=True):
+            mark = writer.mark()
+            try:
+                _add_segment(writer, path, float(start), limits)
+            except DamagedSegmentError as error:
+                writer.rollback(mark)
+                skipped.append((path.name, str(error)))
+                warnings.warn(
+                    f"skipped a damaged segment, {error}", SkippedSegmentWarning, stacklevel=2
+                )
+        if len(skipped) == len(paths):
+            listed = "; ".join(reason for _, reason in skipped)
+            raise InvalidInputError(f"segments: every one is damaged ({listed})")
+        frames = writer.finish(keep)
+        named = dict(source or {"kind": "segments"})
+        kind = str(named.pop("kind", "segments"))
+        read = {
+            **named,
+            "segments": [p.name for p in paths],
+            "starts": [float(s) for s in begin],
+            "metadata": {},
+            "depth": None,
+            "mask": keep is not None,
+            "skipped": [{"segment": name, "reason": reason} for name, reason in skipped],
+        }
+        _write_source(folder, kind, chosen, frames, read)
+    return skipped
+
+
+def _add_segment(writer: _Writer, path: Path, start: float, limits: Limits) -> None:
+    """Add a segment's frames to `writer`, timed from `start`; refuse one with no frames."""
+    index = first = writer.count
+    for elapsed, frame in _decode_segment(path, limits):
+        if index >= limits.max_frames:
+            raise InvalidInputError(f"segments: more than {limits.max_frames} frames")
+        writer.add(index, start + elapsed, frame)
+        index += 1
+    if index == first:
+        raise DamagedSegmentError(f"{path.name}: no frames")
 
 
 @dataclass(frozen=True)

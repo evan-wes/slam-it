@@ -107,8 +107,14 @@ this document first.
   PyAV, an optional extra (`video`, from PR 11), decodes phone videos in
   `slam_it.eval.video` alone, kept there by a contract of its own. Its wheels bundle an
   FFmpeg built with GPL encoders (x264, x265); the project installs it from PyPI and ships no
-  binaries. `slam_it.eval.rosbag` reads ROS 1 bags by hand, with no dependency (the
-  calibration side track).
+  binaries. A dashcam's recordings (`slam_it.eval.dashcam`, from 2026-10-17) add the optional
+  `dashcam` extra: PyAV again, decoding through `slam_it.eval.video`; pytesseract, reading the
+  burned-in overlay with the Tesseract program (Apache-2.0, from conda-forge), in
+  `slam_it.eval.dashcam.overlay` alone; and pycolmap, self-calibrating each camera's lens by
+  SfM, in `slam_it.eval.dashcam.calibrate` and the BA reference `slam_it.eval.colmap_reference`
+  alone. Contracts keep each in its module, and the pipelines reach neither.
+  `slam_it.eval.rosbag` reads ROS 1 bags by hand, with no dependency (the calibration side
+  track).
 - **The upload server** (`server/`, the package `slam_it_server`, from PR 11): FastAPI
   with pydantic, which its requests are read with, uvicorn, and boto3 with botocore, with httpx
   for its tests. It never imports `slam_it`.

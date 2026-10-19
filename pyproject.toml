@@ -28,6 +28,10 @@ colmap = ["pycolmap>=4.2"]
 # Video decoding (FFmpeg, through PyAV), for importing phone videos in slam_it.eval.video
 # alone. The worker's image and the development setup install it.
 video = ["av>=18.1"]
+# A dashcam's recordings (slam_it.eval.dashcam): PyAV decodes the segments, pytesseract reads
+# the burned-in overlay (with the Tesseract program, from conda-forge), and pycolmap calibrates
+# each camera's lens and the rig. Each is imported only where it is used.
+dashcam = ["av>=18.1", "pytesseract>=0.3.13", "pycolmap>=4.2"]
 # The development and layer-1 toolchain's pip layer: the single list scripts/setup_slam_it.sh
 # installs from when not using the lockfile (the conda layer -- compilers, clang tools,
 # doxygen, Node.js/jscpd -- is in that script).
@@ -127,6 +131,11 @@ ignore_missing_imports = true
 # are typed as Any.
 module = ["gtsam", "gtsam.*"]
 follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The dashcam overlay's OCR (the optional `dashcam` extra), which ships without type information.
+module = ["pytesseract"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -251,17 +260,17 @@ forbidden_modules = ["poselib", "mpmath", "manifpy"]
 # helpers, the LiDAR depth and a vocabulary's folder at the bottom, the dataset readers and
 # metrics on them, runs (and the COLMAP reference) on them, then what writes a dataset's
 # TUM-format folder with its ground truth (the video import, ZJU-SenseTime's, ARKitScenes'), the
-# compute budgets, which judge runs, and the loops' judge, which judges a run's loops, and on top
-# ADVIO's import, a video's through the video import. New modules are optional layers, as in
-# rung 0's contract.
+# compute budgets, which judge runs, the loops' judge, which judges a run's loops, and the GNSS
+# track, which scores runs; on top ADVIO's import and the dashcam's, a video's through the video
+# import. New modules are optional layers, as in rung 0's contract.
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
 exhaustive = true
 containers = ["slam_it.eval"]
 layers = [
-  "(advio)",
-  "(budgets) | (video) | (zju) | (arkitscenes) | (loops)",
+  "(advio) | (dashcam)",
+  "(budgets) | (video) | (zju) | (arkitscenes) | (loops) | (gnss)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
   "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml) | (vocabularies)",
@@ -328,23 +337,37 @@ source_modules = ["slam_it"]
 forbidden_modules = ["av"]
 ignore_imports = ["slam_it.eval.video -> av"]
 
-# pycolmap is an optional reference, imported by slam_it.eval alone.
+# pycolmap is optional, imported by slam_it.eval alone: the BA reference, and the dashcam's
+# calibration.
 [[tool.importlinter.contracts]]
 name = "Only eval may import pycolmap"
 type = "forbidden"
-# An allow-list: all of slam_it is forbidden, the one reference module excepted, so a new
-# package is covered without being listed.
+# An allow-list: all of slam_it is forbidden, the two modules excepted, so a new package is
+# covered without being listed.
 source_modules = ["slam_it"]
 forbidden_modules = ["pycolmap"]
-ignore_imports = ["slam_it.eval.colmap_reference -> pycolmap"]
+ignore_imports = [
+  "slam_it.eval.colmap_reference -> pycolmap",
+  "slam_it.eval.dashcam.calibrate -> pycolmap",
+]
 
-# The ignored import above hides every chain through colmap_reference, so a pipeline that
-# imported it would pass. Pipelines must not depend on the optional reference.
+# pytesseract reads a dashcam's overlay in slam_it.eval.dashcam.overlay alone (the optional
+# `dashcam` extra).
 [[tool.importlinter.contracts]]
-name = "Pipelines never reach the COLMAP reference"
+name = "Only eval.dashcam.overlay may import pytesseract"
+type = "forbidden"
+source_modules = ["slam_it"]
+forbidden_modules = ["pytesseract"]
+ignore_imports = ["slam_it.eval.dashcam.overlay -> pytesseract"]
+
+# The ignored imports above hide every chain through colmap_reference and the dashcam's
+# calibration, so a pipeline that imported either would pass. Pipelines must not depend on the
+# optional extras.
+[[tool.importlinter.contracts]]
+name = "Pipelines never reach the COLMAP reference or the dashcam"
 type = "forbidden"
 source_modules = ["slam_it.orchestration"]
-forbidden_modules = ["slam_it.eval.colmap_reference"]
+forbidden_modules = ["slam_it.eval.colmap_reference", "slam_it.eval.dashcam"]
 
 [[tool.importlinter.contracts]]
 name = "Visual-inertial builds on the edge rung only, not dense or classic"

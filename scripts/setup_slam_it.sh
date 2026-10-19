@@ -36,6 +36,7 @@ EIGEN_VERSION="5.0.1"
 # taken from conda-forge: see "GTSAM" below.
 GTSAM_VERSION="4.3.0"
 GTSAM_SHA256="4539afcd47d336864deb8399e0a9a5c283a638f605892c942ec46f3541fd4fb0"
+TESSERACT_VERSION="5.5.3"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -63,8 +64,10 @@ fi
 # benchmark is Google Benchmark, for the native C++ benchmarks (cpp/bench/).
 # pyparsing is what GTSAM's wrapper generator (gtwrap) parses its interface files with, to
 # build GTSAM's Python wrapper below.
+# tesseract is the OCR program pytesseract runs, for a dashcam's overlay (slam_it.eval.dashcam).
 CONDA_PACKAGES=(cmake ninja cxx-compiler "rust=${RUST_VERSION}" "clang-tools=${CLANG_VERSION}" "clang=${CLANG_VERSION}"
-  "eigen=${EIGEN_VERSION}" doxygen nodejs manifpy nlohmann_json benchmark pyparsing)
+  "eigen=${EIGEN_VERSION}" doxygen nodejs manifpy nlohmann_json benchmark pyparsing
+  "tesseract=${TESSERACT_VERSION}")
 
 # --- conda layer ---------------------------------------------------------------
 if "${CONDA_BIN}" env list | awk '{print $1}' | grep -qx "${ENV_NAME}"; then
@@ -95,15 +98,17 @@ if [[ ${UNLOCKED} -eq 0 && -f "${LOCK_FILE}" ]]; then
   run python -m pip install -r "${LOCK_FILE}"
 else
   # Resolve fresh from pyproject.toml: the runtime dependencies plus the `dev` extra (the
-  # toolchain's pip layer), the `colmap` extra (the BA reference the tests compare to) and
-  # the `video` extra (PyAV, for importing phone videos); then the server package's own.
-  # GTSAM is left out: it is built below, never taken from an index.
+  # toolchain's pip layer), the `colmap` extra (the BA reference the tests compare to), the
+  # `video` extra (PyAV, for importing phone videos) and the `dashcam` extra (a dashcam's
+  # overlay and calibration); then the server package's own. GTSAM is left out: it is built
+  # below, never taken from an index.
   mapfile -t PIP_REQS < <(run python -c '
 import tomllib
 project = tomllib.load(open("'"${ROOT_DIR}"'/pyproject.toml", "rb"))["project"]
 extras = project["optional-dependencies"]
 runtime = [req for req in project["dependencies"] if not req.startswith("gtsam")]
-print("\n".join(runtime + extras["dev"] + extras["colmap"] + extras["video"]))')
+print("\n".join(runtime + extras["dev"] + extras["colmap"] + extras["video"]
+                + extras["dashcam"]))')
   run python -m pip install "${PIP_REQS[@]}"
 fi
 # jscpd (duplication detection) installs into the env's own Node prefix.

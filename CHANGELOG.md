@@ -4,6 +4,62 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.13.0] - 2026-10-17
+
+A dashcam's recordings as SLAM It! datasets (`slam_it.eval.dashcam`, `docs/notes/dashcam.md`),
+built for the Terunsoul D016, and a GPS track to score a run against (`slam_it.eval.gnss`).
+The owner's recordings, masks, lenses and results stay outside the repo, in a config whose
+template is `docs/dashcam.template.toml`.
+
+### Added
+
+- **`slam_it.eval.dashcam`**, run as `python -m slam_it.eval.dashcam <step> CONFIG`:
+  - `drives`: a card's segments grouped into drives, front and rear paired;
+  - `mask`: a camera's static mask measured from a drive (persistent edges), with drawn
+    parts and a preview;
+  - `overlay`: the burned-in overlay read with Tesseract into a fix a second and each
+    camera's lag (its overlay clock against its segments' names);
+  - `calibrate`: each camera's fisheye lens self-calibrated by COLMAP's sequential SfM, then
+    the front-rear rig: the clocks' offset from the two cameras' turns, the rotation from
+    their turns' axes and directions of travel, and the translation and rear scale by a
+    linear MAP with a baseline prior, the front map's scale from the GPS speed;
+  - `import`: one camera's share of a drive as one TUM-format sequence on its overlay clock.
+  The D016's formats are a built-in profile (`dashcam.d016`), its data stream's GPS records
+  read for their time, speed and course (`dashcam.stream`). Every step skips a damaged
+  segment (`eval.video.DamagedSegmentError`: one that cannot be read through) with a
+  warning and goes on, `overlay` and `import` listing those skipped. `mask`, `overlay` and
+  `calibrate` refuse to replace what they wrote before, and each step checks everything it
+  would write, and the earlier steps' outputs it reads, before it writes anything, so a
+  refusal leaves nothing half done.
+- **`slam_it.eval.gnss`**: a gated constant-velocity Kalman filter with an RTS smoother over
+  GNSS fixes, and a run's maps scored against the track in their plane of motion, in metres.
+- **The `dashcam` extra** (PyAV, pytesseract, pycolmap) and Tesseract in the conda layer;
+  import-linter contracts keep pytesseract in `dashcam.overlay` and pycolmap in
+  `dashcam.calibrate` (and the BA reference), and the pipelines out of both.
+  `THIRD_PARTY_NOTICES.md` lists Tesseract 5.5.3 and pytesseract 0.3.13, both Apache 2.0.
+- **`eval.video` reads recorded segments**: sampled in time, their data packets, and joined
+  into one sequence (`import_segments`), sharing the video import's frame writing, which can
+  now take back a damaged segment's frames.
+
+### Tests
+
+- Synthetic only: MPEG-TS segments written with PyAV (a moving scene under a static hood,
+  a data stream of records, a burned-in overlay), the drives, the mask, the record decoder,
+  the drive import and its timing, the config and the command line; the overlay's reading
+  with Tesseract (skipped without it) and the lag from reads; the filter's gating, restart
+  and smoothing and the planar scoring; each calibration stage on a synthetic rig drive; a
+  damaged segment skipped by each step, one failing partway taken back, all damaged refused,
+  and a segment with concealed corrupt frames kept; and `mask`, `overlay` and `calibrate` each
+  refusing before they write: a preview left from before, the rear's overlay already read, the
+  rear's overlay not yet read.
+- The guard against local paths and personal details (`tests/test_no_local_paths.py`) holds
+  the folders the project lived in and the personal tools' folders as SHA-256 digests, as it
+  holds the owner's name, so it no longer spells them out. A folder is held by its whole name
+  and found in a token, whole or inside a longer one, in a path, a string or a file name, but
+  not as the same words in prose; the name is still found by its words, across a line break
+  too. Its self-test has a stand-in for each kind it holds so, and its scratch-folder case is a
+  generic one.
+
 ## [0.3.12.0] - 2026-10-17
 
 Milestone 2B's third part, B3: loop closure (`docs/design/2026-10-14-online-slam.md`, section

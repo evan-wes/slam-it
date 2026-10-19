@@ -130,7 +130,9 @@ wheels.
 | GTSAM 4.3.0 (<https://github.com/borglab/gtsam>), built by the setup script; with it CCOLAMD, METIS, Spectra and Cephes (its `igami`) | BSD; CCOLAMD BSD 3-Clause, METIS Apache 2.0, Spectra MPL 2.0, Cephes MIT | factor graphs: loop closing, the essential graph, global BA |
 | numpy; Pillow | BSD 3-Clause and others; MIT-CMU | the Python package |
 | PyAV 18.1, whose wheels bundle FFmpeg built with x264 and x265 | BSD 3-Clause; the bundled FFmpeg is GPL | importing videos (the `video` extra) |
-| pycolmap 4.2 (COLMAP, Ceres) | BSD 3-Clause | the BA reference (the `colmap` extra) |
+| pycolmap 4.2 (COLMAP, Ceres) | BSD 3-Clause | the BA reference (the `colmap` extra); a dashcam's lens and rig calibration (the `dashcam` extra) |
+| Tesseract 5.5.3, from conda-forge, with its trained language data | Apache 2.0 | reading a dashcam's burned-in overlay (the env's conda layer) |
+| pytesseract 0.3.13 | Apache 2.0 | running Tesseract on a dashcam's burned-in overlay (the `dashcam` extra) |
 | Rust crates (nalgebra, faer, png, pyo3, numpy, pythonize, serde, cxx and their dependencies) | MIT, Apache 2.0, or either | the Rust core and its bindings |
 | FastAPI, pydantic, uvicorn, boto3 and botocore, httpx | MIT, MIT, BSD 3-Clause, Apache 2.0, BSD 3-Clause | the upload server |
 | three.js 0.186.0, loaded by the page from jsDelivr | MIT | the run viewer |

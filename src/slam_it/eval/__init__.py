@@ -11,8 +11,14 @@
   JPEGs (the one module that imports Pillow; C++'s ``slam_it_eval`` library and Rust's
   ``slam-it-eval`` crate read PNGs natively and the same way).
 - :mod:`slam_it.eval.video`: importing a phone's recording, a video or a Stray Scanner zip
-  (with its LiDAR depth), into a TUM-format folder, and a dataset's video with its own limits
-  and clock (the one module that imports PyAV, an optional extra).
+  (with its LiDAR depth), into a TUM-format folder, a dataset's video with its own limits
+  and clock, and a dashcam's recorded segments, sampled or joined into one sequence (the one
+  module that imports PyAV, an optional extra).
+- :mod:`slam_it.eval.dashcam`: a dashcam's recordings as datasets: its drives, its static
+  mask, its burned-in GPS overlay read, its lenses and front-rear rig calibrated, and a drive
+  imported (needs the ``dashcam`` extra).
+- :mod:`slam_it.eval.gnss`: a GNSS track smoothed (a gated Kalman filter and RTS), and a run
+  scored against it in its plane of motion, in metres.
 - :mod:`slam_it.eval.zju`, :mod:`slam_it.eval.advio`, :mod:`slam_it.eval.arkitscenes`: milestone
   2A's test set imported to TUM format, each with its ground truth moved to the camera:
   ZJU-SenseTime's phones, ADVIO's iPhone video, ARKitScenes' iPad with LiDAR. Python only: the
