@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -95,6 +96,26 @@ def test_every_frame_times_its_steps(
     looped = [d["loop_seconds"] > 0.0 for d in run.diagnostics]
     assert looped == [d["loop"] is not None for d in run.diagnostics]
     assert looped == mapped
+
+
+def _mapping_fails(*_: Any, **__: Any) -> Any:  # noqa: ANN401 -- mapping.process's stand-in
+    """Fail as a mapping step would."""
+    raise RuntimeError("mapping failed")
+
+
+def test_a_failed_threaded_python_run_ends_its_threads(
+    room_folders: Room, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Python run threaded that fails ends its threads before the error leaves the run.
+
+    The run's frames go through a pipeline that is closed whatever happens (B3b's review panel,
+    H5): no thread the run started is left.
+    """
+    monkeypatch.setattr("slam_it.edge.mapping.process", _mapping_fails)
+    before = set(threading.enumerate())
+    with pytest.raises(RuntimeError, match="mapping failed"):
+        vo.run("tum", room_folders.tum, "rgbd", tmp_path / "run", options=OPTIONS, threaded=True)
+    assert [thread for thread in threading.enumerate() if thread not in before] == []
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

@@ -9,7 +9,11 @@ threaded; Python's threaded run of it is measured, not tested (the design's sect
 
 from __future__ import annotations
 
+import gc
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -325,6 +329,55 @@ def test_a_keyframe_queued_across_a_correction_is_placed_by_its_reference(
         assert tracked is not None
         expected = tracked @ inverse if k < before else tracked
         np.testing.assert_allclose(pose, expected, atol=1e-9, err_msg=f"frame {k}'s keyframe")
+
+
+def _started(
+    make: Callable[[], pipeline.Pipeline],
+) -> tuple[pipeline.Pipeline, list[threading.Thread]]:
+    """Return the pipeline `make` makes, and the threads it started."""
+    before = set(threading.enumerate())
+    run = make()
+    return run, [thread for thread in threading.enumerate() if thread not in before]
+
+
+def _ended(threads: list[threading.Thread]) -> bool:
+    """Return whether each thread has ended, waiting a little for it."""
+    for thread in threads:
+        thread.join(10.0)
+    return not any(thread.is_alive() for thread in threads)
+
+
+def _failing(*_: Any, **__: Any) -> Any:  # noqa: ANN401 -- mapping.process's stand-in
+    """Fail as a mapping step would."""
+    raise RuntimeError("mapping failed")
+
+
+def test_a_failed_run_still_ends_its_threads(
+    rendered: list[room.Frame], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mapping step's failure reaches finish(), which still ends the threads.
+
+    finish() settles the threads, which raises the failure, then ends them (B3b's review panel,
+    H5): the threads started end.
+    """
+    monkeypatch.setattr("slam_it.edge.mapping.process", _failing)
+    run, started = _started(_threaded)
+    assert started
+    for k, f in enumerate(rendered):
+        if run.track(_frame(f, run)).keyframe and k > 0:  # given to mapping, which fails
+            break
+    with pytest.raises(RuntimeError, match="mapping failed"):
+        run.finish()
+    assert _ended(started)
+
+
+def test_a_dropped_pipeline_ends_its_threads(rendered: list[room.Frame]) -> None:
+    """A threaded pipeline dropped without finish() ends its threads rather than leave them."""
+    run, started = _started(_threaded)
+    run.track(_frame(rendered[0], run))
+    del run
+    gc.collect()
+    assert _ended(started)
 
 
 def test_a_lost_map_settles_the_threads_then_closes(rendered: list[room.Frame]) -> None:

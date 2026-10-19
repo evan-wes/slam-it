@@ -100,7 +100,8 @@ global BA in one of their own (:mod:`slam_it.edge.threads`), as ORB-SLAM's do:
 
 A frame's result is then what tracking made of it; what the threads finish later comes as
 :class:`Completion` records (:meth:`Pipeline.completed`), each naming its frame, and
-:meth:`Pipeline.finish` ends the run, waiting for the threads. Inline, the default, the steps
+:meth:`Pipeline.finish` ends the run, waiting for the threads; :meth:`Pipeline.close` ends them
+after a failure, and a pipeline dropped without either ends them too. Inline, the default, the steps
 run in turn in the caller's thread and a run repeats exactly; the golden records and the stage
 tests run so.
 
@@ -116,6 +117,7 @@ from __future__ import annotations
 import enum
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
@@ -1443,6 +1445,7 @@ class Pipeline:
     atlas: Atlas = field(init=False, repr=False)
     _threads: _Threads | None = field(default=None, init=False, repr=False)
     _finished: bool = field(default=False, init=False, repr=False)
+    _finalizer: weakref.finalize[[], Pipeline] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Check the mode, and start the owner, the atlas and, threaded, the threads.
@@ -1469,6 +1472,11 @@ class Pipeline:
         self.atlas = Atlas(self.options)
         if writer is not None:
             self._threads = _Threads(self, writer)
+            # Dropped without finish() or close(), the threads end rather than wait on their
+            # queues: they hold nothing of the pipeline, so it can be collected. Not at exit,
+            # where the threads, daemons, end with the interpreter.
+            self._finalizer = weakref.finalize(self, self._threads.stop)
+            self._finalizer.atexit = False
 
     @property
     def map(self) -> Map | None:
@@ -1568,9 +1576,30 @@ class Pipeline:
         if self._threads is not None and not self._finished:
             self._finished = True
             self.atlas.end()
-            self._threads.settle(apply=True)
-            self._threads.stop()
+            try:
+                self._threads.settle(apply=True)
+            finally:  # a thread's failure still ends the threads (B3b's review panel, H5)
+                self._end_threads()
         self._finished = True
+
+    def close(self) -> None:
+        """End the threads without waiting for a global BA or raising what they failed with.
+
+        For a run that failed, or one not wanted: local mapping and loop closing end once the
+        keyframes queued are handled, and a global BA running is superseded, so it stops at its
+        next iteration. No frame is tracked after. Inline, or after :meth:`finish`, nothing to do.
+        """
+        if self._threads is not None and not self._finished:
+            self._threads.generation.next()
+            self._end_threads()
+        self._finished = True
+
+    def _end_threads(self) -> None:
+        """End the threads now (threaded), which a dropped pipeline then need not."""
+        assert self._threads is not None
+        if self._finalizer is not None:
+            self._finalizer.detach()
+        self._threads.stop()
 
     def completed(self) -> list[Completion]:
         """Return what the threads finished since the last call (threaded; none inline).

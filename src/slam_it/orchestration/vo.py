@@ -753,12 +753,25 @@ def _world_cam(poses: NDArray[np.float64]) -> NDArray[np.float64]:
 
 
 def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
-    """Run the request with the Python pipeline, in-process, with its vocabulary as read."""
+    """Run the request with the Python pipeline, in-process, with its vocabulary as read.
+
+    A run that fails ends its threads (:meth:`slam_it.edge.pipeline.Pipeline.close`).
+    """
     source = open_source(request.dataset, request.sequence, request.mode)
     matching = request.options.stereo_matching()
     tracker = Pipeline(
         request.mode, source.camera, request.options, words, threaded=request.threaded
     )
+    try:
+        return _track_here(request, source, matching, tracker)
+    finally:  # after finish(), nothing to do (B3b's review panel, H5)
+        tracker.close()
+
+
+def _track_here(
+    request: Request, source: Source, matching: stereo.Options, tracker: Pipeline
+) -> runs.Run:
+    """Track the request's frames with `tracker`, then finish it, and give the run."""
     end = len(source.times)
     if request.count is not None:
         end = min(end, request.first + request.count)
