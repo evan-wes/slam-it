@@ -731,7 +731,10 @@ class MapOwner:
             self._set(maps.clear_gone(m))
 
     def close(self) -> Map:
-        """Give up the map, lost: the database goes with it.
+        """Give up the map, lost: the database, the view and the counts waiting go with it.
+
+        The next map numbers its points from 0 again, so tracking's counts for this one must
+        not reach it.
 
         Returns
         -------
@@ -740,6 +743,8 @@ class MapOwner:
         """
         m = self.read()
         self._map, self._view, self._database = None, None, None
+        with self._counting:
+            self._counts = []
         return m
 
     def reading(self) -> AbstractContextManager[None]:

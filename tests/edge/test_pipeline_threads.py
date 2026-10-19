@@ -177,6 +177,26 @@ def test_tracking_reads_the_view_and_its_counts_wait_for_mapping(
     assert owner.view is owner.map is later
 
 
+def test_a_closed_maps_counts_never_reach_the_next(rendered: list[room.Frame]) -> None:
+    """Counts waiting when the map is lost go with it: the next map's points keep theirs.
+
+    The next map numbers its points from 0 again, so a count kept across the loss would land
+    on the new map's points of the same ids (B3b's review panel, H1).
+    """
+    inline = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    inline.track(_frame(rendered[0], inline))
+    m = inline.owner.read()
+    owner = pipeline.MapOwner(words_for(OPTIONS), Writer())
+    owner.start(m)
+    owner.count(m.pt_id[:3], m.pt_id[:2])
+    owner.close()
+    owner.start(m)  # the next map, its ids from 0 as the closed one's
+    owner.apply_counts()
+    assert owner.map is not None
+    np.testing.assert_array_equal(owner.map.pt_visible, m.pt_visible)
+    np.testing.assert_array_equal(owner.map.pt_found, m.pt_found)
+
+
 def test_a_lost_map_settles_the_threads_then_closes(rendered: list[room.Frame]) -> None:
     """Lost, the map waits for mapping, then closes as inline: kept or reset, the next started."""
     require_backend("cpp")
