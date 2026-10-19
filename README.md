@@ -1,15 +1,22 @@
 # SLAM It!
 
+**Live demo: [slam-it-demo.up.railway.app](https://slam-it-demo.up.railway.app)**, runs on a
+dashcam drive replayed in the run viewer, with their loop closures.
+
 A learning ladder for visual SLAM, from first-principles geometry to learned dense SLAM,
 implemented in Python, C++ and Rust and measured across compute budgets.
 
 *A codebase for a SLAM pipeline in three languages.*
 
-Status: milestones 1 and 2 are complete; 2A and 2B, a complete SLAM system, come next. Rung 0, the
-foundations, has the geometry, bundle adjustment, two-view geometry and absolute pose in Python, C++
-and Rust. On it, the edge rung's visual odometry runs monocular, stereo and RGB-D in all three, in
-real time in C++ and Rust; the run viewer replays a run frame by frame; and your own phone video can
-be uploaded, run and viewed.
+Status: milestones 1 and 2 are complete, and most of the complete SLAM system that follows them
+(2A and 2B) is built. Rung 0, the foundations, has the geometry, bundle adjustment, two-view
+geometry and absolute pose in Python, C++ and Rust. On it, the edge rung runs monocular, stereo and
+RGB-D in all three, its visual odometry in real time in C++ and Rust. On top of that comes
+ORB-SLAM3's design: place recognition and relocalisation, a new map after a lost track, the
+covisibility graph, and loop closure (pose graph and global bundle adjustment on GTSAM), with
+tracking, mapping and loop closing in threads of their own. Merging maps comes next. The run viewer
+replays a run frame by frame, loops included, and your own phone video can be uploaded, run and
+viewed.
 
 The design, the ladder and the milestones are in
 [`docs/design/2026-10-02-slam-it-ladder.md`](docs/design/2026-10-02-slam-it-ladder.md), and
