@@ -12,9 +12,13 @@ private notes and sessions are removed, links to the old repository's files poin
 (or name the file, where it no longer exists), and headings are shifted to fit this page.
 Numbers such as "#12" inside a description refer to the first repository's pull requests, listed
 here. Each date is its merge commit's own, in the author's time zone, as the changelog dates
-releases. The merge commit in each heading is its ID in this history; commit IDs quoted in
-descriptions, review reports, notes and commit messages are the first repository's, and
-[`commit-map.txt`](commit-map.txt) gives each one's ID in this history.
+releases. The merge commit in each heading is its ID in this history. Commit IDs quoted in
+descriptions, and in review reports and notes written before the rewrite, are the first
+repository's. Commit messages were rewritten with the history and quote its IDs, except on a
+branch rebased after the rewrite, whose messages quote its commits' IDs from before the rebase.
+[`commit-map.txt`](commit-map.txt) maps both to their IDs in this history: a first-repository
+commit to its own, and a commit that a rebase replaced to the commit that replaced it. A branch
+still open is mapped as it stands, and its rows are brought up to date when it merges.
 
 ## The first repository
 

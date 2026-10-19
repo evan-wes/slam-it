@@ -127,7 +127,7 @@ wheels.
 | What | Licence | Used for |
 |---|---|---|
 | Eigen 5.0.1 | MPL 2.0 | the C++ core |
-| GTSAM 4.3.0 (<https://github.com/borglab/gtsam>), built by the setup script; with it CCOLAMD, METIS and Spectra | BSD; CCOLAMD BSD 3-Clause, METIS Apache 2.0, Spectra MPL 2.0 | factor graphs: loop closing, the essential graph, global BA |
+| GTSAM 4.3.0 (<https://github.com/borglab/gtsam>), built by the setup script; with it CCOLAMD, METIS, Spectra and Cephes (its `igami`) | BSD; CCOLAMD BSD 3-Clause, METIS Apache 2.0, Spectra MPL 2.0, Cephes MIT | factor graphs: loop closing, the essential graph, global BA |
 | numpy; Pillow | BSD 3-Clause and others; MIT-CMU | the Python package |
 | PyAV 18.1, whose wheels bundle FFmpeg built with x264 and x265 | BSD 3-Clause; the bundled FFmpeg is GPL | importing videos (the `video` extra) |
 | pycolmap 4.2 (COLMAP, Ceres) | BSD 3-Clause | the BA reference (the `colmap` extra) |
