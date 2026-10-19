@@ -55,9 +55,10 @@ template is `docs/dashcam.template.toml`.
 - The guard against local paths and personal details (`tests/test_no_local_paths.py`) holds
   the folders the project lived in and the personal tools' folders as SHA-256 digests, as it
   holds the owner's name, so it no longer spells them out. A folder is held by its whole name
-  and found as a token, in a path, a string or a file name, but not as the same words in prose;
-  the name is still found by its words, across a line break too. Its self-test has a stand-in
-  for each kind it holds so, and its scratch-folder case is a generic one.
+  and found in a token, whole or inside a longer one, in a path, a string or a file name, but
+  not as the same words in prose; the name is still found by its words, across a line break
+  too. Its self-test has a stand-in for each kind it holds so, and its scratch-folder case is a
+  generic one.
 
 ## [0.3.12.0] - 2026-10-17
 

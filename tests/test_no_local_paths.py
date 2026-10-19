@@ -47,8 +47,8 @@ _WORD = re.compile(r"[^\W\d_]+")
 
 # The folders, by what the guard reports, matched by their whole names: the SHA-256 of each
 # name, lowercased, joined as on disk (by underscores or hyphens, a leading dot kept). They are
-# found as tokens (`_TOKEN`), so in a path, a string or a file name, but not as the same words
-# in prose; a token after a dot is also compared without the dot.
+# found in tokens (`_TOKEN`), as a whole token or inside a longer one (`_folders`), so in a
+# path, a string or a file name, but not as the same words in prose.
 HIDDEN: dict[str, frozenset[str]] = {
     "a folder the project lived in": frozenset(
         {
@@ -66,6 +66,9 @@ HIDDEN: dict[str, frozenset[str]] = {
     ),
 }
 _TOKEN = re.compile(r"\.?[a-z0-9]+(?:[_-][a-z0-9]+)*")
+# Where a token parts: at an underscore or a hyphen (kept, to join the parts again), and
+# between a letter and a digit (with nothing to keep).
+_PARTS = re.compile(r"([_-]|(?<=[a-z])(?=[0-9])|(?<=[0-9])(?=[a-z]))")
 
 # Mentions kept on purpose: the Eigen-derived SVD carries Eigen's copyright lines as Eigen's
 # files do, author addresses included (the MPL 2.0, section 3.4: the substance of a copyright
@@ -92,6 +95,22 @@ def _digest(word: str) -> str:
         The digest.
     """
     return hashlib.sha256(word.lower().encode()).hexdigest()
+
+
+def _sha256(text: str) -> str:
+    """Return the SHA-256 of a text as hex, uncached: most runs of a token's parts appear once.
+
+    Parameters
+    ----------
+    text : str
+        The text, already lowercased.
+
+    Returns
+    -------
+    str
+        The digest.
+    """
+    return hashlib.sha256(text.encode()).hexdigest()
 
 
 def _files() -> list[str]:
@@ -160,7 +179,12 @@ def _names(text: str, name: tuple[str, ...] = NAME) -> list[int]:
 
 
 def _folders(text: str, hidden: Mapping[str, frozenset[str]] = HIDDEN) -> list[tuple[int, str]]:
-    """Return each token of a text that is a folder held as a digest.
+    """Return each place in a text's tokens that is a folder held as a digest.
+
+    Each token is cut into parts (``_PARTS``), and every run of consecutive parts, joined as in
+    the token, is compared: so a name is found as a whole token or inside a longer one, after a
+    word or before one (``old-<name>``, ``<name>_backup``) or next to digits (``<name>2``). A
+    run that starts a token with a leading dot is compared with the dot and without it.
 
     Parameters
     ----------
@@ -172,17 +196,24 @@ def _folders(text: str, hidden: Mapping[str, frozenset[str]] = HIDDEN) -> list[t
     Returns
     -------
     list of tuple of (int, str)
-        Each token's line (from 1) and what it is.
+        Each place's line (from 1) and what it is.
     """
     kinds = {digest: what for what, digests in hidden.items() for digest in digests}
     lowered = text.lower()
     found = []
     for m in _TOKEN.finditer(lowered):
         token = m.group()
-        for spelling in dict.fromkeys((token, token.removeprefix("."))):
-            what = kinds.get(_digest(spelling))
-            if what is not None:
-                found.append((lowered.count("\n", 0, m.start()) + 1, what))
+        pieces = _PARTS.split(token.removeprefix("."))
+        parts, joins = pieces[0::2], pieces[1::2]
+        for i in range(len(parts)):
+            run = parts[i]
+            for j in range(i, len(parts)):
+                if j > i:
+                    run += joins[j - 1] + parts[j]
+                dotted = (f".{run}", run) if i == 0 and token.startswith(".") else (run,)
+                what = next((kinds[d] for s in dotted if (d := _sha256(s)) in kinds), None)
+                if what is not None:
+                    found.append((lowered.count("\n", 0, m.start()) + 1, what))
     return found
 
 
@@ -294,7 +325,8 @@ def test_the_guard_reports_each_kind_it_holds_as_digests() -> None:
 
     Stand-ins take the real names' places, in their shapes: a folder named ``<name>_project``, a
     tool's folder hyphenated or dotted; each in a path, before a dot or at a sentence's end, and
-    not reported as the same words in prose. The name is found across a line break.
+    inside a longer token, after a word, before one or both, or next to digits; never reported as
+    the same words in prose. The name is found across a line break.
     """
     name = (_digest("ada"), _digest("lovelace"))
     hidden = {
@@ -304,24 +336,28 @@ def test_the_guard_reports_each_kind_it_holds_as_digests() -> None:
         "a personal tool": frozenset({_digest("difference-engines"), _digest(".mill")}),
     }
     assert hidden.keys() == HIDDEN.keys()  # a stand-in for every kind the guard holds
+    folder, tool = hidden
     text = (
         "cd /srv/babbage_project/x\n"  # 1: in a path
         "It lives in /data/Analytical_Engine_Project.\n"  # 2: at a sentence's end, any case
         "see difference-engines/run.py\n"  # 3: before a slash
         "ls ~/.mill/x\n"  # 4: dotted, in the home folder
         "log difference-engines.md\n"  # 5: before a dot extension
-        "the babbage project and the analytical engine project\n"  # 6: prose, not reported
-        "babbage_projects, difference engines, a mill, .mills\n"  # 7: alike, not reported
-        "by Ada\nLovelace\n"  # 8: the name, across a line break
+        "cp -r old-babbage_project /x\n"  # 6: after a word
+        "mv babbage_project_backup /x\n"  # 7: before a word
+        "ls old_analytical_engine_project_v2\n"  # 8: after and before words, with a digit
+        "ls babbage_project2 3difference-engines\n"  # 9: next to digits, twice
+        "ls ~/.mill-old/x\n"  # 10: dotted, before a word
+        "the babbage project and the analytical engine project\n"  # 11: prose, not reported
+        "babbage-project, difference engines, a mill, the mill-pond\n"  # 12: alike, neither
+        "by Ada\nLovelace\n"  # 13: the name, across a line break
     )
-    assert sorted(_problems("a.txt", text.encode(), name, hidden)) == [
-        "a.txt:1: a folder the project lived in",
-        "a.txt:2: a folder the project lived in",
-        "a.txt:3: a personal tool",
-        "a.txt:4: a personal tool",
-        "a.txt:5: a personal tool",
-        "a.txt:8: the owner's full name",
-    ]
+    reported = [(1, folder), (2, folder), (3, tool), (4, tool), (5, tool), (6, folder)]
+    reported += [(7, folder), (8, folder), (9, folder), (9, tool), (10, tool)]
+    reported += [(13, "the owner's full name")]
+    assert sorted(_problems("a.txt", text.encode(), name, hidden)) == sorted(
+        f"a.txt:{n}: {what}" for n, what in reported
+    )
     # the real names are whole SHA-256 digests, and no kind is also a pattern's or the name's
     for digest in (*NAME, *(d for digests in HIDDEN.values() for d in digests)):
         assert re.fullmatch(r"[0-9a-f]{64}", digest)
