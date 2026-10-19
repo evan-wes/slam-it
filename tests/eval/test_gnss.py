@@ -114,7 +114,7 @@ def test_a_run_is_scored_in_its_plane_of_motion_in_metres() -> None:
     poses = np.repeat(np.eye(4)[None], len(times), axis=0)
     poses[:, :3, 3] = flat @ tilt.T + [1.0, 2.0, 3.0]
     run = runs.Run(
-        "dashcam", "drive", "monocular", "python", times, poses,
+        "dashcam", "drive", "monocular", "python", times, poses, poses,
         pose_maps=np.zeros(len(times), dtype=np.int64),
     )  # fmt: skip
     (scored,) = gnss.score(run, track, times)
