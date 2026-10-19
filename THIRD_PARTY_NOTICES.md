@@ -61,12 +61,12 @@ These are SLAM It!'s own code, under its own licence, and are credited here:
   Tardós, T-RO 2017; Campos et al., T-RO 2021; <https://github.com/UZ-SLAMLab/ORB_SLAM3>): the
   edge rung (`src/slam_it/edge/` and its C++ and Rust cores) implements their tracking, local
   mapping, covisibility graph and spanning tree, keyframe database, relocalisation, loop
-  closing and essential graph from the papers and a reading of their code, and takes many of
-  its parameters from that code. The front end follows their ORB extractor's spreading of
-  keypoints and their matcher's thresholds and rotation check; `slam_it.foundations.stereo`
-  follows `Frame::ComputeStereoMatches`, and `slam_it.foundations.sim3` and
-  `slam_it.foundations.graphs` follow `Sim3Solver` and `Optimizer`'s solves, on GTSAM. Where
-  the code departs from ORB-SLAM's, its docstrings say so.
+  closing, essential graph, map merging and atlas from the papers and a reading of their code,
+  and takes many of its parameters from that code. The front end follows their ORB extractor's
+  spreading of keypoints and their matcher's thresholds and rotation check;
+  `slam_it.foundations.stereo` follows `Frame::ComputeStereoMatches`, and
+  `slam_it.foundations.sim3` and `slam_it.foundations.graphs` follow `Sim3Solver` and
+  `Optimizer`'s solves, on GTSAM. Where the code departs from ORB-SLAM's, its docstrings say so.
   No ORB-SLAM code is included. ORB-SLAM's code is under the GNU General Public License v3.
 - **DBoW2** (Gálvez-López and Tardós, T-RO 2012; <https://github.com/dorian3d/DBoW2>):
   `slam_it.foundations.vocabulary` implements its vocabulary tree from the paper and a reading of
@@ -144,5 +144,6 @@ wheels.
 | ZJU-SenseTime | no licence stated | the test set |
 | ADVIO | CC BY-NC 4.0 | the test set |
 | ARKitScenes | Apple's ARKitScenes licence | the test set; the default vocabulary's training frames |
+| Microsoft 7-Scenes | non-commercial use only | relocalisation and map merging |
 | Rawseeds Bovisa 2008-09-01 | no licence stated | a vocabulary kept outside the repository |
 | Bundle Adjustment in the Large | its authors' terms | BA demos and benchmarks |
