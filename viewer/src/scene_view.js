@@ -490,7 +490,8 @@ export class SceneView {
   /**
    * Draw a loop over the map until `clearLoop`, bright and thick in the loops' colour: its cycle
    * (the trajectory from the frame that made its matched keyframe to the loop's frame), the edge
-   * between its two keyframes, and their frustums.
+   * between its two keyframes, and their frustums. It is drawn from the next frame shown (`show`),
+   * which the caller draws: a render here would only be drawn over.
    * @param {import("./loops.js").Loop} loop The loop, of the run shown.
    */
   highlightLoop(loop) {
@@ -521,7 +522,6 @@ export class SceneView {
       line.visible = this.shownMap === loop.map;
       this.scene.add(line);
     }
-    this.render();
   }
 
   /**

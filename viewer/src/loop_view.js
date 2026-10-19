@@ -47,9 +47,9 @@ const INSET_DECODED = 60;
  */
 
 /**
- * A loop effect running: its loop, its clock's start (the first animation frame's time, in
- * milliseconds; null before it), its next animation frame's request, its opacity now, and the
- * earlier frame the inset plays now.
+ * A loop effect running: its loop, its clock's start (the time of the first animation frame
+ * with the loop on screen, in milliseconds; null before it), its next animation frame's request,
+ * its opacity now, and the earlier frame the inset plays now.
  * @typedef {{loop: import("./loops.js").Loop, start: number | null, request: number,
  *     opacity: number, earlier: number}} Effect
  */
@@ -169,13 +169,14 @@ export class LoopView {
   startEffect(loop) {
     this.endEffect();
     this.scene.highlightLoop(loop);
-    this.effect = {
-      loop,
-      start: null,
-      request: requestAnimationFrame((now) => this.tick(now)),
-      opacity: 1,
-      earlier: loop.olderMade,
-    };
+    /** @type {Effect} */
+    const effect = { loop, start: null, request: 0, opacity: 1, earlier: loop.olderMade };
+    // The frame shown next paints the loop; the effect's clock starts at the frame after it, once
+    // the loop is on screen, so a slow first paint does not eat into it.
+    effect.request = requestAnimationFrame(() => {
+      effect.request = requestAnimationFrame((now) => this.tick(now));
+    });
+    this.effect = effect;
   }
 
   /**
@@ -193,9 +194,12 @@ export class LoopView {
       this.endEffect();
       return;
     }
-    effect.opacity = effectOpacity(time);
+    const opacity = effectOpacity(time);
+    if (opacity !== effect.opacity) {
+      effect.opacity = opacity; // the map is drawn again only while the loop fades
+      this.scene.setLoopOpacity(opacity);
+    }
     effect.earlier = effectFrame(effect.loop, this.bundle.times, time);
-    this.scene.setLoopOpacity(effect.opacity);
     this.showInset().catch(this.report);
     effect.request = requestAnimationFrame((later) => this.tick(later));
   }
