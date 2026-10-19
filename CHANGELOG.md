@@ -60,14 +60,18 @@ earlier pass at the same place, and flashed over the map when the playhead arriv
 
 ### Tests
 
-- The viewer's tests go from 61 to 82.
-- `viewer/tests/loops.test.js` (10): the loop rooms' C++ runs
-  (`tests/fixtures/edge/room_runs_cpp.json`, TUM RGB-D and EuRoC stereo, each closing one loop)
-  and their tooltips; a made-up run of two maps whose record counts keyframes in its map, and
-  loops the run does not hold; the loop beside a frame; the inset's earlier frames on a made-up
-  street driven twice and on the RGB-D room's loop, and the window chosen where two overlap; a
-  loop's cycle; the flash's opacity over time and the frames the inset plays meanwhile; and what
-  each move of the playhead does to the flash.
+- The viewer's tests go from 61 to 84.
+- `viewer/tests/loops.test.js` (12): the C++ runs of the rooms' golden records that close loops
+  (`tests/fixtures/edge/room_runs_cpp.json`), held to what their own columns say (each frame
+  whose summary holds a correction, its keyframes the `keyframe_loops` row), with their tooltips
+  where every frame is tracked; a run with no loop column; a made-up run of two maps whose
+  record counts keyframes in its map, and loops the run does not hold; the loop beside a frame;
+  the inset's earlier frames on a made-up street driven twice and on the loops of the rooms
+  whose every frame is tracked (never stepping back, before the cutoff, nearer the loop's place
+  than the window's start), the window chosen where two overlap, and no earlier frames for no
+  loops or a loop whose map has no tracked poses; a loop's cycle; the flash's opacity over time
+  and the frames the inset plays meanwhile; and what each move of the playhead does to the
+  flash.
 - `viewer/tests/axis.test.js` (4): ticks and their labels, tops that are no positive number, the
   finest step, and the deadline's text; `viewer/tests/settings.test.js` (2): both sliders'
   ranges and the values read from storage.

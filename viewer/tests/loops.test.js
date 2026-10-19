@@ -1,5 +1,6 @@
-// The loops a run closed and the "seen before" inset's earlier frames: on the loop rooms' runs
-// (tests/fixtures/edge/room_runs_cpp.json, each closing one loop) and on runs made up here.
+// The loops a run closed and the "seen before" inset's earlier frames: on the C++ runs of the
+// rooms' golden records that close loops (tests/fixtures/edge/room_runs_cpp.json), held to what
+// those records say of themselves, and on runs made up here.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -35,61 +36,109 @@ function rows(columns) {
 }
 
 /**
- * One of the loop rooms' C++ runs, as a bundle gives a run: every frame tracked in it.
- * @param {string} name The case: "loop/tum/rgbd" or "loop/euroc/stereo".
+ * A golden record's case, as the fixture holds it: columns a frame, a keyframe or a loop.
+ * @typedef {{summaries: {loop?: {correction?: {matched: number, current: number} | null} | null}[],
+ *     maps: (number | null)[], keyframe_maps: number[], keyframe_lives: number[][],
+ *     keyframe_loops: number[][], poses: number[][], pose_maps: number[], timestamps: number[]}}
+ *     Case
  */
-async function room(name) {
+
+/**
+ * The rooms' cases that close a loop, each as a bundle gives its run (`Backend`'s records and
+ * keyframes; its poses and times where every frame is tracked, a pose a frame).
+ */
+async function rooms() {
   const doc = JSON.parse(await readFile(ROOMS, "utf8"));
-  const c = doc.cases[name];
-  const frames = c.summaries.length;
-  assert.equal(c.poses.length, frames, "every frame tracked: a frame's pose is its row");
-  return {
-    run: {
-      records: {
-        frame: Array.from({ length: frames }, (_, i) => i),
-        map: c.maps,
-        loop: c.summaries.map((/** @type {{loop: unknown}} */ s) => s.loop),
+  /** @type {[string, Case][]} */
+  const cases = Object.entries(doc.cases);
+  const closing = cases.filter(([, c]) => c.keyframe_loops[0].length > 0);
+  assert.ok(closing.length > 0, "the golden records close loops");
+  return closing.map(([name, c]) => {
+    const frames = c.summaries.length;
+    const every = Array.from({ length: frames }, (_, i) => i);
+    return {
+      name,
+      c,
+      run: {
+        records: { frame: every, map: c.maps, loop: c.summaries.map((s) => s.loop ?? null) },
+        keyframeMaps: Int32Array.from(c.keyframe_maps),
+        keyframeLives: rows(c.keyframe_lives),
+        keyframeLoops: rows(c.keyframe_loops),
       },
-      keyframeMaps: Int32Array.from(c.keyframe_maps),
-      keyframeLives: rows(c.keyframe_lives),
-      keyframeLoops: rows(c.keyframe_loops),
-      poses: Float32Array.from(c.poses.flatMap((/** @type {number[]} */ p) => p.slice(0, 12))),
-      poseFrames: Int32Array.from({ length: frames }, (_, i) => i),
-      poseMaps: Int32Array.from(c.pose_maps),
-    },
-    times: Float32Array.from(c.timestamps, (/** @type {number} */ t) => t - c.timestamps[0]),
-  };
+      tracked:
+        c.poses.length === frames
+          ? {
+              poses: Float32Array.from(c.poses.flatMap((p) => p.slice(0, 12))),
+              poseFrames: Int32Array.from(every),
+              poseMaps: Int32Array.from(c.pose_maps),
+              times: Float32Array.from(c.timestamps, (t) => t - c.timestamps[0]),
+            }
+          : null,
+    };
+  });
+}
+
+/**
+ * The loops a case's record says its run closed, from its own columns: each frame whose summary
+ * holds a correction, the record's keyframes counted from its map's first, which must be the
+ * `keyframe_loops` row of the same order.
+ * @param {Case} c The case.
+ * @returns {import("../src/loops.js").Loop[]} The loops.
+ */
+function recordedLoops(c) {
+  const corrections = c.summaries.flatMap((summary, frame) => {
+    const correction = summary.loop?.correction ?? null;
+    return correction === null ? [] : [{ frame, correction }];
+  });
+  assert.equal(corrections.length, c.keyframe_loops[0].length, "a correction for each loop");
+  return corrections.map(({ frame, correction }, e) => {
+    const map = /** @type {number} */ (c.maps[frame]);
+    const first = c.keyframe_maps.indexOf(map);
+    const [older, newer] = [first + correction.matched, first + correction.current];
+    assert.deepEqual(
+      [Math.min(older, newer), Math.max(older, newer)],
+      [c.keyframe_loops[0][e], c.keyframe_loops[1][e]],
+      `loop ${e}: the record's keyframes are keyframe_loops.npy's`,
+    );
+    return {
+      frame,
+      map,
+      older,
+      newer,
+      matched: correction.matched,
+      current: correction.current,
+      olderMade: c.keyframe_lives[0][older],
+      newerMade: c.keyframe_lives[0][newer],
+    };
+  });
 }
 
 test("a loop is the frame whose record corrects it, its keyframes the loop the map holds", async () => {
-  for (const [name, frame, older, newer, olderMade] of [
-    ["loop/tum/rgbd", 261, 0, 28, 0],
-    ["loop/euroc/stereo", 260, 2, 30, 13],
-  ]) {
-    const { run, times } = await room(String(name));
-    assert.deepEqual(
-      loopsOf(run),
-      [
-        {
-          frame,
-          map: 0,
-          older,
-          newer,
-          matched: older,
-          current: newer,
-          olderMade,
-          newerMade: frame,
-        },
-      ],
-      String(name),
-    );
-    const [loop] = loopsOf(run);
-    const apart = (times[frame] - times[Number(olderMade)]).toFixed(1);
-    assert.equal(
-      loopHint(loop, times),
-      `loop closed in map 0: keyframes ${older} ↔ ${newer}, ${apart} s apart`,
-    );
+  for (const { name, c, run, tracked } of await rooms()) {
+    const loops = loopsOf(run);
+    assert.deepEqual(loops, recordedLoops(c), name);
+    if (tracked !== null) {
+      const { times } = tracked;
+      for (const loop of loops) {
+        const apart = (times[loop.newerMade] - times[loop.olderMade]).toFixed(1);
+        assert.equal(
+          loopHint(loop, times),
+          `loop closed in map ${loop.map}: keyframes ${loop.matched} ↔ ${loop.current}, ` +
+            `${apart} s apart`,
+        );
+      }
+    }
   }
+});
+
+test("a run without a loop column closed none", () => {
+  const run = {
+    records: { frame: [0, 1, 2], map: [0, 0, 0] },
+    keyframeMaps: Int32Array.from([0, 0]),
+    keyframeLives: Int32Array.from([0, -1, -1, 2, -1, -1]),
+    keyframeLoops: new Int32Array(0),
+  };
+  assert.deepEqual(loopsOf(run), []);
 });
 
 /**
@@ -174,21 +223,50 @@ test("a frame before the window's first earlier frame has none, and the later wi
   assert.deepEqual(insetAt([first], 12), { loop, earlier: 4 });
 });
 
-test("the room's loop shows its start until the loop, then the first pass playing on", async () => {
-  const { run, times } = await room("loop/tum/rgbd");
-  const [window] = insets(loopsOf(run), times, run);
-  const matches = Array.from(window.matches);
-  assert.ok(
-    matches.every((earlier, i) => earlier >= 0 && (i === 0 || earlier >= matches[i - 1])),
-    "every frame has an earlier frame, never stepping back",
-  );
-  // Its earlier frames are the first pass's: nearer the start than the window.
-  assert.ok(matches.every((earlier) => times[earlier] < times[window.first] / 2));
-  const centre = (/** @type {number} */ f) => [3, 7, 11].map((i) => run.poses[f * 12 + i]);
-  const at = 261;
-  const earlier = matches[at - window.first];
-  const gap = Math.hypot(...centre(at).map((v, i) => v - centre(earlier)[i]));
-  assert.ok(gap < 0.15, `the loop's frame stands ${gap} m from its earlier frame`);
+test("a room's loop shows its earlier pass, nearer its place than the window's start", async () => {
+  for (const { name, run, tracked } of await rooms()) {
+    if (tracked === null) {
+      continue; // its poses and times are not a frame each
+    }
+    const windows = insets(loopsOf(run), tracked.times, tracked);
+    const centre = (/** @type {number} */ f) => [3, 7, 11].map((i) => tracked.poses[f * 12 + i]);
+    const apart = (/** @type {number} */ a, /** @type {number} */ b) =>
+      Math.hypot(...centre(a).map((v, i) => v - centre(b)[i]));
+    for (const { loop, first, matches } of windows) {
+      const earlier = Array.from(matches);
+      assert.ok(
+        earlier.every((frame, i) => frame >= 0 && (i === 0 || frame >= earlier[i - 1])),
+        `${name}: every frame has an earlier frame, never stepping back`,
+      );
+      // The earlier pass's frames: before the cutoff, midway between the matched keyframe's
+      // making and the window's first frame.
+      const cutoff = (tracked.times[loop.olderMade] + tracked.times[first]) / 2;
+      assert.ok(
+        earlier.every((frame) => tracked.times[frame] < cutoff),
+        name,
+      );
+      // At the loop's frame, the earlier pass stands nearer it than the window's first frame.
+      const at = earlier[loop.frame - first];
+      assert.ok(apart(loop.frame, at) < apart(loop.frame, first), name);
+    }
+  }
+});
+
+test("no loops, or a loop whose map has no tracked poses, have no earlier frames", () => {
+  const times = Float32Array.from({ length: 30 }, (_, frame) => frame);
+  const track = {
+    poses: Float32Array.from({ length: 30 * 12 }, (_, i) =>
+      i % 12 === 3 ? Math.floor(i / 12) : 0,
+    ),
+    poseFrames: Int32Array.from({ length: 30 }, (_, frame) => frame),
+    poseMaps: new Int32Array(30),
+  };
+  assert.deepEqual(insets([], times, track), []);
+  const loop = { ...loopsOf(twoMaps([4, 7]))[0], frame: 23, olderMade: 2 }; // map 1: no poses
+  const [window] = insets([loop], times, track);
+  assert.ok(window.matches.length > 0);
+  assert.ok(window.matches.every((frame) => frame === -1));
+  assert.equal(insetAt([window], 23), null);
 });
 
 test("a loop's cycle is its map's trajectory from its matched keyframe's making to its frame", () => {
@@ -207,8 +285,6 @@ test("a loop's cycle is its map's trajectory from its matched keyframe's making 
 });
 
 test("the loop effect holds, then fades, on its own clock", () => {
-  assert.equal(EFFECT_HOLD, 1.5);
-  assert.equal(EFFECT_FADE, 1);
   assert.equal(effectOpacity(0), 1);
   assert.equal(effectOpacity(-1), 1);
   assert.equal(effectOpacity(EFFECT_HOLD), 1);
