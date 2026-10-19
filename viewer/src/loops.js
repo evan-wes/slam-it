@@ -153,13 +153,57 @@ function lastUpTo(times, time) {
 }
 
 /**
+ * The tracked frames a loop's window may take as its earlier pass: those of the loop's map
+ * within `INSET_SEARCH` of the frame that made the matched keyframe, and before a cutoff midway
+ * between the matched keyframe's making and the window's first frame (on a short loop, the
+ * frames leading into the window would otherwise be their own earlier pass).
+ * @param {Loop} loop The loop.
+ * @param {ArrayLike<number>} times The bundle's frames' times, in seconds.
+ * @param {Int32Array} poseFrames The run's tracked frames, ascending.
+ * @param {Int32Array} poseMaps Their maps.
+ * @param {number} first The window's first frame.
+ * @returns {number[]} Their poses' rows, ascending.
+ */
+function candidateRows(loop, times, poseFrames, poseMaps, first) {
+  const made = times[loop.olderMade];
+  const cutoff = (made + times[first]) / 2;
+  /** @type {number[]} */
+  const out = [];
+  poseFrames.forEach((frame, row) => {
+    const time = times[frame];
+    if (poseMaps[row] === loop.map && time < cutoff && Math.abs(time - made) <= INSET_SEARCH) {
+      out.push(row);
+    }
+  });
+  return out;
+}
+
+/**
+ * The candidate pose whose centre is nearest a pose's.
+ * @param {Float32Array} path The poses' centres, (T, 3).
+ * @param {number} row The pose's row.
+ * @param {number[]} candidates The candidates' rows, at least one.
+ * @returns {number} The nearest's row; of candidates as near, the first.
+ */
+function nearestRow(path, row, candidates) {
+  let [nearest, least] = [candidates[0], Infinity];
+  for (const candidate of candidates) {
+    const distance =
+      (path[row * 3] - path[candidate * 3]) ** 2 +
+      (path[row * 3 + 1] - path[candidate * 3 + 1]) ** 2 +
+      (path[row * 3 + 2] - path[candidate * 3 + 2]) ** 2;
+    if (distance < least) {
+      [nearest, least] = [candidate, distance];
+    }
+  }
+  return nearest;
+}
+
+/**
  * Each loop's window of frames, from `INSET_BEFORE` before its frame to `INSET_AFTER` after it,
- * each with the earlier frame whose final pose's centre is nearest its own: among the tracked
- * frames of the loop's map within `INSET_SEARCH` of the frame that made the matched keyframe,
- * and nearer it in time than the window (on a short loop, the frames leading into the window
- * would otherwise be their own earlier pass). A frame without a final pose in the map takes the
- * frame before's, and the earlier frames never step back as the window's go on, so the inset
- * plays forward.
+ * each with the earlier frame whose final pose's centre is nearest its own, among the window's
+ * candidates (`candidateRows`). A frame without a final pose in the map takes the frame before's,
+ * and the earlier frames never step back as the window's go on, so the inset plays forward.
  * @param {Loop[]} loops The loops.
  * @param {ArrayLike<number>} times The bundle's frames' times, in seconds, ascending.
  * @param {{poses: Float32Array, poseFrames: Int32Array, poseMaps: Int32Array}} track The run's
@@ -171,44 +215,17 @@ export function insets(loops, times, { poses, poseFrames, poseMaps }) {
   /** @type {Map<number, number>} */
   const rowOf = new Map();
   poseFrames.forEach((frame, row) => rowOf.set(frame, row));
-  /**
-   * @param {number} a A pose's row. @param {number} b Another's.
-   * @returns {number} The squared distance between their centres.
-   */
-  const apart = (a, b) =>
-    (path[a * 3] - path[b * 3]) ** 2 +
-    (path[a * 3 + 1] - path[b * 3 + 1]) ** 2 +
-    (path[a * 3 + 2] - path[b * 3 + 2]) ** 2;
   return loops.map((loop) => {
     const at = times[loop.frame];
     const first = lowerBound(times, 1, at - INSET_BEFORE);
     const end = lastUpTo(times, at + INSET_AFTER) + 1;
-    const made = times[loop.olderMade];
-    const before = (made + times[first]) / 2;
-    /** @type {number[]} */
-    const candidates = [];
-    poseFrames.forEach((frame, row) => {
-      if (
-        times[frame] < before &&
-        poseMaps[row] === loop.map &&
-        Math.abs(times[frame] - made) <= INSET_SEARCH
-      ) {
-        candidates.push(row);
-      }
-    });
+    const candidates = candidateRows(loop, times, poseFrames, poseMaps, first);
     const matches = new Int32Array(end - first).fill(-1);
     let last = -1;
     for (let frame = first; frame < end; frame++) {
       const row = rowOf.get(frame);
       if (row !== undefined && poseMaps[row] === loop.map && candidates.length > 0) {
-        let [nearest, least] = [candidates[0], Infinity];
-        for (const candidate of candidates) {
-          const distance = apart(row, candidate);
-          if (distance < least) {
-            [nearest, least] = [candidate, distance];
-          }
-        }
-        last = Math.max(last, poseFrames[nearest]);
+        last = Math.max(last, poseFrames[nearestRow(path, row, candidates)]);
       }
       matches[frame - first] = last;
     }
