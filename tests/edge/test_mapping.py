@@ -406,7 +406,7 @@ def test_an_abort_stops_the_local_ba(mapped: Mapped) -> None:
 
 
 def test_a_compiled_backend_refuses_interrupts(mapped: Mapped) -> None:
-    """Only the Python reference is interrupted so far: a compiled one is refused, not ignored."""
+    """The bindings do not cross Python's interrupts: a compiled backend refuses them."""
     with pytest.raises(InvalidInputError, match="interrupts"):
         mapping.process(
             mapped.map, CAMERA, mapped.frame, mapped.tracked, mode="rgbd", options=OPTIONS,

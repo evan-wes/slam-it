@@ -34,7 +34,8 @@ keyframe is placed before local mapping makes its keyframe (:meth:`Atlas.place_p
 reference set once it has (:meth:`Atlas.resolve`); a keyframe tracked before a correction is
 placed by its reference keyframe as the map now has it (:meth:`Atlas.pose_by`), through the
 reference's culled ancestors as the trajectory places a frame. Every method holds the atlas's
-lock.
+lock but the properties and :meth:`Atlas.run_ids`, which read single values that Python's
+global interpreter lock keeps whole (``run_ids`` is also called with the lock held).
 """
 
 from __future__ import annotations

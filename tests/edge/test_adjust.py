@@ -186,7 +186,7 @@ def test_an_abort_between_iterations_keeps_what_was_solved(truth: Truth) -> None
 
 
 def test_a_compiled_backend_refuses_an_abort(truth: Truth) -> None:
-    """Only the Python reference stops early so far: a compiled one is refused, not ignored."""
+    """The bindings do not cross Python's abort: a compiled backend refuses it, not ignores it."""
     m = truth.map
     with pytest.raises(InvalidInputError, match="abort"):
         adjust.bundle_adjust(

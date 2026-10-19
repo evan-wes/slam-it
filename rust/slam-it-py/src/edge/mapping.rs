@@ -29,6 +29,7 @@ use crate::common::{add_functions, contiguous, enum_codes, to_i64, unwrap};
 /// * `options` - The settings, as a dict.
 /// * `idle` - Whether local mapping is idle.
 /// * `since_keyframe` - The frames since the last keyframe, or `None`.
+/// * `keyframes` - The whole map's keyframes when `m` is a view of it, or `None`.
 ///
 /// # Returns
 ///

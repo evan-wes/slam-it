@@ -385,7 +385,7 @@ def bundle_adjust(  # noqa: PLR0913 -- the map, its camera, what to adjust, the 
         given to a compiled backend.
     """
     if abort is not None and backend != "python":
-        raise InvalidInputError("abort: only the Python reference stops early so far")
+        raise InvalidInputError("abort: a compiled backend's own threads abort it")
     given = np.asarray(keyframes)
     chosen = as_indices(given, given.size, m.keyframes, "keyframes")
     held = as_mask(fixed, (m.keyframes,), "fixed")

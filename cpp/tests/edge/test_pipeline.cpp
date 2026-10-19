@@ -365,8 +365,6 @@ void check_relocalized(int& failures) {
          "a frame out of the fallback's reach is relocalised in its map, at its pose", failures);
 }
 
-/// @brief The test body.
-/// @return The exit code.
 /// @brief The scene's settings, a first keyframe's reference ratio raised to the others' (from
 ///        0.4), so that `thinning`'s frames ask for a keyframe.
 /// @return The settings.
@@ -690,6 +688,8 @@ void check_lost_threaded(int& failures) {
          "threaded, a lost map closes as inline, and the next frame starts map 1", failures);
 }
 
+/// @brief The test body.
+/// @return The exit code.
 int run_tests() {
   int failures = 0;
   check_depth_modes(failures);

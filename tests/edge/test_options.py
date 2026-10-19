@@ -112,7 +112,7 @@ def test_an_unknown_setting_or_group_is_refused() -> None:
 
 
 def test_the_settings_are_named_by_group_and_field() -> None:
-    """settings() lists all 132, each ``group.field`` but ``seed``, and with_settings reads them."""
+    """settings() lists all 134, each ``group.field`` but ``seed``, and with_settings reads them."""
     settings = Options().settings()
     assert len(settings) == 134
     assert [name for name in settings if "." not in name] == ["seed"]

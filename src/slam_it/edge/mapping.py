@@ -27,8 +27,9 @@ is requested (``stopRequested``); local BA stops early when aborted (``mbAbortBA
 :func:`slam_it.edge.adjust.bundle_adjust`); and the map is published for tracking once the
 keyframe's points are made. How each was scheduled is kept (:class:`Schedule`). Tracking asks
 for a keyframe as ORB-SLAM's ``NeedNewKeyFrame`` does whether mapping is idle or busy
-(:func:`need_keyframe`). Only the Python reference takes these so far, until B3b's compiled
-ports.
+(:func:`need_keyframe`). The C++ and Rust cores are interrupted the same way, by their own
+threads; their bindings do not cross Python's callables, so a compiled backend given
+``interrupts`` is refused.
 
 A keyframe's neighbours are its links in the covisibility graph
 (:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Lite: matching for triangulation has no
@@ -500,8 +501,8 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the mode is unknown, the map has no keyframe, the depths are infinite, the matches
-        are not one per depth.
+        If the mode is unknown, the map has no keyframe, the depths are infinite, or the
+        matches are not one per depth.
     """
     check_mode(mode)
     _check_newest(m)
@@ -1362,7 +1363,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     """
     check_mode(mode)
     if interrupts is not None and backend != "python":
-        raise InvalidInputError("interrupts: only the Python reference is interrupted so far")
+        raise InvalidInputError("interrupts: a compiled backend's own threads interrupt it")
     checked = checked_tracked(tracked, frame)
     kept = covisibility.as_held(held)
     return backends.call(
