@@ -97,14 +97,15 @@ inline std::vector<std::uint8_t> flags_in(const VectorIn<bool>& in) {
   return out;
 }
 
-/// @brief Read an (N, 2) float64 item into pixels.
+/// @brief Read an (N, 2) item into pairs: pixels (float64), or keyframe ids (int64).
+/// @tparam T The element type.
 /// @param values The dict.
 /// @param key The item's key.
-/// @return The pixels.
-inline std::vector<std::array<double, 2>> pixels_item(const nanobind::dict& values,
-                                                      const char* key) {
-  const auto in = item<double, nanobind::shape<-1, 2>>(values, key);
-  std::vector<std::array<double, 2>> out(in.shape(0));
+/// @return The pairs.
+template <typename T>
+std::vector<std::array<T, 2>> pairs_item(const nanobind::dict& values, const char* key) {
+  const auto in = item<T, nanobind::shape<-1, 2>>(values, key);
+  std::vector<std::array<T, 2>> out(in.shape(0));
   for (std::size_t i = 0; i < out.size(); ++i) {
     out[i] = {in(i, 0), in(i, 1)};
   }
@@ -169,12 +170,13 @@ nanobind::ndarray<nanobind::numpy, T> vector_array(const std::vector<T>& values)
   return out;
 }
 
-/// @brief Pixels as a new (N, 2) array.
-/// @param values The pixels.
+/// @brief Pairs as a new (N, 2) array: pixels (float64), or keyframe ids (int64).
+/// @tparam T The element type.
+/// @param values The pairs.
 /// @return The array.
-inline nanobind::ndarray<nanobind::numpy, double> pixels_array(
-    const std::vector<std::array<double, 2>>& values) {
-  auto [out, data] = new_array({values.size(), 2});
+template <typename T>
+nanobind::ndarray<nanobind::numpy, T> pairs_array(const std::vector<std::array<T, 2>>& values) {
+  auto [out, data] = new_array<T>({values.size(), 2});
   for (std::size_t i = 0; i < values.size(); ++i) {
     // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic): array fill
     data[2 * i] = values[i][0];
@@ -214,14 +216,15 @@ inline nanobind::ndarray<nanobind::numpy, std::uint8_t> descriptors_array(
 }
 
 /// @brief The map's fields, as the dict's keys.
-inline constexpr std::array<const char*, 34> kMapKeys = {
-    "levels",          "scale_factor", "kf_id",         "kf_time",       "kf_pose",
-    "kf_parent",       "kf_start",     "kp_xy",         "kp_level",      "kp_angle",
-    "kp_descriptor",   "kp_bearing",   "kp_depth",      "kp_right",      "kp_point",
-    "pt_id",           "pt_xyz",       "pt_descriptor", "pt_normal",     "pt_min_distance",
-    "pt_max_distance", "pt_visible",   "pt_found",      "pt_first_kf",   "pt_reference_kf",
-    "next_kf_id",      "next_pt_id",   "gone_pt_id",    "gone_pt_xyz",   "gone_pt_how",
-    "gone_kf_id",      "gone_kf_time", "gone_kf_pose",  "gone_kf_parent"};
+inline constexpr std::array<const char*, 36> kMapKeys = {
+    "levels",          "scale_factor", "kf_id",         "kf_time",        "kf_pose",
+    "kf_parent",       "kf_start",     "kp_xy",         "kp_level",       "kp_angle",
+    "kp_descriptor",   "kp_bearing",   "kp_depth",      "kp_right",       "kp_point",
+    "pt_id",           "pt_xyz",       "pt_descriptor", "pt_normal",      "pt_min_distance",
+    "pt_max_distance", "pt_visible",   "pt_found",      "pt_first_kf",    "pt_reference_kf",
+    "next_kf_id",      "next_pt_id",   "gone_pt_id",    "gone_pt_xyz",    "gone_pt_how",
+    "gone_kf_id",      "gone_kf_time", "gone_kf_pose",  "gone_kf_parent", "gone_kf_relative",
+    "loop_edges"};
 
 /// @brief Read a map from a dict of its fields, its observations indexed, checked.
 /// @param values The dict.
@@ -237,7 +240,7 @@ inline edge::Map map_in(const nanobind::dict& values) {
               .kf_pose = poses_item(values, "kf_pose"),
               .kf_parent = vector_item<std::int64_t>(values, "kf_parent"),
               .kf_start = vector_item<std::int64_t>(values, "kf_start"),
-              .kp_xy = pixels_item(values, "kp_xy"),
+              .kp_xy = pairs_item<double>(values, "kp_xy"),
               .kp_level = vector_item<std::int64_t>(values, "kp_level"),
               .kp_angle = vector_item<std::int64_t>(values, "kp_angle"),
               .kp_descriptor = descriptors_item(values, "kp_descriptor"),
@@ -264,6 +267,8 @@ inline edge::Map map_in(const nanobind::dict& values) {
               .gone_kf_time = vector_item<double>(values, "gone_kf_time"),
               .gone_kf_pose = poses_item(values, "gone_kf_pose"),
               .gone_kf_parent = vector_item<std::int64_t>(values, "gone_kf_parent"),
+              .gone_kf_relative = poses_item(values, "gone_kf_relative"),
+              .loop_edges = pairs_item<std::int64_t>(values, "loop_edges"),
               .pt_observations = {}};
   edge::index_observations(m);
   unwrap(edge::check_map(m));
@@ -282,7 +287,7 @@ inline nanobind::dict map_dict(const edge::Map& m) {
   out["kf_pose"] = poses_array(m.kf_pose);
   out["kf_parent"] = vector_array(m.kf_parent);
   out["kf_start"] = vector_array(m.kf_start);
-  out["kp_xy"] = pixels_array(m.kp_xy);
+  out["kp_xy"] = pairs_array(m.kp_xy);
   out["kp_level"] = vector_array(m.kp_level);
   out["kp_angle"] = vector_array(m.kp_angle);
   out["kp_descriptor"] = descriptors_array(m.kp_descriptor);
@@ -309,6 +314,8 @@ inline nanobind::dict map_dict(const edge::Map& m) {
   out["gone_kf_time"] = vector_array(m.gone_kf_time);
   out["gone_kf_pose"] = poses_array(m.gone_kf_pose);
   out["gone_kf_parent"] = vector_array(m.gone_kf_parent);
+  out["gone_kf_relative"] = poses_array(m.gone_kf_relative);
+  out["loop_edges"] = pairs_array(m.loop_edges);
   return out;
 }
 
@@ -324,7 +331,7 @@ inline constexpr std::array<const char*, 12> kFrameKeys = {
 ///         or not one row per keypoint; CoreError for a keypoint position that is not finite.
 inline edge::Frame frame_in(const nanobind::dict& values) {
   check_keys(values, kFrameKeys, "the frame");
-  const auto xy = pixels_item(values, "xy");
+  const auto xy = pairs_item<double>(values, "xy");
   const auto level = vector_item<std::int64_t>(values, "level");
   const auto level_xy = item<std::int64_t, nanobind::shape<-1, 2>>(values, "level_xy");
   const auto response = vector_item<std::int64_t>(values, "response");

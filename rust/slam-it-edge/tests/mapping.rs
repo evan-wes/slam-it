@@ -156,12 +156,12 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
     let built = scene_map();
     let mut copy = built.clone();
     map::insert_keyframe(&mut copy, &frame(2, true), &pose(2), &ids(0, 60)).unwrap();
-    cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &Options::default()).unwrap();
+    cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &Options::default(), &[]).unwrap();
     assert_eq!(copy.kf_id, vec![0, 2, 3]);
     check_map(&copy).unwrap();
     let mut none = Map::empty(8, 1.2);
     assert!(
-        cull_keyframes(&mut none, &camera(), Mode::Rgbd, &Options::default()).is_err(),
+        cull_keyframes(&mut none, &camera(), Mode::Rgbd, &Options::default(), &[]).is_err(),
         "culling refuses a map without keyframes"
     );
     assert!(fuse_targets(&none, Mode::Rgbd, &Options::default()).is_err());
@@ -184,6 +184,7 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
         &tracked,
         Mode::Rgbd,
         &Options::default(),
+        &[],
     )
     .unwrap();
     assert_eq!(m.kf_id.last(), Some(&3));

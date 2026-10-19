@@ -160,10 +160,12 @@ struct Mapped {
 /// @param camera The camera.
 /// @param mode The pipeline's mode.
 /// @param options The fraction and count.
+/// @param held The ids of the keyframes loop detection holds, which `cull` spares.
 /// @return Nothing; `InvalidInput` for a map without keyframes, or an invalid camera or
 ///         settings.
 [[nodiscard]] foundations::Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode,
-                                                       const Options& options);
+                                                       const Options& options,
+                                                       std::span<const std::int64_t> held = {});
 
 /// @brief Insert a keyframe and run local mapping on it (`slam_it.edge.mapping.process`).
 /// @param m The map, changed in place.
@@ -172,11 +174,13 @@ struct Mapped {
 /// @param tracked Its pose and matches.
 /// @param mode The pipeline's mode.
 /// @param options The settings.
+/// @param held The ids of the keyframes loop detection holds, which culling spares.
 /// @return How each step went, and the points made for the keyframe's keypoints;
 ///         `InvalidInput` for matches that are not one per keypoint, or an invalid camera or
 ///         settings.
 [[nodiscard]] foundations::Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame,
                                                   const Tracked& tracked, Mode mode,
-                                                  const Options& options);
+                                                  const Options& options,
+                                                  std::span<const std::int64_t> held = {});
 
 }  // namespace slam_it::edge

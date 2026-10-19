@@ -95,13 +95,13 @@ options and environment variables use `SLAM_IT_`, and types `SlamIt`.
   module that `tests/test_backends.py` checks every extension submodule against. The edge
   rung's stages compare live with the Python reference on states built from the synthetic
   room (stored, they would run to megabytes), at `tests/edge/support.py`'s tolerances; its
-  whole runs are held to a golden record of the room's runs, so a changed decision fails
-  until the record is regenerated. **Until milestone 2B's B3,** that is one record
-  (`tests/fixtures/edge/room_runs.json`), Python's, which every backend must match decision
-  for decision. **B3 replaces it** (decided with evan-wes on 2026-10-17) with a record per
-  language, each its own regression check, and one bar of results that all three must clear
-  on the same data: the languages must each map and localise well, not decide alike. Add no
-  test or fixture that requires the languages to decide identically. Bindings only convert
+  whole runs are held to golden records of the rooms' runs, so a changed decision fails
+  until a record is regenerated. **Since milestone 2B's B3** (decided with evan-wes on
+  2026-10-17) there is a record per language (`tests/fixtures/edge/room_runs_<backend>.json`),
+  each its own regression check, and one bar of results that all three must clear on the same
+  data (`tests/orchestration/test_loop_room.py`): the languages must each map and localise
+  well, not decide alike. Add no test or fixture that requires the languages to decide
+  identically. Bindings only convert
   types; algorithms live in the cores, which build without Python.
 - Native benchmarks are developer tools outside the cores: `cpp/bench/<rung>/` (Google
   Benchmark, built with `-DSLAM_IT_BUILD_BENCHMARKS=ON`) and each crate's `benches/`

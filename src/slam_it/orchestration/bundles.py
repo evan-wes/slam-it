@@ -3,7 +3,7 @@
 A bundle is a folder any plain file server can serve; the page (``viewer/``) reads nothing else.
 It holds one sequence's runs in one mode, at most one per backend, and the frames they ran:
 
-- ``bundle.json``: ``{"format": "slam-it-bundle", "version": 3, "dataset", "sequence",
+- ``bundle.json``: ``{"format": "slam-it-bundle", "version": 4, "dataset", "sequence",
   "mode", "camera", "frames", "first_time", "extent", "images", "truth", "fates", "steps",
   "backends"}``. ``camera`` is the pipeline's (a stereo pair's rectified left camera):
   ``model``, ``width``, ``height``, ``intrinsics`` and ``baseline``. ``frames`` counts the
@@ -28,14 +28,16 @@ It holds one sequence's runs in one mode, at most one per backend, and the frame
   - ``records.json``: the run's diagnostics as columns, one value per frame it ran, with
     ``frame``, the bundle's frame of each; its ``map`` column, each frame's map or null, is
     what the page shows a map by;
-  - ``poses.npy``: each tracked frame's ``T_world_cam``, its top three rows, ``(T, 3, 4)``
+  - ``poses.npy``: each tracked frame's final ``T_world_cam`` (the run format's
+    ``trajectory.txt``), its top three rows, ``(T, 3, 4)``
     float32; ``pose_frames.npy``: their frames, and ``pose_maps.npy``: their maps, each
     ``(T,)`` int32;
   - ``keyframe_poses.npy``, ``(K, 3, 4)`` float32, ``keyframe_lives.npy``, ``(K, 3)`` int32,
     and ``keyframe_maps.npy``, ``(K,)`` int32; ``keyframe_parents.npy``, ``(K,)`` int32, and
     ``keyframe_links.npy``, ``(L, 3)`` int32, the spanning tree and the strong links as each
-    map ended (each keyframe's last parent; a map's links when it closed or the run ended), which
-    the page draws through the run while both their keyframes live;
+    map ended (each keyframe's last parent; a map's links when it closed or the run ended), and
+    ``keyframe_loops.npy``, ``(E, 2)`` int32, the loops closed, which the page draws through the
+    run while both their keyframes live;
     ``points.npy``, ``(N, 3)`` float32,
     ``point_lives.npy``, ``(N, 3)`` int32, and ``point_maps.npy``, ``(N,)`` int32: every
     keyframe and point the run made, as the run format holds them (:mod:`slam_it.eval.runs`);
@@ -88,9 +90,9 @@ from slam_it.orchestration import vo
 FORMAT = "slam-it-bundle"
 """``bundle.json``'s ``format``."""
 
-VERSION = 3
+VERSION = 4
 """``bundle.json``'s ``version``: this module's layout (2 added the maps; 3 the spanning tree and
-the strong links)."""
+the strong links; 4 the loops closed, and the trajectory the run format's final one)."""
 
 CHUNK = 100
 """The frames whose JPEGs share a chunk file."""
@@ -331,6 +333,7 @@ def _write_backend(out: Path, baked: _Baked, times: NDArray[np.float64]) -> dict
     _npy(folder / "keyframe_maps.npy", run.keyframe_maps.astype(np.int32))
     _npy(folder / "keyframe_parents.npy", run.keyframe_parents.astype(np.int32))
     _npy(folder / "keyframe_links.npy", run.keyframe_links.astype(np.int32).reshape(-1, 3))
+    _npy(folder / "keyframe_loops.npy", run.keyframe_loops.astype(np.int32).reshape(-1, 2))
     _npy(folder / "points.npy", _moved(run.points, run.point_maps, alignments))
     _npy(folder / "point_lives.npy", _lives(run.point_lives, frame))
     _npy(folder / "point_maps.npy", run.point_maps.astype(np.int32))

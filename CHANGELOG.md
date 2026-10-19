@@ -4,6 +4,122 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.12.0] - 2026-10-17
+
+Milestone 2B's third part, B3: loop closure (`docs/design/2026-10-14-online-slam.md`, section
+10). Each keyframe, after local mapping, is searched for a loop in its map, as ORB-SLAM3
+searches; a loop closed is corrected, its essential graph optimised and the whole map
+bundle-adjusted, on GTSAM 4.3 in the three languages. The trajectory a run scores is ORB-SLAM's
+final one. On the loop sequences, 16 of 22 runs meet a bar anchored to ORB-SLAM's published
+accuracy, in C++ and Rust alike, and no loop closes at a wrong place; on the test set, 18 loops
+close in 14 runs, one at a wrong place. Each language keeps its own golden record and is held to
+a bar of results on the same rooms, not to the others' decisions. The run format is version 7
+and the bundle's 4: runs written by 0.3.11.0 no longer read.
+
+### Added
+
+- **GTSAM 4.3 as the back end** (`slam_it.foundations.graphs`, with C++ and Rust twins, Rust
+  through a `cxx` bridge whose factors call back into Rust): a pose graph, the Sim(3)
+  refinement and bundle adjustment. `scripts/setup_slam_it.sh` builds GTSAM 4.3.0 from its tag
+  with `EIGEN_NO_CPUID`, as the cores compile, so a run repeats on any core, and its Python
+  wrapper over the same library; the worker's image builds the C++ library the same way, for
+  its C++ program, and its Python, which imports GTSAM but never solves with it,
+  takes PyPI's 4.3.0 wheel, pinned by its hash (`scripts/locks/worker-gtsam.lock`).
+- **The loop's Sim(3) by RANSAC** in the three languages, each sample solved by Umeyama's
+  method, its matches tested as ORB-SLAM's `Sim3Solver` tests them.
+- **Loop closing** (`slam_it.edge.loops`, with C++ and Rust twins), its settings in the `loops`
+  group: ORB-SLAM3's detection (`DetectNBestCandidates`, matching by word, the loop's Sim(3),
+  projection, refinement, and confirmation by the new keyframe's neighbours and the keyframes
+  after it); ORB-SLAM's correction (`CorrectLoop`: the new keyframe and its links moved by the
+  Sim(3), the matched points replacing theirs, the loop's points fused); the essential graph;
+  and global BA after each loop (`loops.global_ba`). Each stage is held to Python's reference
+  in C++ and Rust.
+- **The map's loop edges;** culling spares a keyframe with one, or one that detection holds.
+- **The final trajectory:** each frame placed by its reference keyframe's final pose, through
+  its culled ancestors; the poses as tracked are kept beside it.
+- **The run format, version 7, and the bundle's, version 4:** `trajectory.txt` holds the final
+  trajectory and `trajectory_tracked.txt` the poses as tracked; `keyframe_loops.npy`; a frame's
+  `loop_seconds`; each keyframe's detection and each loop's correction in the diagnostics. The
+  viewer draws the loop edges, and its Solver panel describes loop closing.
+- **The budget judge** counts the keyframes searched for a loop, spreads their loop-closing
+  times, and gives loop closing's load.
+- **The loop room:** a camera circling 420° in 280 frames on a circle of 0.6 m, looking
+  outward and up, so a loop closes in every mode; and the bar on the rooms for the three
+  languages in layer 1 (`tests/orchestration/test_loop_room.py`): the frames tracked, one map,
+  a loop closed and none at a wrong place, the final trajectory's error and the points' distance
+  to the walls.
+- **The test-set measure** reads EuRoC; scores the final trajectory (`ate`), the poses as
+  tracked (`ate_tracked`) and the final keyframes (`ate_keyframes`); judges each loop against
+  the ground truth, at a wrong place by the distance between its keyframes and the angle
+  between their viewing directions, and with a poor pose; and records its runs' details, so
+  that measures compare across a format break (B2's panel, A9).
+- **B3's results**, in `docs/notes/test-set.md` and the design's section 11: on the loop
+  sequences, 16 of 22 runs within 1.5 times ORB-SLAM's published ATE with at least 95% of their
+  frames tracked; on the test set, 209,148 frames tracked in C++ against B2's 208,906; global
+  BA lowering the final ATE on 4 loop sequences and raising it on 4.
+
+### Changed
+
+- **A golden record per language** (`tests/fixtures/edge/room_runs_{python,cpp,rust}.json`, 27
+  cases each), each its own language's regression check, in place of one record that every
+  language had to reproduce; the tests that compared whole runs across languages are gone, and
+  each native's reading of its settings is held in its own language.
+- **Every bundle-adjustment factor gives a point behind its camera GTSAM's constant error,**
+  twice the focal length a row, with no gradient; without it, global BA collapsed a monocular
+  map.
+- **Python's global BA takes GTSAM's own factors through a pinhole camera,** which model it
+  exactly; GTSAM's Python wrapper copies the problem's values on every call into a custom factor.
+- **The keyframe database is kept whenever relocalisation or loop closing is on**
+  (`Options.keeps_keyframe_database`, with C++ and Rust twins), as ORB-SLAM always keeps its
+  `KeyFrameDatabase`: before, `loops.enabled` without relocalisation closed no loop, silently.
+  A run with `loops.enabled` alone now needs a vocabulary and records it (`vo.run` gives the
+  committed one), so `--option relocalization.enabled=false` no longer turns loop closing off;
+  add `loops.enabled=false` for neither. `vo.check` and both native programs refuse with
+  "relocalization.enabled or loops.enabled needs one" and "given, but relocalization.enabled and
+  loops.enabled are both off".
+- **The loops' judge is `slam_it.eval.loops`,** moved out of `scripts/measure_testset.py`: the
+  test-set measure and the loop room judge a loop alike.
+- **The graphs refuse what they took:** `refine_similarity` a `pixels2` row neither finite nor
+  wholly NaN, in the three languages; Python's graphs raise `NotConvergedError` where GTSAM
+  fails, as C++ and Rust return `NotConverged`; loop closing's `search_by_similarity` checks its
+  window and distance, and `essential_graph` its inputs.
+- **GTSAM stays behind `foundations.graphs`:** an import-linter contract and `check_layers.py`
+  hold it there, its C++ headers included by `graphs.cpp` and the Rust bridge's source alone;
+  `_cpp` exports none of its symbols.
+- **Offline CI compiles GTSAM's Python wrapper in a scope of its own, under 16 GB,** the rest
+  under 8 GB; the GitHub workflow's timeout is 120 minutes. `compare_testsets.py summarize`
+  reads each sequence's ground truth as its dataset.
+- **`THIRD_PARTY_NOTICES.md` covers B3's code:** GTSAM 4.3.0, built by the setup script, and
+  with it CCOLAMD, METIS and Spectra, among what you install; `cxx` among the Rust crates; and
+  in the ORB-SLAM credit, loop closing and the essential graph, and `slam_it.foundations.sim3`
+  and `slam_it.foundations.graphs` following `Sim3Solver` and `Optimizer`'s solves, on GTSAM.
+- **`loops.py`'s list of departures from ORB-SLAM** caps the links' links "as ORB-SLAM's
+  design intends; its source adds them all", where it said "as ORB-SLAM's code means to",
+  which read like a port the code does not bear out (the licence audit's D1).
+
+### Tests
+
+- Loop closing's stages held to Python's reference in C++ and Rust on the loop room's map: the
+  searches, the refinement, the fusion, detection, the correction and global BA, the refusals
+  and the outcomes' codes.
+- The final trajectory follows the keyframes in each mode, each tracked frame once, in order;
+  the run format's final and as-tracked trajectories are written and read in the three
+  languages, each refusing a loop edge between two maps.
+- The measure: EuRoC read, the three trajectories scored, a loop judged at a wrong place and
+  with a poor pose, and a keyframe rolled about its view judged in the right place.
+- A parity fixture for rung 0's factor graphs (`tests/fixtures/foundations/graphs.json`): pose
+  graphs, both rounds of the Sim(3) refinement and two BAs, from the Python reference; every
+  backend held to it, its summaries included, each field under its own policy.
+- Every program's diagnostics hold Python's key paths and value types, on the lost, found and
+  loop rooms.
+- The refusals: Python's loop-closing functions each refuse a bad argument by its name, and
+  each core a `pixels2` row neither finite nor wholly NaN. A loop closes with relocalisation off
+  (Python, the loop room); with loop closing alone, no failed frame relocalises, in each core.
+- `tests/test_build_copies.py` holds the worker image's GTSAM build to the setup script's, and
+  rung 0's crate's lints to the workspace's.
+- The guard against local paths and personal details (`tests/test_no_local_paths.py`) also
+  reports a link to a Claude Code session, and its self-test has a case for it.
+
 ## [0.3.11.2] - 2026-10-18
 
 SLAM It! is relicensed under the PolyForm Noncommercial License 1.0.0, to prepare for going

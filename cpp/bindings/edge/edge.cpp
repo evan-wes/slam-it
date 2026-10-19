@@ -30,6 +30,9 @@ void bind_edge(nanobind::module_& parent) {
   nanobind::module_ relocalization =
       edge.def_submodule("relocalization", "Relocalisation: placing a lost frame by its words.");
   bind_relocalization(relocalization);
+  nanobind::module_ loops = edge.def_submodule(
+      "loops", "Loop closing: finding a revisited place, and correcting the map.");
+  bind_loops(loops);
 }
 
 }  // namespace slam_it::bindings

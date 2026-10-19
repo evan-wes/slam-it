@@ -88,11 +88,13 @@ nb::dict reparent(const nb::dict& m, std::int64_t k, const nb::dict& options) {
 /// @param m The map, as a dict.
 /// @param k The keyframe's row.
 /// @param options The settings, as a dict.
+/// @param held The ids of the keyframes loop detection holds.
 /// @return The map.
 /// @throws CoreError for a row out of range or the map's first keyframe.
-nb::dict cull(const nb::dict& m, std::int64_t k, const nb::dict& options) {
+nb::dict cull(const nb::dict& m, std::int64_t k, const nb::dict& options,
+              const edge_crossing::Int64In& held) {
   edge::Map out = map_in(m);
-  unwrap(edge::cull(out, k, options_in(options)));
+  unwrap(edge::cull(out, k, options_in(options), edge_crossing::int64_in(held)));
   return map_dict(out);
 }
 
@@ -122,7 +124,7 @@ void bind_covisibility(nb::module_& m) {
   m.def("adopt", &adopt, nb::arg("m"), nb::arg("k"), "Give a keyframe its parent.");
   m.def("reparent", &reparent, nb::arg("m"), nb::arg("k"), nb::arg("options"),
         "Give a keyframe's children new parents.");
-  m.def("cull", &cull, nb::arg("m"), nb::arg("k"), nb::arg("options"),
+  m.def("cull", &cull, nb::arg("m"), nb::arg("k"), nb::arg("options"), nb::arg("held").noconvert(),
         "Cull a keyframe: its children given new parents, then it erased.");
   m.def("strong_links", &strong_links, nb::arg("m"), nb::arg("options"),
         "Every pair of keyframes sharing at least covisibility.strong_points.");

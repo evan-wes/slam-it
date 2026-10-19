@@ -1,8 +1,8 @@
 """Guard: nothing in the repository names a place on one machine, or its owner.
 
 Datasets and runs are named by settings or relative to the repository, so no tracked file
-needs a home folder, a session's scratch folder, the folders the project has lived in on one
-machine, or anything from one person's own tools; and the owner is named by their public
+needs a home folder, a session's scratch folder or link, the folders the project has lived in
+on one machine, or anything from one person's own tools; and the owner is named by their public
 handle alone. This scans the text of every file git would commit (this one excepted, since it
 spells out the patterns).
 
@@ -25,6 +25,7 @@ FORBIDDEN = {
     "a home folder": r"/home/[\w.-]+|/Users/[\w.-]+|[A-Za-z]:\\Users\\[\w.-]+",
     "a folder under the home folder": r"~/projects|~/\.claude",
     "a session's scratch folder": r"/tmp/claude-\d+",
+    "a link to a Claude Code session": r"claude\.ai/code/session",
     "a personal tool": r"claude-scripts|\.gstack",
     "a folder the project lived in": r"(?:slamlab|slam_it_all|slam_it|reifyscene)_project",
     "a note kept outside the repository": r"\[\[[a-z0-9]+(?:-[a-z0-9]+)+\]\]",
@@ -185,13 +186,15 @@ def test_the_guard_sees_each_kind_of_mention() -> None:
         ("h = 'slam_it_project'", "a folder the project lived in"),
         ("i = 'see [[some-note]]'", "a note kept outside the repository"),
         ("j = 'me@Gmail.com'", "a personal email address"),
+        ("k = 'https://claude.ai/code/session_0123'", "a link to a Claude Code session"),
     ]
     alike = [
-        "k = [[0]]",
-        "l = '/tmp/x'",
-        "m = '~/.cache/x'",
-        "n = 'slam_it.project'",
-        "o = '/home/'",
+        "l = [[0]]",
+        "m = '/tmp/x'",
+        "n = '~/.cache/x'",
+        "o = 'slam_it.project'",
+        "p = '/home/'",
+        "q = 'https://claude.ai/code'",
     ]
     found = _mentions("\n".join([line for line, _ in cases] + alike) + "\n")
     assert [(n, what) for n, what, _ in found] == [

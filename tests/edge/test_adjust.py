@@ -123,6 +123,19 @@ def test_no_points_leave_the_map_unchanged(truth: Truth) -> None:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_no_keyframe_held_fixed_leaves_the_map_unchanged(backend: str, truth: Truth) -> None:
+    """Every keyframe free, nothing gauges the problem: ORB-SLAM3 skips it, and so does this."""
+    chosen = require_function(backend, adjust.__name__, "bundle_adjust")
+    m = _perturbed(truth.map)
+    free = np.zeros(m.keyframes, dtype=bool)
+    adjusted = adjust.bundle_adjust(
+        m, CAMERA, np.arange(m.keyframes), free, OPTIONS, backend=chosen
+    )
+    assert_maps_match(adjusted.map, m)
+    assert (adjusted.solves, adjusted.outliers, adjusted.free, adjusted.fixed) == ((), 0, 0, 0)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_rejects_malformed_arguments(backend: str, truth: Truth) -> None:
     """Rows out of range and flags that are not one per keyframe raise before any backend runs."""
     m = truth.map

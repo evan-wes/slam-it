@@ -305,24 +305,29 @@ pub fn reparent(m: &mut Map, k: usize, options: &Options) -> Result<()> {
 /// Culls a keyframe: its children given new parents, then it erased (ORB-SLAM's `SetBadFlag`;
 /// `slam_it.edge.covisibility.cull`). The one way a keyframe leaves the graph, as
 /// [`map::erase_keyframe`] refuses a keyframe that is still a parent. The map's first keyframe
-/// (id 0), its tree's root, is refused, as `SetBadFlag` leaves it.
+/// (id 0), its tree's root, is refused, as `SetBadFlag` leaves it. A keyframe with a loop edge,
+/// or one of `held`, is spared, the map left as it was (`SetNotErase`).
 ///
 /// # Arguments
 ///
 /// * `m` - The map, changed in place.
 /// * `k` - The keyframe's row.
 /// * `options` - The settings: `covisibility.min_points`.
+/// * `held` - The ids of the keyframes loop detection holds.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for a row out of range or the map's first keyframe.
-pub fn cull(m: &mut Map, k: usize, options: &Options) -> Result<()> {
+pub fn cull(m: &mut Map, k: usize, options: &Options, held: &[i64]) -> Result<()> {
     check_row(m, k)?;
     if m.kf_id[k] == 0 {
         return fail(
             ErrorKind::InvalidInput,
             "k: keyframe 0 is the map's first, its tree's root, and is not culled",
         );
+    }
+    if map::has_loop(m, k) || held.contains(&m.kf_id[k]) {
+        return Ok(()); // spared, as ORB-SLAM's SetNotErase spares it
     }
     reparent(m, k, options)?;
     map::erase_keyframe(m, k)

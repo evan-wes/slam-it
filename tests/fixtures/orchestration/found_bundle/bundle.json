@@ -1,6 +1,6 @@
 {
  "format": "slam-it-bundle",
- "version": 3,
+ "version": 4,
  "dataset": "tum",
  "sequence": "room_tum",
  "mode": "rgbd",
@@ -39,7 +39,8 @@
   "read_seconds",
   "build_seconds",
   "track_seconds",
-  "map_seconds"
+  "map_seconds",
+  "loop_seconds"
  ],
  "backends": {
   "python": {
@@ -58,9 +59,9 @@
    "alignment": "se3",
    "score": {
     "matched": 33,
-    "ate_rmse": 0.007272834652265271,
-    "rpe_translation_rmse": 0.009659955707803416,
-    "rpe_rotation_rmse": 0.0016766975397583133
+    "ate_rmse": 0.007776528675933351,
+    "rpe_translation_rmse": 0.010287915931550411,
+    "rpe_rotation_rmse": 0.0017867845985421206
    },
    "maps": [
     {
@@ -73,18 +74,18 @@
      "reset": false,
      "score": {
       "matched": 33,
-      "ate_rmse": 0.007272834652265271,
-      "rpe_translation_rmse": 0.009659955707803416,
-      "rpe_rotation_rmse": 0.0016766975397583133,
+      "ate_rmse": 0.007776528675933351,
+      "rpe_translation_rmse": 0.010287915931550411,
+      "rpe_rotation_rmse": 0.0017867845985421206,
       "scale": 1.0
      }
     }
    ],
    "latency": {
     "deadline": 0.03333300000000006,
-    "median": 0.047013361006975174,
-    "p95": 0.048960700747556984,
-    "max": 0.10088377096690238,
+    "median": 0.04904063162393868,
+    "p95": 0.051029091351665556,
+    "max": 0.10456563299521804,
     "late": 33
    },
    "peak_memory": null

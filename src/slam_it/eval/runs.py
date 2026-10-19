@@ -2,26 +2,31 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 6, "dataset", "sequence",
+- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 7, "dataset", "sequence",
   "mode", "backend", "settings", "vocabulary", "record_features", "peak_memory", "cpus",
   "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and
   ``rust``; ``settings`` holds the pipeline's options as JSON (the edge pipeline's an object per
-  group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary`` the vocabulary a
-  relocalising run used, as its folder's header and checksums record it
+  group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary`` the vocabulary a run
+  relocalising or closing loops used, as its folder's header and checksums record it
   (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k, levels,
-  words and each array's SHA-256), null for a run that did not relocalise
-  (``relocalization.enabled`` off); ``record_features`` whether the run recorded its features
+  words and each array's SHA-256), null for a run that did neither (``relocalization.enabled``
+  and ``loops.enabled`` off); ``record_features`` whether the run recorded its features
   (below). The last three describe the program that ran it, as it recorded them before writing
   (:mod:`slam_it.eval.budgets`), and are null when the run was not a program's of its own
   (Python's in-process run) or the system does not say: ``peak_memory``, its largest resident
   set in bytes; ``cpus``, the CPUs it could run on, ascending (a budget pins them);
   ``memory_cap``, its control group's memory cap in bytes (null without one).
-- ``trajectory.txt``: each tracked frame's ``T_world_cam`` in TUM's format, one
+- ``trajectory.txt``: each tracked frame's final ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are
   written to round-trip exactly. A run of several maps (below) holds each map's poses in
   turn, each in its own frame, a ``# map <n>`` line before each map's first: an outside tool
-  must align one map at a time, splitting the file there or by ``pose_maps.npy``.
+  must align one map at a time, splitting the file there or by ``pose_maps.npy``. The final
+  pose is ORB-SLAM's (``SaveTrajectoryTUM``): the frame's pose relative to its reference
+  keyframe, carried by that keyframe's last pose, so it follows what loop closing and bundle
+  adjustment did after the frame was tracked (:meth:`slam_it.edge.pipeline.Pipeline.trajectory`).
+- ``trajectory_tracked.txt``: the same frames' ``T_world_cam`` as tracked, in the same format,
+  the same times and maps.
 - ``keyframes.npy``: the timestamps of every keyframe the run made, by id (the order it made
   them in), ``(K,)`` float64; ``keyframe_poses.npy``: their ``T_world_cam``, ``(K, 4, 4)``, the
   last each had; ``keyframe_lives.npy``: their lives, ``(K, 3)`` int64 (below);
@@ -29,7 +34,8 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   keyframe id or -1, ``(K,)`` int64 (:mod:`slam_it.edge.covisibility`); and
   ``keyframe_links.npy``: each map's strong links when it closed or the run ended, ``(L, 3)``
   int64: two keyframe ids of the same map, the lower first, and the points they share, the
-  rows ascending.
+  rows ascending; ``keyframe_loops.npy``: the loops closed, ``(E, 2)`` int64, each two keyframe
+  ids of the same map, the lower first, in the order they closed.
 - ``points.npy``: every point the run made, by id, in its map's world frame, ``(M, 3)``
   float64, where each last was; ``point_lives.npy``: their lives, ``(M, 3)`` int64.
 - **A life** is three numbers: the frame that made it; the frame that removed it, or -1 if it
@@ -90,11 +96,12 @@ from slam_it.foundations.errors import DegenerateError, InvalidInputError
 FORMAT = "slam-it-run"
 """``run.json``'s ``format``."""
 
-VERSION = 6
+VERSION = 7
 """``run.json``'s ``version``: this module's layout (2 added ``peak_memory``, ``cpus`` and
 ``memory_cap``; 3 every point and keyframe the run made, with their lives; 4 the maps, and the
 removal ``reset``; 5 the ``vocabulary`` a relocalising run used; 6 the settings grouped, each
-keyframe's parent and the strong links)."""
+keyframe's parent and the strong links; 7 the final trajectory, the poses as tracked beside it,
+the loops closed, and loop closing's time)."""
 
 REMOVALS = ("culled", "fused", "weak", "reset")
 """Why a point or keyframe was removed, a life's code being the index: culled (a recent point
@@ -113,11 +120,12 @@ PIXELS = "feature_pixels.npy"
 RECORDS = "feature_records.npy"
 """The file of a run's keypoints' records: frame, level, fate and point."""
 
-STEPS = ("read_seconds", "build_seconds", "track_seconds", "map_seconds")
+STEPS = ("read_seconds", "build_seconds", "track_seconds", "map_seconds", "loop_seconds")
 """The steps each frame of the edge pipeline times, as keys of its diagnostic, in seconds:
 delivering its images decoded (and a stereo pair rectified), building the frame from them,
-tracking it (initialisation included), and mapping it, 0 exactly when it is not a keyframe
-mapped. C++ and Rust write the same keys (:mod:`slam_it.orchestration.vo`)."""
+tracking it (initialisation included), mapping it, 0 exactly when it is not a keyframe mapped,
+and closing loops on it, 0 when it is not a keyframe searched (correction included). C++ and
+Rust write the same keys (:mod:`slam_it.orchestration.vo`)."""
 
 DATASETS = ("tum", "euroc")
 """The datasets a sequence can come from: those this package reads (:func:`ground_truth`)."""
@@ -176,7 +184,9 @@ class Run:
     timestamps : ndarray of float64, shape (F,)
         Each tracked frame's timestamp, in seconds, ascending.
     poses : ndarray of float64, shape (F, 4, 4)
-        Each tracked frame's ``T_world_cam``.
+        Each tracked frame's final ``T_world_cam`` (the module docstring's ``trajectory.txt``).
+    tracked_poses : ndarray of float64, shape (F, 4, 4)
+        Each tracked frame's ``T_world_cam`` as tracked.
     keyframe_timestamps : ndarray of float64, shape (K,)
         The timestamps of every keyframe the run made, by id.
     keyframe_poses : ndarray of float64, shape (K, 4, 4)
@@ -186,8 +196,8 @@ class Run:
     settings : dict
         The pipeline's options, as JSON values.
     vocabulary : dict or None
-        The vocabulary a relocalising run used, its header and checksums
-        (:func:`slam_it.eval.vocabularies.record`); None if it did not relocalise.
+        The vocabulary a run relocalising or closing loops used, its header and checksums
+        (:func:`slam_it.eval.vocabularies.record`); None if it did neither.
     diagnostics : list of dict
         One JSON object per frame, each with a ``timestamp``, and its ``map`` in a run with maps
         (the module docstring has the keys read across a run's maps).
@@ -208,6 +218,9 @@ class Run:
     keyframe_links : ndarray of int64, shape (L, 3)
         The strong links: two keyframes of the same map, the lower id first, and the points they
         share, the rows ascending.
+    keyframe_loops : ndarray of int64, shape (E, 2)
+        The loops closed: two keyframes of the same map, the lower id first, in the order they
+        closed.
     record_features : bool
         Whether the run recorded its features (:func:`read_features` reads them).
     pose_maps : ndarray of int64, shape (F,)
@@ -224,6 +237,7 @@ class Run:
     backend: str
     timestamps: NDArray[np.float64]
     poses: NDArray[np.float64]
+    tracked_poses: NDArray[np.float64]
     keyframe_timestamps: NDArray[np.float64] = field(default_factory=lambda: np.zeros(0))
     keyframe_poses: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 4, 4)))
     points: NDArray[np.float64] = field(default_factory=lambda: np.zeros((0, 3)))
@@ -240,6 +254,9 @@ class Run:
     keyframe_parents: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     keyframe_links: NDArray[np.int64] = field(
         default_factory=lambda: np.zeros((0, 3), dtype=np.int64)
+    )
+    keyframe_loops: NDArray[np.int64] = field(
+        default_factory=lambda: np.zeros((0, 2), dtype=np.int64)
     )
     record_features: bool = False
     pose_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
@@ -448,6 +465,24 @@ def _check_links(links: ArrayLike, maps: NDArray[np.int64], name: str) -> NDArra
     return out
 
 
+def _check_loops(loops: ArrayLike, maps: NDArray[np.int64], name: str) -> NDArray[np.int64]:
+    """Check loop edges: two keyframes of one map, the lower first, each pair once; return them.
+
+    `maps` is each keyframe's map, checked; `name` begins each message.
+    """
+    out = np.asarray(loops)
+    if out.dtype != np.int64 or out.ndim != 2 or out.shape[1] != 2:
+        raise InvalidInputError(f"{name}: expected int64 (E, 2), got {out.dtype} {out.shape}")
+    first, second = out.T
+    if np.any((first < 0) | (first >= second) | (second >= len(maps))):
+        raise InvalidInputError(f"{name}: a loop must join two keyframes, the lower first")
+    if np.any(maps[first] != maps[second]):
+        raise InvalidInputError(f"{name}: a loop's keyframes must be in one map")
+    if len(np.unique(first * len(maps) + second)) != len(out):
+        raise InvalidInputError(f"{name}: a loop must close once")
+    return out
+
+
 def _check_maps(maps: ArrayLike, count: int, name: str) -> NDArray[np.int64]:
     """Check maps, one per row: map numbers, never descending; return them.
 
@@ -580,6 +615,7 @@ def write_run(folder: str | Path, run: Run) -> None:
             raise InvalidInputError(f"{name}: expected a string")
     _check_names(run.mode, run.backend)
     times, poses = _as_stamped(run.timestamps, run.poses, "trajectory")
+    _, tracked = _as_stamped(run.timestamps, run.tracked_poses, "tracked trajectory")
     keyframe_times, keyframe_poses = _as_stamped(
         run.keyframe_timestamps, run.keyframe_poses, "keyframes"
     )
@@ -627,15 +663,21 @@ def write_run(folder: str | Path, run: Run) -> None:
     _check_frame_maps(run.diagnostics, maps["keyframe_maps"], "diagnostics")
     parents = _check_parents(run.keyframe_parents, maps["keyframe_maps"], "keyframe_parents")
     links = _check_links(run.keyframe_links, maps["keyframe_maps"], "keyframe_links")
+    loops = _check_loops(run.keyframe_loops, maps["keyframe_maps"], "keyframe_loops")
     out = Path(folder)
     out.mkdir(parents=True, exist_ok=True)
     _replace(out / "run.json", (json.dumps(info, indent=1) + "\n").encode())
     _replace(out / "trajectory.txt", _trajectory_text(times, poses, maps["pose_maps"]).encode())
+    _replace(
+        out / "trajectory_tracked.txt",
+        _trajectory_text(times, tracked, maps["pose_maps"]).encode(),
+    )
     _replace(out / "keyframes.npy", _npy(keyframe_times))
     _replace(out / "keyframe_poses.npy", _npy(keyframe_poses))
     _replace(out / "keyframe_lives.npy", _npy(keyframe_lives))
     _replace(out / "keyframe_parents.npy", _npy(parents))
     _replace(out / "keyframe_links.npy", _npy(links))
+    _replace(out / "keyframe_loops.npy", _npy(loops))
     _replace(out / "points.npy", _npy(points))
     _replace(out / "point_lives.npy", _npy(point_lives))
     for name, values in maps.items():
@@ -744,6 +786,11 @@ def read_run(folder: str | Path) -> Run:
     root = Path(folder)
     info = _read_info(root / "run.json")
     times, poses = read_trajectory(root / "trajectory.txt")
+    tracked_times, tracked = read_trajectory(root / "trajectory_tracked.txt")
+    if not np.array_equal(tracked_times, times):
+        raise InvalidInputError(
+            f"{root / 'trajectory_tracked.txt'}: expected trajectory.txt's times"
+        )
     keyframe_times = _load(root / "keyframes.npy", ())
     keyframe_poses = _load(root / "keyframe_poses.npy", (4, 4))
     _as_stamped(keyframe_times, keyframe_poses, "keyframes")
@@ -774,6 +821,11 @@ def read_run(folder: str | Path) -> Run:
         maps["keyframe_maps"],
         str(root / "keyframe_links"),
     )
+    loops = _check_loops(
+        _load(root / "keyframe_loops.npy", (2,), np.int64),
+        maps["keyframe_maps"],
+        str(root / "keyframe_loops"),
+    )
     return Run(
         dataset=info["dataset"],
         sequence=info["sequence"],
@@ -781,6 +833,7 @@ def read_run(folder: str | Path) -> Run:
         backend=info["backend"],
         timestamps=times,
         poses=poses,
+        tracked_poses=tracked,
         keyframe_timestamps=keyframe_times,
         keyframe_poses=keyframe_poses,
         points=points,
@@ -794,6 +847,7 @@ def read_run(folder: str | Path) -> Run:
         keyframe_lives=lives["keyframe_lives"],
         keyframe_parents=parents,
         keyframe_links=links,
+        keyframe_loops=loops,
         record_features=info["record_features"],
         pose_maps=maps["pose_maps"],
         keyframe_maps=maps["keyframe_maps"],
@@ -1245,10 +1299,15 @@ def _scored(  # noqa: PLR0913 -- the run, its truth, the tolerance and interval;
     rpe_delta: float | None,
     *,
     relative: bool,
+    tracked: bool,
 ) -> Evaluation:
-    """Score each of a run's maps on its own alignment; the RPE too if `relative`."""
+    """Score each of a run's maps on its own alignment; the RPE too if `relative`.
+
+    The final trajectory is scored, or the poses as tracked if `tracked`.
+    """
     truth_times, truth_poses = _as_stamped(timestamps, poses, "ground truth")
-    run_times, run_poses = _as_stamped(run.timestamps, run.poses, "run")
+    scored_poses = run.tracked_poses if tracked else run.poses
+    run_times, run_poses = _as_stamped(run.timestamps, scored_poses, "run")
     maps = _check_maps(run.pose_maps, len(run_times), "pose_maps")
     period = float(np.median(np.diff(run_times))) if len(run_times) >= 2 else 0.0
     delta = period if relative else None  # a map of three frames or more has a period
@@ -1284,7 +1343,12 @@ def _scored(  # noqa: PLR0913 -- the run, its truth, the tolerance and interval;
 
 
 def evaluate_absolute(
-    run: Run, timestamps: ArrayLike, poses: ArrayLike, *, max_difference: float = MAX_DIFFERENCE
+    run: Run,
+    timestamps: ArrayLike,
+    poses: ArrayLike,
+    *,
+    max_difference: float = MAX_DIFFERENCE,
+    tracked: bool = False,
 ) -> Evaluation:
     """Score a run's ATE against the ground truth, without the RPE: each map on its own.
 
@@ -1301,6 +1365,8 @@ def evaluate_absolute(
     max_difference : float, optional
         The largest time difference, in seconds, between a run frame and its ground truth
         (default :data:`MAX_DIFFERENCE`).
+    tracked : bool, optional
+        Score the poses as tracked, not the final trajectory (default: the final one).
 
     Returns
     -------
@@ -1315,16 +1381,17 @@ def evaluate_absolute(
         If no map can be aligned: each with fewer than three frames matched, or their centres
         on a line. The message names each map's cause.
     """
-    return _scored(run, timestamps, poses, max_difference, None, relative=False)
+    return _scored(run, timestamps, poses, max_difference, None, relative=False, tracked=tracked)
 
 
-def evaluate(
+def evaluate(  # noqa: PLR0913 -- the run, its truth, the tolerance and interval, which trajectory
     run: Run,
     timestamps: ArrayLike,
     poses: ArrayLike,
     *,
     max_difference: float = MAX_DIFFERENCE,
     rpe_delta: float | None = None,
+    tracked: bool = False,
 ) -> Evaluation:
     """Score a run against the ground truth: each map's ATE, and its RPE where it has pairs.
 
@@ -1347,6 +1414,8 @@ def evaluate(
     rpe_delta : float, optional
         The RPE's interval, in seconds (default: the run's frame period, the median spacing
         of its timestamps). Pairs are sought within half a frame period, within a map.
+    tracked : bool, optional
+        Score the poses as tracked, not the final trajectory (default: the final one).
 
     Returns
     -------
@@ -1362,4 +1431,6 @@ def evaluate(
         If no map can be aligned: each with fewer than three frames matched, or their centres
         on a line. The message names each map's cause.
     """
-    return _scored(run, timestamps, poses, max_difference, rpe_delta, relative=True)
+    return _scored(
+        run, timestamps, poses, max_difference, rpe_delta, relative=True, tracked=tracked
+    )

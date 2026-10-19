@@ -41,16 +41,6 @@ Eigen::Vector3d to_world(const Eigen::Matrix4d& pose, const Eigen::Vector3d& x) 
   return pose.topLeftCorner<3, 3>().transpose() * (x - pose.topRightCorner<3, 1>());
 }
 
-/// @brief A keyframe's keypoint rows.
-/// @param m The map.
-/// @param k The keyframe's row.
-/// @return Its rows.
-std::vector<std::int64_t> rows_of(const Map& m, std::size_t k) {
-  std::vector<std::int64_t> out(static_cast<std::size_t>(m.kf_start[k + 1] - m.kf_start[k]));
-  std::ranges::iota(out, m.kf_start[k]);
-  return out;
-}
-
 /// @brief A keyframe's links' rows, most shared first (`slam_it.edge.covisibility.links`).
 /// @param m The map.
 /// @param k The keyframe's row.
@@ -137,7 +127,7 @@ Result<void> check_keyframes(const Map& m, const Options& options) {
 /// @return Each keypoint's point, if its id is `first` or later; -1 elsewhere.
 std::vector<std::int64_t> made_since(const Map& m, std::int64_t first) {
   std::vector<std::int64_t> out;
-  for (const std::int64_t row : rows_of(m, keyframe_count(m) - 1)) {
+  for (const std::int64_t row : keypoint_rows(m, keyframe_count(m) - 1)) {
     const std::int64_t id = m.kp_point[static_cast<std::size_t>(row)];
     out.push_back(id >= first ? id : -1);
   }
@@ -190,7 +180,7 @@ std::pair<std::int64_t, std::int64_t> close_counts(std::span<const double> depth
 /// @return Their rows.
 std::vector<std::int64_t> free_rows(const Map& m, std::size_t k) {
   std::vector<std::int64_t> out;
-  for (const std::int64_t row : rows_of(m, k)) {
+  for (const std::int64_t row : keypoint_rows(m, k)) {
     const auto r = static_cast<std::size_t>(row);
     if (m.kp_point[r] < 0 && m.kp_bearing[r].z() > 0.0) {
       out.push_back(row);
@@ -492,7 +482,7 @@ Result<std::pair<std::vector<Eigen::Vector3d>, std::vector<std::vector<std::int6
 /// @return The depth, or nothing if it sees no point.
 std::optional<double> median_depth(const Map& m, std::size_t k) {
   std::vector<double> depths;
-  for (const std::int64_t row : rows_of(m, k)) {
+  for (const std::int64_t row : keypoint_rows(m, k)) {
     if (const std::int64_t p = point_row(m, m.kp_point[static_cast<std::size_t>(row)]); p >= 0) {
       depths.push_back(to_camera(m.kf_pose[k], m.pt_xyz[static_cast<std::size_t>(p)]).z());
     }
@@ -502,53 +492,6 @@ std::optional<double> median_depth(const Map& m, std::size_t k) {
   }
   std::ranges::sort(depths);
   return depths[(depths.size() - 1) / 2];
-}
-
-/// @brief Replace one point by another (`slam_it.edge.mapping._merge_points`,
-///        `MapPoint::Replace`).
-/// @param m The map.
-/// @param lose The lost point's id.
-/// @param keep The kept point's id.
-/// @return Nothing, or the map's error.
-Result<void> merge_points(Map& m, std::int64_t lose, std::int64_t keep) {
-  const auto p_lose = static_cast<std::size_t>(point_row(m, lose));
-  const auto p_keep = static_cast<std::size_t>(point_row(m, keep));
-  std::set<std::size_t> kept_in;
-  for (const std::int64_t r : m.pt_observations[p_keep]) {
-    kept_in.insert(keyframe_of(m, r));
-  }
-  const std::vector<std::int64_t> moving = m.pt_observations[p_lose];  // observe() changes it
-  for (const std::int64_t r : moving) {
-    if (auto ok = observe(m, r, kept_in.contains(keyframe_of(m, r)) ? -1 : keep); !ok) {
-      return ok;
-    }
-  }
-  m.pt_visible[p_keep] += m.pt_visible[p_lose];
-  m.pt_found[p_keep] += m.pt_found[p_lose];
-  std::vector<std::uint8_t> erase(point_count(m), 0);
-  erase[p_lose] = 1;
-  if (auto ok = erase_points(m, erase, Removal::kFused); !ok) {
-    return ok;
-  }
-  const std::vector<std::int64_t> kept{point_row(m, keep)};
-  return refresh_points(m, kept);
-}
-
-/// @brief A keyframe's keypoints as the grid reads them.
-/// @param m The map.
-/// @param k The keyframe's row.
-/// @return Their positions and levels.
-std::vector<foundations::orb::Keypoint> keypoints_of(const Map& m, std::size_t k) {
-  std::vector<foundations::orb::Keypoint> out;
-  for (const std::int64_t row : rows_of(m, k)) {
-    const auto r = static_cast<std::size_t>(row);
-    out.push_back({.xy = m.kp_xy[r],
-                   .level = m.kp_level[r],
-                   .level_xy = {},
-                   .response = 0,
-                   .angle = m.kp_angle[r]});
-  }
-  return out;
 }
 
 /// @brief The keypoint row a point fuses into in a keyframe, if any
@@ -641,7 +584,7 @@ Result<void> fuse_one(Map& m, const Camera& camera, std::size_t k,
   if (!weights) {
     return std::unexpected(std::move(weights.error()));
   }
-  return (*weights)[0] > (*weights)[1] ? merge_points(m, id, held) : merge_points(m, held, id);
+  return (*weights)[0] > (*weights)[1] ? replace_point(m, id, held) : replace_point(m, held, id);
 }
 
 /// @brief Fuse points into a keyframe, by id.
@@ -653,7 +596,7 @@ Result<void> fuse_one(Map& m, const Camera& camera, std::size_t k,
 /// @return Nothing, or an error.
 Result<void> fuse_into(Map& m, const Camera& camera, std::size_t k,
                        const std::vector<std::int64_t>& ids, const Options& options) {
-  auto grid = matching::FeatureGrid::build(keypoints_of(m, k));
+  auto grid = matching::FeatureGrid::build(keyframe_keypoints(m, k));
   if (!grid) {
     return std::unexpected(std::move(grid.error()));
   }
@@ -736,7 +679,7 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
                                             ? options.keyframes.ref_min_observations_early
                                             : options.keyframes.ref_min_observations;
   std::vector<std::int64_t> rows;
-  for (const std::int64_t row : rows_of(m, static_cast<std::size_t>(reference))) {
+  for (const std::int64_t row : keypoint_rows(m, static_cast<std::size_t>(reference))) {
     if (const std::int64_t p = point_row(m, m.kp_point[static_cast<std::size_t>(row)]); p >= 0) {
       rows.push_back(p);
     }
@@ -771,7 +714,7 @@ Result<void> create_points_from_depth(Map& m, const Camera& camera, const Option
   }
   const std::size_t k = keyframe_count(m) - 1;
   std::vector<std::int64_t> order;
-  for (const std::int64_t row : rows_of(m, k)) {
+  for (const std::int64_t row : keypoint_rows(m, k)) {
     const auto r = static_cast<std::size_t>(row);
     if (m.kp_depth[r] > 0.0 && m.kp_bearing[r].z() > 0.0) {
       order.push_back(row);
@@ -931,7 +874,8 @@ Result<std::vector<std::int64_t>> local_ba_keyframes(const Map& m, const Options
   return local_rows(m, options);
 }
 
-Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options) {
+Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Options& options,
+                            std::span<const std::int64_t> held) {
   if (auto ok = check_newest(m, camera, options); !ok) {
     return ok;
   }
@@ -946,7 +890,7 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
     }
     const auto k = static_cast<std::size_t>(keyframe_row(m, id));
     std::vector<std::int64_t> rows;
-    for (const std::int64_t row : rows_of(m, k)) {
+    for (const std::int64_t row : keypoint_rows(m, k)) {
       const auto r = static_cast<std::size_t>(row);
       if (m.kp_point[r] >= 0 &&
           (mode == Mode::kMonocular || (m.kp_depth[r] >= 0.0 && m.kp_depth[r] <= limit))) {
@@ -962,7 +906,7 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
     }
     if (static_cast<double>(*count) >
         options.mapping.redundant_fraction * static_cast<double>(rows.size())) {
-      if (auto ok = cull(m, static_cast<std::int64_t>(k), options); !ok) {
+      if (auto ok = cull(m, static_cast<std::int64_t>(k), options, held); !ok) {
         return ok;
       }
     }
@@ -971,7 +915,7 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
 }
 
 Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
-                       Mode mode, const Options& options) {
+                       Mode mode, const Options& options, std::span<const std::int64_t> held) {
   if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -1025,7 +969,7 @@ Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const T
     adjustment = std::move(*adjusted);
   }
   const auto keyframes = static_cast<std::int64_t>(keyframe_count(m));
-  if (auto ok = cull_keyframes(m, camera, mode, options); !ok) {
+  if (auto ok = cull_keyframes(m, camera, mode, options, held); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   return Mapped{

@@ -123,6 +123,12 @@ pub struct Map {
     pub gone_kf_pose: Vec<Matrix4<f64>>,
     /// Their last parents.
     pub gone_kf_parent: Vec<i64>,
+    /// Each one's pose relative to its parent when it went, `T_cam_parent` (ORB-SLAM's
+    /// `mTcp`): the identity for one without a parent.
+    pub gone_kf_relative: Vec<Matrix4<f64>>,
+    /// The loops closed in the map, each the two keyframes' ids, the older first, in the order
+    /// they were closed.
+    pub loop_edges: Vec<[i64; 2]>,
     /// Each point's observing keypoint rows, ascending: the index of `kp_point` the operations
     /// here keep. It does not cross to Python; `index_observations` builds it for a map
     /// assembled column by column.
@@ -177,6 +183,8 @@ impl Map {
             gone_kf_time: Vec::new(),
             gone_kf_pose: Vec::new(),
             gone_kf_parent: Vec::new(),
+            gone_kf_relative: Vec::new(),
+            loop_edges: Vec::new(),
             pt_observations: Vec::new(),
         }
     }
@@ -398,6 +406,7 @@ pub fn check_map(m: &Map) -> Result<()> {
         m.gone_kf_time.len() == m.gone_kf_id.len(),
         m.gone_kf_pose.len() == m.gone_kf_id.len(),
         m.gone_kf_parent.len() == m.gone_kf_id.len(),
+        m.gone_kf_relative.len() == m.gone_kf_id.len(),
     ];
     if lengths.contains(&false) {
         return fail(
@@ -429,6 +438,27 @@ pub fn check_map(m: &Map) -> Result<()> {
             "map.kp_point: every observed point must be in the map",
         );
     }
+    check_links(m)?;
+    if m.pt_observations != indexed(m) {
+        return fail(
+            ErrorKind::InvalidInput,
+            "map.pt_observations: expected each point's observing keypoint rows, ascending",
+        );
+    }
+    check_gone(m)
+}
+
+/// Checks the keyframes' links: each parent, and each loop edge.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+///
+/// # Errors
+///
+/// `InvalidInput` for a parent that is neither -1 nor another of its keyframes, or a loop edge
+/// not joining two of them, the older first.
+fn check_links(m: &Map) -> Result<()> {
     if m.kf_parent
         .iter()
         .zip(&m.kf_id)
@@ -439,13 +469,15 @@ pub fn check_map(m: &Map) -> Result<()> {
             "map.kf_parent: a parent must be -1 or another of its keyframes",
         );
     }
-    if m.pt_observations != indexed(m) {
+    if m.loop_edges.iter().any(|&[older, newer]| {
+        older >= newer || m.keyframe_row(older).is_none() || m.keyframe_row(newer).is_none()
+    }) {
         return fail(
             ErrorKind::InvalidInput,
-            "map.pt_observations: expected each point's observing keypoint rows, ascending",
+            "map.loop_edges: each joins two of its keyframes, the older (lower id) first",
         );
     }
-    check_gone(m)
+    Ok(())
 }
 
 /// Checks a map's archive of erased points and keyframes: each id one the map gave, once, and
@@ -503,6 +535,7 @@ pub fn clear_gone(m: &mut Map) {
     m.gone_kf_time.clear();
     m.gone_kf_pose.clear();
     m.gone_kf_parent.clear();
+    m.gone_kf_relative.clear();
 }
 
 /// Builds `pt_observations` from `kp_point`, for a map assembled column by column.
@@ -1070,7 +1103,8 @@ pub fn forget_observations(m: &mut Map, rows: &[usize]) -> Result<()> {
 /// A keyframe that is still another's parent is refused, so every parent stays a keyframe of
 /// the map: [`crate::covisibility::cull`] gives its children new parents first. It guards the
 /// parents, not the root: a childless first keyframe is erased; callers above the map go through
-/// `cull`, which refuses it.
+/// `cull`, which refuses it. A keyframe with a loop edge is refused too (`cull` spares it). Its
+/// pose relative to its parent is archived, for the final trajectory.
 ///
 /// # Arguments
 ///
@@ -1079,7 +1113,8 @@ pub fn forget_observations(m: &mut Map, rows: &[usize]) -> Result<()> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a row out of range or a keyframe that is still a parent.
+/// `InvalidInput` for a row out of range or a keyframe that is still a parent or has a loop
+/// edge.
 pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     if k >= m.keyframes() {
         return fail(
@@ -1100,6 +1135,13 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
             ),
         );
     }
+    if has_loop(m, k) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("k: keyframe {} has a loop edge, and is kept", m.kf_id[k]),
+        );
+    }
+    let relative = relative_to_parent(m, k);
     let (start, stop) = (m.kf_start[k], m.kf_start[k + 1]);
     let rows: Vec<usize> = (start..stop).collect();
     forget(m, &rows);
@@ -1116,6 +1158,7 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     m.gone_kf_time.push(m.kf_time[k]);
     m.gone_kf_pose.push(m.kf_pose[k]);
     m.gone_kf_parent.push(m.kf_parent[k]);
+    m.gone_kf_relative.push(relative);
     m.kf_id.remove(k);
     m.kf_time.remove(k);
     m.kf_pose.remove(k);
@@ -1130,6 +1173,144 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A keyframe's pose relative to its parent, `T_cam_parent`, or the identity.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `k` - The keyframe's row.
+///
+/// # Returns
+///
+/// The relative pose.
+fn relative_to_parent(m: &Map, k: usize) -> Matrix4<f64> {
+    let Some(parent) = (m.kf_parent[k] >= 0)
+        .then(|| m.keyframe_row(m.kf_parent[k]))
+        .flatten()
+    else {
+        return Matrix4::identity();
+    };
+    let (pose, of_parent) = (&m.kf_pose[k], &m.kf_pose[parent]);
+    let rotation = pose.fixed_view::<3, 3>(0, 0) * of_parent.fixed_view::<3, 3>(0, 0).transpose();
+    let mut out = Matrix4::identity();
+    out.fixed_view_mut::<3, 3>(0, 0).copy_from(&rotation);
+    out.fixed_view_mut::<3, 1>(0, 3).copy_from(
+        &(pose.fixed_view::<3, 1>(0, 3) - rotation * of_parent.fixed_view::<3, 1>(0, 3)),
+    );
+    out
+}
+
+/// Whether a keyframe has a loop edge (`slam_it.edge.map.has_loop`).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `k` - The keyframe's row, in range.
+///
+/// # Returns
+///
+/// Whether a loop closed in the map joins it.
+#[must_use]
+pub fn has_loop(m: &Map, k: usize) -> bool {
+    m.loop_edges.iter().any(|edge| edge.contains(&m.kf_id[k]))
+}
+
+/// Adds a loop edge joining two of the map's keyframes (`AddLoopEdge`, both ways).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `first`, `second` - The two keyframes' ids, in either order.
+///
+/// # Errors
+///
+/// `InvalidInput` if either is not the map's, or they are the same.
+pub fn add_loop_edge(m: &mut Map, first: i64, second: i64) -> Result<()> {
+    if first == second || m.keyframe_row(first).is_none() || m.keyframe_row(second).is_none() {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("loop edge {first}-{second}: expected two of the map's keyframes"),
+        );
+    }
+    m.loop_edges.push([first.min(second), first.max(second)]);
+    Ok(())
+}
+
+/// Replaces one point by another (`slam_it.edge.map.replace_point`, `MapPoint::Replace`).
+///
+/// The lost point's observations pass to the kept one, except in keyframes that already see
+/// the kept one, where they are dropped; its visible and found counts are added to the kept
+/// one's; it is erased ([`Removal::Fused`]), and the kept one refreshed. Local mapping's fusion
+/// and loop closing replace points through it.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `lose` - The lost point's id.
+/// * `keep` - The kept point's id.
+///
+/// # Errors
+///
+/// `InvalidInput` if either point is not in the map, or they are the same.
+pub fn replace_point(m: &mut Map, lose: i64, keep: i64) -> Result<()> {
+    let (Some(p_lose), Some(p_keep)) = (m.point_row(lose), m.point_row(keep)) else {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("replace {lose} by {keep}: expected two of the map's points"),
+        );
+    };
+    if lose == keep {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("replace {lose} by {keep}: expected two of the map's points"),
+        );
+    }
+    let kept_in: BTreeSet<usize> = m.pt_observations[p_keep]
+        .iter()
+        .map(|&r| m.keyframe_of(r))
+        .collect();
+    for r in m.pt_observations[p_lose].clone() {
+        let to = if kept_in.contains(&m.keyframe_of(r)) {
+            -1
+        } else {
+            keep
+        };
+        observe(m, r, to)?;
+    }
+    m.pt_visible[p_keep] += m.pt_visible[p_lose];
+    m.pt_found[p_keep] += m.pt_found[p_lose];
+    let mut flags = vec![false; m.points()];
+    flags[p_lose] = true;
+    erase(m, &flags, Removal::Fused);
+    let kept: Vec<usize> = m.point_row(keep).into_iter().collect();
+    refresh_points(m, &kept)
+}
+
+/// The row of the keyframe with an id, refusing one the map does not hold
+/// (`slam_it.edge.map.keyframe_row`).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `keyframe` - The keyframe's id.
+///
+/// # Returns
+///
+/// Its row.
+///
+/// # Errors
+///
+/// `InvalidInput` if the map holds no keyframe with that id.
+pub fn keyframe_row(m: &Map, keyframe: i64) -> Result<usize> {
+    match m.keyframe_row(keyframe) {
+        Some(k) => Ok(k),
+        None => fail(
+            ErrorKind::InvalidInput,
+            format!("keyframe {keyframe} is not in the map"),
+        ),
+    }
 }
 
 /// Points a keypoint at a point, or at none, keeping the observation lists.
@@ -1337,6 +1518,32 @@ mod tests {
     }
 
     /// Malformed maps and arguments are `InvalidInput`.
+    /// Loop edges are kept older first, refused between a keyframe and itself or a stranger, and
+    /// their keyframes never erased; an erased keyframe keeps its pose relative to its parent.
+    #[test]
+    fn loop_edges_and_relative_poses() {
+        let mut m = two_keyframes();
+        let mut further = Matrix4::identity();
+        further[(0, 3)] = -0.4;
+        further[(1, 3)] = 0.1;
+        insert_keyframe(&mut m, &frame_of(4, false), &further, &[0, 1, -1, -1]).unwrap();
+        m.kf_parent = vec![-1, 0, 0];
+        let mut looped = m.clone();
+        add_loop_edge(&mut looped, 1, 0).unwrap();
+        assert_eq!(looped.loop_edges, vec![[0, 1]]);
+        assert!(has_loop(&looped, 0) && has_loop(&looped, 1) && !has_loop(&looped, 2));
+        check_map(&looped).unwrap();
+        assert!(add_loop_edge(&mut looped, 1, 1).is_err());
+        assert!(add_loop_edge(&mut looped, 1, 9).is_err());
+        assert!(erase_keyframe(&mut looped, 1).is_err());
+        let mut backwards = m.clone();
+        backwards.loop_edges = vec![[1, 0]];
+        assert!(check_map(&backwards).is_err());
+        let expected = m.kf_pose[2] * m.kf_pose[0].try_inverse().unwrap();
+        erase_keyframe(&mut m, 2).unwrap();
+        assert!((m.gone_kf_relative[0] - expected).amax() < 1e-12);
+    }
+
     #[test]
     fn rejects_invalid_input() {
         let m = two_keyframes();

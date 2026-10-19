@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tomllib
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -467,6 +469,27 @@ def test_the_rungs_kept_from_files_are_the_algorithm_rungs() -> None:
     }  # fmt: skip
 
 
+def _one_file_checked(
+    fake_repo: Path,
+    path: str,
+    text: str,
+    reported: bool,
+    check: Callable[[Path, dict[str, Any]], Iterable[Any]],
+) -> list[Any]:
+    """Write one file into the fake repository and run a check on it, with the contracts.
+
+    Checks that the file is reported, at its first line, exactly when `reported`; returns the
+    violations found.
+    """
+    _write(fake_repo, path, text)
+    pyproject = tomllib.loads((fake_repo / "pyproject.toml").read_text())
+    found = list(check(fake_repo, pyproject))
+    assert bool(found) == reported
+    if reported:
+        assert found[0].location == f"{path}:1"
+    return found
+
+
 @pytest.mark.parametrize(
     ("path", "text", "reported"),
     [
@@ -492,10 +515,56 @@ def test_a_rung_kept_from_files_reads_none_natively(
     fake_repo: Path, path: str, text: str, reported: bool
 ) -> None:
     """A file header in a rung's C++ modules, or std::fs in its crate outside tests, is reported."""
-    _write(fake_repo, path, text)
-    pyproject = tomllib.loads((fake_repo / "pyproject.toml").read_text())
-    found = list(check_layers.check_file_io(fake_repo, check_layers.file_reading_rungs(pyproject)))
-    assert bool(found) == reported
+    found = _one_file_checked(
+        fake_repo, path, text, reported,
+        lambda root, pyproject: check_layers.check_file_io(
+            root, check_layers.file_reading_rungs(pyproject)
+        ),
+    )  # fmt: skip
     if reported:
-        assert found[0].location == f"{path}:1"
         assert "reads no files" in found[0].message
+
+
+def test_gtsam_is_confined_to_rung_0s_graphs() -> None:
+    """The forbidden contract over gtsam leaves it to foundations.graphs alone."""
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text())
+    assert check_layers.confined_libraries(pyproject) == {"gtsam": {("foundations", "graphs")}}
+
+
+@pytest.mark.parametrize(
+    ("path", "text", "reported"),
+    [
+        ("cpp/src/foundations/graphs.cpp", "#include <gtsam/geometry/Pose3.h>\n", False),
+        ("cpp/include/slam_it/foundations/graphs.hpp", "#include <gtsam/inference/Key.h>\n", True),
+        (
+            "rust/slam-it-foundations/cxx/graphs_bridge.hpp",
+            "#include <gtsam/inference/Key.h>\n",
+            True,
+        ),
+        (
+            "rust/slam-it-foundations/cxx/graphs_bridge.cpp",
+            "#include <gtsam/nonlinear/Values.h>\n",
+            False,
+        ),
+        ("cpp/src/foundations/sim3.cpp", "#include <gtsam/geometry/Similarity3.h>\n", True),
+        ("cpp/src/edge/loops.cpp", "#include <gtsam/geometry/Pose3.h>\n", True),
+        ("cpp/tests/foundations/test_graphs.cpp", "#include <gtsam/geometry/Pose3.h>\n", True),
+        ("rust/slam-it-edge/cxx/loops_bridge.cpp", "#include <gtsam/geometry/Pose3.h>\n", True),
+        ("cpp/src/edge/loops.cpp", '#include "slam_it/foundations/graphs.hpp"\n', False),
+    ],
+)
+def test_only_graphs_includes_gtsam_natively(
+    fake_repo: Path, path: str, text: str, reported: bool
+) -> None:
+    """A GTSAM header outside graphs.cpp and the Rust crate's graphs bridge source is reported.
+
+    Headers included: rung 0's public header and the bridge's own (B3's review panel, run 2, A17).
+    """
+    found = _one_file_checked(
+        fake_repo, path, text, reported,
+        lambda root, pyproject: check_layers.check_confined(
+            root, check_layers.confined_libraries(pyproject)
+        ),
+    )  # fmt: skip
+    if reported:
+        assert found[0].message == "gtsam is included only by the sources of foundations.graphs"

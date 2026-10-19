@@ -54,6 +54,12 @@ differences forward (``slam_it.foundations.ba``'s own parity is held to this too
 structure is still exact."""
 
 
+GRAPH_TOLERANCE = {"rtol": 1e-7, "atol": 1e-7}
+"""The same for a stage that solves on GTSAM (loop closing's refinement, essential graph and
+global BA): each language builds its own factors on it, so their solves agree to their
+convergence, not their last bits; the decisions still exactly."""
+
+
 def words_for(options: Options) -> vocabulary.Vocabulary | None:
     """Return the vocabulary a pipeline with these settings needs: the committed one, or none.
 
@@ -65,9 +71,10 @@ def words_for(options: Options) -> vocabulary.Vocabulary | None:
     Returns
     -------
     slam_it.foundations.vocabulary.Vocabulary or None
-        The committed vocabulary with ``relocalization.enabled`` on, None with it off.
+        The committed vocabulary with ``relocalization.enabled`` or ``loops.enabled`` on, None
+        with both off.
     """
-    return vocabularies.default() if options.relocalization.enabled else None
+    return vocabularies.default() if options.keeps_keyframe_database() else None
 
 
 def assert_close(

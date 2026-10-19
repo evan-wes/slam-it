@@ -17,7 +17,9 @@ V.D; ``KeyFrame::UpdateConnections``, ``KeyFrame::SetBadFlag``, ``Tracking::Upda
   it was inserted (:func:`adopt`, ORB-SLAM's first ``UpdateConnections``); a map's first
   keyframe has none. A keyframe leaves the map only by :func:`cull`, ORB-SLAM's ``SetBadFlag``:
   its children are given new parents (:func:`reparent`), then it is erased, and
-  :func:`slam_it.edge.map.erase_keyframe` refuses a keyframe that is still a parent.
+  :func:`slam_it.edge.map.erase_keyframe` refuses a keyframe that is still a parent. ``cull``
+  spares a keyframe with a loop edge, and one loop detection holds, as ORB-SLAM's
+  ``SetNotErase`` does.
 - **Tracking's local map** (:func:`local_map`, ``UpdateLocalKeyFrames``): K1, the keyframes
   that observe the points a frame was matched to, the most shared first, the first of them
   the frame's reference keyframe; then, for each of K1 in that order, while the local map holds
@@ -96,7 +98,9 @@ class Implementation(Protocol):
         """Return the map with a keyframe's children given new parents."""
         ...
 
-    def cull(self, m: dict[str, Any], k: int, options: dict[str, Any]) -> dict[str, Any]:
+    def cull(
+        self, m: dict[str, Any], k: int, options: dict[str, Any], held: NDArray[np.int64]
+    ) -> dict[str, Any]:
         """Return the map without a keyframe, its children given new parents first."""
         ...
 
@@ -269,8 +273,10 @@ def _reparent(m: Map, k: int, options: Options) -> Map:
     return replace(m, kf_parent=parents)
 
 
-def _cull(m: Map, k: int, options: Options) -> Map:
-    """Give a keyframe's children new parents, then erase it (reference)."""
+def _cull(m: Map, k: int, options: Options, held: IntArray) -> Map:
+    """Give a keyframe's children new parents, then erase it, unless it is spared (reference)."""
+    if maps.has_loop(m, k) or m.kf_id[k] in held:
+        return m
     return maps.erase_keyframe(_reparent(m, k, options), k)
 
 
@@ -307,6 +313,32 @@ def as_points(points: ArrayLike) -> IntArray:
         return np.zeros(0, dtype=np.int64)
     if arr.ndim != 1 or not holds_integers(arr) or arr.min() < -1:
         raise InvalidInputError("points: expected a vector of point ids (-1 or more)")
+    return np.ascontiguousarray(arr, dtype=np.int64)
+
+
+def as_held(held: ArrayLike) -> IntArray:
+    """Check the keyframes loop detection holds: a vector of keyframe ids, 0 or more.
+
+    Parameters
+    ----------
+    held : array_like of int
+        The ids.
+
+    Returns
+    -------
+    ndarray of int64
+        The ids, checked.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If they are not a vector of ids.
+    """
+    arr = np.asarray(held)
+    if arr.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    if arr.ndim != 1 or not holds_integers(arr) or arr.min() < 0:
+        raise InvalidInputError("held: expected a vector of keyframe ids")
     return np.ascontiguousarray(arr, dtype=np.int64)
 
 
@@ -471,13 +503,15 @@ def reparent(m: Map, k: int, options: Options, *, backend: str = "python") -> Ma
     )
 
 
-def cull(m: Map, k: int, options: Options, *, backend: str = "python") -> Map:
+def cull(m: Map, k: int, options: Options, *, held: ArrayLike = (), backend: str = "python") -> Map:
     """Return the map without a keyframe, its children given new parents first (``SetBadFlag``).
 
     The one way a keyframe leaves the graph: :func:`reparent`, then
     :func:`slam_it.edge.map.erase_keyframe`, which refuses a keyframe that is still a parent, so
     every parent stays a keyframe of the map. The map's first keyframe (id 0), its tree's root,
-    is refused, as ``SetBadFlag`` leaves it.
+    is refused, as ``SetBadFlag`` leaves it. A keyframe with a loop edge, or one of `held`, is
+    spared: the map comes back as it was (ORB-SLAM's ``SetNotErase``; ORB-SLAM erases a spared
+    keyframe once it is released, where here a later culling weighs it again).
 
     Parameters
     ----------
@@ -487,30 +521,34 @@ def cull(m: Map, k: int, options: Options, *, backend: str = "python") -> Map:
         The keyframe's row.
     options : slam_it.edge.options.Options
         ``covisibility.min_points``.
+    held : array_like of int, optional
+        The ids of the keyframes loop detection holds (default: none).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
     slam_it.edge.map.Map
-        The map without the keyframe, its children's ``kf_parent`` changed.
+        The map without the keyframe, its children's ``kf_parent`` changed; or as it was, the
+        keyframe spared.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If `k` is not a keyframe row, or is the map's first keyframe.
+        If `k` is not a keyframe row, or is the map's first keyframe, or `held` is not ids.
     """
     row = maps.as_keyframe_row(m, k)
     if m.kf_id[row] == 0:
         raise InvalidInputError(
             "k: keyframe 0 is the map's first, its tree's root, and is not culled"
         )
+    kept = as_held(held)
     return backends.call(
         backend,
         __name__,
         "cull",
-        reference=lambda: _cull(m, row, options),
-        arguments={"m": m.as_dict(), "k": row, "options": options.as_dict()},
+        reference=lambda: _cull(m, row, options, kept),
+        arguments={"m": m.as_dict(), "k": row, "options": options.as_dict(), "held": kept},
         decode=maps.decode,
     )
 

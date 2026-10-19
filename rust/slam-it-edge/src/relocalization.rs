@@ -12,7 +12,7 @@ use slam_it_foundations::vocabulary::Vocabulary;
 
 use crate::database::{Database, Words, candidates, words_of};
 use crate::frames::{Camera, Frame, Tracked, check_setup, search};
-use crate::map::{Map, camera_centre, in_distance_range, predict_level, to_camera};
+use crate::map::{Map, camera_centre, in_distance_range, keyframe_row, predict_level, to_camera};
 use crate::options::Options;
 use crate::tracking::{PnpRecord, RecordsPnp, optimize_pose, pnp_kept};
 
@@ -86,26 +86,6 @@ struct Attempt {
     summary: CandidateSummary,
     /// Each keypoint's match by word or by projection, or -1.
     matched: Vec<i64>,
-}
-
-/// A keyframe's row, refusing one the map does not hold.
-///
-/// # Arguments
-///
-/// * `m` - The map.
-/// * `keyframe` - Its id.
-///
-/// # Errors
-///
-/// `InvalidInput` if the map does not hold it.
-fn row_of(m: &Map, keyframe: i64) -> Result<usize> {
-    match m.keyframe_row(keyframe) {
-        Some(k) => Ok(k),
-        None => fail(
-            ErrorKind::InvalidInput,
-            format!("keyframe {keyframe} is not in the map"),
-        ),
-    }
 }
 
 /// How many keypoints matched a point.
@@ -230,7 +210,7 @@ pub fn search_keyframe(
     window: SearchWindow,
     options: &Options,
 ) -> Result<Vec<i64>> {
-    let k = row_of(m, keyframe)?;
+    let k = keyframe_row(m, keyframe)?;
     let mut skipped = skip.to_vec();
     skipped.sort_unstable();
     let centre = camera_centre(&tracked.pose);
@@ -445,7 +425,7 @@ fn try_candidate(
     options: &Options,
 ) -> Result<Attempt> {
     let (keyframe, score) = candidate;
-    let k = row_of(m, keyframe)?;
+    let k = keyframe_row(m, keyframe)?;
     let (start, end) = (m.kf_start[k], m.kf_start[k + 1]);
     let nodes = &db.keyframes[&keyframe].nodes;
     if nodes.len() != end - start {

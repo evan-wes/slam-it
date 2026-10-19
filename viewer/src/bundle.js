@@ -88,7 +88,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  * bundle.json.
  * @typedef {object} BundleInfo
  * @property {string} format "slam-it-bundle".
- * @property {number} version 3.
+ * @property {number} version 4.
  * @property {string} dataset The dataset.
  * @property {string} sequence The sequence.
  * @property {string} mode "monocular", "stereo" or "rgbd".
@@ -114,7 +114,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {string} name The backend.
  * @property {BackendInfo} info Its header.
  * @property {Records} records Its per-frame records.
- * @property {Float32Array} poses Each tracked frame's `T_world_cam`, its top three rows, (T, 3, 4).
+ * @property {Float32Array} poses Each tracked frame's final `T_world_cam` (the run format's
+ *     final trajectory), its top three rows, (T, 3, 4).
  * @property {Int32Array} poseFrames Their frames, (T,).
  * @property {Int32Array} poseMaps Their maps, (T,), never descending.
  */
@@ -125,7 +126,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {string} name The backend.
  * @property {BackendInfo} info Its header.
  * @property {Records} records Its per-frame records.
- * @property {Float32Array} poses Each tracked frame's `T_world_cam`, its top three rows, (T, 3, 4).
+ * @property {Float32Array} poses Each tracked frame's final `T_world_cam` (the run format's
+ *     final trajectory), its top three rows, (T, 3, 4).
  * @property {Int32Array} poseFrames Their frames, (T,).
  * @property {Int32Array} poseMaps Their maps, (T,), never descending.
  * @property {Float32Array} keyframePoses Every keyframe's last pose, (K, 3, 4).
@@ -135,6 +137,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  *     id, or -1, (K,).
  * @property {Int32Array} keyframeLinks The strong links: two ids of one map and the points
  *     they share, (L, 3).
+ * @property {Int32Array} keyframeLoops The loops closed: two ids of one map, (E, 2).
  * @property {Float32Array} points Every point's last position, (N, 3).
  * @property {Int32Array} pointLives Their lives, (N, 3).
  * @property {Int32Array} pointMaps Their maps, (N,).
@@ -153,7 +156,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 export const FORMAT = "slam-it-bundle";
-export const VERSION = 3;
+export const VERSION = 4;
 
 /** The backends a bundle may hold, in the order the page offers them. */
 export const BACKENDS = ["cpp", "rust", "python"];
@@ -207,8 +210,8 @@ function expectShape(name, shape, trailing, rows) {
  * @param {string} name The array's file, for the message.
  * @param {Int32Array} values Its values.
  * @param {number} keyframes The run's keyframes.
- * @param {number} stride Values a row: 1 for parents (-1 for none), 3 for links (two ids, then
- *     the points shared, not an id).
+ * @param {number} stride Values a row: 1 for parents (-1 for none), 2 for loops (two ids), 3 for
+ *     links (two ids, then the points shared, not an id).
  * @returns {Int32Array} The values.
  * @throws {Error} If one names no keyframe.
  */
@@ -367,6 +370,12 @@ export async function loadBackend(fetch, track) {
       await int32("keyframe_links.npy", [3]),
       keyframes,
       3,
+    ),
+    keyframeLoops: keyframeIds(
+      "keyframe_loops.npy",
+      await int32("keyframe_loops.npy", [2]),
+      keyframes,
+      2,
     ),
     points: await float32("points.npy", [3], pointLives.length / 3),
     pointLives,

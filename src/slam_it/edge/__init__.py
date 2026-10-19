@@ -6,7 +6,9 @@ thread (design doc, "The edge rung is ORB-SLAM-lite"; the plan is
 ``docs/design/2026-10-05-edge-vo.md``). Milestone 2B makes it ORB-SLAM's own
 (``docs/design/2026-10-14-online-slam.md``): from B1, a frame tracking fails is relocalised
 against the whole map through a bag of words; from B2, the local map, local mapping and
-relocalisation's candidates take their keyframes from the covisibility graph.
+relocalisation's candidates take their keyframes from the covisibility graph; from B3, each
+keyframe mapped is searched for a loop through the same bag of words, and a loop closed pulls
+the map onto it: a Sim(3), the essential graph and a global BA, on rung 0's factor graphs.
 
 - :mod:`slam_it.edge.options`: every setting, ORB-SLAM's defaults.
 - :mod:`slam_it.edge.frames`: a frame's features, bearings, depth and right columns, per mode.
@@ -22,12 +24,17 @@ relocalisation's candidates take their keyframes from the covisibility graph.
 - :mod:`slam_it.edge.relocalization`: placing a frame the fallback fails in the whole map,
   through the database's candidates (ORB-SLAM's ``Tracking::Relocalization``).
 - :mod:`slam_it.edge.mapping`: growing and cleaning the map around each new keyframe.
+- :mod:`slam_it.edge.loops`: detecting the place a keyframe revisits, through the database's
+  candidates, and correcting the map onto it (ORB-SLAM3's ``LoopClosing``).
 - :mod:`slam_it.edge.pipeline`: the per-frame loop over them, holding the map.
 
 **Compute budget:** real time under ``laptop-cpu``, then ``jetson-class`` and
 ``pi-class``; local mapping, run inline, falls behind on the largest maps since milestone 2B's
-B2 (its load 1.7 to 2.6 on the test set's five largest), and how it shares time with tracking is
-decided in B3's design (the ladder's "Mapping in a thread of its own"). CPU only; implemented
+B2 (its load 1.7 to 2.6 on the test set's five largest). Loop closing, run inline after each
+keyframe is mapped, is judged the same way, by its load as a thread of its own would carry it
+(:func:`slam_it.eval.budgets.judge`'s ``loop_load``); B3's design gives tracking, mapping and
+loop closing threads of their own in B3b (the ladder's "Mapping in a thread of its own"). CPU
+only; implemented
 in Python, C++ and Rust in lock-step. Must never import PyTorch, a GPU stack or a depth model
 (enforced by import-linter). Builds only on :mod:`slam_it.foundations`.
 """

@@ -1,11 +1,12 @@
 //! Integration tests of the keyframe database (`slam_it_edge::database`) on the exact scene's
 //! map: the inverted index as keyframes enter and leave it, relocalisation's candidates without
-//! an erased keyframe, and the refusals (a keyframe given twice, one erased that is not there, a
-//! malformed vector).
+//! an erased keyframe, loop closing's outside a keyframe's links, and the refusals (a keyframe
+//! given twice, one erased that is not there, a malformed vector, a keyframe outside the map or
+//! the database).
 
 mod scene;
 
-use slam_it_edge::database::{Database, Words, candidates};
+use slam_it_edge::database::{Database, Words, candidates, loop_candidates};
 use slam_it_edge::options::{CovisibilityOptions, Options};
 use slam_it_foundations::error::ErrorKind;
 use slam_it_foundations::vocabulary::BowVector;
@@ -89,4 +90,37 @@ fn a_keyframe_twice_and_a_malformed_vector_are_refused() {
     };
     let err = candidates(&db, &m, &unsorted, &Options::default()).unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
+}
+
+/// Loop closing's candidates are never the keyframe or one linked to it; with every keyframe
+/// linked to its best alone, the other is the one left; a keyframe outside the map or the
+/// database is refused.
+#[test]
+fn loop_candidates_are_outside_a_keyframe_s_links() {
+    let m = scene_map();
+    let mut db = Database::default();
+    for k in 0..3 {
+        db.insert(k, words_of(k)).unwrap();
+    }
+    let linked = loop_candidates(&db, &m, 2, &Options::default()).unwrap();
+    assert!(linked.keyframes.is_empty() && linked.sharing == 0);
+    let best_only = Options {
+        covisibility: CovisibilityOptions {
+            min_points: 1 << 20,
+            ..CovisibilityOptions::default()
+        },
+        ..Options::default()
+    };
+    let found = loop_candidates(&db, &m, 2, &best_only).unwrap();
+    assert_eq!((found.sharing, found.keyframes.len()), (1, 1));
+    assert_ne!(found.keyframes[0], 2);
+    assert_eq!(
+        loop_candidates(&db, &m, 7, &best_only).unwrap_err().kind,
+        ErrorKind::InvalidInput
+    );
+    db.erase(2).unwrap();
+    assert_eq!(
+        loop_candidates(&db, &m, 2, &best_only).unwrap_err().kind,
+        ErrorKind::InvalidInput
+    );
 }

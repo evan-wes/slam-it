@@ -86,4 +86,19 @@ struct Candidates {
     const Database& db, const Map& m, const foundations::vocabulary::BowVector& frame,
     const Options& options);
 
+/// @brief Find the keyframes a keyframe may close a loop with
+///        (`slam_it.edge.database.loop_candidates`, ORB-SLAM3's `DetectNBestCandidates`):
+///        relocalisation's scoring of its words with `loops.common_words` and
+///        `loops.neighbours`, the keyframe and every keyframe linked to it left out, the best
+///        `loops.candidates` groups.
+/// @param db The map's keyframe database, holding the keyframe.
+/// @param m The map, holding the keyframe.
+/// @param keyframe The keyframe's id.
+/// @param options The `loops` settings and `covisibility.min_points`.
+/// @return The candidates, best first, with their scores; `InvalidInput` if the keyframe is not
+///         in the map or the database.
+[[nodiscard]] foundations::Result<Candidates> loop_candidates(const Database& db, const Map& m,
+                                                              std::int64_t keyframe,
+                                                              const Options& options);
+
 }  // namespace slam_it::edge

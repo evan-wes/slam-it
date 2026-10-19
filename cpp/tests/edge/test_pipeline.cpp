@@ -40,7 +40,8 @@ edge::Options small_scene() {
   edge::Options out{
       .initialization = {.min_features = 20, .min_features_depth = 20, .min_matches = 20}};
   out.relocalization.enabled =
-      false;  // A2's loss rule; relocalizing() turns it on, with a vocabulary
+      false;                  // A2's loss rule; relocalizing() turns it on, with a vocabulary
+  out.loops.enabled = false;  // the keyframe database's other user; relocalizing() turns it on
   return out;
 }
 
@@ -199,12 +200,13 @@ void check_lost(int& failures) {
 }
 
 /// @brief The settings relocalising, a map above `loss.reset_keyframes` kept: the scene's, with
-///        `relocalization.enabled` on.
+///        `relocalization.enabled` and `loops.enabled` on.
 /// @param reset_keyframes The most keyframes a lost map is reset with.
 /// @return The settings.
 edge::Options relocalizing(std::int64_t reset_keyframes) {
   edge::Options out = small_scene();
   out.relocalization.enabled = true;
+  out.loops.enabled = true;
   out.loss.reset_keyframes = reset_keyframes;
   return out;
 }
@@ -251,6 +253,28 @@ void check_lost_relocalizing(int& failures) {
   }
 }
 
+/// @brief Check loop closing alone (Python's
+///        `test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes`, its
+///        loop-closing case): the keyframe database is kept, but no failed frame tries
+///        relocalisation, and a kept map is lost on the `loss.lost_frames`-th failure (B3's
+///        review panel, run 2, A20).
+/// @param failures Running failure count.
+void check_closing_loops_alone(int& failures) {
+  edge::Options options = relocalizing(0);
+  options.relocalization.enabled = false;
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, scene::one_word());
+  const auto started = start(pipeline);
+  bool ok = started && started->keyframe;
+  const std::int64_t lost_on = options.loss.lost_frames;
+  for (std::int64_t k = 0; ok && k < lost_on; ++k) {
+    const auto failed = pipeline->track(empty_at(0.001 * static_cast<double>(k + 1)));
+    const edge::State expected = k + 1 < lost_on ? edge::State::kTracking : edge::State::kLost;
+    ok = failed && failed->state == expected && !failed->summary.relocalization;
+  }
+  expect(ok, "closing loops alone, no failed frame relocalises", failures);
+}
+
 /// @brief Check that a frame the local fallback cannot reach is placed by relocalisation in
 ///        the same map, at its pose: after the path, 30 cm to the right, and an empty frame, the
 ///        camera is back where the map began, 25 px away, past the motion model's narrowed
@@ -292,6 +316,7 @@ int run_tests() {
   check_monocular(failures);
   check_lost(failures);
   check_lost_relocalizing(failures);
+  check_closing_loops_alone(failures);
   check_relocalized(failures);
   return slam_it::testing::finish("edge/pipeline", failures);
 }

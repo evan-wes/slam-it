@@ -119,7 +119,7 @@ fn with_settings<'py>(
     m: &Bound<'py, PyDict>,
     k: usize,
     options: &Bound<'py, PyDict>,
-    step: fn(&mut Map, usize, &Options) -> Result<()>,
+    step: impl Fn(&mut Map, usize, &Options) -> Result<()>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let options = options_in(options)?;
     changed(py, m, |out| step(out, k, &options))
@@ -151,7 +151,7 @@ fn reparent<'py>(
     with_settings(py, m, k, options, core::reparent)
 }
 
-/// Culls a keyframe: its children given new parents, then it erased.
+/// Culls a keyframe: its children given new parents, then it erased; or spares it.
 ///
 /// # Arguments
 ///
@@ -159,6 +159,7 @@ fn reparent<'py>(
 /// * `m` - The map, as a dict.
 /// * `k` - The keyframe's row.
 /// * `options` - The settings, as a dict.
+/// * `held` - The ids of the keyframes loop detection holds.
 ///
 /// # Returns
 ///
@@ -166,15 +167,19 @@ fn reparent<'py>(
 ///
 /// # Errors
 ///
-/// `InvalidInputError` from the core.
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
 fn cull<'py>(
     py: Python<'py>,
     m: &Bound<'py, PyDict>,
     k: usize,
     options: &Bound<'py, PyDict>,
+    held: PyReadonlyArray1<'py, i64>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    with_settings(py, m, k, options, core::cull)
+    let held = contiguous(&held)?;
+    with_settings(py, m, k, options, |m, k, options| {
+        core::cull(m, k, options, held)
+    })
 }
 
 /// The strong links.

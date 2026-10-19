@@ -61,6 +61,9 @@ void bind_p3p(nanobind::module_& m);
 /// @brief Add the `pnp` functions to the `foundations.pnp` submodule.
 /// @param m The `foundations.pnp` submodule.
 void bind_pnp(nanobind::module_& m);
+/// @brief Add the `sim3` functions to the `foundations.sim3` submodule.
+/// @param m The `foundations.sim3` submodule.
+void bind_sim3(nanobind::module_& m);
 /// @brief Add the `homography` functions to the `foundations.homography` submodule.
 /// @param m The `foundations.homography` submodule.
 void bind_homography(nanobind::module_& m);
@@ -72,6 +75,10 @@ void bind_twoview(nanobind::module_& m);
 /// @brief Add the `ba` functions to the `foundations.ba` submodule.
 /// @param m The `foundations.ba` submodule.
 void bind_ba(nanobind::module_& m);
+
+/// @brief Add the `graphs` functions to the `foundations.graphs` submodule.
+/// @param m The `foundations.graphs` submodule.
+void bind_graphs(nanobind::module_& m);
 
 /// @brief Add the `vocabulary` functions to the `foundations.vocabulary` submodule.
 /// @param m The `foundations.vocabulary` submodule.

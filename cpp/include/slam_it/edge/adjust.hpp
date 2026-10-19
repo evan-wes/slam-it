@@ -38,7 +38,8 @@ struct Solve {
 /// @brief How a bundle adjustment went (`slam_it.edge.adjust.Adjustment`, whose map is
 ///        changed in place here).
 struct Adjustment {
-  /// @brief The first solve and the refining one; none when no point was observed.
+  /// @brief The first solve and the refining one; none when nothing was solved: no point was
+  ///        observed, or no keyframe was held fixed.
   std::vector<Solve> solves;
   /// @brief The observations forgotten as outliers after the refining solve.
   std::int64_t outliers{0};
@@ -63,7 +64,8 @@ struct Adjustment {
 ///        points is held fixed.
 /// @param fixed One flag per keyframe: nonzero to hold it fixed even among `keyframes`.
 /// @param options The iterations and thresholds.
-/// @return The two solves (none if no point was observed) and the outliers dropped;
+/// @return The two solves (none, the map as it was, if no point was observed or no keyframe
+///         was held fixed, as ORB-SLAM3 skips it) and the outliers dropped;
 ///         `InvalidInput` for a keyframe row out of range, flags that are not one per
 ///         keyframe, or an invalid camera or settings.
 [[nodiscard]] foundations::Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,

@@ -17,8 +17,12 @@ a keyframe removes its rows. Every operation returns a new map and leaves its in
 
 **What was removed** is kept aside, in the ``gone_*`` arrays, until the pipeline takes it
 (:func:`clear_gone`): each erased point's id, last position and why it went (:class:`Removal`),
-and each erased keyframe's id, time and pose. A run records from them when each point and
-keyframe was removed (:mod:`slam_it.eval.runs`).
+and each erased keyframe's id, time, pose, parent and pose relative to that parent. A run
+records from them when each point and keyframe was removed (:mod:`slam_it.eval.runs`), and
+places the frames tracked from a culled keyframe through its parents.
+
+**The loops closed** are the map's loop edges (``loop_edges``), each a pair of keyframe ids: a
+keyframe with one is never culled, as ORB-SLAM's ``AddLoopEdge`` marks it not to be erased.
 
 **A point's descriptor, normal and distances** follow ORB-SLAM's ``MapPoint``:
 
@@ -140,6 +144,12 @@ class Map:
         Their last poses ``T_cam_world``.
     gone_kf_parent : ndarray of int64, shape (H,)
         Their last parents.
+    gone_kf_relative : ndarray of float64, shape (H, 4, 4)
+        Each one's pose relative to its parent when it went, ``T_cam_parent`` (ORB-SLAM's
+        ``mTcp``): the identity for one without a parent.
+    loop_edges : ndarray of int64, shape (E, 2)
+        The loops closed in the map, each the two keyframes' ids, the older first, in the order
+        they were closed.
     """
 
     levels: int
@@ -176,6 +186,8 @@ class Map:
     gone_kf_time: Array
     gone_kf_pose: Array
     gone_kf_parent: IntArray
+    gone_kf_relative: Array
+    loop_edges: IntArray
 
     def __post_init__(self) -> None:
         """Check the tables' shapes, types and links (not copied: maps are built by this module).
@@ -186,8 +198,9 @@ class Map:
             If an array has the wrong type or length, the keypoint offsets do not run from 0
             to the keypoint count, an id column is not strictly ascending or reaches its next
             id, a keypoint observes a point that is not in the map, a keyframe's parent is
-            neither -1 nor another of its keyframes, or the archive holds an id the map still
-            has, one it never gave, or an unknown removal.
+            neither -1 nor another of its keyframes, the archive holds an id the map still
+            has, one it never gave, or an unknown removal, or a loop edge joins a keyframe the
+            map does not hold, or one to itself, or lists the newer first.
         """
         _check(self)
 
@@ -362,6 +375,8 @@ def empty(levels: int, scale_factor: float) -> Map:
         gone_kf_time=no_real,
         gone_kf_pose=np.zeros((0, 4, 4)),
         gone_kf_parent=no_int,
+        gone_kf_relative=np.zeros((0, 4, 4)),
+        loop_edges=np.zeros((0, 2), dtype=np.int64),
     )
 
 
@@ -384,6 +399,93 @@ def clear_gone(m: Map) -> Map:
     blank = empty(m.levels, m.scale_factor)
     gone = [item.name for item in fields(m) if item.name.startswith("gone_")]
     return replace(m, **{name: getattr(blank, name) for name in gone})
+
+
+def has_loop(m: Map, k: int) -> bool:
+    """Return whether keyframe row `k` has a loop edge.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    k : int
+        The keyframe's row.
+
+    Returns
+    -------
+    bool
+        Whether a loop closed in the map joins it.
+    """
+    return bool(np.any(m.loop_edges == m.kf_id[k]))
+
+
+def add_loop_edge(m: Map, first: int, second: int) -> Map:
+    """Return the map with a loop edge joining two of its keyframes (``AddLoopEdge``, both ways).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    first, second : int
+        The two keyframes' ids, in either order.
+
+    Returns
+    -------
+    Map
+        The map, the edge last in ``loop_edges``, the older keyframe first.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either is not a keyframe of the map, or they are the same.
+    """
+    edge = np.array([[min(first, second), max(first, second)]], dtype=np.int64)
+    if first == second or np.any(m.keyframe_rows(edge[0]) < 0):
+        raise InvalidInputError(f"loop edge {first}-{second}: expected two of the map's keyframes")
+    return replace(m, loop_edges=np.concatenate([m.loop_edges, edge]))
+
+
+def replace_point(m: Map, *, lose: int, keep: int) -> Map:
+    """Return the map with one point replaced by another (ORB-SLAM's ``MapPoint::Replace``).
+
+    The lost point's observations pass to the kept one, except in keyframes that already see
+    the kept one, where they are dropped; its visible and found counts are added to the kept
+    one's; it is erased (:attr:`Removal.FUSED`), and the kept one refreshed. Local mapping's
+    fusion and loop closing replace points through it.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    lose, keep : int
+        The two points' ids, both in the map, different.
+
+    Returns
+    -------
+    Map
+        The map without the lost point.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either point is not in the map, or they are the same.
+    """
+    p_lose, p_keep = (int(r) for r in m.point_rows(np.array([lose, keep], dtype=np.int64)))
+    if lose == keep or p_lose < 0 or p_keep < 0:
+        raise InvalidInputError(f"replace {lose} by {keep}: expected two of the map's points")
+    keyframe_of = m.keypoint_keyframe()
+    kp_point = m.kp_point.copy()
+    kept_in = set(keyframe_of[kp_point == keep].tolist())
+    for row in np.flatnonzero(kp_point == lose):
+        kp_point[row] = -1 if int(keyframe_of[row]) in kept_in else keep
+    visible, found = m.pt_visible.copy(), m.pt_found.copy()
+    visible[p_keep] += visible[p_lose]
+    found[p_keep] += found[p_lose]
+    merged = replace(m, kp_point=kp_point, pt_visible=visible, pt_found=found)
+    erase = np.zeros(merged.points, dtype=bool)
+    erase[p_lose] = True
+    merged = erase_points(merged, erase, Removal.FUSED)
+    return refresh_points(merged, merged.point_rows(np.array([keep], dtype=np.int64)))
 
 
 def _predict_level(m: Map, rows: IntArray, distance: Array) -> IntArray:
@@ -552,8 +654,21 @@ def _forget_observations(m: Map, rows: IntArray) -> Map:
     return _erase_points(_refresh_points(cleared, remaining), weak, Removal.WEAK)
 
 
+def _relative_to_parent(m: Map, k: int) -> Array:
+    """Return keyframe row `k`'s pose relative to its parent, ``T_cam_parent``, or the identity."""
+    parent = int(m.keyframe_rows(m.kf_parent[k : k + 1])[0])
+    if parent < 0:
+        return np.eye(4)
+    pose, of_parent = m.kf_pose[k], m.kf_pose[parent]
+    out = np.eye(4)
+    out[:3, :3] = pose[:3, :3] @ of_parent[:3, :3].T
+    out[:3, 3] = pose[:3, 3] - out[:3, :3] @ of_parent[:3, 3]
+    return out
+
+
 def _erase_keyframe(m: Map, k: int) -> Map:
     """Remove a keyframe (reference)."""
+    relative = _relative_to_parent(m, k)
     rows = np.arange(m.kf_start[k], m.kf_start[k + 1])
     forgotten = _forget_observations(m, rows)
     keep_rows = np.ones(len(forgotten.kp_point), dtype=bool)
@@ -568,6 +683,7 @@ def _erase_keyframe(m: Map, k: int) -> Map:
         gone_kf_time=np.append(forgotten.gone_kf_time, forgotten.kf_time[k]),
         gone_kf_pose=np.concatenate([forgotten.gone_kf_pose, forgotten.kf_pose[k][None]]),
         gone_kf_parent=np.append(forgotten.gone_kf_parent, forgotten.kf_parent[k]),
+        gone_kf_relative=np.concatenate([forgotten.gone_kf_relative, relative[None]]),
         kf_id=forgotten.kf_id[keep_kf],
         kf_time=forgotten.kf_time[keep_kf],
         kf_pose=forgotten.kf_pose[keep_kf],
@@ -623,9 +739,11 @@ _SHAPES: dict[str, tuple[str, type[np.generic], tuple[int, ...]]] = {
     "gone_kf_time": ("H", np.float64, ()),
     "gone_kf_pose": ("H", np.float64, (4, 4)),
     "gone_kf_parent": ("H", np.int64, ()),
+    "gone_kf_relative": ("H", np.float64, (4, 4)),
+    "loop_edges": ("E", np.int64, (2,)),
 }
-"""Each table array's row count (keyframes, keypoints, points, or erased points and keyframes),
-dtype and item shape."""
+"""Each table array's row count (keyframes, keypoints, points, erased points and keyframes, or
+loop edges), dtype and item shape."""
 
 
 def _check(m: Map) -> None:
@@ -644,6 +762,7 @@ def _check(m: Map) -> None:
         "P": len(np.asarray(m.pt_id)),
         "G": len(np.asarray(m.gone_pt_id)),
         "H": len(np.asarray(m.gone_kf_id)),
+        "E": len(np.asarray(m.loop_edges)),
     }
     for name, (rows, dtype, item) in _SHAPES.items():
         value = np.asarray(getattr(m, name))
@@ -675,9 +794,19 @@ def _check(m: Map) -> None:
             )
     if not np.all(np.isin(m.gone_pt_how, [int(r) for r in Removal])):
         raise InvalidInputError("map.gone_pt_how: expected Removal codes")
+    _check_links(m)
+
+
+def _check_links(m: Map) -> None:
+    """Check the keyframes' links: each parent, and each loop edge (see :func:`_check`)."""
     parents = np.asarray(m.kf_parent)
     if np.any(parents == m.kf_id) or not np.all((parents == -1) | np.isin(parents, m.kf_id)):
         raise InvalidInputError("map.kf_parent: a parent must be -1 or another of its keyframes")
+    edges = np.asarray(m.loop_edges)
+    if not np.all(np.isin(edges, m.kf_id)) or np.any(edges[:, 0] >= edges[:, 1]):
+        raise InvalidInputError(
+            "map.loop_edges: each joins two of its keyframes, the older (lower id) first"
+        )
 
 
 class Implementation(Protocol):
@@ -804,6 +933,32 @@ def as_keyframe_row(m: Map, k: object, name: str = "k") -> int:
         If it is not an integer in range.
     """
     return as_count(k, name, 0, m.keyframes - 1)
+
+
+def keyframe_row(m: Map, keyframe: int) -> int:
+    """Return the row of the keyframe with an id; refuse one the map does not hold.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    keyframe : int
+        The keyframe's id.
+
+    Returns
+    -------
+    int
+        Its row.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the map holds no keyframe with that id.
+    """
+    k = int(m.keyframe_rows(np.array([keyframe], dtype=np.int64))[0])
+    if k < 0:
+        raise InvalidInputError(f"keyframe {keyframe} is not in the map")
+    return k
 
 
 def as_point_rows(m: Map, rows: ArrayLike, name: str = "rows") -> IntArray:
@@ -1294,7 +1449,9 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
     A keyframe that is still another's parent is refused, so every parent stays a keyframe of
     the map: :func:`slam_it.edge.covisibility.cull` gives its children new parents first. It
     guards the parents, not the root: a childless first keyframe is erased; callers above the map
-    go through ``cull``, which refuses it.
+    go through ``cull``, which refuses it. A keyframe with a loop edge is refused too: the loops
+    closed keep theirs (``cull`` spares it). The erased keyframe's pose relative to its parent
+    is archived, for the final trajectory.
 
     Parameters
     ----------
@@ -1313,7 +1470,8 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If `k` is not a keyframe's row, or the keyframe is still another's parent.
+        If `k` is not a keyframe's row, or the keyframe is still another's parent, or has a loop
+        edge.
     """
     if m.keyframes == 0:
         raise InvalidInputError("k: the map has no keyframes")
@@ -1324,6 +1482,8 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
             f"k: keyframe {m.kf_id[row]} is still keyframe {m.kf_id[children[0]]}'s parent "
             "(covisibility's cull gives its children new parents first)"
         )
+    if has_loop(m, row):
+        raise InvalidInputError(f"k: keyframe {m.kf_id[row]} has a loop edge, and is kept")
     return backends.call(
         backend,
         __name__,

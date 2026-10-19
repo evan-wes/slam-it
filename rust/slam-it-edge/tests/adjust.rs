@@ -54,6 +54,28 @@ fn recovers_the_scene_and_forgets_a_moved_observation() {
 }
 
 #[test]
+fn no_keyframe_held_fixed_solves_nothing() {
+    let mut m = scene_map();
+    let mut t = m.kf_pose[1].fixed_view_mut::<3, 1>(0, 3);
+    t += Vector3::new(0.01, -0.01, 0.02);
+    let before = m.clone();
+    let adjustment = bundle_adjust(
+        &mut m,
+        &camera(),
+        &[0, 1, 2],
+        &[false, false, false],
+        &Options::default(),
+    )
+    .unwrap();
+    assert_eq!(adjustment.solves.len(), 0);
+    assert_eq!((adjustment.free, adjustment.fixed), (0, 0));
+    assert_eq!(
+        (m.kf_pose.clone(), m.pt_xyz.clone()),
+        (before.kf_pose, before.pt_xyz)
+    );
+}
+
+#[test]
 fn rejects_bad_rows_and_flags() {
     let mut m = scene_map();
     let options = Options::default();

@@ -13,7 +13,12 @@ license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "LICENSES/*"]
 authors = [{ name = "evan-wes" }]
 # Pillow reads image files, in slam_it.eval.images alone (a contract below keeps it there).
-dependencies = ["numpy>=2.0", "pillow>=10.0"]
+# GTSAM is rung 0's factor-graph back end (slam_it.foundations.graphs). scripts/setup_slam_it.sh
+# builds it from its release and pip-installs its Python bindings, built over the same library
+# the C++ core links; the env asks no index for it. The worker's image, whose Python imports it
+# but never solves with it, installs PyPI's 4.3.0 wheel, pinned by its hash
+# (scripts/locks/worker-gtsam.lock).
+dependencies = ["numpy>=2.0", "pillow>=10.0", "gtsam>=4.3"]
 
 [project.optional-dependencies]
 # COLMAP's Ceres bundle adjuster, for slam_it.eval.colmap_reference (the only importer).
@@ -118,6 +123,13 @@ module = ["mpmath", "manifpy", "scipy.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# GTSAM's Python bindings ship py.typed but no stubs for their extension module, so its names
+# are typed as Any.
+module = ["gtsam", "gtsam.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # The upload server's S3 client, which ships without type information.
 module = ["boto3", "botocore.*"]
 ignore_missing_imports = true
@@ -154,8 +166,8 @@ type = "layers"
 exhaustive = true
 containers = ["slam_it.foundations"]
 layers = [
-  "(ba) | (twoview)",
-  "(epipolar) | (homography) | (pnp) | (stereo)",
+  "(ba) | (graphs) | (twoview)",
+  "(epipolar) | (homography) | (pnp) | (sim3) | (stereo)",
   "(camera) | (fivepoint) | (matching) | (p3p) | (ransac) | (triangulation) | (vocabulary)",
   "(nls) | (orb)",
   "(correspondences) | (image)",
@@ -193,7 +205,7 @@ exhaustive = true
 containers = ["slam_it.edge"]
 layers = [
   "(pipeline)",
-  "(relocalization)",
+  "(loops) | (relocalization)",
   "(initialization) | (tracking) | (mapping)",
   "(adjust) | (database)",
   "(residuals) | (covisibility)",
@@ -223,22 +235,25 @@ type = "forbidden"
 source_modules = ["slam_it"]
 forbidden_modules = ["cv2"]
 
-# The library's runtime is numpy alone (the dependencies above), so none of these may enter
-# it; and they are the test oracles, which check slam_it against independent implementations,
-# so the library using one would make that check circular (PoseLib implements the same
-# solvers). A rung that needs one of them at run time changes the dependencies first.
+# Libraries are welcome in the runtime (the ladder's "Runtime dependencies", decided with
+# evan-wes on 2026-10-17), so none is kept out for a test's sake: scipy may enter once a rung
+# needs it, and a test then checks that rung against something else. These are test oracles
+# that implement the library's own solvers (PoseLib) or its mathematics at high precision
+# (mpmath, manif): nothing in the library needs them, and a rung that does adds it to the
+# dependencies first.
 [[tool.importlinter.contracts]]
 name = "slam_it never imports its test oracles"
 type = "forbidden"
 source_modules = ["slam_it"]
-forbidden_modules = ["poselib", "mpmath", "manifpy", "scipy"]
+forbidden_modules = ["poselib", "mpmath", "manifpy"]
 
 # The order of modules inside eval: the timestamp helpers, the image reader, the sensor.yaml
 # helpers, the LiDAR depth and a vocabulary's folder at the bottom, the dataset readers and
 # metrics on them, runs (and the COLMAP reference) on them, then what writes a dataset's
-# TUM-format folder with its ground truth (the video import, ZJU-SenseTime's, ARKitScenes') and
-# the compute budgets, which judge runs, and on top ADVIO's import, a video's through the video
-# import. New modules are optional layers, as in rung 0's contract.
+# TUM-format folder with its ground truth (the video import, ZJU-SenseTime's, ARKitScenes'), the
+# compute budgets, which judge runs, and the loops' judge, which judges a run's loops, and on top
+# ADVIO's import, a video's through the video import. New modules are optional layers, as in
+# rung 0's contract.
 [[tool.importlinter.contracts]]
 name = "Eval's internal order"
 type = "layers"
@@ -246,7 +261,7 @@ exhaustive = true
 containers = ["slam_it.eval"]
 layers = [
   "(advio)",
-  "(budgets) | (video) | (zju) | (arkitscenes)",
+  "(budgets) | (video) | (zju) | (arkitscenes) | (loops)",
   "(runs) | (colmap_reference)",
   "(metrics) | (tum) | (euroc) | (readers) | (reprojection)",
   "(timestamps) | (images) | (lenses) | (lidar) | (sensor_yaml) | (vocabularies)",
@@ -261,6 +276,16 @@ type = "forbidden"
 source_modules = ["slam_it"]
 forbidden_modules = ["PIL"]
 ignore_imports = ["slam_it.eval.images -> PIL"]
+
+# GTSAM stands behind rung 0's factor graphs alone (the ladder; B3's review panel, A10): no other
+# module imports it, and graphs' own converters to its types are private. check_layers.py holds
+# C++'s includes of <gtsam/...> to graphs.cpp and the Rust crate's bridge the same way.
+[[tool.importlinter.contracts]]
+name = "Only foundations.graphs may import gtsam"
+type = "forbidden"
+source_modules = ["slam_it"]
+forbidden_modules = ["gtsam"]
+ignore_imports = ["slam_it.foundations.graphs -> gtsam"]
 
 # The algorithm rungs take arrays, never files: none imports what reads, finds or hashes one.
 # Eval reads their files for them (a vocabulary's folder in slam_it.eval.vocabularies, the run

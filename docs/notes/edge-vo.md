@@ -195,7 +195,8 @@ holds. The blank frame fails, and the next is predicted with no motion; across t
 motion model fails and the fallback recovers, twice, since the recovery's velocity spans the
 gap; just after it the keyframe hold decides. The backends agree across it, and again with
 every setting the review's fixes added moved off its default. Both rooms' runs are also held
-to a committed golden record (`tests/fixtures/edge/room_runs.json`): the decisions, frame
+to a committed golden record (`tests/fixtures/edge/room_runs_<backend>.json`, one per language
+since B3; one file, `room_runs.json`, before): the decisions, frame
 times, keyframes and point count exactly, the poses to 1e-9, with the rooms' inputs checked
 first. Live parity
 with Python cannot catch a rule changed in all three languages at once; the record can, until

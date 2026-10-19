@@ -28,7 +28,7 @@ inline constexpr const char* kFormat = "slam-it-run";
 ///        and keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
 ///        `vocabulary` a relocalising run used; 6 the settings grouped, each keyframe's parent and
 ///        the strong links).
-inline constexpr std::int64_t kVersion = 6;
+inline constexpr std::int64_t kVersion = 7;
 
 /// @brief The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 inline constexpr std::int64_t kRemovals = 4;
@@ -75,8 +75,11 @@ struct Run {
   std::string backend;
   /// @brief Each tracked frame's timestamp, ascending.
   std::vector<double> timestamps;
-  /// @brief Each tracked frame's `T_world_cam`.
+  /// @brief Each tracked frame's final `T_world_cam` (`trajectory.txt`: its pose relative to its
+  ///        reference keyframe, carried by that keyframe's last pose).
   std::vector<Eigen::Matrix4d> poses;
+  /// @brief Each tracked frame's `T_world_cam` as tracked (`trajectory_tracked.txt`).
+  std::vector<Eigen::Matrix4d> tracked_poses;
   /// @brief The timestamps of every keyframe the run made, by id.
   std::vector<double> keyframe_timestamps;
   /// @brief Their last `T_world_cam`.
@@ -90,8 +93,9 @@ struct Run {
   ///        relocalise.
   std::optional<vocabularies::Header> vocabulary;
   /// @brief One object per frame, each with a `timestamp`; the edge pipeline's also time
-  ///        its steps (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`, as
-  ///        `slam_it.eval.runs.STEPS` defines them) and say how its stages went.
+  ///        its steps (`read_seconds`, `build_seconds`, `track_seconds`, `map_seconds`,
+  ///        `loop_seconds`, as `slam_it.eval.runs.STEPS` defines them) and say how its stages
+  ///        went.
   std::vector<JsonObject> diagnostics;
   /// @brief The largest resident set of the program that ran it, in bytes, if known
   ///        (`slam_it::eval::budgets::peak_memory`); written as null otherwise.
@@ -112,6 +116,9 @@ struct Run {
   /// @brief The strong links: two keyframes of the same map, the lower id first, and the points
   ///        they share, ascending.
   std::vector<std::array<std::int64_t, 3>> keyframe_links;
+  /// @brief The loops closed: two keyframes of the same map, the lower id first, in the order
+  ///        they closed.
+  std::vector<std::array<std::int64_t, 2>> keyframe_loops;
   /// @brief Whether the run recorded its features (`FeatureWriter` streams them).
   bool record_features{false};
   /// @brief The map each tracked frame's pose is in, never descending.

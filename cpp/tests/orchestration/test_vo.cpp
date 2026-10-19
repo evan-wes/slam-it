@@ -41,6 +41,7 @@ vo::Request request_for(const std::string& dataset, edge::Mode mode, const std::
   out.mode = mode;
   out.out = "run";
   out.options.relocalization.enabled = false;  // no vocabulary: these check the request
+  out.options.loops.enabled = false;
   return out;
 }
 

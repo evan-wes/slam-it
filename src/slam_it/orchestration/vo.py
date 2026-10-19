@@ -144,7 +144,8 @@ class Request:
     record_features : bool
         Whether the run records each frame's keypoints, with their fates.
     vocabulary : pathlib.Path or None
-        The vocabulary's folder: required with ``relocalization.enabled`` on, refused with it off.
+        The vocabulary's folder: required with ``relocalization.enabled`` or ``loops.enabled``
+        on, refused with both off.
     """
 
     dataset: str
@@ -213,8 +214,8 @@ def check(request: Request) -> None:
     slam_it.foundations.errors.InvalidInputError
         For an unknown dataset or mode, a mode the dataset does not record (TUM has no stereo
         pairs, EuRoC no depth maps), a negative `first` or `count`, or a vocabulary missing
-        while relocalising or given while not. (The options checked themselves when they were
-        made; the vocabulary's folder is checked when it is read.)
+        while relocalising or closing loops, or given while doing neither. (The options checked
+        themselves when they were made; the vocabulary's folder is checked when it is read.)
     """
     if request.dataset not in runs.DATASETS:
         wanted = " or ".join(runs.DATASETS)
@@ -227,10 +228,13 @@ def check(request: Request) -> None:
         raise InvalidInputError("mode: a euroc sequence has no depth maps")
     if request.first < 0 or (request.count is not None and request.count < 0):
         raise InvalidInputError("first, count: must be at least 0")
-    if request.options.relocalization.enabled and request.vocabulary is None:
-        raise InvalidInputError("--vocabulary: relocalization.enabled needs one")
-    if not request.options.relocalization.enabled and request.vocabulary is not None:
-        raise InvalidInputError("--vocabulary: given, but relocalization.enabled is off")
+    needed = request.options.keeps_keyframe_database()
+    if needed and request.vocabulary is None:
+        raise InvalidInputError("--vocabulary: relocalization.enabled or loops.enabled needs one")
+    if not needed and request.vocabulary is not None:
+        raise InvalidInputError(
+            "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
+        )
 
 
 def _integer(flag: str, text: str) -> int:
@@ -448,10 +452,10 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         Whether to record each frame's keypoints, with their fates
         (:func:`slam_it.eval.runs.read_features` reads them; default: no).
     vocabulary : str or pathlib.Path, optional
-        The vocabulary's folder, which a relocalising run needs (default: the committed one when
-        ``relocalization.enabled`` is on, none when it is off; one given while it is off is
-        refused). It is read once, here, its checksums checked before any program runs
-        (:func:`slam_it.eval.vocabularies.read`).
+        The vocabulary's folder, which a run relocalising or closing loops needs (default: the
+        committed one when ``relocalization.enabled`` or ``loops.enabled`` is on, none when both
+        are off; one given while both are off is refused). It is read once, here, its checksums
+        checked before any program runs (:func:`slam_it.eval.vocabularies.read`).
 
     Returns
     -------
@@ -486,7 +490,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         record_features=record_features,
         vocabulary=None if vocabulary is None else Path(vocabulary),
     )
-    if request.vocabulary is None and request.options.relocalization.enabled:
+    if request.vocabulary is None and request.options.keeps_keyframe_database():
         request = replace(request, vocabulary=vocabularies.DEFAULT)
     backends.check_name(backend)
     check(request)
@@ -680,6 +684,11 @@ def _read_vocabulary(request: Request) -> Vocabulary | None:
     return None if request.vocabulary is None else vocabularies.read(request.vocabulary)
 
 
+def _world_cam(poses: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Return ``T_cam_world`` poses as ``T_world_cam``, the run format's (none for none)."""
+    return se3.inverse(poses) if len(poses) else np.zeros((0, 4, 4))
+
+
 def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
     """Run the request with the Python pipeline, in-process, with its vocabulary as read."""
     source = open_source(request.dataset, request.sequence, request.mode)
@@ -688,9 +697,6 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
     end = len(source.times)
     if request.count is not None:
         end = min(end, request.first + request.count)
-    times: list[float] = []
-    poses: list[NDArray[np.float64]] = []
-    pose_maps: list[int] = []
     diagnostics: list[dict[str, object]] = []
     recording: contextlib.AbstractContextManager[runs.FeatureWriter | None] = (
         runs.FeatureWriter(request.out) if request.record_features else contextlib.nullcontext()
@@ -716,20 +722,14 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
                     "build_seconds": after_build - after_read,
                     "track_seconds": result.track_seconds,
                     "map_seconds": result.map_seconds,
+                    "loop_seconds": result.loop_seconds,
                     **result.summary.as_dict(),
                 }
             )
             if features is not None:
                 keypoints = frame.features.keypoints
                 features.write(keypoints.xy, keypoints.level, result.fates.fate, result.fates.point)
-            if result.pose is not None and result.map is not None:
-                poses.append(se3.inverse(result.pose))
-                times.append(result.timestamp)
-                pose_maps.append(result.map)
-            lost = result.summary.lost
-            if lost is not None and lost.reset:  # its frames' poses go with it
-                while pose_maps and pose_maps[-1] == result.map:
-                    del poses[-1], times[-1], pose_maps[-1]
+    trajectory = tracker.trajectory()  # a reset map's frames left out
     lives = tracker.lifetimes()
     keyframes = lives.keyframe_poses
     return runs.Run(
@@ -737,10 +737,11 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
         sequence=request.sequence.resolve().name,
         mode=request.mode,
         backend="python",
-        timestamps=np.array(times),
-        poses=np.array(poses).reshape(-1, 4, 4),
+        timestamps=trajectory.timestamps,
+        poses=_world_cam(trajectory.poses),
+        tracked_poses=_world_cam(trajectory.tracked),
         keyframe_timestamps=lives.keyframe_times,
-        keyframe_poses=se3.inverse(keyframes) if len(keyframes) else np.zeros((0, 4, 4)),
+        keyframe_poses=_world_cam(keyframes),
         points=lives.points,
         settings=request.options.as_dict(),
         vocabulary=None if request.vocabulary is None else vocabularies.record(request.vocabulary),
@@ -749,8 +750,9 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
         keyframe_lives=lives.keyframe_lives,
         keyframe_parents=lives.keyframe_parents,
         keyframe_links=lives.keyframe_links,
+        keyframe_loops=lives.keyframe_loops,
         record_features=request.record_features,
-        pose_maps=np.array(pose_maps, dtype=np.int64),
+        pose_maps=trajectory.maps,
         keyframe_maps=lives.keyframe_maps,
         point_maps=lives.point_maps,
     )

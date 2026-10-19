@@ -118,6 +118,39 @@ def test_every_point_and_keyframe_has_a_life(mode: str, runs: dict[str, Run]) ->
     assert int(np.count_nonzero(lives.keyframe_lives[:, 1] >= 0)) == culled_keyframes
 
 
+@pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])
+def test_the_final_trajectory_follows_the_keyframes(mode: str, runs: dict[str, Run]) -> None:
+    """Each tracked frame once, in order, placed by its reference keyframe's last pose.
+
+    The poses as tracked are the frames' own; a keyframe's own frame is where its keyframe is
+    now (but a monocular map's first, whose frame only set initialisation's reference); and the
+    final trajectory is within the bound tracking is held to.
+    """
+    run = runs[mode]
+    trajectory = run.pipeline.trajectory()
+    tracked = [r for r in run.results if r.pose is not None]
+    np.testing.assert_array_equal(trajectory.timestamps, [r.timestamp for r in tracked])
+    np.testing.assert_array_equal(trajectory.tracked, [r.pose for r in tracked])
+    assert np.all(trajectory.maps == 0)
+    lives = run.pipeline.lifetimes()
+    at = {float(t): i for i, t in enumerate(trajectory.timestamps)}
+    alive = lives.keyframe_lives[:, 1] < 0
+    placed = 0
+    for keyframe in np.flatnonzero(alive).tolist():
+        frame = at.get(float(lives.keyframe_times[keyframe]))
+        if frame is None:  # a monocular map's first keyframe: its frame was never tracked
+            continue
+        np.testing.assert_allclose(
+            trajectory.poses[frame], lives.keyframe_poses[keyframe], atol=1e-12
+        )
+        placed += 1
+    assert placed >= np.count_nonzero(alive) - 1
+    truth = np.array([run.truth[i] for i, r in enumerate(run.results) if r.pose is not None])
+    final = np.array([np.linalg.inv(pose) for pose in trajectory.poses])
+    error = absolute_error(final, truth, with_scale=mode == "monocular")
+    assert error.rmse < ATE_BOUND[mode]
+
+
 def test_monocular_frames_start_with_more_features() -> None:
     """Before the map, a monocular frame gets features.init_factor times the features."""
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240)
@@ -243,12 +276,19 @@ def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(
     assert all(r.summary.relocalization is not None for r in failed)
 
 
+@pytest.mark.parametrize("close_loops", [False, True])
 def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
-    rendered: list[room.Frame],
+    rendered: list[room.Frame], close_loops: bool
 ) -> None:
-    """Relocalisation off, A2's rule: lost on the loss.lost_frames-th failure, whatever the time."""
-    options = OPTIONS.with_settings({"relocalization.enabled": False, "loss.reset_keyframes": 0})
-    run = pipeline.Pipeline("rgbd", CAMERA, options)
+    """Relocalisation off, A2's rule: lost on the loss.lost_frames-th failure, whatever the time.
+
+    Nothing relocalises with loop closing on either, though the keyframe database is then kept
+    (B3's review panel, H7).
+    """
+    options = OPTIONS.with_settings(
+        {"relocalization.enabled": False, "loops.enabled": close_loops, "loss.reset_keyframes": 0}
+    )
+    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
     first = rendered[0]
     assert run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction())).keyframe
     failed = [run.track(_empty(0.001 * (k + 1))) for k in range(options.loss.lost_frames)]
@@ -256,11 +296,18 @@ def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
     assert all(r.summary.relocalization is None for r in failed)
 
 
-@pytest.mark.parametrize(("relocalize", "message"), [(True, "needs one"), (False, "is off")])
-def test_the_vocabulary_is_needed_exactly_when_relocalizing(relocalize: bool, message: str) -> None:
-    """Relocalising without a vocabulary, or given one while not: InvalidInputError."""
-    options = OPTIONS.with_settings({"relocalization.enabled": relocalize})
-    given = None if relocalize else words_for(OPTIONS)
+@pytest.mark.parametrize(
+    ("relocalize", "close_loops", "message"),
+    [(True, False, "needs one"), (False, True, "needs one"), (False, False, "both off")],
+)
+def test_the_vocabulary_is_needed_exactly_with_a_keyframe_database(
+    relocalize: bool, close_loops: bool, message: str
+) -> None:
+    """Relocalising or closing loops without a vocabulary, or given one doing neither: refused."""
+    options = OPTIONS.with_settings(
+        {"relocalization.enabled": relocalize, "loops.enabled": close_loops}
+    )
+    given = None if relocalize or close_loops else words_for(OPTIONS)
     with pytest.raises(InvalidInputError, match=f"vocabulary: .*{message}"):
         pipeline.Pipeline("rgbd", CAMERA, options, given)
 

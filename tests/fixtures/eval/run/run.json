@@ -1,6 +1,6 @@
 {
  "format": "slam-it-run",
- "version": 6,
+ "version": 7,
  "dataset": "tum",
  "sequence": "rgbd_dataset_freiburg1_fixture",
  "mode": "rgbd",

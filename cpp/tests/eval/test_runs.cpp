@@ -122,29 +122,32 @@ slam_it::eval::vocabularies::Header header_of(const nlohmann::json& record) {
 /// @return The run.
 runs::Run golden_run() {
   const nlohmann::json values = slam_it::testing::load_fixture("eval/run_values.json");
-  runs::Run run{.dataset = values["dataset"],
-                .sequence = values["sequence"],
-                .mode = values["mode"],
-                .backend = "cpp",
-                .timestamps = values["timestamps"].get<std::vector<double>>(),
-                .poses = poses(values["poses"]),
-                .keyframe_timestamps = values["keyframe_timestamps"].get<std::vector<double>>(),
-                .keyframe_poses = poses(values["keyframe_poses"]),
-                .points = {},
-                .settings = object_of(values["settings"]),
-                .vocabulary = header_of(values["vocabulary"]),
-                .diagnostics = {},
-                .peak_memory = values["peak_memory"].get<std::int64_t>(),
-                .cpus = values["cpus"].get<std::vector<std::int64_t>>(),
-                .memory_cap = values["memory_cap"].get<std::int64_t>(),
-                .point_lives = lives(values["point_lives"]),
-                .keyframe_lives = lives(values["keyframe_lives"]),
-                .keyframe_parents = values["keyframe_parents"].get<std::vector<std::int64_t>>(),
-                .keyframe_links = lives(values["keyframe_links"]),
-                .record_features = values["record_features"].get<bool>(),
-                .pose_maps = values["pose_maps"].get<std::vector<std::int64_t>>(),
-                .keyframe_maps = values["keyframe_maps"].get<std::vector<std::int64_t>>(),
-                .point_maps = values["point_maps"].get<std::vector<std::int64_t>>()};
+  runs::Run run{
+      .dataset = values["dataset"],
+      .sequence = values["sequence"],
+      .mode = values["mode"],
+      .backend = "cpp",
+      .timestamps = values["timestamps"].get<std::vector<double>>(),
+      .poses = poses(values["poses"]),
+      .tracked_poses = poses(values["tracked_poses"]),
+      .keyframe_timestamps = values["keyframe_timestamps"].get<std::vector<double>>(),
+      .keyframe_poses = poses(values["keyframe_poses"]),
+      .points = {},
+      .settings = object_of(values["settings"]),
+      .vocabulary = header_of(values["vocabulary"]),
+      .diagnostics = {},
+      .peak_memory = values["peak_memory"].get<std::int64_t>(),
+      .cpus = values["cpus"].get<std::vector<std::int64_t>>(),
+      .memory_cap = values["memory_cap"].get<std::int64_t>(),
+      .point_lives = lives(values["point_lives"]),
+      .keyframe_lives = lives(values["keyframe_lives"]),
+      .keyframe_parents = values["keyframe_parents"].get<std::vector<std::int64_t>>(),
+      .keyframe_links = lives(values["keyframe_links"]),
+      .keyframe_loops = values["keyframe_loops"].get<std::vector<std::array<std::int64_t, 2>>>(),
+      .record_features = values["record_features"].get<bool>(),
+      .pose_maps = values["pose_maps"].get<std::vector<std::int64_t>>(),
+      .keyframe_maps = values["keyframe_maps"].get<std::vector<std::int64_t>>(),
+      .point_maps = values["point_maps"].get<std::vector<std::int64_t>>()};
   for (const auto& point : values["points"]) {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
@@ -228,8 +231,8 @@ void check_golden(int& failures) {
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
   for (const char* name :
        {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy", "keyframe_parents.npy",
-        "keyframe_links.npy", "points.npy", "point_lives.npy", "pose_maps.npy", "keyframe_maps.npy",
-        "point_maps.npy"}) {
+        "keyframe_links.npy", "keyframe_loops.npy", "points.npy", "point_lives.npy",
+        "pose_maps.npy", "keyframe_maps.npy", "point_maps.npy"}) {
     expect(bytes(out / name) == bytes(golden / name),
            (std::string(name) + " matches numpy's byte for byte").c_str(), failures);
   }
@@ -243,6 +246,9 @@ void check_golden(int& failures) {
          "trajectory.txt holds Python's values", failures);
   expect(comments(out / "trajectory.txt") == comments(golden / "trajectory.txt"),
          "trajectory.txt marks each map where Python's does", failures);
+  expect(same_trajectory(trajectory(out / "trajectory_tracked.txt"),
+                         trajectory(golden / "trajectory_tracked.txt")),
+         "trajectory_tracked.txt holds Python's values", failures);
   expect(json_lines(out / "diagnostics.jsonl") == json_lines(golden / "diagnostics.jsonl"),
          "diagnostics.jsonl holds Python's values", failures);
   expect(!fs::exists(out / ".run.json.tmp"), "no temporary file is left", failures);
@@ -413,6 +419,23 @@ void check_refusals(int& failures) {
            "parents that are not one per keyframe, its own, another map's or none are refused",
            failures);
   }
+  run = golden_run();
+  run.tracked_poses.pop_back();
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "poses as tracked that are not one per time are refused", failures);
+  // The golden keyframes' maps are 0, 1, 1: a loop joins 1 and 2.
+  for (const std::array<std::int64_t, 2>& loop :
+       {std::array<std::int64_t, 2>{2, 1}, std::array<std::int64_t, 2>{0, 1},
+        std::array<std::int64_t, 2>{1, 1}, std::array<std::int64_t, 2>{1, 3}}) {
+    run = golden_run();
+    run.keyframe_loops = {loop};
+    expect(is_invalid_input(runs::write_run(out.string(), run)),
+           "a loop not joining two keyframes of one map, the lower first, is refused", failures);
+  }
+  run = golden_run();
+  run.keyframe_loops = {{1, 2}, {1, 2}};
+  expect(is_invalid_input(runs::write_run(out.string(), run)), "a loop closed twice is refused",
+         failures);
   for (const std::array<std::int64_t, 3>& link :
        {std::array<std::int64_t, 3>{2, 1, 120}, std::array<std::int64_t, 3>{0, 1, 120},
         std::array<std::int64_t, 3>{1, 2, 0}, std::array<std::int64_t, 3>{1, 3, 120}}) {

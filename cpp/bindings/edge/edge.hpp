@@ -50,4 +50,8 @@ void bind_database(nanobind::module_& m);
 /// @param m The submodule.
 void bind_relocalization(nanobind::module_& m);
 
+/// @brief Bind `slam_it.edge.loops`'s compiled functions.
+/// @param m The submodule.
+void bind_loops(nanobind::module_& m);
+
 }  // namespace slam_it::bindings

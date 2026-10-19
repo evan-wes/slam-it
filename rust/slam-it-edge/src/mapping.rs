@@ -2,7 +2,7 @@
 //! mirror of `slam_it.edge.mapping` (ORB-SLAM's `LocalMapping`, lite), whose docstring states
 //! the steps. Mapping a keyframe also says how each step went, which a run records per keyframe.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, check_range, fail};
@@ -792,45 +792,6 @@ pub fn triangulate_new_points(
     Ok(())
 }
 
-/// Replaces one point by another (`slam_it.edge.mapping._merge_points`, `MapPoint::Replace`).
-///
-/// # Arguments
-///
-/// * `m` - The map.
-/// * `lose` - The lost point's id.
-/// * `keep` - The kept point's id.
-///
-/// # Errors
-///
-/// The map's error.
-fn merge_points(m: &mut Map, lose: i64, keep: i64) -> Result<()> {
-    let (Some(p_lose), Some(p_keep)) = (m.point_row(lose), m.point_row(keep)) else {
-        return fail(
-            ErrorKind::InvalidInput,
-            "merge: both points must be in the map",
-        );
-    };
-    let kept_in: BTreeSet<usize> = m.pt_observations[p_keep]
-        .iter()
-        .map(|&r| m.keyframe_of(r))
-        .collect();
-    for r in m.pt_observations[p_lose].clone() {
-        let to = if kept_in.contains(&m.keyframe_of(r)) {
-            -1
-        } else {
-            keep
-        };
-        map::observe(m, r, to)?;
-    }
-    m.pt_visible[p_keep] += m.pt_visible[p_lose];
-    m.pt_found[p_keep] += m.pt_found[p_lose];
-    let mut erase = vec![false; m.points()];
-    erase[p_lose] = true;
-    map::erase_points(m, &erase, Removal::Fused)?;
-    let kept: Vec<usize> = m.point_row(keep).into_iter().collect();
-    map::refresh_points(m, &kept)
-}
-
 /// A keyframe's keypoints as the grid reads them.
 ///
 /// # Arguments
@@ -954,9 +915,9 @@ fn fuse_one(
     };
     let weights = map::observation_weight(m, &[q, p])?;
     if weights[0] > weights[1] {
-        merge_points(m, id, held)
+        map::replace_point(m, id, held)
     } else {
-        merge_points(m, held, id)
+        map::replace_point(m, held, id)
     }
 }
 
@@ -1158,6 +1119,7 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
 /// * `camera` - The camera.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The fraction and count.
+/// * `held` - The ids of the keyframes loop detection holds, which `cull` spares.
 ///
 /// # Errors
 ///
@@ -1166,7 +1128,13 @@ fn redundant(m: &Map, k: usize, rows: &[usize], threshold: usize) -> Result<usiz
     clippy::cast_precision_loss,
     reason = "counts of keypoints, exact in f64"
 )]
-pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Options) -> Result<()> {
+pub fn cull_keyframes(
+    m: &mut Map,
+    camera: &Camera,
+    mode: Mode,
+    options: &Options,
+    held: &[i64],
+) -> Result<()> {
     check_newest(m, camera, options)?;
     let limit = close_depth(camera, options);
     let ids: Vec<i64> = linked_rows(m, m.keyframes() - 1, options)
@@ -1191,7 +1159,7 @@ pub fn cull_keyframes(m: &mut Map, camera: &Camera, mode: Mode, options: &Option
         }
         let count = redundant(m, k, &rows, options.mapping.redundant_observers)?;
         if count as f64 > options.mapping.redundant_fraction * rows.len() as f64 {
-            covisibility::cull(m, k, options)?;
+            covisibility::cull(m, k, options, held)?;
         }
     }
     Ok(())
@@ -1245,6 +1213,7 @@ pub struct Mapped {
 /// * `tracked` - Its pose and matches.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The settings.
+/// * `held` - The ids of the keyframes loop detection holds, which culling spares.
 ///
 /// # Returns
 ///
@@ -1261,6 +1230,7 @@ pub fn process(
     tracked: &Tracked,
     mode: Mode,
     options: &Options,
+    held: &[i64],
 ) -> Result<Mapped> {
     map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
     // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
@@ -1292,7 +1262,7 @@ pub fn process(
         adjustment = bundle_adjust(m, camera, &local_rows(m, options), &fixed, options)?;
     }
     let keyframes = m.keyframes();
-    cull_keyframes(m, camera, mode, options)?;
+    cull_keyframes(m, camera, mode, options, held)?;
     Ok(Mapped {
         summary: MappingSummary {
             from_depth: with_depth - start,

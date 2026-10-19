@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import importlib
 import json
+import shutil
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
 from slam_it.edge.options import Options
+from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES
 from tests.orchestration.conftest import require_program
@@ -59,57 +62,34 @@ def batches(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]
     return base / "off", base / "on", config
 
 
-def test_a_stretch_ends_relocalised_recovered_lost_or_with_the_sequence(script: ModuleType) -> None:
-    """Untracked frames are those tracking failed, a frame placed that then failed among them."""
-    states = [
-        (0, "tracking", "initialization", 200),
-        (0, "tracking", "motion", 0),  # placed, then failed the local map
-        (0, "tracking", None, 0),
-        (0, "tracking", "relocalization", 80),
-        (0, "tracking", None, 0),
-        (0, "tracking", "motion", 150),
-        (0, "tracking", None, 0),
-        (0, "lost", None, 0),
-        (None, "not_initialized", None, 0),
-        (1, "tracking", "initialization", 200),
-        (1, "tracking", None, 0),
-    ]
-    diagnostics = [
-        {"timestamp": float(k), "map": m, "state": state, "placed_by": placed, "tracked": n}
-        for k, (m, state, placed, n) in enumerate(states)
-    ]
-    assert script.stretches(diagnostics) == [
-        ("relocalised", 2, 2.0), ("recovered", 1, 1.0), ("lost", 2, 1.0), ("end", 1, 0.0),
-    ]  # fmt: skip
-
-
-def test_a_frame_is_relocalised_tried_placed_or_neither(script: ModuleType) -> None:
-    """What a frame needed, read from its diagnostic."""
-    summary = {"words": 10, "placed": False}
-    assert [
-        script.kind({"placed_by": "relocalization", "relocalization": {**summary, "placed": True}}),
-        script.kind({"placed_by": None, "relocalization": summary}),
-        script.kind({"placed_by": "motion", "relocalization": None}),
-        script.kind({"placed_by": None, "relocalization": None}),
-    ] == ["relocalised", "tried", "placed", "other"]
-
-
 def test_a_batch_names_its_failed_sequences_and_groups_by_dataset_and_mode(
     script: ModuleType, tmp_path: Path
 ) -> None:
     """A failed sequence is named apart; a group is the name up to its first ``-``, and the mode."""
-    rows = [{"name": "zju-B0", "mode": "monocular"}, {"name": "tum-x-rgbd", "failed": "why"}]
+    details = dict.fromkeys(script.measure_testset.DETAILS)
+    rows = [
+        {"name": "zju-B0", "mode": "monocular", **details},
+        {"name": "tum-x-rgbd", "failed": "why"},
+    ]
     (tmp_path / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     batch = script.read_batch(tmp_path)
     assert (list(batch.results), batch.failed) == (["zju-B0"], ["tum-x-rgbd"])
     assert script.group(batch.results["zju-B0"]) == "zju monocular"
 
 
+def test_a_result_without_its_runs_details_is_refused(script: ModuleType, tmp_path: Path) -> None:
+    """A measure made before results carried their run's details is compared once given them."""
+    rows = [{"name": "zju-B0", "mode": "monocular"}, {"name": "zju-B1", "mode": "monocular"}]
+    (tmp_path / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    with pytest.raises(InvalidInputError, match="no run details for zju-B0, zju-B1"):
+        script.read_batch(tmp_path)
+
+
 def test_the_found_room_compared_off_and_on(
     script: ModuleType, batches: tuple[Path, Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Off, its blank frames lose the track; on, they end found again, in the right place."""
-    off, on, config = batches
+    off, on, _ = batches
     base, new = script.read_batch(off), script.read_batch(on)
     names = ["room-found"]
     # Off: the frames after the blank ones fail too, the local fallback out of reach, until the
@@ -123,11 +103,11 @@ def test_the_found_room_compared_off_and_on(
         script.endings(new, names)[2]
         == f"| room rgbd | 1 / 0 / 0 / 0 | {FOUND_BLANKS} / 0 / 0 / 0 | 0 |"
     )
-    (placed,) = script.against_truth(new, names, {"room-found": config.parent / "room"})[2:]
+    (placed,) = script.against_truth(new, names)[2:]
     cells = [cell.strip() for cell in placed.strip("|").split("|")]
     assert (cells[0], cells[2]) == ("room-found", "0")
     assert float(cells[3]) < 100 * ATE_BOUND["rgbd"]
-    assert script.main([str(off), str(on), "--config", str(config)]) == 0
+    assert script.main(["compare", str(off), str(on)]) == 0
     out = capsys.readouterr().out
     assert out.startswith("1 runs compared")
     for title in (
@@ -135,6 +115,51 @@ def test_the_found_room_compared_off_and_on(
         "The runs that moved",
         "How failures ended, new",
         "Latency by frame, new",
+        "Relocalised frames against the ground truth, new",
     ):
         assert f"## {title}" in out
     assert "| room rgbd | relocalised | 1 |" in out
+
+
+def _undetailed(script: ModuleType, on: Path, copy: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Copy the measure in `on` to `copy`, its one result without its run's details.
+
+    Returns the result as measured, and as written to the copy.
+    """
+    shutil.copytree(on, copy)
+    (measured,) = [json.loads(line) for line in (on / "results.jsonl").read_text().splitlines()]
+    bare = {k: v for k, v in measured.items() if k not in script.measure_testset.DETAILS}
+    (copy / "results.jsonl").write_text(json.dumps(bare) + "\n")
+    return measured, bare
+
+
+def test_a_measure_made_without_its_runs_details_is_given_them(
+    script: ModuleType, batches: tuple[Path, Path, Path], tmp_path: Path
+) -> None:
+    """``summarize`` reads each run and its truth for the details the measure itself records."""
+    _, on, config = batches
+    copy = tmp_path / "on"
+    measured, bare = _undetailed(script, on, copy)
+    assert script.main(["summarize", str(copy), str(config)]) == 0
+    assert json.loads((copy / "results.jsonl").read_text()) == measured
+    assert json.loads((copy / script.UNDETAILED).read_text()) == bare
+    assert script.summarize(copy, config) == 0  # nothing left to give
+
+
+def test_summarize_reads_each_sequences_truth_as_its_dataset(
+    script: ModuleType,
+    batches: tuple[Path, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sequence's truth is read as its config names its dataset (B3's review panel, H10)."""
+    _, on, config = batches
+    copy = tmp_path / "on"
+    _undetailed(script, on, copy)
+    euroc = tmp_path / "euroc.toml"
+    euroc.write_text(config.read_text() + 'dataset = "euroc"\n')
+    read: list[tuple[str, Path]] = []
+    monkeypatch.setattr(script.runs, "ground_truth", lambda *given: read.append(given))
+    assert script.summarize(copy, euroc) == 1
+    (folder,) = [e.folder for e in script.measure_testset.read_config(config)]
+    assert read == [("euroc", folder)]

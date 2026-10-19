@@ -306,7 +306,7 @@ def search_keyframe(  # noqa: PLR0913 -- the map, its camera, the frame, the key
     slam_it.foundations.errors.InvalidInputError
         If the keyframe is not in the map.
     """
-    k = _keyframe_row(m, keyframe)
+    k = maps.keyframe_row(m, keyframe)
     rows = np.arange(m.kf_start[k], m.kf_start[k + 1], dtype=np.int64)
     rows = rows[(m.kp_point[rows] >= 0) & ~np.isin(m.kp_point[rows], skip)]
     points = m.point_rows(m.kp_point[rows])
@@ -329,14 +329,6 @@ def search_keyframe(  # noqa: PLR0913 -- the map, its camera, the frame, the key
     out = np.full(frame.size, -1, dtype=np.int64)
     out[found.pairs[:, 1]] = m.pt_id[points[found.pairs[:, 0]]]
     return out
-
-
-def _keyframe_row(m: Map, keyframe: int) -> int:
-    """Return a keyframe's row; refuse one the map does not hold."""
-    k = int(m.keyframe_rows(np.array([keyframe], dtype=np.int64))[0])
-    if k < 0:
-        raise InvalidInputError(f"keyframe {keyframe} is not in the map")
-    return k
 
 
 def _merged(tracked: Tracked, added: IntArray) -> Tracked:
@@ -397,7 +389,7 @@ def _match_by_word(  # noqa: PLR0913, PLR0917 -- the map, its database, the fram
     matched : ndarray of int64, shape (F,)
         The point each of the frame's keypoints matched, -1 for none.
     """
-    k = _keyframe_row(m, keyframe)
+    k = maps.keyframe_row(m, keyframe)
     start = int(m.kf_start[k])
     rows = np.arange(start, m.kf_start[k + 1], dtype=np.int64)
     if len(db.nodes(keyframe)) != len(rows):

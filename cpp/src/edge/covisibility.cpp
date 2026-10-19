@@ -265,13 +265,18 @@ Result<void> reparent(Map& m, std::int64_t k, const Options& options) {
   return {};
 }
 
-Result<void> cull(Map& m, std::int64_t k, const Options& options) {
+Result<void> cull(Map& m, std::int64_t k, const Options& options,
+                  std::span<const std::int64_t> held) {
   if (auto ok = check_row(m, k); !ok) {
     return ok;
   }
-  if (m.kf_id[static_cast<std::size_t>(k)] == 0) {
+  const auto row = static_cast<std::size_t>(k);
+  if (m.kf_id[row] == 0) {
     return fail(ErrorKind::kInvalidInput,
                 "k: keyframe 0 is the map's first, its tree's root, and is not culled");
+  }
+  if (has_loop(m, row) || std::ranges::find(held, m.kf_id[row]) != held.end()) {
+    return {};  // spared, as ORB-SLAM's SetNotErase spares it
   }
   if (auto ok = reparent(m, k, options); !ok) {
     return ok;

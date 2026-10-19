@@ -6,6 +6,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -17,12 +18,14 @@ from slam_it.eval import lenses, runs, tum
 from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES
+from tests.eval.synthetic_runs import line_run
 from tests.orchestration.conftest import require_program
 from tests.orchestration.datasets import (
     FOUND_AT,
     FOUND_BLANKS,
     FOUND_OPTIONS,
     found_frames,
+    write_euroc,
     write_tum,
 )
 
@@ -64,6 +67,42 @@ def _config(path: Path, sequence: Path, name: str = "room") -> Path:
     return path
 
 
+def test_a_stretch_ends_relocalised_recovered_lost_or_with_the_sequence() -> None:
+    """Untracked frames are those tracking failed, a frame placed that then failed among them."""
+    states = [
+        (0, "tracking", "initialization", 200),
+        (0, "tracking", "motion", 0),  # placed, then failed the local map
+        (0, "tracking", None, 0),
+        (0, "tracking", "relocalization", 80),
+        (0, "tracking", None, 0),
+        (0, "tracking", "motion", 150),
+        (0, "tracking", None, 0),
+        (0, "lost", None, 0),
+        (None, "not_initialized", None, 0),
+        (1, "tracking", "initialization", 200),
+        (1, "tracking", None, 0),
+    ]
+    diagnostics = [
+        {"timestamp": float(k), "map": m, "state": state, "placed_by": placed, "tracked": n}
+        for k, (m, state, placed, n) in enumerate(states)
+    ]
+    assert _script().stretches(diagnostics) == [
+        ("relocalised", 2, 2.0), ("recovered", 1, 1.0), ("lost", 2, 1.0), ("end", 1, 0.0),
+    ]  # fmt: skip
+
+
+def test_a_frame_is_relocalised_tried_placed_or_neither() -> None:
+    """What a frame needed, read from its diagnostic."""
+    summary = {"words": 10, "placed": False}
+    kind = _script().kind
+    assert [
+        kind({"placed_by": "relocalization", "relocalization": {**summary, "placed": True}}),
+        kind({"placed_by": None, "relocalization": summary}),
+        kind({"placed_by": "motion", "relocalization": None}),
+        kind({"placed_by": None, "relocalization": None}),
+    ] == ["relocalised", "tried", "placed", "other"]
+
+
 @pytest.mark.usefixtures("cpp")
 def test_a_sequence_is_run_measured_and_tabled(
     sequence: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -83,12 +122,21 @@ def test_a_sequence_is_run_measured_and_tabled(
     assert [(s["map"], s["tracked"]) for s in result["segments"]] == [(0, FRAMES)]
     assert (result["resets"], result["relocalizations"]) == (0, 0)
     assert [m["map"] for m in result["map_ate"]] == [0]
-    assert result["ate"] < ATE_BOUND["rgbd"]
+    for key in ("ate", "ate_tracked", "ate_keyframes"):  # final, as tracked, the keyframes'
+        assert result[key] < ATE_BOUND["rgbd"]
+    assert result["loops"] == []  # the room closes none
     assert (result["matched"], result["reference"]) == (FRAMES, "the room's own poses")
     assert result["p95"] > 0.0
     assert result["deadline"] == pytest.approx(1 / 30, abs=1e-6)  # rgb.txt's microseconds
     assert result["late"] >= 0
     assert result["unjudged"] is None
+    # The run's details: nothing untracked, every frame placed (the first by the map's start),
+    # and no relocalised frame to hold against the truth.
+    assert (result["lost_frames"], result["stretches"]) == (Options().loss.lost_frames, [])
+    assert {k: len(v) for k, v in result["latency"].items()} == {
+        "relocalised": 0, "tried": 0, "placed": FRAMES, "other": 0,
+    }  # fmt: skip
+    assert result["relocalised_frames"] == []
     table = capsys.readouterr().out.splitlines()
     assert table[0].startswith("| sequence | mode |")
     assert table[2].startswith(f"| room | rgbd | 320x240 | 1000 | {FRAMES}/{FRAMES} (100%) |")
@@ -137,6 +185,7 @@ KEYS = 'name = "a"\nfolder = "/a"\nmode = "rgbd"\nreference = "r"\n'
         ("[[sequence]]\n" + KEYS + "extra = 1\n", "expected the keys"),
         ("[[sequence]]\n" + KEYS.replace('"/a"', "1"), "expected strings"),
         ("[[sequence]]\n" + KEYS.replace("rgbd", "lidar"), "unknown mode 'lidar'"),
+        ("[[sequence]]\n" + KEYS + 'dataset = "kitti"\n', "unknown dataset 'kitti'"),
         ("[[sequence]]\n" + KEYS + "[[sequence]]\n" + KEYS, "share a name"),
     ],
 )
@@ -150,6 +199,36 @@ def test_a_malformed_config_is_refused(text: str, message: str, tmp_path: Path) 
     path.write_text(text)
     with pytest.raises(InvalidInputError, match=message):
         _script().read_config(path)
+
+
+def test_a_euroc_sequence_is_measured_from_its_own_folder(tmp_path: Path) -> None:
+    """A sequence naming its dataset ``euroc`` runs as EuRoC, in stereo.
+
+    The room's EuRoC folder has no ground truth, which the result says; the room closes no loop.
+    """
+    folder = tmp_path / "room_euroc"
+    write_euroc(folder, room.sequence(FRAMES, stereo=True))
+    config = tmp_path / "testset.toml"
+    config.write_text(
+        f'[[sequence]]\nname = "room"\nfolder = "{folder}"\nmode = "stereo"\n'
+        'reference = "the room\'s own poses"\ndataset = "euroc"\n'
+    )
+    assert _script().main([str(config), str(tmp_path / "out")]) == 0
+    result = json.loads((tmp_path / "out" / "results.jsonl").read_text())
+    assert (result["dataset"], result["mode"], result["tracked"]) == ("euroc", "stereo", FRAMES)
+    assert (result["ate"], result["unscored"]) == (None, "no ground truth")
+    assert result["loops"] == []
+
+
+def test_the_keyframes_ate_is_their_own() -> None:
+    """The final keyframes' ATE is scored on them alone: a keyframe moved 1 m shows."""
+    run, truth = line_run(30)
+    assert _script().keyframes_ate(run, truth) == pytest.approx(0.0, abs=1e-9)  # the truth's
+    moved = run.keyframe_poses.copy()
+    moved[1, 2, 3] += 1.0
+    error = _script().keyframes_ate(replace(run, keyframe_poses=moved), truth)
+    assert error is not None
+    assert error > 0.1
 
 
 def test_the_template_is_a_config_the_script_reads() -> None:

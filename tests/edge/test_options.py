@@ -76,6 +76,9 @@ def test_the_settings_cross_as_groups_of_scalars() -> None:
             {"relocalization.narrow_distance": 257},
             "relocalization.narrow_distance: must be from 1 to 256",
         ),
+        ({"loops.confidence": 1.0}, r"loops.confidence: must be in \(0, 1\), got 1.0"),
+        ({"loops.fine_distance": 257}, "loops.fine_distance: must be from 1 to 256"),
+        ({"loops.essential_damping": 0.0}, "loops.essential_damping: must be finite and positive"),
         ({"features.n_features": "a"}, "features.n_features: must be an integer"),
         ({"features.n_features": None}, "features.n_features: must be an integer"),
     ],
@@ -106,9 +109,9 @@ def test_an_unknown_setting_or_group_is_refused() -> None:
 
 
 def test_the_settings_are_named_by_group_and_field() -> None:
-    """settings() lists all 97, each ``group.field`` but ``seed``, and with_settings reads them."""
+    """settings() lists all 132, each ``group.field`` but ``seed``, and with_settings reads them."""
     settings = Options().settings()
-    assert len(settings) == 97
+    assert len(settings) == 132
     assert [name for name in settings if "." not in name] == ["seed"]
     changed = Options().with_settings({"relocalization.min_inliers": 12, "seed": 3})
     assert (changed.relocalization.min_inliers, changed.seed) == (12, 3)

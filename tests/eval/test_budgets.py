@@ -182,16 +182,24 @@ def test_command_caps_memory_without_swap_and_pins_the_cores() -> None:
     ]
 
 
-def _timed_run(steps: list[tuple[float, float, float, float]], period: float = 0.05) -> runs.Run:
-    """Return a run of frames `period` apart, each with its (read, build, track, map) seconds."""
+def _timed_run(
+    steps: list[tuple[float, float, float, float]],
+    period: float = 0.05,
+    loops: dict[int, float] | None = None,
+) -> runs.Run:
+    """Return a run of frames `period` apart, each with its (read, build, track, map) seconds.
+
+    `loops` gives the frames loop closing ran on their seconds; the rest have none.
+    """
     times = 100.0 + period * np.arange(len(steps))
+    looped = loops or {}
     diagnostics = [
         {"timestamp": float(t), "read_seconds": r, "build_seconds": b, "track_seconds": k,
-         "map_seconds": m}
-        for t, (r, b, k, m) in zip(times, steps, strict=True)
+         "map_seconds": m, "loop_seconds": looped.get(i, 0.0)}
+        for i, (t, (r, b, k, m)) in enumerate(zip(times, steps, strict=True))
     ]  # fmt: skip
     return runs.Run("euroc", "MH_01_easy", "stereo", "cpp", np.zeros(0), np.zeros((0, 4, 4)),
-                    diagnostics=diagnostics)  # fmt: skip
+                    np.zeros((0, 4, 4)), diagnostics=diagnostics)  # fmt: skip
 
 
 def test_judge_holds_building_and_tracking_to_the_frame_period() -> None:
@@ -216,6 +224,23 @@ def test_judge_holds_building_and_tracking_to_the_frame_period() -> None:
     # The run (1 s) is shorter than the window: its busiest stretch is the whole run.
     assert judged.window == pytest.approx(1.0)
     assert judged.mapping_peak_load == pytest.approx(judged.mapping_load)
+
+
+def test_judge_reports_loop_closing_by_its_load() -> None:
+    """Loop closing's time is its own thread's: neither latency nor mapping counts it."""
+    steps = [(0.004, 0.010, 0.005, 0.0)] * 19 + [(0.004, 0.010, 0.005, 0.100)]
+    plain = budgets.judge(_timed_run(steps))
+    assert (plain.searched, plain.looping, plain.loop_load) == (0, None, 0.0)
+    judged = budgets.judge(_timed_run(steps, loops={19: 0.250}))
+    assert judged.searched == 1
+    assert judged.looping is not None
+    assert judged.looping.max == pytest.approx(0.250)
+    assert judged.loop_load == pytest.approx(0.250 / (19 * 0.05 + 0.05))
+    assert (judged.latency, judged.late, judged.mapping) == (
+        plain.latency,
+        plain.late,
+        plain.mapping,
+    )
 
 
 def test_judge_finds_mappings_busiest_window() -> None:

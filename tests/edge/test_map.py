@@ -71,7 +71,11 @@ def _cases(truth: Truth) -> dict[str, list[tuple[tuple[object, ...], dict[str, o
             ((m, rng.choice(len(m.kp_point), 300, replace=False)), {}),
             ((m, np.arange(m.kf_start[0], m.kf_start[1])), {}),
         ],
-        "erase_keyframe": [((m, k), {}) for k in range(m.keyframes)],
+        "erase_keyframe": [
+            *[((m, k), {}) for k in range(m.keyframes)],
+            # a loop edge crosses with the map, its keyframes kept
+            ((maps.add_loop_edge(m, int(m.kf_id[1]), int(m.kf_id[0])), m.keyframes - 1), {}),
+        ],
         "count": [
             (
                 (m, np.concatenate([m.pt_id[:30], m.pt_id[:5], [-1, m.next_pt_id + 7]])),
@@ -139,8 +143,9 @@ def test_forgetting_erases_points_left_weakly_observed(truth: Truth) -> None:
 def test_what_is_removed_is_kept_aside_until_cleared(truth: Truth) -> None:
     """What is removed is kept aside, as it last was, until the archive is cleared.
 
-    Erased points keep their last positions and why they went; an erased keyframe its time and
-    pose; the points it leaves too weakly observed go too.
+    Erased points keep their last positions and why they went; an erased keyframe its time,
+    pose, parent and pose relative to that parent; the points it leaves too weakly observed go
+    too.
     """
     m = truth.map
     erase = np.zeros(m.points, dtype=bool)
@@ -154,6 +159,9 @@ def test_what_is_removed_is_kept_aside_until_cleared(truth: Truth) -> None:
     np.testing.assert_array_equal(culled.gone_kf_time, [m.kf_time[1]])
     np.testing.assert_array_equal(culled.gone_kf_pose, m.kf_pose[[1]])
     np.testing.assert_array_equal(culled.gone_kf_parent, m.kf_parent[[1]])
+    parent = int(m.keyframe_rows(m.kf_parent[[1]])[0])
+    expected = m.kf_pose[1] @ np.linalg.inv(m.kf_pose[parent]) if parent >= 0 else np.eye(4)
+    np.testing.assert_allclose(culled.gone_kf_relative[0], expected, rtol=0, atol=1e-12)
     weak = culled.gone_pt_id[2:]
     assert len(weak) == fused.points - culled.points
     assert np.all(culled.gone_pt_how[2:] == Removal.WEAK)
@@ -161,6 +169,36 @@ def test_what_is_removed_is_kept_aside_until_cleared(truth: Truth) -> None:
     cleared = maps.clear_gone(culled)
     assert len(cleared.gone_pt_id) == len(cleared.gone_kf_id) == 0
     assert_maps_match(replace(culled, **{f: getattr(cleared, f) for f in _GONE}), cleared)
+
+
+def test_a_keyframe_without_a_parent_is_archived_relative_to_none(truth: Truth) -> None:
+    """An erased keyframe that has no parent keeps the identity as its relative pose."""
+    m = truth.map
+    orphan = replace(m, kf_parent=np.full(m.keyframes, -1, dtype=np.int64))
+    np.testing.assert_array_equal(maps.erase_keyframe(orphan, 1).gone_kf_relative, [np.eye(4)])
+
+
+def test_a_loop_edge_joins_two_keyframes_and_keeps_them(truth: Truth) -> None:
+    """A loop edge is kept older first, and its keyframes are never erased.
+
+    One between a keyframe and itself or a stranger is refused. Python refuses the erasing before
+    any backend runs; the C++ and Rust tests hold their cores' refusal.
+    """
+    m = truth.map
+    newer, older = int(m.kf_id[1]), int(m.kf_id[0])
+    looped = maps.add_loop_edge(m, newer, older)
+    assert looped.loop_edges.tolist() == [[older, newer]]
+    assert maps.has_loop(looped, 0)
+    assert maps.has_loop(looped, 1)
+    assert not maps.has_loop(looped, m.keyframes - 1)
+    for first, second in ((newer, newer), (newer, m.next_kf_id + 3)):
+        with pytest.raises(InvalidInputError, match="expected two of the map's keyframes"):
+            maps.add_loop_edge(m, first, second)
+    with pytest.raises(InvalidInputError, match="has a loop edge"):
+        maps.erase_keyframe(looped, 1)
+    for edge in ([newer, older], [older, m.next_kf_id + 3]):
+        with pytest.raises(InvalidInputError, match="loop_edges"):
+            replace(m, loop_edges=np.array([edge], dtype=np.int64))
 
 
 def test_erasing_a_keyframe_moves_the_others_keypoints_up(truth: Truth) -> None:

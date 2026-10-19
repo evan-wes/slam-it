@@ -43,7 +43,7 @@ def _summary(k: int) -> dict[str, Any]:
     """Return frame ``k``'s stage summaries, nested as the edge pipeline writes them.
 
     Frame 0 starts map 0; frame 2 loses it, kept; frame 3 starts map 1, and frame 4 is its
-    second keyframe.
+    second keyframe, on which a loop closes back to the first.
     """
     solve = {
         "initial_cost": 12.5 / (k + 1),
@@ -81,8 +81,55 @@ def _summary(k: int) -> dict[str, Any]:
         }
         if k == 4
         else None,
+        "loop": _loop() if k == 4 else None,
         "lost": {"keyframes": 1, "points": 2, "reset": False} if k == 2 else None,
     }
+
+
+def _loop() -> dict[str, Any]:
+    """Return a keyframe's loop summary, nested as the edge pipeline writes it: closed at once."""
+    candidate = {
+        "keyframe": 0,
+        "score": 0.125,
+        "near": False,
+        "matches": 64,
+        "best": 0,
+        "inliers": 40,
+        "projected": 90,
+        "refined": 35,
+        "reprojected": 120,
+        "confirmations": 3,
+    }
+    solve = {
+        "initial_error": 0.5,
+        "final_error": 0.0625,
+        "iterations": 4,
+        "termination": "function",
+    }
+    return {
+        "detection": {
+            "outcome": "closed",
+            "confirmation": None,
+            "sharing": 1,
+            "scored": 1,
+            "candidates": [candidate],
+            "confirmations": 3,
+        },
+        "correction": {
+            "current": 1,
+            "matched": 0,
+            "similarity": [[1.0, 0.0, 0.0, 0.5], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.25],
+                           [0.0, 0.0, 0.0, 1.0]],
+            "corrected": 2,
+            "moved": 3,
+            "replaced": 1,
+            "fused": 1,
+            "links": 1,
+            "edges": 2,
+            "essential": solve,
+            "global_ba": {**solve, "iterations": 10, "termination": "max_iterations"},
+        },
+    }  # fmt: skip
 
 
 def _features(rng: np.random.Generator) -> list[dict[str, list[Any]]]:
@@ -120,7 +167,7 @@ def values() -> dict[str, Any]:
     tracked = [0, 1, 3, 4, 5]
     poses = _poses(rng, len(tracked))
     keyframes = [0, 3, 4]
-    return {
+    out = {
         "dataset": "tum",
         "sequence": "rgbd_dataset_freiburg1_fixture",
         "mode": "rgbd",
@@ -136,6 +183,7 @@ def values() -> dict[str, Any]:
         "keyframe_lives": [[0, -1, -1], [3, -1, -1], [4, -1, -1]],
         "keyframe_parents": [-1, -1, 1],
         "keyframe_links": [[1, 2, 120]],
+        "keyframe_loops": [[1, 2]],
         "settings": {
             "features": {"n_features": 1000, "scale_factor": 1.2},
             "covisibility": {"local_neighbours": 10},
@@ -158,11 +206,16 @@ def values() -> dict[str, Any]:
                 "build_seconds": 0.0125 * (k + 1),
                 "track_seconds": 0.005 * (k + 1),
                 "map_seconds": 0.0625 if k == 4 else 0.0,
+                "loop_seconds": 0.1328125 if k == 4 else 0.0,
                 **_summary(k),
             }
             for k, t in enumerate(times)
         ],
     }
+    as_tracked = poses.copy()  # drawn last, so the other values stay as they were
+    as_tracked[:, :3, 3] += rng.normal(0.0, 0.05, (len(tracked), 3))
+    out["tracked_poses"] = as_tracked.tolist()
+    return out
 
 
 def main() -> None:
@@ -178,6 +231,7 @@ def main() -> None:
             backend="python",
             timestamps=np.array(run["timestamps"]),
             poses=np.array(run["poses"]),
+            tracked_poses=np.array(run["tracked_poses"]),
             keyframe_timestamps=np.array(run["keyframe_timestamps"]),
             keyframe_poses=np.array(run["keyframe_poses"]),
             points=np.array(run["points"]),
@@ -191,6 +245,7 @@ def main() -> None:
             keyframe_lives=np.array(run["keyframe_lives"], dtype=np.int64),
             keyframe_parents=np.array(run["keyframe_parents"], dtype=np.int64),
             keyframe_links=np.array(run["keyframe_links"], dtype=np.int64),
+            keyframe_loops=np.array(run["keyframe_loops"], dtype=np.int64),
             record_features=run["record_features"],
             pose_maps=np.array(run["pose_maps"], dtype=np.int64),
             keyframe_maps=np.array(run["keyframe_maps"], dtype=np.int64),

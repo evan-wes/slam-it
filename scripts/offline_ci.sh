@@ -16,7 +16,9 @@
 #      setup_slam_it.sh updates it in place, as it would any existing env. Either way
 #      setup_slam_it.sh then reinstalls SLAM It! and the Rust extension from the checkout.
 #   4. scripts/check.sh --env slam-it-ci, exactly as CI runs it.
-# Every step runs under an 8G memory cap with 4 build jobs. The log goes to
+# Every step runs under an 8G memory cap with 4 build jobs, but one: setup's compile of GTSAM's
+# Python wrapper, whose largest file needs more than 8 GB, runs in a sibling scope capped at 16G
+# (decided by evan-wes on 2026-10-17, B3's review panel, A4). The log goes to
 # ~/.cache/slam-it-offline-ci/logs/; a one-line result per run is appended to
 # ~/.cache/slam-it-offline-ci/results.tsv (sha, ref, base merged?, result, log), to cite in
 # a PR.
@@ -34,6 +36,9 @@ CACHE="${HOME}/.cache/slam-it-offline-ci"
 CHECKOUT="${CACHE}/slam-it"
 ENV_NAME="slam-it-ci"
 CAP=(systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=2G --)
+# A scope systemd-run starts from inside CAP's is its sibling, not its child, so its own cap
+# holds: setup_slam_it.sh runs the wrapper's compile through it, and nothing else.
+export SLAM_IT_GTSAM_PYTHON_CAP="systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=2G --"
 export CMAKE_BUILD_PARALLEL_LEVEL=4 CARGO_BUILD_JOBS=4
 
 REF="" BASE="origin/develop" FRESH=0

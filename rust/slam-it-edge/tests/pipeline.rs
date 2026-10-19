@@ -2,14 +2,17 @@
 //! a sideways path: RGB-D and stereo track every frame exactly, monocular starts its map and
 //! keeps the path's direction, and empty frames lose the track, the next frame starting a new
 //! map; relocalising, a kept map is lost in time and a small one in frames, and a frame the
-//! fallback cannot reach is relocalised.
+//! fallback cannot reach is relocalised; the final trajectory follows the keyframes, and a reset
+//! map's frames leave it.
 
 mod scene;
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_edge::frames::Frame;
 use slam_it_edge::map::Removal;
-use slam_it_edge::options::{InitializationOptions, Mode, Options, RelocalizationOptions};
+use slam_it_edge::options::{
+    InitializationOptions, LoopOptions, Mode, Options, RelocalizationOptions,
+};
 use slam_it_edge::pipeline::{Fate, FrameResult, LostSummary, Pipeline, Placement, State};
 use slam_it_foundations::error::ErrorKind;
 
@@ -38,6 +41,10 @@ fn small_scene() -> Options {
         relocalization: RelocalizationOptions {
             enabled: false, // A2's loss rule; relocalizing() turns it on, with a vocabulary
             ..RelocalizationOptions::default()
+        },
+        loops: LoopOptions {
+            enabled: false, // the keyframe database's other user; relocalizing() turns it on
+            ..LoopOptions::default()
         },
         ..Options::default()
     }
@@ -69,6 +76,33 @@ fn depth_modes_track_every_frame_on_the_path() {
             let pose = result.pose.expect("every frame is tracked");
             assert!((pose - along(i)).abs().max() < 1e-6);
         }
+    }
+}
+
+/// The final trajectory: every tracked frame once, in order, its pose as tracked beside its
+/// final one; a keyframe's own frame where its keyframe is now, the others placed by theirs
+/// (here, where they were tracked: the path is exact).
+#[test]
+fn the_final_trajectory_follows_the_keyframes() {
+    for mode in [Mode::Rgbd, Mode::Monocular] {
+        let (pipeline, results) = run(mode);
+        let trajectory = pipeline.trajectory();
+        let tracked: Vec<&FrameResult> = results.iter().filter(|r| r.pose.is_some()).collect();
+        let times: Vec<f64> = tracked.iter().map(|r| r.timestamp).collect();
+        assert_eq!(trajectory.timestamps, times);
+        assert!(trajectory.maps.iter().all(|&m| m == 0));
+        for (k, result) in tracked.iter().enumerate() {
+            assert_eq!(trajectory.tracked[k], result.pose.unwrap());
+            assert!((trajectory.poses[k] - result.pose.unwrap()).abs().max() < 1e-6);
+        }
+        let m = pipeline.map().unwrap();
+        for (k, &time) in m.kf_time.iter().enumerate() {
+            if let Some(at) = times.iter().position(|&t| (t - time).abs() < 1e-12) {
+                assert!((trajectory.poses[at] - m.kf_pose[k]).abs().max() < 1e-12);
+            }
+        }
+        assert!(results.iter().all(|r| r.loop_seconds == 0.0)); // not relocalising: no loops
+        assert_eq!(pipeline.lifetimes().keyframe_loops.len(), 0);
     }
 }
 
@@ -117,6 +151,11 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
         assert!(pipeline.map().is_none());
         let restarted = pipeline.track(&frame_at(&along(1), true, 0)).unwrap();
         assert_eq!((restarted.map, restarted.keyframe), (Some(1), true));
+        // A reset map's frames leave the trajectory; a kept one's stay.
+        assert_eq!(
+            pipeline.trajectory().maps,
+            if reset { vec![1] } else { vec![0, 1] }
+        );
         let lives = pipeline.lifetimes();
         assert_eq!(lives.keyframe_maps, vec![0, 1]);
         let first = started.tracked;
@@ -144,13 +183,36 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-/// The settings relocalising: the scene's, with `relocalization.enabled` on and a lost map of
-/// more than `loss.reset_keyframes` keyframes kept.
+/// The settings relocalising: the scene's, with `relocalization.enabled` and `loops.enabled` on
+/// and a lost map of more than `loss.reset_keyframes` keyframes kept.
 fn relocalizing(reset_keyframes: usize) -> Options {
     let mut out = small_scene();
     out.relocalization.enabled = true;
+    out.loops.enabled = true;
     out.loss.reset_keyframes = reset_keyframes;
     out
+}
+
+/// Starts a map on the path's first frame, a keyframe, with the one-word vocabulary, then tracks
+/// `count` empty frames `step` seconds apart; returns their results, and checks that the last
+/// alone loses the track.
+#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
+fn lose_the_track(options: &Options, step: f64, count: usize) -> Vec<FrameResult> {
+    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), *options, Some(one_word())).unwrap();
+    assert!(
+        pipeline
+            .track(&frame_at(&along(0), true, 0))
+            .unwrap()
+            .keyframe
+    );
+    let failed: Vec<FrameResult> = (0..count)
+        .map(|k| pipeline.track(&empty_frame(step * (k + 1) as f64)).unwrap())
+        .collect();
+    let states: Vec<State> = failed.iter().map(|r| r.state).collect();
+    let mut expected = vec![State::Tracking; count - 1];
+    expected.push(State::Lost);
+    assert_eq!(states, expected, "step {step}, {count} frames");
+    failed
 }
 
 /// Relocalising (Python's `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map
@@ -159,29 +221,23 @@ fn relocalizing(reset_keyframes: usize) -> Options {
 /// is not more), one of `loss.reset_keyframes` or fewer on the `loss.lost_frames`-th failure,
 /// whatever the time; each failed frame tried relocalisation.
 #[test]
-#[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {
     for (reset_keyframes, step, lost_on) in [(0, 0.25, 14), (1, 0.25, 5), (1, 0.001, 5)] {
-        let options = relocalizing(reset_keyframes);
-        let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), options, Some(one_word())).unwrap();
-        assert!(
-            pipeline
-                .track(&frame_at(&along(0), true, 0))
-                .unwrap()
-                .keyframe
-        );
-        let failed: Vec<FrameResult> = (0..lost_on)
-            .map(|k| pipeline.track(&empty_frame(step * (k + 1) as f64)).unwrap())
-            .collect();
-        let states: Vec<State> = failed.iter().map(|r| r.state).collect();
-        let mut expected = vec![State::Tracking; lost_on - 1];
-        expected.push(State::Lost);
-        assert_eq!(
-            states, expected,
-            "reset_keyframes {reset_keyframes}, step {step}"
-        );
+        let failed = lose_the_track(&relocalizing(reset_keyframes), step, lost_on);
         assert!(failed.iter().all(|r| r.summary.relocalization.is_some()));
     }
+}
+
+/// Loop closing alone (Python's
+/// `test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes`, its loop-closing
+/// case): the keyframe database is kept, but no failed frame tries relocalisation, and a kept map
+/// is lost on the `loss.lost_frames`-th failure (B3's review panel, run 2, A20).
+#[test]
+fn closing_loops_alone_relocalizes_nothing() {
+    let mut options = relocalizing(0);
+    options.relocalization.enabled = false;
+    let failed = lose_the_track(&options, 0.001, options.loss.lost_frames);
+    assert!(failed.iter().all(|r| r.summary.relocalization.is_none()));
 }
 
 /// A frame the local fallback cannot reach is placed by relocalisation in the same map, at its

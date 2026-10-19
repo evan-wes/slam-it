@@ -1,6 +1,6 @@
 {
  "format": "slam-it-bundle",
- "version": 3,
+ "version": 4,
  "dataset": "tum",
  "sequence": "room_tum",
  "mode": "rgbd",
@@ -39,7 +39,8 @@
   "read_seconds",
   "build_seconds",
   "track_seconds",
-  "map_seconds"
+  "map_seconds",
+  "loop_seconds"
  ],
  "backends": {
   "python": {
@@ -82,9 +83,9 @@
    ],
    "latency": {
     "deadline": 0.033333,
-    "median": 0.047038880409672856,
-    "p95": 0.0489644565503113,
-    "max": 0.04926272388547659,
+    "median": 0.04927499790210277,
+    "p95": 0.051158762152772395,
+    "max": 0.05143067496828735,
     "late": 4
    },
    "peak_memory": null
@@ -129,12 +130,12 @@
    ],
    "latency": {
     "deadline": 0.033333,
-    "median": 0.0048705265,
-    "p95": 0.007936997250000001,
-    "max": 0.008623587,
+    "median": 0.0053423555,
+    "p95": 0.0058236085,
+    "max": 0.005873682999999999,
     "late": 0
    },
-   "peak_memory": 17711104
+   "peak_memory": 18169856
   },
   "rust": {
    "frames": [
@@ -176,12 +177,12 @@
    ],
    "latency": {
     "deadline": 0.033333,
-    "median": 0.004779937,
-    "p95": 0.006725146249999999,
-    "max": 0.007282601,
+    "median": 0.004708976,
+    "p95": 0.005053769,
+    "max": 0.005069533,
     "late": 0
    },
-   "peak_memory": 18092032
+   "peak_memory": 21352448
   }
  }
 }

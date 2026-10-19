@@ -59,7 +59,8 @@ impl Solve {
 /// in place here).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Adjustment {
-    /// The first solve and the refining one; none when no point was observed.
+    /// The first solve and the refining one; none when nothing was solved: no point was
+    /// observed, or no keyframe was held fixed.
     pub solves: Vec<Solve>,
     /// The observations forgotten as outliers after the refining solve.
     pub outliers: usize,
@@ -275,7 +276,8 @@ fn outliers(
 ///
 /// # Returns
 ///
-/// The two solves (none if no point was observed) and the outliers dropped.
+/// The two solves (none, the map as it was, if no point was observed or no keyframe was held
+/// fixed, as ORB-SLAM3 skips it) and the outliers dropped.
 ///
 /// # Errors
 ///
@@ -313,6 +315,9 @@ pub fn bundle_adjust(
     } = build(m, camera, keyframes, fixed, &points)?;
     let held = problem.fixed_poses.iter().filter(|&&f| f).count();
     let posed = problem.fixed_poses.len();
+    if held == 0 {
+        return Ok(Adjustment::default()); // no gauge: ORB-SLAM3 skips it
+    }
     let first = ba::solve::solve(
         &problem,
         &solver_options(options, options.adjustment.iterations),
