@@ -3,9 +3,16 @@
 docs/design/2026-10-09-run-viewer.md, sections 5.3 and 5.4.
 
 **The pages** come from the viewer's folder (only the files :data:`PAGES` matches): the upload
-page at ``/``, a job's status at ``/r/<token>``, and the run viewer (``/index.html``), which
-reads a done job's bundle from ``/r/<token>/bundle/``. A bundle's files are redirected to
-storage's own links, never proxied.
+page at ``/upload``, and at ``/`` unless there is a showcase, a job's status at ``/r/<token>``,
+and the run viewer (``/index.html``), which reads a done job's bundle from
+``/r/<token>/bundle/``. A bundle's files are redirected to storage's own links, never proxied.
+
+**The showcase** (:attr:`~slam_it_server.config.Settings.showcase`): runs baked by us, each a
+bundle in storage under ``showcase/<name>/`` (:func:`showcase_prefix`), shown to anyone. Its page
+(:func:`showcase_page`) is the home page, linking each run's ``/s/<name>/``, which opens it in the
+run viewer, its bundle read from ``/s/<name>/bundle/``. ``/s/<name>/<file>`` is one of the files
+kept beside the bundle, its calibration page and the images it shows (:data:`SHOWCASE_FILE`),
+redirected with its content type (:data:`SHOWCASE_TYPES`).
 
 **The owner's API:**
 
@@ -39,6 +46,9 @@ token checked on every request.
 - a result's files only of the names and kinds a bundle has (:data:`RESULT_PATH`);
 - results reachable only through their token, pages marked ``noindex``, and no ``Referer``
   sent, so a token never leaves in one; the log names jobs by their id alone;
+- the showcase's runs reachable only by the names the settings list, and its files only of a
+  bundle's names and kinds, or :data:`SHOWCASE_FILE`'s; the showcase never reads the job list,
+  and nothing lists storage;
 - a Content Security Policy (:func:`content_policy`): scripts from this site, the import map
   by its hash and three.js's CDN alone, connections to this site and storage alone;
 - request bodies capped at :data:`BODY_BYTES`, except folder storage's signed uploads.
@@ -52,20 +62,22 @@ import binascii
 import contextlib
 import hashlib
 import hmac
+import html
 import json
 import logging
 import re
 import shutil
+import urllib.parse
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
 import boto3
 from botocore.config import Config
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field, StrictInt
 
 from slam_it_server import config, jobs
@@ -85,6 +97,24 @@ RESULT_BYTES = 10**9
 RESULT_PATH = re.compile(r"([a-z]+/)?[a-z0-9_]+\.(json|npy|bin)")
 """A result's file, matched whole: a bundle's files are JSON, numpy arrays and image chunks, at
 most one folder deep (``slam_it.orchestration.bundles``)."""
+
+SHOWCASE_FILE = re.compile(
+    r"calibration\.html|(calibration/)?[a-z0-9][a-z0-9_-]{0,63}\.(png|jpg|svg)"
+)
+"""A file kept beside a showcase run's bundle, matched whole: its calibration page, and images,
+named in lowercase letters, digits, ``_`` and ``-``, beside the bundle or in ``calibration/``."""
+
+SHOWCASE_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".svg": "image/svg+xml",
+}
+"""The content type storage answers each of :data:`SHOWCASE_FILE`'s kinds with."""
+
+VIEWER_PAGE = "/index.html?bundle="
+"""The run viewer's address, to be followed by a bundle's, escaped: the status page's link to it
+(``viewerLink`` in ``viewer/src/jobs.js``, held equal by ``tests/server/test_shared_names.py``)."""
 
 SUMMARY_BYTES = 4096
 """The largest summary of a job done, as JSON."""
@@ -144,6 +174,82 @@ def import_key(job_id: str) -> str:
 def result_prefix(job_id: str) -> str:
     """Return the storage prefix of a job's result."""
     return f"{job_prefix(job_id)}/result"
+
+
+def showcase_prefix(name: str) -> str:
+    """Return the storage prefix of a showcase run: its bundle's files, and those kept beside it.
+
+    Outside ``jobs/``, so no job's deletion reaches it.
+    """
+    return f"showcase/{name}"
+
+
+_SHOWCASE_PAGE = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>SLAM It!</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+    />
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body class="sheet">
+    <header class="bar">
+      <div class="brand">SLAM It!</div>
+      <span class="meta">visual SLAM in Python, C++ and Rust</span>
+    </header>
+
+    <main class="column">
+      <section class="panel card" aria-labelledby="runs-title">
+        <h1 id="runs-title">Runs to explore</h1>
+        <p>
+          Recordings we ran through SLAM It!, each in the run viewer: every frame as the pipeline
+          saw it, its keypoints, and the map it built.
+        </p>
+<!-- runs -->
+      </section>
+
+      <section class="panel card" aria-labelledby="own-title">
+        <h2 id="own-title">Your own video</h2>
+        <p>
+          With an invite code, upload a phone video and the C++ pipeline tracks the camera through
+          it.
+        </p>
+        <a class="primary" href="/upload">Run it on your own video</a>
+      </section>
+    </main>
+  </body>
+</html>
+"""
+"""The showcase's page, its runs' links in place of ``<!-- runs -->`` (:func:`showcase_page`)."""
+
+
+def showcase_page(names: tuple[str, ...]) -> str:
+    """Return the showcase's page: each run by its name, linked to it in the run viewer.
+
+    In the upload page's style, with its stylesheet and fonts alone: no script and no inline
+    style, which the pages' content policy would refuse (:func:`content_policy`).
+
+    Parameters
+    ----------
+    names : tuple of str
+        The runs' names (:attr:`~slam_it_server.config.Settings.showcase`).
+
+    Returns
+    -------
+    str
+        The page, as HTML.
+    """
+    runs = "\n".join(
+        f'        <a class="primary" href="/s/{html.escape(name)}/">{html.escape(name)}</a>'
+        for name in names
+    )
+    return _SHOWCASE_PAGE.replace("<!-- runs -->", runs)
 
 
 def make_storage(settings: Settings) -> Storage:
@@ -502,6 +608,7 @@ def make_app(
     _worker_api(app, server)
     if isinstance(server.store, FolderStorage):
         _folder_storage(app, server.store)
+    _showcase(app, server)
     _pages(app, server)  # last: its catch-all would shadow the routes after it
     return app
 
@@ -751,10 +858,62 @@ def _folder_storage(app: FastAPI, folder: FolderStorage) -> None:
         )
 
 
+def _stored(store: Storage, key: str, content_type: str | None = None) -> RedirectResponse:
+    """Redirect to a file in storage, by a link made for this request, so never one expired."""
+    return RedirectResponse(store.download_link(key, content_type), 307)
+
+
+def _showcase(app: FastAPI, server: _Server) -> None:
+    """Add the showcase's routes: a run in the run viewer, its bundle's files, the files beside it.
+
+    Read-only, and as public as the pages (behind staging's Basic auth, on staging). A run is
+    found by its name among the settings' alone: no job, no token, and storage is never listed.
+    """
+
+    def listed(name: str) -> str:
+        """Return a showcase run's storage prefix, or answer 404 for a name not listed."""
+        if name not in server.settings.showcase:
+            raise HTTPException(404, "no such run")
+        return showcase_prefix(name)
+
+    @app.get("/s/{name}")
+    @app.get("/s/{name}/")
+    def showcase_run(name: str) -> RedirectResponse:
+        """Open a showcase run in the run viewer, which reads its bundle from its own path."""
+        listed(name)
+        bundle = urllib.parse.quote(f"/s/{name}/bundle/", safe="")
+        return RedirectResponse(VIEWER_PAGE + bundle, 307)
+
+    @app.get("/s/{name}/bundle/{path:path}")
+    def showcase_bundle_file(name: str, path: str) -> RedirectResponse:
+        """Redirect to a showcase run's file in storage, of a bundle's names and kinds alone."""
+        prefix = listed(name)
+        if not RESULT_PATH.fullmatch(path):
+            raise HTTPException(404)
+        return _stored(server.store, f"{prefix}/{path}")
+
+    @app.get("/s/{name}/{path:path}")
+    def showcase_file(name: str, path: str) -> RedirectResponse:
+        """Redirect to a file kept beside a showcase run's bundle, answered as its kind."""
+        prefix = listed(name)
+        if not SHOWCASE_FILE.fullmatch(path):
+            raise HTTPException(404)
+        kind = SHOWCASE_TYPES[PurePosixPath(path).suffix]
+        return _stored(server.store, f"{prefix}/{path}", kind)
+
+
 def _pages(app: FastAPI, server: _Server) -> None:
     """Add the pages, a done job's bundle, robots.txt and the health check."""
+    showcase = showcase_page(server.settings.showcase) if server.settings.showcase else None
 
     @app.get("/")
+    def home_page() -> Response:
+        """Serve the showcase's page, where there is a showcase; else the upload page."""
+        if showcase is None:
+            return server.page("upload.html")
+        return HTMLResponse(showcase, headers={"Cache-Control": "no-cache"})
+
+    @app.get("/upload")
     def upload_page() -> FileResponse:
         """Serve the upload page."""
         return server.page("upload.html")
@@ -771,8 +930,7 @@ def _pages(app: FastAPI, server: _Server) -> None:
         job = server.owned(token)
         if job.state != "done" or path not in job.files:
             raise HTTPException(404)
-        link = server.store.download_link(f"{result_prefix(job.id)}/{path}")
-        return RedirectResponse(link, 307)
+        return _stored(server.store, f"{result_prefix(job.id)}/{path}")
 
     @app.get("/robots.txt")
     def robots() -> Response:

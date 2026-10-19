@@ -110,3 +110,19 @@ def test_the_upload_window_the_page_states_is_the_servers() -> None:
 def test_the_workers_claim_is_within_the_servers_bound() -> None:
     """The worker's claim waits no longer than the server holds one."""
     assert worker.WAIT <= app.CLAIM_WAIT
+
+
+def test_the_showcase_opens_the_viewer_as_the_status_page_does() -> None:
+    """A showcase run's link to the run viewer is the status page's: the bundle's path, escaped.
+
+    The status page's ``viewerLink`` escapes with ``encodeURIComponent``, and the server with
+    ``urllib.parse.quote(..., safe="")``: on a showcase run's bundle path (``/s/<name>/bundle/``,
+    the name of letters, digits and hyphens), the two agree, escaping the slashes alone.
+    """
+    link = re.search(
+        r"export function viewerLink\(bundle\) \{\s*"
+        r"return `(.*?)\$\{encodeURIComponent\(bundle\)\}`;",
+        PAGE,
+    )
+    assert link is not None
+    assert link.group(1) == app.VIEWER_PAGE

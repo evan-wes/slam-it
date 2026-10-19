@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from slam_it_server.config import SettingsError, from_environment
+from slam_it_server.config import SHOWCASE_LENGTH, SettingsError, from_environment
 
 TEMPLATE = Path(__file__).resolve().parents[2] / "server" / "settings.template.env"
 
@@ -58,3 +58,41 @@ def test_a_missing_or_weak_setting_is_refused(name: str, value: str, message: st
     env = {**_template(), name: value}
     with pytest.raises(SettingsError, match=message):
         from_environment(env)
+
+
+def test_the_showcase_is_a_list_of_names() -> None:
+    """Unset or empty: none. Its names are read stripped, empty entries skipped, in order."""
+    env = _template()
+    unset = {name: value for name, value in env.items() if name != "SLAM_IT_SHOWCASE"}
+    assert from_environment(unset).showcase == ()
+    assert from_environment({**env, "SLAM_IT_SHOWCASE": ""}).showcase == ()
+    listed = {**env, "SLAM_IT_SHOWCASE": " tum-fr1-desk, room ,,euroc-mh01"}
+    assert from_environment(listed).showcase == ("tum-fr1-desk", "room", "euroc-mh01")
+    longest = "a" * SHOWCASE_LENGTH
+    assert from_environment({**env, "SLAM_IT_SHOWCASE": longest}).showcase == (longest,)
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("Room", "not a name"),
+        ("room_1", "not a name"),
+        ("a/b", "not a name"),
+        ("..", "not a name"),
+        ("a.b", "not a name"),
+        ("-room", "not a name"),
+        ("room-", "not a name"),
+        ("a--b", "not a name"),
+        ("a b", "not a name"),
+        ("%2e", "not a name"),
+        ("a" * (SHOWCASE_LENGTH + 1), "not a name"),
+        ("room,tum,room", "listed twice"),
+    ],
+)
+def test_a_showcase_name_is_plain_short_and_listed_once(value: str, message: str) -> None:
+    """A name with capitals, underscores, slashes, dots, spaces or escapes: refused, by name.
+
+    So are hyphens at an end or doubled, a name too long, and a name listed twice.
+    """
+    with pytest.raises(SettingsError, match=f"SLAM_IT_SHOWCASE: .*{message}"):
+        from_environment({**_template(), "SLAM_IT_SHOWCASE": value})

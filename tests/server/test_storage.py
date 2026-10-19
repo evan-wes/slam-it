@@ -5,15 +5,13 @@ from __future__ import annotations
 import urllib.parse
 from pathlib import Path
 
-import boto3
 import pytest
-from botocore.config import Config
 from botocore.exceptions import ClientError
 from botocore.stub import Stubber
 
 from slam_it_server.config import LINK_SECONDS
-from slam_it_server.storage import FolderStorage, S3Storage, StorageError, check_key
-from tests.server.conftest import Clock
+from slam_it_server.storage import FolderStorage, StorageError, check_key
+from tests.server.conftest import BUCKET, Clock, make_s3
 
 
 @pytest.mark.parametrize(
@@ -88,28 +86,11 @@ def test_folder_storage_sizes_moves_and_deletes(tmp_path: Path) -> None:
     assert (tmp_path / "files").is_dir()
 
 
-BUCKET = "uploads-bucket"
-"""The made-up bucket's name."""
-
-
-def _s3() -> S3Storage:
-    """Return S3 storage with made-up keys: boto3 signs without a network."""
-    client = boto3.client(
-        "s3",
-        endpoint_url="https://bucket.example.invalid",
-        aws_access_key_id="AKIDEXAMPLE",
-        aws_secret_access_key="a-made-up-secret",
-        region_name="auto",
-        config=Config(signature_version="s3v4"),
-    )
-    return S3Storage(client, BUCKET)
-
-
 def test_each_store_says_where_its_links_point(tmp_path: Path) -> None:
     """Its links' scheme and host, for the content policy's connections."""
     folder = FolderStorage(tmp_path, "http://192.168.1.20:8770/demo/", b"k" * 32)
     assert folder.origin == "http://192.168.1.20:8770"
-    s3 = _s3()
+    s3 = make_s3()
     link = urllib.parse.urlsplit(s3.download_link("results/job/bundle.json"))
     assert s3.origin == f"{link.scheme}://{link.netloc}"
     assert s3.origin.startswith("https://")
@@ -118,7 +99,7 @@ def test_each_store_says_where_its_links_point(tmp_path: Path) -> None:
 
 def test_an_s3_upload_link_signs_its_size() -> None:
     """The PUT link signs Content-Length, so the bucket refuses another size, for its life."""
-    path, query = _query(_s3().upload_link("uploads/job", 123_456, 900))
+    path, query = _query(make_s3().upload_link("uploads/job", 123_456, 900))
     assert path.endswith("/uploads/job")
     assert query["X-Amz-Algorithm"] == "AWS4-HMAC-SHA256"
     assert "content-length" in query["X-Amz-SignedHeaders"].split(";")
@@ -127,17 +108,33 @@ def test_an_s3_upload_link_signs_its_size() -> None:
 
 def test_an_s3_download_link_is_signed_for_its_key() -> None:
     """The GET link names its key and is signed, for an hour."""
-    path, query = _query(_s3().download_link("results/job/bundle.json"))
+    path, query = _query(make_s3().download_link("results/job/bundle.json"))
     assert path.endswith("/results/job/bundle.json")
     assert int(query["X-Amz-Expires"]) == LINK_SECONDS
     assert len(query["X-Amz-Signature"]) == 64
     with pytest.raises(StorageError):
-        _s3().download_link("results/../uploads/job")
+        make_s3().download_link("results/../uploads/job")
+
+
+def test_an_s3_download_link_signs_the_content_type_it_is_given(tmp_path: Path) -> None:
+    """Given a type, the link asks the bucket to answer with it; without one, it does not.
+
+    The type is a query parameter, which SigV4 signs with the rest of the query. Folder storage
+    takes a type and leaves it out: it serves every file as a download.
+    """
+    page = "text/html; charset=utf-8"
+    _, query = _query(make_s3().download_link("showcase/room/calibration.html", page))
+    assert query["response-content-type"] == page
+    assert int(query["X-Amz-Expires"]) == LINK_SECONDS
+    assert "response-content-type" not in _query(make_s3().download_link("results/j/a.npy"))[1]
+    folder = FolderStorage(tmp_path, "http://here", b"k" * 32, Clock())
+    typed = folder.download_link("showcase/room/a.png", "image/png")
+    assert typed == folder.download_link("showcase/room/a.png")
 
 
 def test_s3_reads_only_a_404_as_absent_and_raises_the_rest() -> None:
     """A 404 is "not there"; a 403 (keys gone wrong) or a 500 raises, never "not there"."""
-    store = _s3()
+    store = make_s3()
     with Stubber(store.client) as stub:
         stub.add_response("head_object", {"ContentLength": 42}, {"Bucket": BUCKET, "Key": "a"})
         stub.add_client_error("head_object", "404", http_status_code=404)
@@ -152,7 +149,7 @@ def test_s3_reads_only_a_404_as_absent_and_raises_the_rest() -> None:
 
 def test_s3_moves_by_copy_and_delete_and_reports_what_it_could_not_delete() -> None:
     """A move copies, then deletes; a delete the bucket refuses for some keys raises."""
-    store = _s3()
+    store = make_s3()
     with Stubber(store.client) as stub:
         copy = {"Bucket": BUCKET, "Key": "uploads/j"}
         stub.add_response(
