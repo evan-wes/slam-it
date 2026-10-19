@@ -33,13 +33,17 @@ the map onto it: a Sim(3), the essential graph and a global BA, on rung 0's fact
 - :mod:`slam_it.edge.pipeline`: the per-frame loop over them: tracking, local mapping and
   loop closing as steps over state of their own, and the owner of the map being tracked.
 
-**Compute budget:** real time under ``laptop-cpu``, then ``jetson-class`` and
-``pi-class``; local mapping, run inline, falls behind on the largest maps since milestone 2B's
-B2 (its load 1.7 to 2.6 on the test set's five largest). Loop closing, run inline after each
-keyframe is mapped, is judged the same way, by its load as a thread of its own would carry it
-(:func:`slam_it.eval.budgets.judge`'s ``loop_load``); B3's design gives tracking, mapping and
-loop closing threads of their own in B3b (the ladder's "Mapping in a thread of its own"). CPU
-only; implemented
-in Python, C++ and Rust in lock-step. Must never import PyTorch, a GPU stack or a depth model
-(enforced by import-linter). Builds only on :mod:`slam_it.foundations`.
+**Compute budget:** real time under ``laptop-cpu``, then ``jetson-class`` and ``pi-class``.
+In order, the default, local mapping and loop closing run inline after tracking, and mapping
+falls behind on the largest maps since milestone 2B's B2 (its load 1.7 to 2.6 on the test set's
+five largest); both are judged by their loads as threads of their own would carry them, and
+mapping also by the backlog its thread would build (:func:`slam_it.eval.budgets.judge`).
+Threaded (milestone 2B's B3b, :mod:`slam_it.edge.threads`), tracking, local mapping, loop closing
+and a global BA each run in a thread of their own: up to four threads, against ``laptop-cpu``'s
+4 cores, which a budget takes as physical cores (:func:`slam_it.eval.budgets.cpus`). Mapping
+keeps up as ORB-SLAM's does, refusing keyframes and cutting its local BA short, and the judge
+reads it so: the keyframes asked for and refused, the queue, the local BAs aborted and
+tracking's wait. CPU only; implemented in Python, C++ and Rust in lock-step. Must never import
+PyTorch, a GPU stack or a depth model (enforced by import-linter). Builds only on
+:mod:`slam_it.foundations`.
 """
