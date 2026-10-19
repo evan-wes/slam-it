@@ -59,7 +59,8 @@ are not run for this release (decided by evan-wes on 2026-10-18).
   run in order also by the backlog a mapping thread would build, by Lindley's recursion (PR 9's
   panel, L8); a budget's cores pinned as physical cores (L12). `scripts/measure_testset.py`
   takes `--threaded`, `--locks` and `--budget` and records section 13's measures;
-  `scripts/measure_sharded.py` takes `--cores`.
+  `scripts/measure_sharded.py` takes `--cores`, and its workers run on one logical CPU of each
+  physical core, by default as many workers as those cores make, where they took every CPU.
 
 ### Changed
 

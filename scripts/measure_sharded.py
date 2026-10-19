@@ -13,13 +13,15 @@ saying why; once every run has ended, the file is rewritten in the config's orde
         [--backend cpp] [--features by-size|default] [--camera exact|nominal] [--only NAME ...]
         [--option KEY=VALUE ...] [--threaded [--locks]]
 
-``--jobs`` is the workers, at most the CPUs this process may run on (by default, all of them),
-the highest-numbered first, as :func:`slam_it.eval.budgets.cpus` takes them. ``--cores`` gives
-each worker that many cores of its own (default 1), one logical CPU of each physical core
-(:func:`slam_it.eval.budgets.physical`): a threaded run (``--threaded``) needs its tracking,
-mapping and loop closing on cores of their own. Read only the tracking and the ATE from these
-runs: side by side, they share the caches, the memory's bandwidth and the power, so their
-latency is not a run's alone (``measure_testset.py`` says how to measure it).
+The workers run on the physical cores this process may run on, one logical CPU of each
+(:func:`slam_it.eval.budgets.physical`), so no two share a core's hyperthreads. ``--cores``
+gives each worker that many of them (default 1): a threaded run (``--threaded``) needs its
+tracking, mapping and loop closing on cores of their own. ``--jobs`` is the workers, ``--jobs``
+times ``--cores`` at most those physical cores, the highest-numbered first, as
+:func:`slam_it.eval.budgets.cpus` takes them; by default, as many workers as the cores make.
+Read only the tracking and the ATE from these runs: side by side, they share the caches, the
+memory's bandwidth and the power, so their latency is not a run's alone (``measure_testset.py``
+says how to measure it).
 
 The workers are forked from this process once it has found the backend's program, which for C++
 imports the extension, and an editable install's import checks the build: each worker has it, so
@@ -52,6 +54,18 @@ Job = tuple[int, measure_testset.Entry]
 def cpus_for(jobs: int | None, offered: set[int]) -> list[int]:
     """Return the CPUs of `jobs` workers: the highest-numbered of those offered, or all of them.
 
+    Parameters
+    ----------
+    jobs : int or None
+        The CPUs wanted (the workers times their cores), or None for all of them.
+    offered : set of int
+        The CPUs to take them from.
+
+    Returns
+    -------
+    list of int
+        The CPUs, ascending.
+
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
@@ -67,6 +81,19 @@ def cpus_for(jobs: int | None, offered: set[int]) -> list[int]:
 def groups_of(cpus: list[int], cores: int) -> list[list[int]]:
     """Return the workers' CPUs, `cores` each, the highest-numbered whole groups.
 
+    Parameters
+    ----------
+    cpus : list of int
+        The CPUs the workers run on.
+    cores : int
+        Each worker's.
+
+    Returns
+    -------
+    list of list of int
+        Each worker's CPUs, ascending, the workers in ascending order; the lowest-numbered CPUs
+        that make no whole group are left out.
+
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
@@ -76,6 +103,45 @@ def groups_of(cpus: list[int], cores: int) -> list[list[int]]:
         raise InvalidInputError(f"--cores: expected 1 to {len(cpus)}, got {cores}")
     ordered = sorted(cpus)[len(cpus) % cores :]
     return [ordered[i : i + cores] for i in range(0, len(ordered), cores)]
+
+
+def workers(jobs: int | None, cores: int, offered: set[int]) -> list[list[int]]:
+    """Return each worker's CPUs: `jobs` workers of `cores` physical cores each.
+
+    One logical CPU of each physical core offered (:func:`slam_it.eval.budgets.physical`),
+    the highest-numbered whole groups.
+
+    Parameters
+    ----------
+    jobs : int or None
+        The workers, or None for as many as the cores make.
+    cores : int
+        Each worker's physical cores.
+    offered : set of int
+        The CPUs this process may run on.
+
+    Returns
+    -------
+    list of list of int
+        Each worker's CPUs (:func:`groups_of`).
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `cores` is not 1 to the physical cores offered, checked first, or `jobs` times it
+        is not, the product named.
+    """
+    physical = budgets.physical(offered)
+    if not 0 < cores <= len(physical):
+        raise InvalidInputError(
+            f"--cores: expected 1 to {len(physical)} physical cores, got {cores}"
+        )
+    if jobs is not None and not 0 < jobs * cores <= len(physical):
+        raise InvalidInputError(
+            f"--jobs x --cores: expected 1 to {len(physical)} physical cores in all, "
+            f"got {jobs} x {cores}"
+        )
+    return groups_of(cpus_for(None if jobs is None else jobs * cores, set(physical)), cores)
 
 
 def frames_of(folder: Path) -> int:
@@ -118,8 +184,12 @@ def main(arguments: list[str]) -> int:
     parser.add_argument(
         "--seeds", nargs="+", type=int, default=[0], metavar="SEED", help="the RANSAC seeds"
     )
-    parser.add_argument("--jobs", type=int, help="the workers (default: one a CPU)")
-    parser.add_argument("--cores", type=int, default=1, help="each worker's cores (default: 1)")
+    parser.add_argument(
+        "--jobs", type=int, help="the workers (default: as many as the physical cores make)"
+    )
+    parser.add_argument(
+        "--cores", type=int, default=1, help="each worker's physical cores (default: 1)"
+    )
     args = parser.parse_args(arguments)
     if any(option.partition("=")[0] == "seed" for option in args.option):
         parser.error("--option seed: the seeds are --seeds")
@@ -128,9 +198,7 @@ def main(arguments: list[str]) -> int:
     try:
         for seed in args.seeds:
             measure_testset.read_options([f"seed={seed}"])
-        cores = budgets.physical(os.sched_getaffinity(0))
-        wanted = None if args.jobs is None else args.jobs * args.cores
-        groups = groups_of(cpus_for(wanted, set(cores)), args.cores)
+        groups = workers(args.jobs, args.cores, os.sched_getaffinity(0))
     except InvalidInputError as error:
         parser.error(str(error))
     entries, replaced = measure_testset.chosen(args, parser)
