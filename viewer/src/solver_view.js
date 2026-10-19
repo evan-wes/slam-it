@@ -1,12 +1,46 @@
-// The solver panel: plots over the whole run with the frame marked (every backend's latency, and
-// the frames where the backends decided differently), the backends' step times at the frame side
-// by side, and the frame's stage summaries, each field explained on hover. Its tables are built
-// once a run, with every row the run has, and a frame shown changes only their text: the panel
-// holds its height while the frames play.
+// The solver panel: plots over the whole run with the frame marked (every backend's latency
+// against the labelled deadline, and the frames where the backends decided differently), each
+// with a value axis, the backends' step times at the frame side by side, and the frame's stage
+// summaries, each field explained on hover. Its tables are built once a run, with every row the
+// run has, and a frame shown changes only their text: the panel holds its height while the
+// frames play.
 
+import { ticks } from "./axis.js";
 import { STEPS, stepsAt } from "./compare.js";
-import { duration } from "./format.js";
+import * as format from "./format.js";
 import { PLACED_HINT, latency, series, summaryAt, summaryLayout } from "./solver.js";
+
+/** The plots' text, in CSS pixels. */
+const TEXT = 10;
+
+/** The space beside the plots' text, in CSS pixels. */
+const PAD = 4;
+
+/** The ticks above 0 a plot's axis aims for: about five fit its 90 px, a label each. */
+const TICKS = 5;
+
+/** The widest tick label the gutter holds: both plots' gutters alike, so their frames line up. */
+const WIDEST = "00,000";
+
+/** The tracked points' axis: counts, so no step below one. */
+const POINTS_AXIS = { unit: "points", scale: 1, least: 1 };
+
+/** Latency's axis: seconds plotted, milliseconds labelled, no step below a tenth of one (the
+ *  step times' precision, `format.duration`). */
+const LATENCY_AXIS = { unit: "ms", scale: 1000, least: 0.1 };
+
+/**
+ * A plot's value axis: its unit, the factor from the values plotted to it, and the finest step
+ * labelled, in it.
+ * @typedef {{unit: string, scale: number, least: number}} Axis
+ */
+
+/**
+ * A plotted line: its values, one per frame from `first`, its colour, whether it is dashed, and
+ * a label written over its right end.
+ * @typedef {{values: Float64Array, first: number, colour: string, dashed?: boolean,
+ *     label?: string}} Line
+ */
 
 /**
  * A CSS custom property's colour.
@@ -44,14 +78,17 @@ function largest(values, floor) {
   return top;
 }
 
-/** A plot of series over the bundle's frames, with the frame shown marked. */
+/** A plot of series over the bundle's frames, with the frame shown marked, and a value axis in a
+ *  gutter on its left: its unit, and ticks from 0, each labelled, with faint lines across. */
 class Plot {
   /**
    * @param {HTMLCanvasElement} canvas Where it is drawn.
+   * @param {Axis} axis Its value axis.
    */
-  constructor(canvas) {
+  constructor(canvas, axis) {
     this.canvas = canvas;
-    /** @type {{values: Float64Array, first: number, colour: string, dashed?: boolean}[]} */
+    this.axis = axis;
+    /** @type {Line[]} */
     this.lines = [];
     /** @type {number[]} */
     this.marks = [];
@@ -62,8 +99,7 @@ class Plot {
   /**
    * Set what is plotted.
    * @param {number} frames The bundle's frames (the x axis).
-   * @param {{values: Float64Array, first: number, colour: string, dashed?: boolean}[]} lines
-   *     Each line's values, one per frame from `first`.
+   * @param {Line[]} lines The lines.
    * @param {number[]} [marks] Frames to tick along the top.
    * @param {number} [top] The value at the top, past which lines run off; by default the
    *     largest of them all.
@@ -76,7 +112,7 @@ class Plot {
   }
 
   /**
-   * Draw, the frame marked.
+   * Draw, the frame marked, at the canvas's size.
    * @param {number} frame The frame shown.
    */
   draw(frame) {
@@ -89,11 +125,26 @@ class Plot {
     this.canvas.width = width;
     this.canvas.height = height;
     const context = /** @type {CanvasRenderingContext2D} */ (this.canvas.getContext("2d"));
+    const [text, pad] = [TEXT * ratio, PAD * ratio];
+    context.font = `${text}px ${token("--mono")}`;
+    // The gutter: the unit turned up its left edge, then the ticks' labels.
+    const gutter = Math.ceil(pad + text + pad + context.measureText(WIDEST).width + pad);
     /** @param {number} f */
-    const x = (f) => (f / (this.frames - 1)) * width;
+    const x = (f) => gutter + (f / (this.frames - 1)) * (width - gutter);
     /** @param {number} v */
     const y = (v) => height - (v / this.top) * height;
+    const axis = ticks(this.top * this.axis.scale, TICKS, this.axis.least);
+    const levels = axis.values.map((value) => y(value / this.axis.scale));
     context.lineWidth = ratio;
+    context.strokeStyle = token("--line");
+    context.beginPath();
+    for (const level of levels) {
+      context.moveTo(gutter, level);
+      context.lineTo(width, level);
+    }
+    context.moveTo(gutter, 0);
+    context.lineTo(gutter, height);
+    context.stroke();
     for (const line of this.lines) {
       context.strokeStyle = line.colour;
       context.setLineDash(line.dashed ? [4 * ratio, 4 * ratio] : []);
@@ -127,6 +178,58 @@ class Plot {
     context.moveTo(x(frame), 0);
     context.lineTo(x(frame), height);
     context.stroke();
+    context.fillStyle = token("--muted");
+    context.textAlign = "right";
+    context.textBaseline = "middle";
+    axis.labels.forEach((label, i) => {
+      // Each beside its line, the top's and 0's kept inside the canvas.
+      const level = Math.min(Math.max(levels[i], text / 2), height - text / 2);
+      context.fillText(label, gutter - pad, level);
+    });
+    context.save();
+    context.translate(pad + text / 2, height / 2);
+    context.rotate(-Math.PI / 2);
+    context.textAlign = "center";
+    context.fillText(this.axis.unit, 0, 0);
+    context.restore();
+    for (const line of this.lines) {
+      this.label(context, line, y, width - pad, text);
+    }
+  }
+
+  /**
+   * Write a line's label, if it has one, over its right end: just above it, or just below where
+   * the top would cut it, on a backing of the plot's ground so lines under it do not blur it.
+   * @param {CanvasRenderingContext2D} context The plot's context, its font set.
+   * @param {Line} line The line.
+   * @param {(v: number) => number} y A value's height on the canvas.
+   * @param {number} right Where the label ends, on the canvas.
+   * @param {number} text The text's size, on the canvas.
+   */
+  label(context, line, y, right, text) {
+    if (line.label === undefined) {
+      return;
+    }
+    let last = NaN;
+    for (let i = line.values.length - 1; i >= 0 && !Number.isFinite(last); i--) {
+      last = line.values[i];
+    }
+    if (!Number.isFinite(last)) {
+      return;
+    }
+    // The label's box: a line of text and a gap around it, clear of the line by another gap.
+    const gap = text / 4;
+    const tall = text + 2 * gap;
+    const top = y(last) - gap - tall >= 0 ? y(last) - gap - tall : y(last) + gap;
+    const width = context.measureText(line.label).width;
+    context.globalAlpha = 0.85;
+    context.fillStyle = token("--ground");
+    context.fillRect(right - width - gap, top, width + 2 * gap, tall);
+    context.globalAlpha = 1;
+    context.fillStyle = line.colour;
+    context.textAlign = "right";
+    context.textBaseline = "middle";
+    context.fillText(line.label, right, top + tall / 2);
   }
 }
 
@@ -147,8 +250,8 @@ export class SolverView {
     this.tracks = [];
     this.placed = placed;
     this.placed.title = PLACED_HINT;
-    this.tracked = new Plot(tracked);
-    this.timing = new Plot(timing);
+    this.tracked = new Plot(tracked, POINTS_AXIS);
+    this.timing = new Plot(timing, LATENCY_AXIS);
     /** @type {import("./bundle.js").Backend | null} */
     this.run = null;
     this.frame = 0;
@@ -207,6 +310,7 @@ export class SolverView {
           first: 0,
           colour: token("--fate-rejected"),
           dashed: true,
+          label: Number.isFinite(deadline) ? format.deadline(deadline) : undefined,
         },
       ],
       [],
@@ -267,7 +371,7 @@ export class SolverView {
     this.tracks.forEach((track, column) => {
       const steps = stepsAt(track, frame);
       this.stepCells.forEach((cells, i) => {
-        setText(cells[column], steps === null ? "–" : duration(steps[i]));
+        setText(cells[column], steps === null ? "–" : format.duration(steps[i]));
       });
     });
   }
