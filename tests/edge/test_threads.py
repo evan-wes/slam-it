@@ -1,12 +1,15 @@
 """The threads' handshakes (slam_it.edge.threads): one writer, the stop, the queue, the generation.
 
 Each test drives two threads through a handshake and holds each step's order with events, so
-none depends on how the threads happen to be scheduled.
+none depends on how the threads happen to be scheduled. A thread's failed assertion is kept and
+raised where the test joins it (:class:`_Thread`): pytest does not fail a test on an exception in
+another thread (B3b's review panel, H2).
 """
 
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 
 import pytest
 
@@ -16,11 +19,28 @@ WAIT = 10.0
 """The longest a test waits for another thread, in seconds: a hang fails, not hangs the suite."""
 
 
-def _start(target: object) -> threading.Thread:
-    """Start a daemon thread running `target`."""
-    thread = threading.Thread(target=target, daemon=True)  # type: ignore[arg-type]
-    thread.start()
-    return thread
+class _Thread:
+    """A daemon thread whose failure, a failed assertion's among them, :meth:`join` raises."""
+
+    def __init__(self, target: Callable[[], None]) -> None:
+        """Start a thread running `target`."""
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, args=(target,), daemon=True)
+        self._thread.start()
+
+    def _run(self, target: Callable[[], None]) -> None:
+        """Run `target`, keeping what it fails with."""
+        try:
+            target()
+        except BaseException as error:  # kept, and raised by join() in the test's thread
+            self._error = error
+
+    def join(self) -> None:
+        """Wait for the thread, failing if it outlives :data:`WAIT`, and raise its failure."""
+        self._thread.join(WAIT)
+        assert not self._thread.is_alive(), "a thread outlived its wait"
+        if self._error is not None:
+            raise self._error
 
 
 def test_a_stop_waits_for_mapping_to_finish_and_aborts_its_ba() -> None:
@@ -32,7 +52,7 @@ def test_a_stop_waits_for_mapping_to_finish_and_aborts_its_ba() -> None:
         with writer.mapping():
             mapping.set()
             assert writer.abort.wait(WAIT)  # the stop aborted the BA mapping was running
-            assert not stopped.is_set()  # and waited for mapping to let the map go
+            assert not stopped.wait(0.2)  # and waits for mapping to let the map go
 
     def stop() -> None:
         assert mapping.wait(WAIT)
@@ -41,9 +61,9 @@ def test_a_stop_waits_for_mapping_to_finish_and_aborts_its_ba() -> None:
             assert writer.stopping()
             stopped.set()
 
-    threads = [_start(map_one), _start(stop)]
+    threads = [_Thread(map_one), _Thread(stop)]
     for thread in threads:
-        thread.join(WAIT)
+        thread.join()
     assert stopped.is_set()
     assert not writer.stopping()  # released
 
@@ -66,11 +86,11 @@ def test_mapping_waits_while_a_stop_is_held() -> None:
             order.append("mapped")
             mapped.set()
 
-    threads = [_start(stop), _start(map_one)]
+    threads = [_Thread(stop), _Thread(map_one)]
     assert not mapped.wait(0.2)  # still stopped
     released.set()
     for thread in threads:
-        thread.join(WAIT)
+        thread.join()
     assert order == ["stop released", "mapped"]
 
 
@@ -86,9 +106,9 @@ def test_holding_the_map_keeps_mapping_off_but_aborts_nothing() -> None:
             with writer.mapping():
                 started.set()
 
-        thread = _start(map_one)
+        thread = _Thread(map_one)
         assert not started.wait(0.2)  # held off
-    thread.join(WAIT)
+    thread.join()
     assert started.is_set()
 
 
@@ -118,10 +138,10 @@ def test_the_queue_counts_what_waits_and_drains() -> None:
         items.drain()
         drained.set()
 
-    thread = _start(drain)
+    thread = _Thread(drain)
     assert not drained.wait(0.2)  # the second is not done yet
     items.done()
-    thread.join(WAIT)
+    thread.join()
     assert drained.is_set()
 
 
