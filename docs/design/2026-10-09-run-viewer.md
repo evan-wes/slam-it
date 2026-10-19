@@ -544,7 +544,8 @@ capped at two open jobs, a waiting job expiring with its 15-minute upload link.
 Decided with evan-wes: the server shows runs we baked ourselves, a **showcase**, beside "your own
 video" (the note's [section](../notes/your-own-video.md#the-showcase)).
 1. **The routes:** `SLAM_IT_SHOWCASE` names the runs. With it set, the home page (`/`) lists them,
-   each linked to `/s/<name>/`, and the upload page moves to `/upload`; `/s/<name>/` opens the
+   each linked to `/s/<name>/` and nothing else, and the upload page moves to `/upload`, unlinked
+   from it (2026-10-19: the demo shows the viewer alone until public uploads are ready); `/s/<name>/` opens the
    run viewer on `/s/<name>/bundle/`, whose files are redirected to storage as a result's are;
    `/s/<name>/calibration.html` is the run's calibration page. Unset, `/` is the upload page.
 2. **The layout:** each run's bundle is in storage under `showcase/<name>/`, its folder's files as

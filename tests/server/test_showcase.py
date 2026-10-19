@@ -73,10 +73,11 @@ def _redirect(client: TestClient, path: str) -> str:
     return str(answer.headers["location"])
 
 
-def test_the_home_page_lists_the_showcase_and_the_upload_page_moves(showcase: Server) -> None:
-    """Each run linked by its name, and the upload page at /upload, under the same policy.
+def test_the_home_page_lists_only_the_showcase_and_the_upload_page_moves(showcase: Server) -> None:
+    """Each run linked by its name, and nothing else; the upload page at /upload, unlinked.
 
-    The page has no script and no inline style, which the content policy would refuse.
+    The page has no script and no inline style, which the content policy would refuse. The upload
+    page is not linked from it (the demo shows the viewer alone), but answers at its address.
     """
     answer = showcase.client.get("/")
     assert answer.status_code == 200
@@ -84,7 +85,7 @@ def test_the_home_page_lists_the_showcase_and_the_upload_page_moves(showcase: Se
     page = answer.text
     for name in NAMES:
         assert f'<a class="primary" href="/s/{name}/">{name}</a>' in page
-    assert '<a class="primary" href="/upload">' in page
+    assert "/upload" not in page
     assert "<script" not in page
     assert "style=" not in page
     upload = showcase.client.get("/upload")
