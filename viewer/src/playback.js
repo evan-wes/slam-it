@@ -5,8 +5,8 @@
 export class Playhead {
   /**
    * @param {Float32Array} times Each frame's time since the first, in seconds.
-   * @param {(frame: number) => void} onFrame Called with the frame whenever it changes, or is
-   *     sought.
+   * @param {(frame: number, played: boolean) => void} onFrame Called with the frame whenever it
+   *     changes, or is sought, and whether playback moved it there (rather than a seek).
    */
   constructor(times, onFrame) {
     this.times = times;
@@ -28,7 +28,7 @@ export class Playhead {
   seek(to) {
     this.frame = Math.min(Math.max(to, 0), this.times.length - 1);
     this.clock = this.times[this.frame];
-    this.onFrame(this.frame);
+    this.onFrame(this.frame, false);
   }
 
   /**
@@ -68,7 +68,7 @@ export class Playhead {
     }
     if (next !== this.frame) {
       this.frame = next;
-      this.onFrame(next);
+      this.onFrame(next, true);
     }
     if (this.frame + 1 >= this.times.length) {
       this.playing = false;

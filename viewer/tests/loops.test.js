@@ -6,8 +6,15 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
+  EFFECT_FADE,
+  EFFECT_HOLD,
   INSET_AFTER,
   INSET_BEFORE,
+  cycleRows,
+  effectChange,
+  effectFrame,
+  effectOpacity,
+  effectOver,
   insetAt,
   insets,
   loopBeside,
@@ -182,4 +189,63 @@ test("the room's loop shows its start until the loop, then the first pass playin
   const earlier = matches[at - window.first];
   const gap = Math.hypot(...centre(at).map((v, i) => v - centre(earlier)[i]));
   assert.ok(gap < 0.15, `the loop's frame stands ${gap} m from its earlier frame`);
+});
+
+test("a loop's cycle is its map's trajectory from its matched keyframe's making to its frame", () => {
+  // Tracked frames 0 to 9 in map 0, then 12 to 19 in map 1 (10 and 11 lost).
+  const poseFrames = Int32Array.from([
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 18, 19,
+  ]);
+  const poseMaps = Int32Array.from(poseFrames, (frame) => (frame < 10 ? 0 : 1));
+  const loop = { ...loopsOf(twoMaps([4, 7]))[0], frame: 17, map: 1, olderMade: 13 };
+  assert.deepEqual(cycleRows(loop, poseFrames, poseMaps), [11, 16]); // frames 13 to 17
+  // Made before the map began: its cycle starts with the map.
+  assert.deepEqual(cycleRows({ ...loop, olderMade: 8 }, poseFrames, poseMaps), [10, 16]);
+  // In the map before: its cycle stops where that map does.
+  assert.deepEqual(cycleRows({ ...loop, map: 0, olderMade: 3 }, poseFrames, poseMaps), [3, 10]);
+  assert.deepEqual(cycleRows({ ...loop, map: 2 }, poseFrames, poseMaps), [16, 16]);
+});
+
+test("the loop effect holds, then fades, on its own clock", () => {
+  assert.equal(EFFECT_HOLD, 1.5);
+  assert.equal(EFFECT_FADE, 1);
+  assert.equal(effectOpacity(0), 1);
+  assert.equal(effectOpacity(-1), 1);
+  assert.equal(effectOpacity(EFFECT_HOLD), 1);
+  assert.equal(effectOpacity(EFFECT_HOLD + EFFECT_FADE / 2), 0.5);
+  assert.equal(effectOpacity(EFFECT_HOLD + EFFECT_FADE), 0);
+  assert.equal(effectOpacity(10), 0);
+  assert.equal(effectOver(EFFECT_HOLD + EFFECT_FADE - 0.01), false);
+  assert.equal(effectOver(EFFECT_HOLD + EFFECT_FADE), true);
+});
+
+test("during the effect the inset plays the earlier pass from the matched keyframe on", () => {
+  const times = Float32Array.from({ length: 40 }, (_, frame) => frame / 4); // 4 frames a second
+  const loop = { ...loopsOf(twoMaps([4, 7]))[0], frame: 30, olderMade: 4 };
+  assert.equal(effectFrame(loop, times, 0), 4);
+  assert.equal(effectFrame(loop, times, 0.3), 5);
+  assert.equal(effectFrame(loop, times, 1), 8);
+  assert.equal(effectFrame(loop, times, 2.5), 14);
+  // Never into the loop: a short one holds the frame before it.
+  assert.equal(effectFrame({ ...loop, frame: 10 }, times, 2.5), 9);
+});
+
+test("arriving at a loop starts its effect; a seek elsewhere ends it, playing on does not", () => {
+  const loops = [100, 250, 260].map((frame) => ({ ...loopsOf(twoMaps([4, 7]))[0], frame }));
+  // Playing onto a loop, and across two (frames skipped): the last passed.
+  assert.equal(effectChange(null, loops, 99, 100, true), loops[0]);
+  assert.equal(effectChange(null, loops, 240, 265, true), loops[2]);
+  assert.equal(effectChange(null, loops, 100, 101, true), null);
+  // A seek onto a loop (the slider, a button, a step back to it), however often.
+  assert.equal(effectChange(null, loops, 10, 250, false), loops[1]);
+  assert.equal(effectChange(250, loops, 251, 250, false), loops[1]);
+  // A seek across a loop is no arrival; showing the same frame again is nothing.
+  assert.equal(effectChange(null, loops, 10, 120, false), null);
+  assert.equal(effectChange(100, loops, 100, 100, false), null);
+  // While an effect runs: a seek elsewhere ends it; playing on, or a seek with none, does not.
+  assert.equal(effectChange(100, loops, 100, 140, false), "end");
+  assert.equal(effectChange(100, loops, 100, 101, true), null);
+  assert.equal(effectChange(null, loops, 100, 140, false), null);
+  // A new loop over a running effect replaces it.
+  assert.equal(effectChange(250, loops, 255, 260, true), loops[2]);
 });

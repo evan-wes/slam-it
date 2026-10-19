@@ -1,6 +1,8 @@
 // The loops a run closed, and the earlier pass each loop's frames came back to: each loop's frame
 // and keyframes, the loop nearest a frame, and, for the frames around a loop, the earlier frame
-// that stood at the same place, for the "seen before" inset. No drawing.
+// that stood at the same place, for the "seen before" inset; and the loop effect the playhead
+// sets off on arriving at a loop: its cycle, its brightness over time and the frames the inset
+// plays meanwhile. No drawing.
 
 import { seconds } from "./format.js";
 import { centres } from "./geometry.js";
@@ -14,6 +16,12 @@ export const INSET_AFTER = 5;
 /** The earlier pass is searched for within this long either side of the frame that made the
  *  loop's matched keyframe, in seconds. */
 export const INSET_SEARCH = 10;
+
+/** The loop effect: at full brightness for this long, in seconds, on its own clock... */
+export const EFFECT_HOLD = 1.5;
+
+/** ...then fading to nothing over this long, in seconds. */
+export const EFFECT_FADE = 1;
 
 /**
  * A loop closed.
@@ -243,4 +251,84 @@ export function insetAt(windows, frame) {
 export function seenText({ loop, earlier }, frame, times) {
   const ago = Math.round(times[frame] - times[earlier]);
   return `seen ${ago} s earlier · keyframe ${loop.matched}`;
+}
+
+/**
+ * The trajectory's rows of a loop's cycle: its map's poses from the frame that made the matched
+ * keyframe to the loop's frame.
+ * @param {Loop} loop The loop.
+ * @param {Int32Array} poseFrames The run's tracked frames, ascending.
+ * @param {Int32Array} poseMaps Their maps, never descending.
+ * @returns {[number, number]} The rows, `[start, end)`; empty if it has none.
+ */
+export function cycleRows(loop, poseFrames, poseMaps) {
+  let start = firstFrom(poseFrames, loop.olderMade);
+  let end = firstFrom(poseFrames, loop.frame, true);
+  while (start < end && poseMaps[start] !== loop.map) {
+    start += 1;
+  }
+  while (end > start && poseMaps[end - 1] !== loop.map) {
+    end -= 1;
+  }
+  return [start, end];
+}
+
+/**
+ * The loop effect's brightness, a time into it.
+ * @param {number} time Seconds since it began.
+ * @returns {number} The opacity: 1 for `EFFECT_HOLD`, then falling evenly to 0 over
+ *     `EFFECT_FADE`, and 0 after.
+ */
+export function effectOpacity(time) {
+  return Math.min(1, Math.max(0, 1 - (time - EFFECT_HOLD) / EFFECT_FADE));
+}
+
+/**
+ * Whether the loop effect is over, a time into it.
+ * @param {number} time Seconds since it began.
+ * @returns {boolean} Whether it has faded out.
+ */
+export function effectOver(time) {
+  return time >= EFFECT_HOLD + EFFECT_FADE;
+}
+
+/**
+ * The frame the inset plays a time into a loop's effect: the earlier pass, from the frame that
+ * made the matched keyframe on, at the frames' own speed.
+ * @param {Loop} loop The loop.
+ * @param {ArrayLike<number>} times The bundle's frames' times, in seconds, ascending.
+ * @param {number} time Seconds since the effect began.
+ * @returns {number} The last frame whose time, from that frame's, is reached; before the loop's
+ *     frame, so the earlier pass never runs into the loop.
+ */
+export function effectFrame(loop, times, time) {
+  const reached = firstFrom(times, times[loop.olderMade] + Math.max(time, 0), true) - 1;
+  return Math.max(loop.olderMade, Math.min(reached, loop.frame - 1));
+}
+
+/**
+ * What the playhead moving does to the loop effect. Arriving at a loop starts its effect, a new
+ * one over a running one: playing onto it or across it (the last loop passed, as playback may
+ * skip frames), or a seek onto its frame (the slider, a button, a key), again each time. A seek
+ * elsewhere ends a running effect; playing on leaves it to finish.
+ * @param {number | null} running The frame of the loop whose effect runs; null if none.
+ * @param {Loop[]} loops The loops, in frame order.
+ * @param {number} from The frame shown before.
+ * @param {number} to The frame shown now.
+ * @param {boolean} played Whether playback moved the playhead, rather than a seek.
+ * @returns {Loop | "end" | null} The loop to start the effect of; "end" to end the running one;
+ *     null to leave things as they are.
+ */
+export function effectChange(running, loops, from, to, played) {
+  if (to === from) {
+    return null;
+  }
+  const passed = played && to > from;
+  const arrived = loops.filter((loop) =>
+    passed ? from < loop.frame && loop.frame <= to : loop.frame === to,
+  );
+  if (arrived.length > 0) {
+    return arrived[arrived.length - 1];
+  }
+  return running !== null && !played ? "end" : null;
 }

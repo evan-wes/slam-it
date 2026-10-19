@@ -353,7 +353,10 @@ async function main() {
   /** @type {import("./bundle.js").Backend | null} */
   let run = null;
   let chosen = ""; // the backend last asked for, which a slower earlier load must not replace
-  const playhead = new Playhead(bundle.times, show);
+  const playhead = new Playhead(bundle.times, (frame, played) => {
+    loops.moved(frame, played); // before the frame is shown: arriving at a loop sets off its effect
+    show();
+  });
   const loops = new LoopView(
     {
       spans: element("spans", HTMLElement),
@@ -367,6 +370,7 @@ async function main() {
     },
     bundle,
     fetchFile,
+    scene,
     (frame) => playhead.seek(frame),
     (error) => fail(error),
   );

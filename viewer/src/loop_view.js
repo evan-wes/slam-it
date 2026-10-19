@@ -1,10 +1,23 @@
 // The loops the chosen run closed, on the page: a tick at each on the timeline, under the
-// backends' rows; buttons that jump to the loop before or after the frame shown; and around each
+// backends' rows; buttons that jump to the loop before or after the frame shown; around each
 // loop, the "seen before" inset: the earlier pass at the same place, in the Frame panel's corner,
-// playing as the frames do, larger on a click, and off on its toggle (remembered).
+// playing as the frames do, larger on a click, and off on its toggle (remembered); and the loop
+// effect, when the playhead arrives at a loop: the loop drawn bright over the map and the inset
+// playing the loop's beginning, then fading, on a clock of its own.
 
 import { FrameImages } from "./image_view.js";
-import { insetAt, insets, loopBeside, loopHint, loopsOf, seenText } from "./loops.js";
+import {
+  effectChange,
+  effectFrame,
+  effectOpacity,
+  effectOver,
+  insetAt,
+  insets,
+  loopBeside,
+  loopHint,
+  loopsOf,
+  seenText,
+} from "./loops.js";
 import { remember, remembered } from "./page_view.js";
 
 /** The height of the loops' row under the backends' rows on the timeline, in pixels. */
@@ -33,19 +46,32 @@ const INSET_DECODED = 60;
  * @property {HTMLElement} label The inset's label.
  */
 
-/** The chosen run's loops: their ticks, the buttons between them, and the inset. */
+/**
+ * A loop effect running: its loop, its clock's start (the first animation frame's time, in
+ * milliseconds; null before it), its next animation frame's request, its opacity now, and the
+ * earlier frame the inset plays now.
+ * @typedef {{loop: import("./loops.js").Loop, start: number | null, request: number,
+ *     opacity: number, earlier: number}} Effect
+ */
+
+/** The chosen run's loops: their ticks, the buttons between them, the inset and the effect. */
 export class LoopView {
   /**
    * @param {LoopParts} parts The page's parts.
    * @param {import("./bundle.js").Bundle} bundle The bundle.
    * @param {import("./bundle.js").Fetch} fetch How to fetch one of its files.
+   * @param {import("./scene_view.js").SceneView} scene The 3D view, which draws a loop's effect.
    * @param {(frame: number) => void} seek Show a frame.
    * @param {(error: unknown) => void} report Show what went wrong drawing the inset.
    */
-  constructor(parts, bundle, fetch, seek, report) {
+  constructor(parts, bundle, fetch, scene, seek, report) {
     this.parts = parts;
     this.bundle = bundle;
+    this.scene = scene;
+    this.report = report;
     this.images = new FrameImages(bundle, fetch, INSET_CHUNKS, INSET_DECODED);
+    /** @type {Effect | null} The loop effect running, if any. */
+    this.effect = null;
     /** @type {import("./loops.js").Loop[]} */
     this.loops = [];
     /** @type {import("./loops.js").Inset[]} */
@@ -86,6 +112,7 @@ export class LoopView {
    *     shown with none.
    */
   setRun(run) {
+    this.endEffect();
     this.loops = [];
     this.windows = [];
     try {
@@ -119,6 +146,72 @@ export class LoopView {
   }
 
   /**
+   * Follow the playhead to a frame, before the frame is shown: arriving at a loop sets off its
+   * effect, over any running; a seek elsewhere ends a running one (`effectChange`).
+   * @param {number} to The frame.
+   * @param {boolean} played Whether playback moved the playhead there, rather than a seek.
+   */
+  moved(to, played) {
+    const running = this.effect === null ? null : this.effect.loop.frame;
+    const change = effectChange(running, this.loops, this.frame, to, played);
+    if (change === "end") {
+      this.endEffect();
+    } else if (change !== null) {
+      this.startEffect(change);
+    }
+  }
+
+  /**
+   * Set off a loop's effect: the loop drawn bright over the map, and the inset playing the
+   * earlier pass from the matched keyframe on, both fading out on the effect's own clock.
+   * @param {import("./loops.js").Loop} loop The loop.
+   */
+  startEffect(loop) {
+    this.endEffect();
+    this.scene.highlightLoop(loop);
+    this.effect = {
+      loop,
+      start: null,
+      request: requestAnimationFrame((now) => this.tick(now)),
+      opacity: 1,
+      earlier: loop.olderMade,
+    };
+  }
+
+  /**
+   * Move the effect on to an animation frame's time, and draw it; end it once it has faded.
+   * @param {number} now The animation frame's time, in milliseconds.
+   */
+  tick(now) {
+    const effect = this.effect;
+    if (effect === null) {
+      return;
+    }
+    effect.start ??= now;
+    const time = (now - effect.start) / 1000;
+    if (effectOver(time)) {
+      this.endEffect();
+      return;
+    }
+    effect.opacity = effectOpacity(time);
+    effect.earlier = effectFrame(effect.loop, this.bundle.times, time);
+    this.scene.setLoopOpacity(effect.opacity);
+    this.showInset().catch(this.report);
+    effect.request = requestAnimationFrame((later) => this.tick(later));
+  }
+
+  /** End the effect running, if any: the map and the inset go back to their own look. */
+  endEffect() {
+    if (this.effect === null) {
+      return;
+    }
+    cancelAnimationFrame(this.effect.request);
+    this.effect = null;
+    this.scene.clearLoop();
+    this.showInset().catch(this.report);
+  }
+
+  /**
    * Show a frame: the buttons to the loops beside it, and the inset if it is in a loop's window.
    * @param {number} frame The frame.
    * @returns {Promise<void>} Once the inset is drawn.
@@ -131,13 +224,20 @@ export class LoopView {
   }
 
   /**
-   * Draw the inset at the frame shown: the earlier frame at its place, labelled; hidden when it
-   * is off or the frame is in no loop's window. Its frames load apart from the main frame's.
+   * Draw the inset at the frame shown: the earlier frame at its place, labelled, or during a
+   * loop's effect the earlier pass it plays, as faded as the effect; hidden when it is off or
+   * there is neither. Its frames load apart from the main frame's.
    * @returns {Promise<void>} Once drawn.
    */
   async showInset() {
     const { inset, picture, label } = this.parts;
-    const shown = this.on ? insetAt(this.windows, this.frame) : null;
+    const effect = this.effect;
+    /** @type {{loop: import("./loops.js").Loop, earlier: number} | null} */
+    let shown = null;
+    if (this.on) {
+      shown = effect === null ? insetAt(this.windows, this.frame) : effect;
+    }
+    inset.style.opacity = effect === null ? "" : String(effect.opacity);
     if (shown === null) {
       if (!inset.hidden) {
         inset.hidden = true;
