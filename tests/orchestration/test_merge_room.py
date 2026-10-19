@@ -48,6 +48,31 @@ TRACKED = 0.95
 design's bar."""
 
 
+def assert_merged(run: runs.Run, folders: Room, mode: str) -> None:
+    """Assert a run of the merge room ends in one map, merged at no wrong place, near the truth.
+
+    Its merges are judged as the loop room's loops are; its final trajectory is scored over the
+    one merged map, aligned once, against :data:`MERGE_ATE`.
+
+    Parameters
+    ----------
+    run : slam_it.eval.runs.Run
+        The run.
+    folders : tests.orchestration.datasets.Room
+        The merge room's folders, with its truth.
+    mode : str
+        The run's mode.
+    """
+    assert run.maps().tolist() == [0]
+    assert len(run.keyframe_merges) >= 1
+    truth = (folders.timestamps, folders.poses)
+    final = runs.evaluate_absolute(run, *truth)
+    judged = loops.judge_pairs(run.keyframe_merges, run, truth, final)
+    assert [merge["wrong_place"] for merge in judged] == [False] * len(run.keyframe_merges)
+    (merged,) = final.maps
+    assert merged.absolute.rmse < MERGE_ATE[mode]
+
+
 def _frames(count: int) -> list[room.Frame]:
     """Return tiny frames at the room's 30 Hz, each lit."""
     lit = np.full((2, 3), 9, dtype=np.uint8)
@@ -85,15 +110,8 @@ def test_every_backend_merges_the_merge_room(
     run = merge_runs(dataset, mode, backend)
     assert [d["state"] for d in run.diagnostics].count("lost") == 1
     assert sorted(set(run.tracked_maps.tolist())) == [0, 1]
-    assert run.maps().tolist() == [0]
-    assert len(run.keyframe_merges) >= 1
     assert len(run.timestamps) >= TRACKED * (len(run.diagnostics) - MERGE_BLANKS)
-    truth = (merge_folders.timestamps, merge_folders.poses)
-    final = runs.evaluate_absolute(run, *truth)
-    judged = loops.judge_pairs(run.keyframe_merges, run, truth, final)
-    assert [merge["wrong_place"] for merge in judged] == [False] * len(run.keyframe_merges)
-    (merged,) = final.maps
-    assert merged.absolute.rmse < MERGE_ATE[mode]
+    assert_merged(run, merge_folders, mode)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
