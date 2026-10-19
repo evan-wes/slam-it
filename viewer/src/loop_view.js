@@ -231,7 +231,8 @@ export class LoopView {
    * Draw the inset at the frame shown: the earlier frame at its place, labelled, or during a
    * loop's effect the earlier pass it plays, as faded as the effect; hidden when it is off or
    * there is neither. Its frames load apart from the main frame's.
-   * @returns {Promise<void>} Once drawn.
+   * @returns {Promise<void>} Once drawn; rejected if the earlier frame's image did not load,
+   *     which the next call then asks for again.
    */
   async showInset() {
     const { inset, picture, label } = this.parts;
@@ -263,7 +264,16 @@ export class LoopView {
     }
     this.drawn = earlier;
     this.images.ahead(earlier);
-    const bitmap = await this.images.image(earlier);
+    /** @type {ImageBitmap} */
+    let bitmap;
+    try {
+      bitmap = await this.images.image(earlier);
+    } catch (error) {
+      if (this.drawn === earlier) {
+        this.drawn = -1; // not drawn: the next frame shown asks for it again
+      }
+      throw error;
+    }
     if (this.drawn === earlier) {
       const context = /** @type {CanvasRenderingContext2D} */ (picture.getContext("2d"));
       context.drawImage(bitmap, 0, 0, picture.width, picture.height);
