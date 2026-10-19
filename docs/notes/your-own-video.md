@@ -185,8 +185,9 @@ bundle format (`slam_it.orchestration.bundles.VERSION`) means baking the showcas
 uploading them again: the viewer reads only its own format. Unset or empty, `/` is the upload page,
 as before.
 
-- **`/`** lists the runs, each by its name, linked to `/s/<name>/`, and links the upload page,
-  which moves to `/upload`, its invite code as before. The page is `viewer/showcase.html`, in the
+- **`/`** lists the runs, each by its name, linked to `/s/<name>/`, and nothing else: the upload
+  page moves to `/upload`, its invite code as before, and is not linked from it (decided
+  2026-10-19: the demo shows the viewer alone until public uploads are ready). The page is `viewer/showcase.html`, in the
   upload page's style and with its head, which the server reads once at startup and fills with
   each run's link in place of its `<!-- runs -->` marker; a page missing, or its marker missing or
   repeated, stops the server. It has no script and no inline style, so the content policy holds
