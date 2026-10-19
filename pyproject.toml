@@ -80,13 +80,15 @@ regex = '(?P<value>\d+\.\d+\.\d+\.\d+)'
 testpaths = ["tests", "src"]
 # Docstring Examples are run as tests so they cannot go stale.
 addopts = "--doctest-modules --strict-markers"
-# Resource markers. scripts/check.sh runs the default CPU subset (`-m "not gpu and not budget"`);
+# Resource markers. scripts/check.sh runs the default CPU subset
+# (`-m "not gpu and not budget and not tsan"`), and the tsan tests in its ThreadSanitizer step;
 # the budget runs are opt-in (`python -m pytest -m budget`, since PR 9); GPU runs get their own
 # opt-in script with the first PyTorch rung.
 markers = [
   "gpu: needs a CUDA GPU (learned and dense rungs)",
   "budget: runs under a simulated compute budget (slam_it.eval.budgets)",
   "slow: takes more than a few seconds",
+  "tsan: runs a ThreadSanitizer build's program (scripts/check.sh's ThreadSanitizer step)",
 ]
 
 [tool.ruff]

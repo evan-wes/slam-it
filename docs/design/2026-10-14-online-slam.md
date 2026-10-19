@@ -755,6 +755,11 @@ measures how much.
     - each handshake (stop, release, abort, the view's swap) is tested natively in each
       language;
     - layer 1 builds the C++ tests once more with ThreadSanitizer; Rust's threads are safe code.
+      *As built* (B3b's review panel, A3): the native tests' scene has no loop, so the step also
+      runs the loop room threaded, RGB-D, through the instrumented program, in both schemes
+      (`tests/orchestration/test_loop_room_tsan.py`, marked `tsan`): a loop's stop and
+      correction, a global BA's thread and its result carried onto the map run under the
+      sanitizer.
 14. **A failed correction, a question from B3's review panel** (H17;
     [the report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md)): a GTSAM failure inside a
     loop's correction propagates out of the pipeline's loop closing and ends the whole run.
