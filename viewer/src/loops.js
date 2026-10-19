@@ -5,6 +5,7 @@
 // plays meanwhile. No drawing.
 
 import { seconds } from "./format.js";
+import { lowerBound, posesUpTo } from "./frames.js";
 import { centres } from "./geometry.js";
 
 /** The "seen before" inset's window: from this long before a loop's frame, in seconds. */
@@ -138,23 +139,17 @@ export function loopBeside(loops, frame, way) {
 }
 
 /**
- * The first frame at or after a time, or after it.
+ * The last frame at or before a time.
  * @param {ArrayLike<number>} times The frames' times, ascending.
  * @param {number} time The time.
- * @param {boolean} [after] Whether a frame at the time is passed over.
- * @returns {number} The frame; the frames' count if there is none.
+ * @returns {number} The frame; -1 if every frame is later.
  */
-function firstFrom(times, time, after = false) {
-  let [low, high] = [0, times.length];
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (times[middle] < time || (after && times[middle] === time)) {
-      low = middle + 1;
-    } else {
-      high = middle;
-    }
+function lastUpTo(times, time) {
+  let after = lowerBound(times, 1, time);
+  while (after < times.length && times[after] === time) {
+    after += 1; // a frame at the time itself is reached
   }
-  return low;
+  return after - 1;
 }
 
 /**
@@ -186,8 +181,8 @@ export function insets(loops, times, { poses, poseFrames, poseMaps }) {
     (path[a * 3 + 2] - path[b * 3 + 2]) ** 2;
   return loops.map((loop) => {
     const at = times[loop.frame];
-    const first = firstFrom(times, at - INSET_BEFORE);
-    const end = firstFrom(times, at + INSET_AFTER, true);
+    const first = lowerBound(times, 1, at - INSET_BEFORE);
+    const end = lastUpTo(times, at + INSET_AFTER) + 1;
     const made = times[loop.olderMade];
     const before = (made + times[first]) / 2;
     /** @type {number[]} */
@@ -262,8 +257,8 @@ export function seenText({ loop, earlier }, frame, times) {
  * @returns {[number, number]} The rows, `[start, end)`; empty if it has none.
  */
 export function cycleRows(loop, poseFrames, poseMaps) {
-  let start = firstFrom(poseFrames, loop.olderMade);
-  let end = firstFrom(poseFrames, loop.frame, true);
+  let start = lowerBound(poseFrames, 1, loop.olderMade);
+  let end = posesUpTo(poseFrames, loop.frame);
   while (start < end && poseMaps[start] !== loop.map) {
     start += 1;
   }
@@ -302,7 +297,7 @@ export function effectOver(time) {
  *     frame, so the earlier pass never runs into the loop.
  */
 export function effectFrame(loop, times, time) {
-  const reached = firstFrom(times, times[loop.olderMade] + Math.max(time, 0), true) - 1;
+  const reached = lastUpTo(times, times[loop.olderMade] + Math.max(time, 0));
   return Math.max(loop.olderMade, Math.min(reached, loop.frame - 1));
 }
 
