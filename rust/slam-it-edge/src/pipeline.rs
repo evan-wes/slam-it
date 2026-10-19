@@ -8,9 +8,14 @@
 //! ([`crate::covisibility::view_keyframes`]), made each time a writer publishes: tracking holds
 //! the view it read for its whole frame, and the writers go on changing the map in place. Inline,
 //! the view is the map itself.
+//!
+//! Threaded, a merge loop closing finds waits for tracking, which makes it between two frames
+//! ([`Pipeline::track`], the online-SLAM design's section 14, item 4, option B), as
+//! `slam_it.edge.pipeline` says; the owner's anchor, which the views follow, takes the merged
+//! map's ids.
 
 use std::fmt;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
@@ -27,8 +32,8 @@ use crate::database::{Database, MapRef};
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
 use crate::loops::{
-    self, CorrectionSummary, Detection, DetectionSummary, GlobalSummary, Loop, Merge,
-    MergeDetection, MergeSummary, Merging, Pending,
+    self, CorrectionSummary, DetectionSummary, GlobalSummary, Loop, Merge, MergeSummary, Merging,
+    Pending,
 };
 use crate::map::{self, Map};
 use crate::mapping::{self, Interrupts, MappingSummary, Schedule};
@@ -588,6 +593,49 @@ impl TrackingState {
         self.lost_since = None;
         self.failures = self.failures.max(1);
     }
+
+    /// Carries the last frame into the map a merge made (`slam_it.edge.pipeline.TrackingState
+    /// .merged`, threaded): its points and anchor keyframe take their ids moved on by the
+    /// merge's offsets, and its two motions, the velocity and its pose relative to the anchor,
+    /// take `G`'s scale (1 but in monocular). The view the merge published carries a new count,
+    /// so the next frame first places the last one by its anchor in the merged map
+    /// ([`TrackingState::follow`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `keyframe_offset` - How far the map's keyframe ids moved on.
+    /// * `point_offset` - How far its point ids moved on.
+    /// * `to_world` - `G`, carrying the map into the matched map's world.
+    pub fn merged(&mut self, keyframe_offset: i64, point_offset: i64, to_world: &Matrix4<f64>) {
+        let scale = loops::scale_of(to_world);
+        if let Some(last) = &mut self.last_tracked {
+            offset_ids(&mut last.points, point_offset);
+        }
+        if let Some(anchor) = &mut self.anchor {
+            *anchor += keyframe_offset;
+        }
+        for motion in [&mut self.velocity, &mut self.anchor_relative]
+            .into_iter()
+            .flatten()
+        {
+            let scaled = motion.fixed_view::<3, 1>(0, 3) * scale;
+            motion.fixed_view_mut::<3, 1>(0, 3).copy_from(&scaled);
+        }
+    }
+}
+
+/// A merge loop closing found, waiting for tracking to make it at its next frame
+/// (`slam_it.edge.pipeline.WaitingMerge`, threaded).
+#[derive(Debug, Clone)]
+pub struct WaitingMerge {
+    /// The frame whose keyframe it was found on, counted from 0.
+    pub index: i64,
+    /// The merge.
+    pub merge: Merge,
+    /// Loop closing's search on that keyframe, the merge to come.
+    pub summary: LoopSummary,
+    /// The search's time.
+    pub seconds: f64,
 }
 
 /// Loop closing's own state from keyframe to keyframe (`slam_it.edge.pipeline.LoopState`,
@@ -598,6 +646,9 @@ pub struct LoopState {
     pub pending: Option<Pending>,
     /// The merge being confirmed with another map, if any.
     pub merging: Option<Merging>,
+    /// Threaded: the merge found, waiting for tracking to make it; `None` inline, where a merge
+    /// is made once found.
+    pub waiting: Option<WaitingMerge>,
 }
 
 impl LoopState {
@@ -606,13 +657,16 @@ impl LoopState {
     ///
     /// # Returns
     ///
-    /// Their ids in the map, ascending: the loop's two, and the merge's last; none when neither
-    /// is being confirmed.
+    /// Their ids in the map, ascending: the loop's two, the merge's last, and the current
+    /// keyframe of a merge waiting (ORB-SLAM3's `SetNotErase`); none when there are none.
     #[must_use]
     pub fn held(&self) -> Vec<i64> {
         let mut out = self.pending.as_ref().map(Pending::held).unwrap_or_default();
         if let Some(merging) = &self.merging {
             out.push(merging.pending.last);
+        }
+        if let Some(waiting) = &self.waiting {
+            out.push(waiting.merge.found.current);
         }
         out.sort_unstable();
         out.dedup();
@@ -1140,21 +1194,37 @@ impl MapOwner {
 
     /// Takes a merge's map, and brings the matched map's database to its keyframes; threaded,
     /// publishes a view. The merge moved the map's ids and world, so it is counted as a
-    /// correction first, and the view published carries the new count.
+    /// correction first, and the view published carries the new count. Where tracking last
+    /// said it was ([`MapOwner::anchor`]) takes the merged map's ids, so the view follows it.
     ///
     /// # Arguments
     ///
     /// * `m` - The merged map.
     /// * `database` - The matched map's database, which becomes the merged map's.
+    /// * `keyframe_offset` - How far the merge moved the map's keyframe ids on.
+    /// * `point_offset` - How far it moved its point ids on.
     ///
     /// # Errors
     ///
     /// A quantisation's error.
-    pub fn take_merged(&self, m: Map, database: Database) -> Result<()> {
+    pub fn take_merged(
+        &self,
+        m: Map,
+        database: Database,
+        keyframe_offset: i64,
+        point_offset: i64,
+    ) -> Result<()> {
         let mut held = lock(&self.held);
         held.map = Some(Arc::new(m));
         if self.vocabulary.is_some() {
             held.database = Some(database);
+        }
+        {
+            let mut anchor = lock(&self.anchor);
+            offset_ids(&mut anchor.0, point_offset);
+            if anchor.1 >= 0 {
+                anchor.1 += keyframe_offset;
+            }
         }
         self.corrections.fetch_add(1, Ordering::SeqCst);
         self.changed(&mut held)
@@ -1755,10 +1825,24 @@ fn offset_ids(ids: &mut [i64], offset: i64) {
     }
 }
 
+/// A merge made (`slam_it.edge.pipeline._Joined`): how it went, how the active map's keyframe
+/// and point ids moved on, and `G`.
+struct Joined {
+    /// How it went.
+    summary: MergeSummary,
+    /// How far the active map's keyframe ids moved on.
+    keyframe_offset: i64,
+    /// How far its point ids moved on.
+    point_offset: i64,
+    /// `G`, carrying the active map into the matched map's world.
+    to_world: Matrix4<f64>,
+}
+
 /// Merges the map being tracked into the kept map a merge found
 /// (`slam_it.edge.pipeline._merge_maps`): the merged map is tracked on, with the matched map's
-/// number and database; the loop being confirmed is carried into it (ids offset, similarity
-/// `S G⁻¹`).
+/// number and database, published with the correction it counts ([`MapOwner::take_merged`]);
+/// the loop being confirmed is carried into it (ids offset, similarity `S G⁻¹`). Threaded,
+/// tracking holds mapping stopped around it ([`Threads::merge_waiting`]).
 ///
 /// # Arguments
 ///
@@ -1771,7 +1855,7 @@ fn offset_ids(ids: &mut [i64], offset: i64) {
 ///
 /// # Returns
 ///
-/// The merge's summary, and its point offset.
+/// The merge made.
 ///
 /// # Errors
 ///
@@ -1783,7 +1867,7 @@ fn merge_maps(
     found: &Merge,
     mode: Mode,
     options: &Options,
-) -> Result<(MergeSummary, i64)> {
+) -> Result<Joined> {
     let mut to_world = Matrix4::identity();
     let mut merged = None;
     // The merge reads the map being tracked with mapping stopped, and makes the merged map,
@@ -1815,7 +1899,9 @@ fn merge_maps(
         point_offset,
         summary,
     } = merged;
-    shared.owner.take_merged(map, database)?;
+    shared
+        .owner
+        .take_merged(map, database, keyframe_offset, point_offset)?;
     if let Some(pending) = &mut state.pending {
         pending.matched += keyframe_offset;
         pending.last += keyframe_offset;
@@ -1823,7 +1909,97 @@ fn merge_maps(
         offset_ids(&mut pending.points, point_offset);
         offset_ids(&mut pending.matched_points, point_offset);
     }
-    Ok((summary, point_offset))
+    Ok(Joined {
+        summary,
+        keyframe_offset,
+        point_offset,
+        to_world,
+    })
+}
+
+/// A keyframe searched ([`search`]): how the searches went, and the loop closed or the merge
+/// found, if one was.
+struct Found {
+    /// The searches, for a loop and, with maps kept, for a merge; neither made yet.
+    summary: LoopSummary,
+    /// The loop closed, if one was and no merge went before it.
+    closed: Option<Loop>,
+    /// The merge found, if one was.
+    merge: Option<Merge>,
+}
+
+/// Searches a keyframe of `m` for a loop and, with maps kept, for a merge, and carries loop
+/// closing's state on (`slam_it.edge.pipeline._search`): a merge goes before a loop closed on
+/// the same keyframe (`loops::merge_first`).
+///
+/// # Arguments
+///
+/// * `state` - Loop closing's state, carried on.
+/// * `m` - The map.
+/// * `database` - Its database.
+/// * `atlas` - The atlas: the maps kept.
+/// * `camera` - The camera.
+/// * `keyframe` - The keyframe, by `m`'s id.
+/// * `mode` - The sensor mode.
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// How the searches went, and the loop closed or the merge found.
+///
+/// # Errors
+///
+/// Detection's.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "loop closing's state, the map and its holders, the keyframe, the settings"
+)]
+fn search(
+    state: &mut LoopState,
+    m: &Map,
+    database: &Database,
+    atlas: &Atlas,
+    camera: &Camera,
+    keyframe: i64,
+    mode: Mode,
+    options: &Options,
+) -> Result<Found> {
+    let mut found = loops::detect(
+        m,
+        database,
+        camera,
+        keyframe,
+        state.pending.as_ref(),
+        mode,
+        options,
+    )?;
+    let mut merging = None;
+    if !atlas.kept().is_empty() {
+        let searched = loops::detect_merge(
+            m,
+            database,
+            camera,
+            keyframe,
+            atlas.kept(),
+            state.merging.as_ref(),
+            mode,
+            options,
+        )?;
+        state.merging.clone_from(&searched.pending);
+        found = loops::merge_first(found, &searched);
+        merging = Some(searched);
+    }
+    state.pending = found.pending.take();
+    Ok(Found {
+        summary: LoopSummary {
+            detection: found.summary,
+            correction: None,
+            merging: merging.as_ref().map(|m| m.summary.clone()),
+            merge: None,
+        },
+        closed: found.closed,
+        merge: merging.and_then(|m| m.merge),
+    })
 }
 
 /// Loop closing's step (`slam_it.edge.pipeline._close_loops`): searches the newest keyframe
@@ -1854,65 +2030,35 @@ fn close_loops(
     options: &Options,
 ) -> Result<Looped> {
     let owner = &shared.owner;
-    let found = owner.read(
-        |held| -> Result<Option<(Detection, Option<MergeDetection>)>> {
-            let (Some(m), Some(database)) = (held.map(), held.database()) else {
-                return Ok(None);
-            };
-            let keyframe = m.kf_id[m.keyframes() - 1];
-            if !options.loops.enabled || keyframe == 0 {
-                return Ok(None);
-            }
-            let mut found = loops::detect(
-                m,
-                database,
-                camera,
-                keyframe,
-                state.pending.as_ref(),
-                mode,
-                options,
-            )?;
-            let atlas = lock(&shared.atlas);
-            if atlas.kept().is_empty() {
-                return Ok(Some((found, None)));
-            }
-            let searched = loops::detect_merge(
-                m,
-                database,
-                camera,
-                keyframe,
-                atlas.kept(),
-                state.merging.as_ref(),
-                mode,
-                options,
-            )?;
-            found = loops::merge_first(found, &searched);
-            Ok(Some((found, Some(searched))))
-        },
-    )?;
-    let Some((found, merging)) = found else {
+    let found = owner.read(|held| -> Result<Option<Found>> {
+        let (Some(m), Some(database)) = (held.map(), held.database()) else {
+            return Ok(None);
+        };
+        let keyframe = m.kf_id[m.keyframes() - 1];
+        if !options.loops.enabled || keyframe == 0 {
+            return Ok(None);
+        }
+        let atlas = lock(&shared.atlas);
+        search(state, m, database, &atlas, camera, keyframe, mode, options).map(Some)
+    })?;
+    let Some(Found {
+        mut summary,
+        closed,
+        merge,
+    }) = found
+    else {
         return Ok(Looped::default());
     };
-    if let Some(searched) = &merging {
-        state.merging.clone_from(&searched.pending);
-    }
-    state.pending = found.pending;
-    let mut summary = LoopSummary {
-        detection: found.summary,
-        correction: None,
-        merging: merging.as_ref().map(|m| m.summary.clone()),
-        merge: None,
-    };
-    if let Some(made) = merging.and_then(|m| m.merge) {
-        let (merged, point_offset) = merge_maps(state, shared, camera, &made, mode, options)?;
-        summary.merge = Some(merged);
+    if let Some(made) = merge {
+        let joined = merge_maps(state, shared, camera, &made, mode, options)?;
+        summary.merge = Some(joined.summary);
         return Ok(Looped {
             summary: Some(summary),
             corrected: false,
-            point_offset: Some(point_offset),
+            point_offset: Some(joined.point_offset),
         });
     }
-    if let Some(closed) = &found.closed {
+    if let Some(closed) = &closed {
         summary.correction =
             owner.stopped(|m| loops::correct(m, camera, closed, mode, options).map(Some))?;
     }
@@ -1959,6 +2105,9 @@ struct Shared {
     atlas: Mutex<Atlas>,
     /// Loop closing's own state.
     closing: Mutex<LoopState>,
+    /// Whether a merge waits for tracking ([`LoopState::waiting`]): set by loop closing, cleared
+    /// by tracking as it makes it, read by both without the state's lock.
+    waiting: AtomicBool,
 }
 
 impl Shared {
@@ -2017,6 +2166,8 @@ struct Steps {
     without_global_ba: Options,
     /// The global BAs' generations.
     generation: Generation,
+    /// The latest global BA whose result is still to come; read and set with mapping stopped.
+    due: Mutex<Option<u64>>,
     /// The completions not yet taken.
     completions: Mutex<Vec<Completion>>,
     /// The global BAs' threads started and not yet joined.
@@ -2201,10 +2352,10 @@ fn map_keyframe(
     Ok(())
 }
 
-/// A global BA started by a loop's correction.
+/// A global BA started by a loop's correction, or by a merge in place of one it superseded.
 #[derive(Default)]
 struct GlobalStart {
-    /// The map as the correction left it, which global BA solves (`loops.global_ba`).
+    /// The map as the correction or merge left it, which global BA solves (`loops.global_ba`).
     copy: Option<Map>,
     /// Its generation.
     generation: u64,
@@ -2212,9 +2363,11 @@ struct GlobalStart {
     superseded: Stop,
 }
 
-/// Loop closing's thread: searches a keyframe for a loop with mapping held off, and corrects
-/// one that closes with mapping stopped, without global BA, which then solves a copy of the map
-/// in a thread of its own.
+/// Loop closing's thread: searches a keyframe for a loop and a merge with mapping held off, and
+/// corrects a loop that closes with mapping stopped, without global BA, which then solves a copy
+/// of the map in a thread of its own. A merge found waits for tracking to make it
+/// ([`Threads::merge_waiting`]); until it has, the keyframes mapped are passed by, their ids
+/// about to move.
 ///
 /// # Arguments
 ///
@@ -2226,7 +2379,7 @@ struct GlobalStart {
 ///
 /// Detection's, the correction's or the database's.
 fn search_loops(shared: &Arc<Shared>, steps: &Arc<Steps>, item: &Searched) -> Result<()> {
-    if !steps.options.loops.enabled || item.keyframe == 0 {
+    if !steps.options.loops.enabled || item.keyframe == 0 || shared.waiting.load(Ordering::SeqCst) {
         return Ok(());
     }
     let start = Instant::now();
@@ -2234,39 +2387,52 @@ fn search_loops(shared: &Arc<Shared>, steps: &Arc<Steps>, item: &Searched) -> Re
     let mut started = GlobalStart::default();
     let summary = {
         let _hold = owner.hold(); // mapping held off through the search and the correction
-        let found = owner.read(|held| -> Result<Option<Detection>> {
+        let found = owner.read(|held| -> Result<Option<Found>> {
             let (Some(m), Some(database)) = (held.map(), held.database()) else {
                 return Ok(None); // no keyframe database
             };
             if m.keyframe_row(item.keyframe).is_none() {
                 return Ok(None); // culled since it was mapped
             }
-            let closing = lock(&shared.closing);
-            let found = loops::detect(
+            let mut closing = lock(&shared.closing);
+            let atlas = lock(&shared.atlas);
+            let (camera, mode, options) = (&steps.camera, steps.mode, &steps.options);
+            search(
+                &mut closing,
                 m,
                 database,
-                &steps.camera,
+                &atlas,
+                camera,
                 item.keyframe,
-                closing.pending.as_ref(),
-                steps.mode,
-                &steps.options,
-            )?;
-            Ok(Some(found))
+                mode,
+                options,
+            )
+            .map(Some)
         })?;
-        let Some(found) = found else {
+        let Some(Found {
+            mut summary,
+            closed,
+            merge,
+        }) = found
+        else {
             return Ok(());
         };
-        lock(&shared.closing).pending = found.pending;
-        let correction = match &found.closed {
+        if let Some(merge) = merge {
+            // Recorded once tracking has made it.
+            lock(&shared.closing).waiting = Some(WaitingMerge {
+                index: item.index,
+                merge,
+                summary,
+                seconds: start.elapsed().as_secs_f64(),
+            });
+            shared.waiting.store(true, Ordering::SeqCst);
+            return Ok(());
+        }
+        summary.correction = match &closed {
             Some(closed) => correct_loop(shared, steps, closed, &mut started)?,
             None => None,
         };
-        LoopSummary {
-            detection: found.summary,
-            correction,
-            merging: None,
-            merge: None,
-        }
+        summary
     };
     steps.complete(Completion {
         frame: item.index,
@@ -2274,19 +2440,35 @@ fn search_loops(shared: &Arc<Shared>, steps: &Arc<Steps>, item: &Searched) -> Re
         loop_closing: Some(summary),
         ..Completion::default()
     });
-    if let Some(copy) = started.copy {
-        let (shared, theirs) = (Arc::clone(shared), Arc::clone(steps));
-        let (generation, superseded) = (started.generation, started.superseded);
-        let thread = thread::Builder::new()
-            .name("global BA".to_owned())
-            .spawn(move || {
-                if let Err(error) = global_ba(&shared, &theirs, copy, generation, &superseded) {
-                    theirs.keep(error);
-                }
-            })
-            .map_err(|error| Error::new(ErrorKind::InvalidInput, format!("global BA: {error}")))?;
-        lock(&steps.global).push(thread);
-    }
+    launch(shared, steps, started)
+}
+
+/// Starts a global BA in a thread of its own, if one was started.
+///
+/// # Arguments
+///
+/// * `shared` - What the threads share with tracking.
+/// * `steps` - What they share among themselves, given the global BA's thread.
+/// * `started` - Its copy of the map, generation and stop flag; no copy, none.
+///
+/// # Errors
+///
+/// `InvalidInput` if the thread cannot start.
+fn launch(shared: &Arc<Shared>, steps: &Arc<Steps>, started: GlobalStart) -> Result<()> {
+    let Some(copy) = started.copy else {
+        return Ok(());
+    };
+    let (shared, theirs) = (Arc::clone(shared), Arc::clone(steps));
+    let (generation, superseded) = (started.generation, started.superseded);
+    let thread = thread::Builder::new()
+        .name("global BA".to_owned())
+        .spawn(move || {
+            if let Err(error) = global_ba(&shared, &theirs, copy, generation, &superseded) {
+                theirs.keep(error);
+            }
+        })
+        .map_err(|error| Error::new(ErrorKind::InvalidInput, format!("global BA: {error}")))?;
+    lock(&steps.global).push(thread);
     Ok(())
 }
 
@@ -2327,6 +2509,7 @@ fn correct_loop(
         map::clear_gone(m);
         if steps.options.loops.global_ba {
             started.copy = Some(m.clone());
+            *lock(&steps.due) = Some(started.generation);
         }
         Ok(Some(corrected))
     })
@@ -2357,6 +2540,12 @@ fn global_ba(
     let solve = loops::global_bundle_adjust(&mut copy, &steps.camera, &steps.options, superseded)?;
     let mut frame = 0;
     let propagation = shared.owner.stopped(|m| {
+        {
+            let mut due = lock(&steps.due);
+            if *due == Some(generation) {
+                *due = None; // applied or dropped now: none to supersede
+            }
+        }
         let mut atlas = lock(&shared.atlas);
         frame = atlas.frame();
         if !steps.generation.current(generation) {
@@ -2417,6 +2606,7 @@ impl Threads {
             options: *options,
             without_global_ba,
             generation: Generation::default(),
+            due: Mutex::new(None),
             completions: Mutex::new(Vec::new()),
             global: Mutex::new(Vec::new()),
             error: Mutex::new(None),
@@ -2537,6 +2727,103 @@ impl Threads {
         self.check()
     }
 
+    /// Waits for local mapping and loop closing to handle every keyframe given, in turn.
+    ///
+    /// # Errors
+    ///
+    /// The error a thread failed with.
+    fn drain(&self) -> Result<()> {
+        self.mapping.drain();
+        self.loop_closing.drain();
+        self.check()
+    }
+
+    /// Makes the merge loop closing found, if one waits: tracking's, between two frames
+    /// (`slam_it.edge.pipeline._Threads.merge_waiting`; the online-SLAM design's section 14,
+    /// item 4, threaded: option B). Tracking pauses for the whole merge, as ORB-SLAM3's
+    /// tracking waits for its map while `MergeLocal` runs. Mapping first maps every keyframe
+    /// queued, which loop closing passes by while the merge waits (`EmptyQueue`); then, mapping
+    /// stopped, a global BA still running is superseded, the merge is made as inline
+    /// ([`merge_maps`]) without global BA, and the merged map is published with the correction
+    /// it counts; a global BA starts on it only if one was superseded (`bRelaunchBA`).
+    /// Tracking's last frame is carried into it ([`TrackingState::merged`]), and the merge is
+    /// recorded on the frame whose keyframe found it.
+    ///
+    /// # Arguments
+    ///
+    /// * `tracking` - Tracking's state, carried into the merged map.
+    ///
+    /// # Returns
+    ///
+    /// The time tracking waited; 0 if no merge waits.
+    ///
+    /// # Errors
+    ///
+    /// The error a thread failed with, or the merge's.
+    fn merge_waiting(&self, tracking: &mut TrackingState) -> Result<f64> {
+        let (shared, steps) = (&self.shared, &self.steps);
+        if !shared.waiting.load(Ordering::SeqCst) {
+            return Ok(0.0);
+        }
+        let asked = Instant::now();
+        self.drain()?;
+        let start = Instant::now();
+        let mut started = GlobalStart::default();
+        let made = {
+            // Mapping stopped through it all, from the global BA's check to its relaunch.
+            let _stop = shared.owner.writer().map(Writer::stopped);
+            shared.waiting.store(false, Ordering::SeqCst);
+            // Taken out of its lock while the merge holds the map: the map is held first.
+            let mut state = std::mem::take(&mut *lock(&shared.closing));
+            let made = state
+                .waiting
+                .take()
+                .map(|waiting| -> Result<(WaitingMerge, Joined)> {
+                    let due = *lock(&steps.due);
+                    let superseded = due.is_some_and(|g| steps.generation.current(g));
+                    if superseded {
+                        steps.generation.next();
+                    }
+                    let (camera, mode) = (&steps.camera, steps.mode);
+                    let options = &steps.without_global_ba;
+                    let joined =
+                        merge_maps(&mut state, shared, camera, &waiting.merge, mode, options)?;
+                    shared.owner.stopped(|m| {
+                        lock(&shared.atlas).record(Some(m));
+                        map::clear_gone(m);
+                        if superseded {
+                            started.generation = steps.generation.next();
+                            started.superseded = steps.generation.stop();
+                            started.copy = Some(m.clone());
+                            *lock(&steps.due) = Some(started.generation);
+                        }
+                        Ok(None::<()>)
+                    })?;
+                    Ok((waiting, joined))
+                })
+                .transpose();
+            *lock(&shared.closing) = state;
+            made?
+        };
+        if let Some((waiting, joined)) = made {
+            tracking.merged(
+                joined.keyframe_offset,
+                joined.point_offset,
+                &joined.to_world,
+            );
+            let mut summary = waiting.summary;
+            summary.merge = Some(joined.summary);
+            steps.complete(Completion {
+                frame: waiting.index,
+                loop_seconds: Some(waiting.seconds + start.elapsed().as_secs_f64()),
+                loop_closing: Some(summary),
+                ..Completion::default()
+            });
+            launch(shared, steps, started)?;
+        }
+        Ok(asked.elapsed().as_secs_f64())
+    }
+
     /// Waits for the global BAs' threads started so far.
     fn join_global(&self) {
         let running = std::mem::take(&mut *lock(&self.steps.global));
@@ -2646,6 +2933,7 @@ impl Pipeline {
             owner: MapOwner::new(vocabulary, threading, options),
             atlas: Mutex::new(Atlas::new(options)),
             closing: Mutex::new(LoopState::default()),
+            waiting: AtomicBool::new(false),
         });
         let threads = threading
             .threaded()
@@ -2738,12 +3026,17 @@ impl Pipeline {
         let start = Instant::now();
         // Between frames the state is never `Lost`: a lost track closes its map on its frame.
         let tracking_map = self.state == State::Tracking;
+        let mut paused = 0.0;
+        if tracking_map && let Some(threads) = &self.threads {
+            // A merge found is made between two frames.
+            paused = threads.merge_waiting(&mut self.tracking)?;
+        }
         let step = if tracking_map {
             self.track_frame(frame)?
         } else {
             self.initialize(frame)?
         };
-        let mut waited = step.handshake.wait_seconds;
+        let mut waited = step.handshake.wait_seconds + paused;
         let owner = &self.shared.owner;
         if let Some(threads) = &self.threads {
             threads.check()?;
@@ -2813,7 +3106,8 @@ impl Pipeline {
 
     /// Ends the run: threaded, waits for the threads to finish their work, then ends them.
     /// Local mapping and loop closing handle every keyframe given, and each global BA running
-    /// ends, the latest carried onto the map. Inline, nothing waits. No frame is tracked after.
+    /// ends, the latest carried onto the map; a merge found then is made. Inline, nothing waits.
+    /// No frame is tracked after.
     ///
     /// # Errors
     ///
@@ -2827,7 +3121,10 @@ impl Pipeline {
             return Ok(());
         }
         self.shared.end();
-        let settled = threads.settle(true);
+        // A merge found last is made.
+        let settled = threads
+            .settle(true)
+            .and_then(|()| threads.merge_waiting(&mut self.tracking).map(|_| ()));
         threads.stop();
         settled
     }
@@ -3184,7 +3481,7 @@ impl Pipeline {
 
 /// Closes the map being tracked (`slam_it.edge.pipeline.Pipeline._leave`): keeps it whole, or
 /// resets it if it has fewer than `small` keyframes ([`Atlas::close`]). Loop closing's state
-/// goes with it; threaded, the threads have settled first.
+/// goes with it, a merge waiting too; threaded, the threads have settled first.
 ///
 /// # Arguments
 ///
@@ -3198,8 +3495,9 @@ impl Pipeline {
 ///
 /// The closed map's summary.
 fn leave(shared: &Shared, small: usize, dated: bool) -> LostSummary {
-    // Shared with loop closing's thread, settled by now.
+    // Shared with loop closing's thread, settled by now; a merge waiting goes with it.
     *lock(&shared.closing) = LoopState::default();
+    shared.waiting.store(false, Ordering::SeqCst);
     let (Some(m), database) = shared.owner.close() else {
         return LostSummary::default();
     };
