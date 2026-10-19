@@ -517,13 +517,20 @@ select {
 }
 .steps td {
   padding: 1px 12px 1px 0;
+  white-space: nowrap;
 }
 .steps tr:first-child td {
   font-weight: 600;
 }
+/* The summary's table: the same rows at every frame of a run, a line each, so the panel holds
+   its height while the frames play; a value too long for its line is cut, whole on hover. */
 .summary table {
   border-collapse: collapse;
   width: 100%;
+  table-layout: fixed;
+}
+.summary col.name {
+  width: 45%;
 }
 .summary th {
   text-align: left;
@@ -531,17 +538,19 @@ select {
   padding: 6px 0 2px;
   color: var(--ink);
 }
+.summary th.idle {
+  color: var(--muted);
+}
 .summary td {
   padding: 1px 0;
   border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .summary td:first-child {
   color: var(--muted);
-  width: 45%;
   cursor: help;
-}
-.summary .none {
-  color: var(--muted);
 }
 .plot {
   margin: 0;

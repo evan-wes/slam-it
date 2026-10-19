@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { loadBundle, loadTrack } from "../src/bundle.js";
-import { STAGES, latency, series, summaryAt, valueText } from "../src/solver.js";
+import { STAGES, latency, series, summaryAt, summaryLayout, valueText } from "../src/solver.js";
 import { fetchGolden, foundRoomRecords } from "./golden.js";
 
 async function records() {
@@ -12,27 +12,126 @@ async function records() {
   return (await loadTrack(fetchGolden, bundle, "cpp")).records;
 }
 
-test("the frame that starts the map shows its initialisation alone", async () => {
-  const summary = summaryAt(await records(), 0);
-  assert.equal(summary.placedBy, "initialization");
+/**
+ * The stages that ran at a frame.
+ * @param {import("../src/solver.js").StageLayout[]} layout The run's rows.
+ * @param {{stages: import("../src/solver.js").StageValues[]}} summary The frame's summary.
+ * @returns {string[]} Those stages.
+ */
+function ranAt(layout, summary) {
+  return layout.filter((_, s) => summary.stages[s].ran).map(({ stage }) => stage);
+}
+
+/**
+ * A field's value in a frame's summary.
+ * @param {import("../src/solver.js").StageLayout[]} layout The run's rows.
+ * @param {{stages: import("../src/solver.js").StageValues[]}} summary The frame's summary.
+ * @param {string} stage The stage.
+ * @param {string} field The field.
+ * @returns {string | undefined} Its value as shown; undefined if the layout has no such row.
+ */
+function valueAt(layout, summary, stage, field) {
+  const s = layout.findIndex((each) => each.stage === stage);
+  const f = layout[s]?.fields.findIndex((each) => each.field === field) ?? -1;
+  return f < 0 ? undefined : summary.stages[s].values[f];
+}
+
+test("a run's summary rows are every stage it ever ran, in order, each with all its fields", () => {
+  const motion = { matches: 120, widened: false, inliers: 110 };
+  const local = {
+    keyframes: 3,
+    points: 400,
+    reference: 1,
+    in_view: 300,
+    matches: 250,
+    inliers: 240,
+  };
+  // Columns in no particular order; pnp never ran, init is null throughout, mapping is missing.
+  const columns = {
+    frame: [0, 1, 2],
+    placed_by: ["motion", null, "motion"],
+    local_map: [null, null, local],
+    pnp: [null, null, null],
+    motion: [motion, null, motion],
+    init: [null, null, null],
+  };
+  const layout = summaryLayout(columns);
   assert.deepEqual(
-    summary.stages.map((s) => s.stage),
-    ["init"],
+    layout.map(({ stage }) => stage),
+    ["motion", "local_map"],
   );
-  assert.ok(summary.stages[0].rows.every((row) => row.hint.length > 0));
+  for (const { stage, title, fields } of layout) {
+    const known = /** @type {(typeof STAGES)[number]} */ (STAGES.find((s) => s.stage === stage));
+    assert.equal(title, known.title);
+    assert.deepEqual(
+      fields,
+      Object.entries(known.hints).map(([field, hint]) => ({ field, hint })),
+    );
+  }
+  // Each frame has every row: "–" where its stage did not run.
+  const first = summaryAt(columns, 0, layout);
+  assert.equal(first.placedBy, "motion");
+  assert.deepEqual(first.stages, [
+    { ran: true, values: ["120", "no", "110"] },
+    { ran: false, values: ["–", "–", "–", "–", "–", "–"] },
+  ]);
+  assert.deepEqual(summaryAt(columns, 2, layout).stages[1].values, [
+    "3",
+    "400",
+    "1",
+    "300",
+    "250",
+    "240",
+  ]);
+  for (const k of [1, -1]) {
+    const none = summaryAt(columns, k, layout);
+    assert.equal(none.placedBy, "–");
+    assert.deepEqual(
+      none.stages.map(({ ran, values }) => [ran, values.every((value) => value === "–")]),
+      [
+        [false, true],
+        [false, true],
+      ],
+      `record ${k}`,
+    );
+  }
+});
+
+test("every frame of a run, and a frame it did not run, has the run's rows", async () => {
+  const columns = await foundRoomRecords();
+  const layout = summaryLayout(columns);
+  assert.deepEqual(
+    layout.map(({ stage }) => stage),
+    STAGES.map(({ stage }) => stage),
+  );
+  for (let k = -1; k < columns.frame.length; k++) {
+    const { stages } = summaryAt(columns, k, layout);
+    assert.deepEqual(
+      stages.map(({ values }) => values.length),
+      layout.map(({ fields }) => fields.length),
+      `record ${k}`,
+    );
+  }
+});
+
+test("the frame that starts the map shows its initialisation alone", async () => {
+  const columns = await records();
+  const layout = summaryLayout(columns);
+  const summary = summaryAt(columns, 0, layout);
+  assert.equal(summary.placedBy, "initialization");
+  assert.deepEqual(ranAt(layout, summary), ["init"]);
+  assert.ok(layout.every(({ fields }) => fields.every(({ hint }) => hint.length > 0)));
 });
 
 test("a tracked frame shows the stages that ran, each field its record's", async () => {
   const columns = await records();
-  const summary = summaryAt(columns, 1);
+  const layout = summaryLayout(columns);
+  const summary = summaryAt(columns, 1, layout);
   assert.equal(summary.placedBy, "motion");
-  assert.deepEqual(
-    summary.stages.map((s) => s.stage),
-    ["motion", "local_map"],
-  );
+  assert.deepEqual(ranAt(layout, summary), ["motion", "local_map"]);
   const local = /** @type {Record<string, unknown>} */ (columns.local_map[1]);
-  const shown = summary.stages[1].rows.find((row) => row.field === "inliers");
-  assert.equal(shown?.value, String(local.inliers));
+  assert.equal(valueAt(layout, summary, "local_map", "inliers"), String(local.inliers));
+  assert.equal(valueAt(layout, summary, "init", "outcome"), "–");
 });
 
 test("every stage's fields are what the pipeline records", async () => {
@@ -51,22 +150,19 @@ test("every stage's fields are what the pipeline records", async () => {
 
 test("a relocalised frame shows its relocalisation, each field the pipeline's", async () => {
   const columns = await foundRoomRecords();
+  const layout = summaryLayout(columns);
   const k = columns.placed_by.indexOf("relocalization");
-  const summary = summaryAt(columns, k);
+  const summary = summaryAt(columns, k, layout);
   assert.equal(summary.placedBy, "relocalization");
-  assert.deepEqual(
-    summary.stages.map((s) => s.stage),
-    ["motion", "pnp", "relocalization", "local_map"],
-  );
+  assert.deepEqual(ranAt(layout, summary), ["motion", "pnp", "relocalization", "local_map"]);
   const recorded = /** @type {Record<string, unknown>} */ (columns.relocalization[k]);
   const { hints } = /** @type {(typeof STAGES)[number]} */ (
     STAGES.find((s) => s.stage === "relocalization")
   );
   assert.deepEqual(Object.keys(hints).sort(), Object.keys(recorded).sort());
-  const rows = summary.stages[2].rows;
-  assert.equal(rows.find((row) => row.field === "placed")?.value, "yes");
+  assert.equal(valueAt(layout, summary, "relocalization", "placed"), "yes");
   const [first] = /** @type {{keyframe: number, found: number}[]} */ (recorded.candidates);
-  const tried = rows.find((row) => row.field === "candidates")?.value ?? "";
+  const tried = valueAt(layout, summary, "relocalization", "candidates") ?? "";
   assert.ok(tried.startsWith(`keyframe ${first.keyframe} (score `), tried);
   assert.ok(tried.endsWith(`, ${first.found} found`), tried);
 });

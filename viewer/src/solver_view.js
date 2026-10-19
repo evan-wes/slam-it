@@ -1,10 +1,12 @@
 // The solver panel: plots over the whole run with the frame marked (every backend's latency, and
 // the frames where the backends decided differently), the backends' step times at the frame side
-// by side, and the frame's stage summaries, each field explained on hover.
+// by side, and the frame's stage summaries, each field explained on hover. Its tables are built
+// once a run, with every row the run has, and a frame shown changes only their text: the panel
+// holds its height while the frames play.
 
 import { STEPS, stepsAt } from "./compare.js";
 import { duration } from "./format.js";
-import { PLACED_HINT, latency, series, summaryAt } from "./solver.js";
+import { PLACED_HINT, latency, series, summaryAt, summaryLayout } from "./solver.js";
 
 /**
  * A CSS custom property's colour.
@@ -13,6 +15,17 @@ import { PLACED_HINT, latency, series, summaryAt } from "./solver.js";
  */
 function token(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/**
+ * Set an element's text where it changed: a frame shown rewrites only what moved.
+ * @param {HTMLElement} element The element.
+ * @param {string} text Its text.
+ */
+function setText(element, text) {
+  if (element.textContent !== text) {
+    element.textContent = text;
+  }
 }
 
 /**
@@ -139,6 +152,14 @@ export class SolverView {
     /** @type {import("./bundle.js").Backend | null} */
     this.run = null;
     this.frame = 0;
+    /** @type {HTMLTableCellElement[][]} Each step's cells, a backend's each. */
+    this.stepCells = [];
+    /** @type {import("./solver.js").StageLayout[]} The run's summary rows. */
+    this.layout = [];
+    /** @type {HTMLTableCellElement[]} Each stage's heading, in the layout's order. */
+    this.stageHeads = [];
+    /** @type {HTMLTableCellElement[][]} Each stage's value cells, a field's each. */
+    this.valueCells = [];
     new ResizeObserver(() => this.redraw()).observe(tracked);
   }
 
@@ -152,6 +173,9 @@ export class SolverView {
   setRun(run, tracks, frames, differ) {
     this.run = run;
     this.tracks = tracks;
+    this.layout = summaryLayout(run.records);
+    this.buildSteps();
+    this.buildSummary();
     const first = run.info.frames[0];
     this.tracked.set(
       frames,
@@ -190,11 +214,8 @@ export class SolverView {
     );
   }
 
-  /**
-   * Set the backends' step times at a frame side by side.
-   * @param {number} frame The bundle's frame.
-   */
-  showSteps(frame) {
+  /** Build the backends' step times' table, once a run: a row a step, a column a backend. */
+  buildSteps() {
     const table = document.createElement("table");
     const head = table.insertRow();
     head.insertCell().textContent = "step";
@@ -203,15 +224,73 @@ export class SolverView {
       cell.textContent = track.name;
       cell.style.color = `var(--backend-${track.name})`;
     }
-    const times = this.tracks.map((track) => stepsAt(track, frame));
-    STEPS.forEach((step, i) => {
+    this.stepCells = STEPS.map((step) => {
       const row = table.insertRow();
       row.insertCell().textContent = step.replace("_seconds", "");
-      for (const steps of times) {
-        row.insertCell().textContent = steps === null ? "–" : duration(steps[i]);
-      }
+      return this.tracks.map(() => row.insertCell());
     });
     this.steps.replaceChildren(table);
+  }
+
+  /** Build the summary's table, once a run: every stage the run summarises, a row a field, each
+   *  explained on hover. */
+  buildSummary() {
+    const table = document.createElement("table");
+    const columns = document.createElement("colgroup");
+    const names = document.createElement("col");
+    names.className = "name";
+    columns.append(names, document.createElement("col"));
+    table.append(columns);
+    this.stageHeads = [];
+    this.valueCells = this.layout.map(({ title, fields }) => {
+      const head = document.createElement("th");
+      head.colSpan = 2;
+      head.textContent = title;
+      table.insertRow().append(head);
+      this.stageHeads.push(head);
+      return fields.map(({ field, hint }) => {
+        const row = table.insertRow();
+        const name = row.insertCell();
+        name.textContent = field;
+        name.title = hint;
+        return row.insertCell();
+      });
+    });
+    this.summary.replaceChildren(table);
+  }
+
+  /**
+   * Set the backends' step times at a frame side by side.
+   * @param {number} frame The bundle's frame.
+   */
+  showSteps(frame) {
+    this.tracks.forEach((track, column) => {
+      const steps = stepsAt(track, frame);
+      this.stepCells.forEach((cells, i) => {
+        setText(cells[column], steps === null ? "–" : duration(steps[i]));
+      });
+    });
+  }
+
+  /**
+   * Set the run's summary at a frame: each stage's values, "–" where it did not run, its
+   * heading faded.
+   * @param {number} k The run's record of the frame, or -1 if the run did not run it.
+   */
+  showSummary(k) {
+    if (this.run === null) {
+      return;
+    }
+    const { placedBy, stages } = summaryAt(this.run.records, k, this.layout);
+    setText(this.placed, k < 0 ? "this run did not run the frame" : `placed by ${placedBy}`);
+    stages.forEach(({ ran, values }, s) => {
+      this.stageHeads[s].classList.toggle("idle", !ran);
+      values.forEach((value, f) => {
+        const cell = this.valueCells[s][f];
+        setText(cell, value);
+        cell.title = value === "–" ? "" : value; // a value cut to its line, whole on hover
+      });
+    });
   }
 
   /**
@@ -222,33 +301,7 @@ export class SolverView {
   show(frame, k) {
     this.frame = frame;
     this.showSteps(frame);
-    this.summary.replaceChildren();
-    if (this.run === null || k < 0) {
-      this.placed.textContent = "";
-      const none = document.createElement("p");
-      none.className = "none";
-      none.textContent = "this run did not run the frame";
-      this.summary.append(none);
-    } else {
-      const { placedBy, stages } = summaryAt(this.run.records, k);
-      this.placed.textContent = `placed by ${placedBy}`;
-      const table = document.createElement("table");
-      for (const { title, rows } of stages) {
-        const head = table.insertRow();
-        const cell = document.createElement("th");
-        cell.colSpan = 2;
-        cell.textContent = title;
-        head.append(cell);
-        for (const { field, value, hint } of rows) {
-          const row = table.insertRow();
-          const name = row.insertCell();
-          name.textContent = field;
-          name.title = hint;
-          row.insertCell().textContent = value;
-        }
-      }
-      this.summary.append(table);
-    }
+    this.showSummary(k);
     this.redraw();
   }
 
