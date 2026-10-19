@@ -69,6 +69,10 @@ export function mapFrustums(poses, maps, camera, depths, fallback) {
 /** A frustum's depth, as a share of its map's trajectory's extent. */
 export const DEPTH_SHARE = 1 / 40;
 
+/** A frustum's deepest, as a multiple of the median distance between its map's consecutive
+ *  keyframes: on a long run with dense keyframes, the extent's share would overlap them. */
+export const SPACING_SHARE = 2;
+
 /** The shallowest frustum, in the trajectory's units. */
 export const MIN_DEPTH = 0.02;
 
@@ -92,12 +96,50 @@ function mapRuns(maps) {
 }
 
 /**
- * Each map's frustum depth: a share of the extent of its trajectory, whose scale is its own.
+ * The middle of some values.
+ * @param {number[]} values The values, at least one; sorted in place.
+ * @returns {number} The middle one, or the mean of the middle two.
+ */
+function median(values) {
+  values.sort((a, b) => a - b);
+  const middle = values.length >> 1;
+  return values.length % 2 === 1 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
+}
+
+/**
+ * Each map's median distance between consecutive keyframes' centres.
+ * @param {Float32Array} keyframes The keyframes' centres, by id, (K, 3).
+ * @param {Int32Array} maps Their maps, (K,).
+ * @returns {Map<number, number>} The median of each map with at least two keyframes.
+ */
+function keyframeSpacings(keyframes, maps) {
+  /** @type {Map<number, number[]>} */
+  const gaps = new Map();
+  for (let k = 1; k < maps.length; k++) {
+    if (maps[k] !== maps[k - 1]) {
+      continue;
+    }
+    const [a, b] = [keyframes.subarray(k * 3 - 3, k * 3), keyframes.subarray(k * 3, k * 3 + 3)];
+    const each = gaps.get(maps[k]) ?? [];
+    each.push(Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]));
+    gaps.set(maps[k], each);
+  }
+  return new Map([...gaps].map(([map, each]) => [map, median(each)]));
+}
+
+/**
+ * Each map's frustum depth: a share of the extent of its trajectory, whose scale is its own,
+ * capped at `SPACING_SHARE` times the median distance between its consecutive keyframes (where
+ * it has two and that distance is not 0), so that dense keyframes along a long run do not
+ * overlap.
  * @param {Float32Array} path The tracked frames' centres, (T, 3).
  * @param {Int32Array} maps Their maps, (T,): a map's are consecutive.
+ * @param {Float32Array} keyframes The keyframes' centres, by id, (K, 3).
+ * @param {Int32Array} keyframeMaps Their maps, (K,).
  * @returns {Map<number, number>} Each map's depth, at least `MIN_DEPTH`.
  */
-export function mapDepths(path, maps) {
+export function mapDepths(path, maps, keyframes, keyframeMaps) {
+  const spacings = keyframeSpacings(keyframes, keyframeMaps);
   /** @type {Map<number, number>} */
   const out = new Map();
   for (const [start, end] of mapRuns(maps)) {
@@ -110,7 +152,9 @@ export function mapDepths(path, maps) {
       }
     }
     const extent = Math.hypot(...high.map((h, axis) => h - low[axis]));
-    out.set(maps[start], Math.max(extent * DEPTH_SHARE, MIN_DEPTH));
+    const spacing = spacings.get(maps[start]) ?? 0;
+    const cap = spacing > 0 ? SPACING_SHARE * spacing : Infinity;
+    out.set(maps[start], Math.max(Math.min(extent * DEPTH_SHARE, cap), MIN_DEPTH));
   }
   return out;
 }

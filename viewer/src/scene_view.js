@@ -223,7 +223,7 @@ export class SceneView {
     );
     this.path = centres(run.poses);
     this.trajectory.geometry.setAttribute("position", new THREE.BufferAttribute(this.path, 3));
-    this.depths = mapDepths(this.path, run.poseMaps);
+    this.depths = mapDepths(this.path, run.poseMaps, centres(run.keyframePoses), run.keyframeMaps);
     const camera = this.bundle.info.camera;
     const keyframes = livingMaterial("--keyframe", 1);
     const points = livingMaterial("--point", 2);
