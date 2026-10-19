@@ -89,6 +89,17 @@ std::vector<std::int64_t> targets_of(const Map& m, Mode mode, const Options& opt
   return ids;
 }
 
+/// @brief One flag per keyframe: the map's first held fixed, local BA's gauge.
+/// @param m The map.
+/// @return The flags.
+std::vector<std::uint8_t> first_fixed(const Map& m) {
+  std::vector<std::uint8_t> fixed(keyframe_count(m), 0);
+  for (std::size_t k = 0; k < fixed.size(); ++k) {
+    fixed[k] = m.kf_id[k] == 0 ? 1 : 0;
+  }
+  return fixed;
+}
+
 /// @brief The newest keyframe's row and its links', ascending (`local_ba_keyframes`, unchecked).
 /// @param m The map, with at least one keyframe.
 /// @param options The settings.
@@ -660,9 +671,26 @@ double close_depth(const Camera& camera, const Options& options) {
   return options.stereo.close_depth * camera.baseline;
 }
 
+const char* name(Scheduled scheduled) {
+  switch (scheduled) {
+    case Scheduled::kRan:
+      return "ran";
+    case Scheduled::kSkipped:
+      return "skipped";
+    case Scheduled::kAborted:
+      return "aborted";
+    case Scheduled::kCount:
+      break;
+  }
+  return "unknown";
+}
+
 Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const double> depth,
                            const Tracked& tracked, std::int64_t reference, Mode mode,
-                           const Options& options) {
+                           const Options& options, bool idle,
+                           // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): two counts
+                           std::optional<std::int64_t> since_keyframe,
+                           std::optional<std::int64_t> keyframes) {
   if (auto ok = check_newest(m, camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -675,7 +703,8 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
     return fail(ErrorKind::kInvalidInput,
                 "tracked.points: expected one point id (or -1) per depth");
   }
-  const std::int64_t min_observations = keyframe_count(m) <= 2  // NeedNewKeyFrame's nKFs <= 2
+  const std::int64_t total = keyframes.value_or(static_cast<std::int64_t>(keyframe_count(m)));
+  const std::int64_t min_observations = total <= 2  // NeedNewKeyFrame's nKFs <= 2
                                             ? options.keyframes.ref_min_observations_early
                                             : options.keyframes.ref_min_observations;
   std::vector<std::int64_t> rows;
@@ -697,15 +726,24 @@ Result<bool> need_keyframe(const Map& m, const Camera& camera, std::span<const d
     need_close = tracked_close < options.keyframes.close_tracked &&
                  untracked_close > options.keyframes.close_untracked;
   }
-  double ratio =
-      keyframe_count(m) < 2 ? options.keyframes.first_ref_ratio : options.keyframes.ref_ratio;
+  double ratio = total < 2 ? options.keyframes.first_ref_ratio : options.keyframes.ref_ratio;
   if (mode == Mode::kMonocular) {
     ratio = options.keyframes.mono_ref_ratio;
   }
   const std::int64_t count = inliers(tracked);
   const bool weak =
       static_cast<double>(count) < static_cast<double>(tracked_reference) * ratio || need_close;
-  return weak && count > options.keyframes.min_inliers;
+  const bool wanted = weak && count > options.keyframes.min_inliers;  // c2
+  if (idle) {  // c1b: no frames need pass, with mapping idle
+    return wanted;
+  }
+  const bool late =
+      since_keyframe.has_value() && *since_keyframe >= options.tracking.max_frames;  // c1a
+  const bool poor = mode != Mode::kMonocular &&                                      // c1c
+                    (static_cast<double>(count) < static_cast<double>(tracked_reference) *
+                                                      options.keyframes.busy_ref_ratio ||
+                     need_close);
+  return wanted && (late || poor);
 }
 
 Result<void> create_points_from_depth(Map& m, const Camera& camera, const Options& options) {
@@ -914,76 +952,132 @@ Result<void> cull_keyframes(Map& m, const Camera& camera, Mode mode, const Optio
   return {};
 }
 
-Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
-                       Mode mode, const Options& options, std::span<const std::int64_t> held) {
+namespace {
+
+/// @brief The points a keyframe inserted made, as `insert_and_make` gives them: the map's
+///        point counts after each step, and each keypoint's point.
+struct Made {
+  /// @brief The points before the keyframe.
+  std::int64_t start{0};
+  /// @brief After the points from depth.
+  std::int64_t with_depth{0};
+  /// @brief After culling the recent points.
+  std::int64_t culled{0};
+  /// @brief After triangulation.
+  std::int64_t triangulated{0};
+  /// @brief The id of the point made for each keypoint, -1 where none.
+  std::vector<std::int64_t> made;
+};
+
+/// @brief Local mapping's steps up to fusion: insert the keyframe, make its points from depth,
+///        cull the recent points and triangulate new ones.
+/// @param m The map, changed in place.
+/// @param camera The camera.
+/// @param frame The keyframe's frame.
+/// @param tracked Its pose and matches.
+/// @param mode The sensor mode.
+/// @param options The settings.
+/// @return The point counts and the points made; a step's error.
+Result<Made> insert_and_make(Map& m, const Camera& camera, const Frame& frame,
+                             const Tracked& tracked, Mode mode, const Options& options) {
   if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
-  const auto newest = static_cast<std::int64_t>(keyframe_count(m)) - 1;
-  if (auto ok = adopt(m, newest); !ok) {
+  if (auto ok = adopt(m, static_cast<std::int64_t>(keyframe_count(m)) - 1); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const auto points = [&m] { return static_cast<std::int64_t>(point_count(m)); };
-  const std::int64_t start = points();
+  Made out;
+  out.start = points();
   const std::int64_t first = m.next_pt_id;
   if (mode != Mode::kMonocular) {
     if (auto ok = create_points_from_depth(m, camera, options); !ok) {
       return std::unexpected(std::move(ok.error()));
     }
   }
-  const std::int64_t with_depth = points();
-  std::vector<std::int64_t> made = made_since(m, first);
+  out.with_depth = points();
+  out.made = made_since(m, first);
   if (auto ok = cull_points(m, mode, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::int64_t culled = points();
+  out.culled = points();
   if (auto ok = triangulate_new_points(m, camera, mode, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  const std::int64_t triangulated = points();
+  out.triangulated = points();
   // Taken before fusion, which may replace a new point; a depth point culled since stays made.
   const std::vector<std::int64_t> triangulated_ids = made_since(m, first);
-  for (std::size_t j = 0; j < made.size(); ++j) {
-    if (made[j] < 0) {
-      made[j] = triangulated_ids[j];
+  for (std::size_t j = 0; j < out.made.size(); ++j) {
+    if (out.made[j] < 0) {
+      out.made[j] = triangulated_ids[j];
     }
   }
-  if (auto ok = fuse_points(m, camera, mode, options); !ok) {
-    return std::unexpected(std::move(ok.error()));
+  return out;
+}
+
+}  // namespace
+
+Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
+                       Mode mode, const Options& options, std::span<const std::int64_t> held,
+                       const Interrupts* interrupts) {
+  auto made = insert_and_make(m, camera, frame, tracked, mode, options);
+  if (!made) {
+    return std::unexpected(std::move(made.error()));
+  }
+  const auto newest = static_cast<std::int64_t>(keyframe_count(m)) - 1;
+  const auto points = [&m] { return static_cast<std::int64_t>(point_count(m)); };
+  Schedule schedule;
+  if (interrupts != nullptr) {
+    interrupts->publish(m);
+  }
+  if (interrupts == nullptr || !interrupts->waiting()) {
+    if (auto ok = fuse_points(m, camera, mode, options); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
+  } else {
+    schedule.fusion = Scheduled::kSkipped;
   }
   if (auto ok = adopt(m, newest); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   const std::int64_t fused = points();
-  std::vector<std::uint8_t> fixed(keyframe_count(m), 0);
-  for (std::size_t k = 0; k < fixed.size(); ++k) {
-    fixed[k] = m.kf_id[k] == 0 ? 1 : 0;
+  const bool quiet = interrupts == nullptr || !(interrupts->waiting() || interrupts->stopping());
+  if (!quiet) {
+    schedule.adjustment = schedule.culling = Scheduled::kSkipped;
   }
   Adjustment adjustment;
-  if (std::cmp_greater_equal(keyframe_count(m), options.adjustment.min_keyframes)) {
-    auto adjusted = bundle_adjust(m, camera, local_rows(m, options), fixed, options);
+  if (quiet && std::cmp_greater_equal(keyframe_count(m), options.adjustment.min_keyframes)) {
+    auto adjusted = bundle_adjust(m, camera, local_rows(m, options), first_fixed(m), options,
+                                  interrupts == nullptr ? nullptr : interrupts->abort,
+                                  interrupts == nullptr ? nullptr : interrupts->around);
     if (!adjusted) {
       return std::unexpected(std::move(adjusted.error()));
     }
     adjustment = std::move(*adjusted);
+    if (adjustment.aborted) {
+      schedule.adjustment = Scheduled::kAborted;
+    }
   }
   const auto keyframes = static_cast<std::int64_t>(keyframe_count(m));
-  if (auto ok = cull_keyframes(m, camera, mode, options, held); !ok) {
-    return std::unexpected(std::move(ok.error()));
+  if (quiet) {
+    if (auto ok = cull_keyframes(m, camera, mode, options, held); !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
   }
   return Mapped{
-      .summary = {.from_depth = with_depth - start,
-                  .culled_points = with_depth - culled,
-                  .triangulated = triangulated - culled,
-                  .fused = triangulated - fused,
+      .summary = {.from_depth = made->with_depth - made->start,
+                  .culled_points = made->with_depth - made->culled,
+                  .triangulated = made->triangulated - made->culled,
+                  .fused = made->triangulated - fused,
                   .solves = std::move(adjustment.solves),
                   .free = adjustment.free,
                   .fixed = adjustment.fixed,
                   .outliers = adjustment.outliers,
                   .weak_points = fused - points(),
                   .culled_keyframes = keyframes - static_cast<std::int64_t>(keyframe_count(m))},
-      .made = std::move(made)};
+      .made = std::move(made->made),
+      .schedule = schedule};
 }
 
 }  // namespace slam_it::edge

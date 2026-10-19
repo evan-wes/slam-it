@@ -8,10 +8,67 @@
 //! C++ core uses a template over a concept. It is not bound to Python itself: the backends
 //! meet at the concrete solvers built on it.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use nalgebra::{DMatrix, DVector};
 
 use crate::error::{ErrorKind, Result, fail};
 use crate::solve;
+
+/// A flag another thread sets to stop a solve before its next step or iteration (g2o's
+/// `setForceStopFlag`, as ORB-SLAM's threads use it). A clone is the same flag.
+#[derive(Debug, Clone, Default)]
+pub struct Stop(Option<Arc<AtomicBool>>);
+
+impl Stop {
+    /// A stop that never fires.
+    ///
+    /// # Returns
+    ///
+    /// The stop.
+    #[must_use]
+    pub const fn never() -> Self {
+        Self(None)
+    }
+
+    /// A stop that fires when `flag` is set.
+    ///
+    /// # Arguments
+    ///
+    /// * `flag` - The flag, shared with the thread that sets it.
+    ///
+    /// # Returns
+    ///
+    /// The stop.
+    #[must_use]
+    pub const fn on(flag: Arc<AtomicBool>) -> Self {
+        Self(Some(flag))
+    }
+
+    /// Whether it fires now.
+    ///
+    /// # Returns
+    ///
+    /// Whether its flag is set; never for [`Stop::never`].
+    #[must_use]
+    pub fn is_set(&self) -> bool {
+        self.0
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+}
+
+impl PartialEq for Stop {
+    /// Two stops are equal when they are the same flag, or both never fire.
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
 
 /// The step rule, with the integer codes it crosses the bindings as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +226,8 @@ pub struct Options {
     pub min_relative_decrease: f64,
     /// Fail with `NotConverged` instead of returning an unconverged estimate.
     pub strict: bool,
+    /// Stops the solve before its next step when another thread sets it.
+    pub stop: Stop,
 }
 
 impl Default for Options {
@@ -188,6 +247,7 @@ impl Default for Options {
             max_diagonal: 1e32,
             min_relative_decrease: 1e-3,
             strict: false,
+            stop: Stop::never(),
         }
     }
 }
@@ -296,11 +356,13 @@ pub enum Termination {
     NoDecrease = 5,
     /// Not converged: the undamped Gauss-Newton system is not positive definite.
     Singular = 6,
+    /// Not converged: stopped from outside, between steps (`Options::stop`).
+    Stopped = 7,
 }
 
 impl Termination {
     /// Every termination, in code order.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Gradient,
         Self::Function,
         Self::Step,
@@ -308,6 +370,7 @@ impl Termination {
         Self::DampingLimit,
         Self::NoDecrease,
         Self::Singular,
+        Self::Stopped,
     ];
 
     /// The termination's name, as `slam_it.foundations.nls.Termination` spells it.
@@ -325,6 +388,7 @@ impl Termination {
             Self::DampingLimit => "damping_limit",
             Self::NoDecrease => "no_decrease",
             Self::Singular => "singular",
+            Self::Stopped => "stopped",
         }
     }
 
@@ -786,6 +850,10 @@ pub fn solve<P: Problem>(
     let mut termination = Termination::MaxIterations;
     let max_iterations = usize::try_from(options.max_iterations).unwrap_or(usize::MAX);
     while trace.len() < max_iterations {
+        if options.stop.is_set() {
+            termination = Termination::Stopped;
+            break;
+        }
         let trial = match try_step(
             problem,
             &state,
@@ -1095,6 +1163,24 @@ mod tests {
         assert_eq!(overshoot.summary.trace.len(), 1);
         let near = DVector::from_vec(vec![0.5, 0.5]);
         assert!(at_minimum(solve(&problem, near, &gn).unwrap()));
+    }
+
+    /// A stop set ends the solve before its next step: none taken, not converged.
+    #[test]
+    fn a_stop_ends_the_solve_between_steps() {
+        let start = DVector::from_vec(vec![-1.2, 1.0]);
+        let problem = Rosenbrock { unused: 0 };
+        let stopping = Options {
+            stop: Stop::on(Arc::new(AtomicBool::new(true))),
+            ..tight(Method::LevenbergMarquardt, Loss::default())
+        };
+        let stopped = solve(&problem, start.clone(), &stopping).unwrap();
+        assert_eq!(
+            (stopped.summary.trace.len(), stopped.summary.termination),
+            (0, Termination::Stopped)
+        );
+        assert_eq!(stopped.state, start);
+        assert_eq!(Termination::Stopped.name(), "stopped");
     }
 
     /// A parameter the residuals ignore leaves the undamped system singular; damping copes.

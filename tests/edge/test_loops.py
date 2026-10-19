@@ -19,9 +19,9 @@ from slam_it.edge import covisibility, loops
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
 from slam_it.edge.loops import Outcome, Pending
-from slam_it.edge.map import Map
+from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options
-from slam_it.foundations import matching, se3, so3
+from slam_it.foundations import graphs, matching, se3, so3
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import Loop
@@ -425,6 +425,25 @@ def test_global_ba_finds_an_exact_map_from_a_nudged_one(loop_rigid: Loop) -> Non
     np.testing.assert_allclose(adjusted.pt_xyz, exact.pt_xyz, atol=1e-5)
 
 
+def test_a_global_ba_stops_between_iterations(loop_rigid: Loop) -> None:
+    """A global BA superseded stops before its next iteration, as ORB-SLAM's mbStopGBA stops it."""
+    exact = loop_rigid.truth
+    poses = exact.kf_pose.copy()
+    poses[1:] = se3.exp(np.array([0.004, -0.003, 0.002, 0.001, 0.002, -0.001])) @ poses[1:]
+    asked: list[bool] = []
+
+    def stop() -> bool:
+        asked.append(True)
+        return len(asked) > 1  # one iteration, then stop
+
+    nudged = replace(exact, kf_pose=poses)
+    _, summary = loops.global_bundle_adjust(nudged, CAMERA, OPTIONS, stop=stop)
+    assert (summary.iterations, summary.termination) == (1, graphs.Termination.STOPPED)
+    assert summary.final_error < summary.initial_error
+    with pytest.raises(InvalidInputError, match="stop"):
+        loops.global_bundle_adjust(nudged, CAMERA, OPTIONS, stop=stop, backend="cpp")
+
+
 def test_the_essential_graph_keeps_a_consistent_map(loop_rigid: Loop) -> None:
     """Started where the poses were, with no new links: nothing moves."""
     m = loop_rigid.truth
@@ -798,3 +817,46 @@ def test_the_compiled_codes_match(backend: str) -> None:
     """The outcome and termination codes Python decodes are each compiled core's, in order."""
     chosen = require_function(backend, loops.__name__, "codes")
     assert backends.implementation(chosen, loops.__name__).codes() == loops.codes()
+
+
+def _moved_world(m: Map, motion: np.ndarray) -> Map:
+    """Return `m` with its world moved by ``motion`` (``X' = motion X``)."""
+    xyz = m.pt_xyz @ motion[:3, :3].T + motion[:3, 3]
+    return replace(m, kf_pose=m.kf_pose @ se3.inverse(motion), pt_xyz=xyz)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_global_ba_carries_what_was_made_since(backend: str, loop_rigid: Loop) -> None:
+    """Solved on an earlier copy, the result carries onto keyframes and points made since.
+
+    The copy lacks the loop map's last keyframe and the points first seen there. Were the BA
+    to move the copy's world rigidly, every keyframe and point of the map now moves the same
+    way: the solved ones by their result, the newest keyframe with its parent, and its points
+    with it, their reference keyframe. Every backend carries it alike.
+    """
+    now = loop_rigid.map
+    newest = int(now.kf_id[-1])
+    made_there = now.pt_id[now.pt_reference_kf == newest]
+    earlier = maps.erase_keyframe(now, now.keyframes - 1)
+    earlier = maps.erase_points(earlier, np.isin(earlier.pt_id, made_there), Removal.CULLED)
+    motion = se3.exp(np.array([0.05, -0.02, 0.03, 0.01, 0.02, -0.015]))
+    chosen = require_function(backend, loops.__name__, "propagate_global_ba")
+    out = loops.propagate_global_ba(now, _moved_world(earlier, motion), backend=chosen)
+    expected = _moved_world(now, motion)
+    np.testing.assert_allclose(out.map.kf_pose, expected.kf_pose, atol=1e-12)
+    np.testing.assert_allclose(out.map.pt_xyz, expected.pt_xyz, atol=1e-12)
+    assert (out.adjusted, out.propagated) == (now.keyframes - 1, 1)
+    assert out.points == earlier.points
+    assert out.carried == now.points - earlier.points > 0
+
+
+def test_a_global_ba_refuses_what_is_not_an_earlier_copy(loop_rigid: Loop) -> None:
+    """A copy that gave more ids than the map has is none of its: refused, as is no map (H9).
+
+    B3b's review panel, H9: a map gives its ids in order, so its earlier copy gave no more.
+    """
+    now = loop_rigid.map
+    with pytest.raises(InvalidInputError, match="solved: not an earlier copy of now"):
+        loops.propagate_global_ba(now, replace(now, next_pt_id=now.next_pt_id + 1))
+    with pytest.raises(InvalidInputError, match="now, solved: expected keyframes"):
+        loops.propagate_global_ba(now, maps.empty(now.levels, now.scale_factor))

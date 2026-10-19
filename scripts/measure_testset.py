@@ -50,7 +50,13 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
 - ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds,
   read against the frame period ``deadline``, with the frames ``late`` past it
   (:func:`slam_it.eval.budgets.judge`); null, with ``unjudged`` saying why, if the run is too
-  short to judge;
+  short to judge; and for the online-SLAM design's section 13, ``on_time``, the share of the
+  frames built and tracked within the deadline (its latency bar: at least 99%), the latency's
+  ``median``, ``p99`` and ``worst``, ``late_frames`` (each late frame's index, time and
+  latency), the time tracking ``waited`` for the map (its total, in seconds), and mapping's
+  measures: the ``keyframes`` the run made, those ``asked`` for and ``refused``, the largest
+  ``queue``, the local BAs ``aborted``, ``mapping_load`` and ``mapping_peak_load``, and, in
+  order, the ``backlog`` a mapping thread of its own would build (null threaded);
 - the run's details (:data:`DETAILS`), which ``scripts/compare_testsets.py`` compares, so that
   a batch is compared by what the code that ran it recorded, never by reading its runs with
   code that may no longer read their format (B2's review panel, A9):
@@ -69,6 +75,12 @@ folder of links to its frames written beside the run. Its depth's virtual baseli
 an RGB-D run's split of near and far points does not move with the guess. It measures what a
 guessed lens costs.
 
+``--threaded`` runs each sequence's steps in threads of their own, the native programs feeding
+its frames at their recorded rate, and ``--locks`` with it shares the map by ORB-SLAM's locks,
+C++'s baseline (:func:`slam_it.orchestration.vo.run`); each result says ``threaded`` and
+``locks``. ``--budget NAME`` runs each within a compute budget
+(:data:`slam_it.eval.budgets.BUDGETS`): pinned to its physical cores, its memory capped.
+
 ``--option KEY=VALUE``, given once a setting, replaces one of the edge pipeline's settings
 (:class:`slam_it.edge.options.Options`, named by its group and field) in every run, its value
 read as JSON: ``--option relocalization.enabled=false`` measures without relocalisation, loop
@@ -82,11 +94,12 @@ The results are one JSON line per sequence in ``OUT/results.jsonl``, and a table
 
     python scripts/measure_testset.py CONFIG OUT [--backend cpp] [--features by-size|default]
         [--camera exact|nominal] [--only NAME ...] [--option KEY=VALUE ...]
+        [--threaded [--locks]] [--budget NAME]
 
 A run's latency is read only from a measure made alone, pinned to one core (``taskset -c 2
-python scripts/measure_testset.py ...``): runs side by side share the caches, the memory's
-bandwidth and the power. ``scripts/measure_sharded.py`` runs them side by side, for the
-tracking and the ATE.
+python scripts/measure_testset.py ...``), or threaded to its budget's cores (``--threaded
+--budget laptop-cpu``): runs side by side share the caches, the memory's bandwidth and the
+power. ``scripts/measure_sharded.py`` runs them side by side, for the tracking and the ATE.
 """
 
 from __future__ import annotations
@@ -377,10 +390,14 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
     by_size: bool,
     nominal: bool,
     replaced: dict[str, Any] | None = None,
+    threaded: bool = False,
+    locks: bool = False,
+    budget: budgets.Budget | None = None,
 ) -> dict[str, Any]:
     """Run a sequence and measure it (the module docstring); return its result.
 
-    `replaced` holds the settings to replace in its run (:func:`read_options`).
+    `replaced` holds the settings to replace in its run (:func:`read_options`); `threaded` and
+    `locks` say how its steps run, and `budget` what it runs within.
     """
     replaced = replaced or {}
     if nominal and entry.dataset != "tum":
@@ -390,7 +407,10 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
     camera = source.camera
     chosen = vo.options_for(camera.width, camera.height) if by_size else Options()
     options = chosen.with_settings(replaced)
-    run = vo.run(entry.dataset, folder, entry.mode, out / "run", backend=backend, options=options)
+    run = vo.run(
+        entry.dataset, folder, entry.mode, out / "run", backend=backend, options=options,
+        threaded=threaded, locks=locks, budget=budget,
+    )  # fmt: skip
     times = source.times
     span = runs.tracking(run, times)
     result: dict[str, Any] = {
@@ -402,6 +422,9 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "size": [camera.width, camera.height],
         "features": options.features.n_features,
         "options": replaced,
+        "threaded": threaded,
+        "locks": locks,
+        "budget": None if budget is None else budget.name,
         "frames": len(times),
         "run": span.frames,
         "tracked": span.tracked,
@@ -458,11 +481,34 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
     try:
         judged = budgets.judge(run)
         result.update(p95=judged.latency.p95, deadline=judged.deadline, late=judged.late)
+        result.update(realtime(run, judged))
     except InvalidInputError as error:  # a run too short to judge: said, never hidden
         result["unjudged"] = str(error)
     result["loops"] = loops.judge_loops(run, truth, scored)
     result.update(details(run, truth, scored))
     return result
+
+
+def realtime(run: runs.Run, judged: budgets.Frames) -> dict[str, Any]:
+    """Return a run's measures for the online-SLAM design's section 13 (the module docstring)."""
+    latency = np.array([d["build_seconds"] + d["track_seconds"] for d in run.diagnostics])
+    late = np.flatnonzero(latency > judged.deadline)
+    return {
+        "on_time": 1.0 - len(late) / len(latency),
+        "median": judged.latency.median,
+        "p99": float(np.percentile(latency, 99)),
+        "worst": judged.latency.max,
+        "late_frames": [[int(k), run.diagnostics[k]["timestamp"], float(latency[k])] for k in late],
+        "waited": float(sum(d["wait_seconds"] for d in run.diagnostics)),
+        "keyframes": len(run.keyframe_timestamps),
+        "asked": judged.asked,
+        "refused": judged.refused,
+        "queue": judged.queue,
+        "aborted": judged.aborted,
+        "mapping_load": judged.mapping_load,
+        "mapping_peak_load": judged.mapping_peak_load,
+        "backlog": judged.backlog,
+    }
 
 
 def row(result: dict[str, Any]) -> str:
@@ -510,6 +556,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="KEY=VALUE",
         help="replace one of the pipeline's settings in every run (repeatable)",
     )
+    parser.add_argument(
+        "--threaded", action="store_true", help="run the steps in threads of their own"
+    )
+    parser.add_argument(
+        "--locks", action="store_true", help="with --threaded: ORB-SLAM's locks (C++'s baseline)"
+    )
+    parser.add_argument(
+        "--budget", choices=sorted(budgets.BUDGETS), help="run within this compute budget"
+    )
 
 
 def chosen(
@@ -547,6 +602,9 @@ def measured(
             by_size=args.features == "by-size",
             nominal=args.camera == "nominal",
             replaced=replaced,
+            threaded=args.threaded,
+            locks=args.locks,
+            budget=None if args.budget is None else budgets.BUDGETS[args.budget],
         )
     except (SlamItError, FileNotFoundError) as error:
         return {"name": entry.name, "failed": str(error)}

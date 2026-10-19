@@ -80,13 +80,15 @@ regex = '(?P<value>\d+\.\d+\.\d+\.\d+)'
 testpaths = ["tests", "src"]
 # Docstring Examples are run as tests so they cannot go stale.
 addopts = "--doctest-modules --strict-markers"
-# Resource markers. scripts/check.sh runs the default CPU subset (`-m "not gpu and not budget"`);
+# Resource markers. scripts/check.sh runs the default CPU subset
+# (`-m "not gpu and not budget and not tsan"`), and the tsan tests in its ThreadSanitizer step;
 # the budget runs are opt-in (`python -m pytest -m budget`, since PR 9); GPU runs get their own
 # opt-in script with the first PyTorch rung.
 markers = [
   "gpu: needs a CUDA GPU (learned and dense rungs)",
   "budget: runs under a simulated compute budget (slam_it.eval.budgets)",
   "slow: takes more than a few seconds",
+  "tsan: runs a ThreadSanitizer build's program (scripts/check.sh's ThreadSanitizer step)",
 ]
 
 [tool.ruff]
@@ -206,7 +208,9 @@ layers = [
 # the observation test and the covisibility graph, independent of each other, on them; bundle
 # adjustment and the keyframe database, independent of each other, on those (the database needs
 # only the map and the graph); initialisation, tracking and mapping, independent of each other,
-# on those; relocalisation on tracking; the pipeline on top. New modules are optional layers.
+# on those; relocalisation on tracking; the atlas (the run's records) on those; the pipeline on
+# top. The threads' handshakes need nothing of the rung, beneath it all. New modules are optional
+# layers.
 [[tool.importlinter.contracts]]
 name = "The edge rung's internal order"
 type = "layers"
@@ -214,6 +218,7 @@ exhaustive = true
 containers = ["slam_it.edge"]
 layers = [
   "(pipeline)",
+  "(atlas)",
   "(loops) | (relocalization)",
   "(initialization) | (tracking) | (mapping)",
   "(adjust) | (database)",
@@ -221,6 +226,7 @@ layers = [
   "map",
   "frames",
   "options",
+  "(threads)",
 ]
 
 # The order of modules inside orchestration: the run program at the bottom, so the program the

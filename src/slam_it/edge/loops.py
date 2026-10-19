@@ -40,6 +40,13 @@ the group's points fused into the moved keyframes (``SearchAndFuse``, ``loops.fu
 the essential graph optimised (:func:`essential_graph`); the loop edge added; and the whole map
 bundle-adjusted (:func:`global_bundle_adjust`, ``loops.global_ba``).
 
+**Global BA in a thread of its own** (milestone 2B's B3b): the correction runs without it, and
+global BA solves a copy of the map taken then, while local mapping goes on. Its result is carried
+onto the map as it has become (:func:`propagate_global_ba`, ORB-SLAM's
+``RunGlobalBundleAdjustment``): the keyframes and points it solved take their result; a keyframe
+made since moves with its parent in the spanning tree, and a point made since with its reference
+keyframe.
+
 **Similarities** are ORB-SLAM's ``S_cw``: ``[[s R, t], [0, 1]]`` carrying a world point into a
 keyframe's camera, scaled; a keyframe's own pose ``T_cam_world`` is one with ``s = 1``. A search
 projects through the rigid ``(R, t / s)``, as ORB-SLAM's does. Stereo and RGB-D measure their
@@ -75,6 +82,7 @@ from __future__ import annotations
 
 import enum
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -89,7 +97,7 @@ from slam_it.edge.frames import Camera
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options, check_mode
 from slam_it.foundations import camera as cameras
-from slam_it.foundations import graphs, matching, ransac, sim3
+from slam_it.foundations import graphs, matching, ransac, se3, sim3
 from slam_it.foundations.arrays import as_count
 from slam_it.foundations.errors import DegenerateError, InvalidInputError
 
@@ -1326,7 +1334,9 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
     return [sim3.inverse(pose) for pose in solved.poses], len(graph.edges), solved.summary
 
 
-def _global_bundle_adjust(m: Map, camera: Camera, options: Options) -> tuple[Map, graphs.Summary]:
+def _global_bundle_adjust(
+    m: Map, camera: Camera, options: Options, stop: Callable[[], bool] | None = None
+) -> tuple[Map, graphs.Summary]:
     """Bundle-adjust every keyframe and point (reference)."""
     rows = np.flatnonzero(m.kp_point >= 0)
     adjusted = graphs.bundle_adjust(
@@ -1342,6 +1352,7 @@ def _global_bundle_adjust(m: Map, camera: Camera, options: Options) -> tuple[Map
         bf=camera.focal * camera.baseline,
         fixed=np.flatnonzero(m.kf_id == 0),
         options=graphs.Options(max_iterations=options.loops.global_iterations),
+        stop=stop,
     )
     poses = np.array([sim3.inverse(pose) for pose in adjusted.poses]).reshape(-1, 4, 4)
     out = replace(m, kf_pose=poses, pt_xyz=adjusted.points)
@@ -1396,6 +1407,176 @@ def _correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options)
         global_ba=ba,
     )
     return Corrected(map=m, summary=summary)
+
+
+@dataclass(frozen=True)
+class Propagated:
+    """A global BA's result carried onto the map as it has become (:func:`propagate_global_ba`).
+
+    Attributes
+    ----------
+    map : slam_it.edge.map.Map
+        The map, moved.
+    adjusted : int
+        Its keyframes the global BA solved, set to their result.
+    propagated : int
+        Its keyframes made since, moved with their parents.
+    points : int
+        Its points the global BA solved, set to their result.
+    carried : int
+        Its points made since, moved with their reference keyframes.
+    """
+
+    map: Map
+    adjusted: int
+    propagated: int
+    points: int
+    carried: int
+
+
+@dataclass(frozen=True)
+class GlobalSummary:
+    """How a global BA in a thread of its own went, as a run records it on the frame it ended on.
+
+    Attributes
+    ----------
+    generation : int
+        Its generation: the loops corrected before it in the run.
+    applied : bool
+        Whether its result was carried onto the map (:func:`propagate_global_ba`); not if a
+        newer loop superseded it, or the map was lost, first.
+    solve : slam_it.foundations.graphs.Summary
+        Its solve.
+    propagation : Propagated or None
+        How its result was carried, when it was.
+    """
+
+    generation: int
+    applied: bool
+    solve: graphs.Summary
+    propagation: Propagated | None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            ``generation``, ``applied``, ``solve``, and the keyframes and points carried each
+            way (``adjusted``, ``propagated``, ``points``, ``carried``; 0 when not applied).
+        """
+        moved = self.propagation
+        return {
+            "generation": self.generation,
+            "applied": self.applied,
+            "solve": _solve_record(self.solve),
+            "adjusted": 0 if moved is None else moved.adjusted,
+            "propagated": 0 if moved is None else moved.propagated,
+            "points": 0 if moved is None else moved.points,
+            "carried": 0 if moved is None else moved.carried,
+        }
+
+
+def propagate_global_ba(now: Map, solved: Map, *, backend: str = "python") -> Propagated:
+    """Carry a global BA's result, solved on an earlier copy of the map, onto the map as it is now.
+
+    ORB-SLAM's ``RunGlobalBundleAdjustment``, after its solve: walking the spanning tree from its
+    roots (the map's first keyframe, and any keyframe without a parent), each keyframe the BA
+    solved takes its solved pose, and each keyframe made since moves with its parent, its pose
+    relative to the parent kept (``T_child' = T_child T_parent^-1 T_parent'``); each point the BA
+    solved takes its solved position, and each made since moves with its reference keyframe
+    (``X' = T_ref'^-1 T_ref X``). A keyframe the walk does not reach, or a point whose reference
+    keyframe is gone, stays where it is. Every point is refreshed after
+    (:func:`slam_it.edge.map.refresh_points`).
+
+    Parameters
+    ----------
+    now : slam_it.edge.map.Map
+        The map as it is now.
+    solved : slam_it.edge.map.Map
+        The copy the global BA solved, moved to its result (:func:`global_bundle_adjust`).
+    backend : {"python", "cpp", "rust"}, optional
+        The implementation to run (default: the Python reference).
+
+    Returns
+    -------
+    Propagated
+        The map moved, and how many keyframes and points each way.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either map has no keyframe, or `solved` cannot be an earlier copy of `now`: a map
+        gives its ids in order, so a copy has given no more keyframe or point ids than it.
+    """
+    if not now.keyframes or not solved.keyframes:
+        raise InvalidInputError(
+            f"now, solved: expected keyframes, got {now.keyframes} and {solved.keyframes}"
+        )
+    if solved.next_kf_id > now.next_kf_id or solved.next_pt_id > now.next_pt_id:
+        raise InvalidInputError(
+            "solved: not an earlier copy of now, its next ids "
+            f"({solved.next_kf_id} keyframe, {solved.next_pt_id} point) past now's "
+            f"({now.next_kf_id}, {now.next_pt_id})"
+        )
+
+    def decode(raw: Crossing, codes: backends.Codes) -> Propagated:
+        counts = {name: int(raw[name]) for name in ("adjusted", "propagated", "points", "carried")}
+        return Propagated(map=maps.decode(raw["map"], codes), **counts)
+
+    return backends.call(
+        backend,
+        __name__,
+        "propagate_global_ba",
+        reference=lambda: _propagate_global_ba(now, solved),
+        arguments={"now": now.as_dict(), "solved": solved.as_dict()},
+        decode=decode,
+    )
+
+
+def _propagate_global_ba(now: Map, solved: Map) -> Propagated:
+    """Carry a global BA's result onto the map as it is now (reference)."""
+    new_poses = now.kf_pose.copy()
+    solved_rows = solved.keyframe_rows(now.kf_id)
+    rows_of = {int(keyframe): k for k, keyframe in enumerate(now.kf_id)}
+    children: dict[int, list[int]] = {}
+    for k, parent in enumerate(now.kf_parent.tolist()):
+        children.setdefault(int(parent), []).append(k)
+    adjusted = propagated = 0
+    walk = list(children.get(-1, []))
+    while walk:
+        k = walk.pop(0)
+        parent = int(now.kf_parent[k])
+        if solved_rows[k] >= 0:
+            new_poses[k] = solved.kf_pose[solved_rows[k]]
+            adjusted += 1
+        elif parent in rows_of:
+            p = rows_of[parent]
+            new_poses[k] = now.kf_pose[k] @ se3.inverse(now.kf_pose[p]) @ new_poses[p]
+            propagated += 1
+        walk.extend(children.get(int(now.kf_id[k]), []))
+    xyz = now.pt_xyz.copy()
+    from_solve = solved.point_rows(now.pt_id)
+    held = from_solve >= 0
+    xyz[held] = solved.pt_xyz[from_solve[held]]
+    carried = 0
+    for p in np.flatnonzero(~held).tolist():
+        reference = rows_of.get(int(now.pt_reference_kf[p]))
+        if reference is None:
+            continue
+        to_camera = now.kf_pose[reference]
+        camera_xyz = to_camera[:3, :3] @ xyz[p] + to_camera[:3, 3]
+        to_world = se3.inverse(new_poses[reference])
+        xyz[p] = to_world[:3, :3] @ camera_xyz + to_world[:3, 3]
+        carried += 1
+    moved = replace(now, kf_pose=new_poses, pt_xyz=xyz)
+    return Propagated(
+        map=maps.refresh_points(moved, np.arange(moved.points)),
+        adjusted=adjusted,
+        propagated=propagated,
+        points=int(np.count_nonzero(held)),
+        carried=carried,
+    )
 
 
 def _move_by_graph(
@@ -1499,6 +1680,10 @@ class Implementation(Protocol):
 
     def global_bundle_adjust(self, *, m: Crossing, camera: Crossing, options: Crossing) -> Crossing:
         """Bundle-adjust every keyframe and point."""
+        ...
+
+    def propagate_global_ba(self, *, now: Crossing, solved: Crossing) -> Crossing:
+        """Carry a global BA's result onto the map as it has become."""
         ...
 
     def detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
@@ -2045,7 +2230,12 @@ def fuse_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, t
 
 
 def global_bundle_adjust(
-    m: Map, camera: Camera, options: Options, *, backend: str = "python"
+    m: Map,
+    camera: Camera,
+    options: Options,
+    *,
+    stop: Callable[[], bool] | None = None,
+    backend: str = "python",
 ) -> tuple[Map, graphs.Summary]:
     """Bundle-adjust every keyframe and point (``GlobalBundleAdjustemnt``, as loop closing runs it).
 
@@ -2061,6 +2251,9 @@ def global_bundle_adjust(
         The camera.
     options : slam_it.edge.options.Options
         ``loops.global_iterations``.
+    stop : callable, optional
+        Asked before each iteration whether to stop (a global BA in a thread of its own,
+        superseded: ORB-SLAM's ``mbStopGBA``); the Python reference's alone.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -2078,6 +2271,8 @@ def global_bundle_adjust(
     """
     if not np.any(m.kf_id == 0):
         raise InvalidInputError("m: expected the map's first keyframe (id 0)")
+    if stop is not None and backend != "python":
+        raise InvalidInputError("stop: a compiled backend's core takes its own stop flag")
 
     def decode(raw: Crossing, codes: backends.Codes) -> tuple[Map, graphs.Summary]:
         return maps.decode(raw["map"], codes), graphs.summary_from_backend(raw["summary"], codes)
@@ -2086,7 +2281,7 @@ def global_bundle_adjust(
         backend,
         __name__,
         "global_bundle_adjust",
-        reference=lambda: _global_bundle_adjust(m, camera, options),
+        reference=lambda: _global_bundle_adjust(m, camera, options, stop),
         arguments={"m": m.as_dict(), "camera": camera.as_dict(), "options": options.as_dict()},
         decode=decode,
     )

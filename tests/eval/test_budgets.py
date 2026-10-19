@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -162,6 +164,30 @@ def test_cpus_pins_the_highest_fast_cores_offered(
     assert budgets.cpus(LAPTOP, performance=listed) == pinned
 
 
+def test_cpus_pins_one_logical_cpu_a_physical_core(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On a machine with hyperthreads, a budget's cores are physical (PR 9's panel, L12).
+
+    Eight cores of two logical CPUs each, CPU n's sibling n + 8: four cores, the highest, each
+    once, by its lowest logical CPU this process may run on.
+    """
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(16)))
+    topology = tmp_path / "cpu"
+    for cpu in range(16):
+        folder = topology / f"cpu{cpu}" / "topology"
+        folder.mkdir(parents=True)
+        (folder / "thread_siblings_list").write_text(f"{cpu % 8},{cpu % 8 + 8}\n")
+    absent = tmp_path / "none"
+    assert budgets.cpus(LAPTOP, performance=absent, topology=topology) == [4, 5, 6, 7]
+    # Cores 1, 2 and 3 twice each, cores 4 and 5 by their second CPUs: the highest four cores.
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {1, 9, 2, 10, 3, 11, 12, 13})
+    assert budgets.cpus(LAPTOP, performance=absent, topology=topology) == [2, 3, 12, 13]
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {8, 9, 10, 0, 1})
+    with pytest.raises(InvalidInputError, match="needs 4 cores, this machine offers 3"):
+        budgets.cpus(LAPTOP, performance=absent, topology=topology)
+
+
 def test_cpus_refuses_a_budget_the_machine_cannot_hold(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -193,9 +219,12 @@ def _timed_run(
     """
     times = 100.0 + period * np.arange(len(steps))
     looped = loops or {}
-    diagnostics = [
+    ran = {"fusion": "ran", "adjustment": "ran", "culling": "ran"}
+    diagnostics: list[dict[str, Any]] = [
         {"timestamp": float(t), "read_seconds": r, "build_seconds": b, "track_seconds": k,
-         "map_seconds": m, "loop_seconds": looped.get(i, 0.0)}
+         "map_seconds": m, "loop_seconds": looped.get(i, 0.0), "wait_seconds": 0.0,
+         "asked": m > 0.0, "refused": False, "queue": 0, "schedule": ran if m > 0.0 else None,
+         "global_ba": [], "global_ba_seconds": 0.0}
         for i, (t, (r, b, k, m)) in enumerate(zip(times, steps, strict=True))
     ]  # fmt: skip
     return runs.Run("euroc", "MH_01_easy", "stereo", "cpp", np.zeros(0), np.zeros((0, 4, 4)),
@@ -271,6 +300,63 @@ def test_judge_has_no_mapping_spread_without_a_keyframe() -> None:
     judged = budgets.judge(_timed_run([(0.001, 0.002, 0.003, 0.0)] * 3))
     assert (judged.mapped, judged.mapping, judged.mapping_load) == (0, None, 0.0)
     assert judged.mapping_peak_load == 0.0
+
+
+def test_judge_finds_the_backlog_a_mapping_thread_would_build() -> None:
+    """In order, Lindley's recursion over the keyframes: the longest a keyframe would wait.
+
+    Keyframes every 0.25 s, each mapped in 0.375 s: each waits 0.125 s longer than the last,
+    the fourth 0.375 s; a run of one keyframe waits for none.
+    """
+    steps = [(0.001, 0.002, 0.003, 0.375 if k % 5 == 0 else 0.0) for k in range(20)]
+    judged = budgets.judge(_timed_run(steps))
+    assert judged.threaded is False
+    assert judged.backlog == pytest.approx(0.375)
+    assert (judged.asked, judged.refused, judged.queue, judged.aborted) == (4, 0, 0, 0)
+    one = [(0.001, 0.002, 0.003, 0.5)] + [(0.001, 0.002, 0.003, 0.0)] * 3
+    assert budgets.judge(_timed_run(one)).backlog == 0.0
+
+
+@pytest.mark.parametrize(
+    ("times", "seconds", "message"),
+    [
+        ([0.0, 1.0], [0.1], "expected one mapping time per time"),
+        ([1.0, 0.0], [0.1, 0.1], "times: must be ascending"),
+        ([0.0, 1.0], [0.1, -0.1], "seconds: must not be negative"),
+        ([0.0, float("nan")], [0.1, 0.1], "times"),
+    ],
+)
+def test_the_backlog_refuses_what_is_not_a_run_of_keyframes(
+    times: list[float], seconds: list[float], message: str
+) -> None:
+    """One mapping time per arrival, finite, the arrivals ascending (B3b's review panel, H9)."""
+    with pytest.raises(InvalidInputError, match=message):
+        budgets.backlog(np.array(times), np.array(seconds))
+
+
+def test_judge_measures_a_threaded_runs_mapping_as_it_ran() -> None:
+    """Threaded: the queue, the keyframes refused, the local BAs aborted, tracking's wait.
+
+    The backlog, a measure for runs made in order, is not given: the queue was measured.
+    """
+    run = _timed_run([(0.001, 0.002, 0.003, 0.1 if k in (2, 4) else 0.0) for k in range(6)])
+    run = replace(run, threaded=True)
+    run.diagnostics[1].update(asked=True, refused=True, queue=3, wait_seconds=0.004)
+    run.diagnostics[4]["schedule"] = {"fusion": "ran", "adjustment": "aborted", "culling": "ran"}
+    judged = budgets.judge(run)
+    assert (judged.threaded, judged.backlog) == (True, None)
+    assert (judged.asked, judged.refused, judged.queue, judged.aborted) == (3, 1, 3, 1)
+    assert judged.waited.max == pytest.approx(0.004)
+    for key, bad, message in [
+        ("asked", 1, "frame 2's asked must be true or false"),
+        ("queue", "3", "frame 2's queue must be a number"),
+        ("wait_seconds", -1.0, "frame 2's wait_seconds must be finite and at least 0"),
+        ("schedule", "ran", "frame 2's schedule must be an object or null"),
+    ]:
+        broken = _timed_run([(0.001, 0.002, 0.003, 0.0)] * 3)
+        broken.diagnostics[2][key] = bad
+        with pytest.raises(InvalidInputError, match=message):
+            budgets.judge(broken)
 
 
 def test_judge_refuses_what_it_cannot_judge() -> None:

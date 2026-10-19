@@ -6,7 +6,10 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
+#include <functional>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -44,6 +47,51 @@ struct MappingSummary {
   std::int64_t culled_keyframes{0};
 };
 
+/// @brief How a step local mapping schedules went (`slam_it.edge.mapping.Scheduled`), with the
+///        codes it crosses the bindings as.
+enum class Scheduled : std::uint8_t {
+  /// @brief It ran (and may have found nothing to do).
+  kRan = 0,
+  /// @brief It was passed over: a keyframe waited, or a stop was requested.
+  kSkipped = 1,
+  /// @brief It started and was stopped early.
+  kAborted = 2,
+  /// @brief The number of outcomes (a sentinel, not an outcome).
+  kCount = 3,
+};
+
+/// @brief An outcome's name, as `slam_it.edge.mapping.Scheduled` spells it.
+/// @param scheduled The outcome.
+/// @return A static string.
+[[nodiscard]] const char* name(Scheduled scheduled);
+
+/// @brief How local mapping scheduled a keyframe's steps (`slam_it.edge.mapping.Schedule`).
+struct Schedule {
+  /// @brief Fusing duplicates with the neighbours (`SearchInNeighbors`).
+  Scheduled fusion{Scheduled::kRan};
+  /// @brief The local BA.
+  Scheduled adjustment{Scheduled::kRan};
+  /// @brief Culling redundant keyframes.
+  Scheduled culling{Scheduled::kRan};
+};
+
+/// @brief What local mapping's own thread is asked between its steps
+///        (`slam_it.edge.mapping.Interrupts`, ORB-SLAM's `LocalMapping::Run`).
+struct Interrupts {
+  /// @brief Whether another keyframe waits to be mapped (`CheckNewKeyFrames`).
+  std::function<bool()> waiting;
+  /// @brief Whether a stop of local mapping is requested (`stopRequested`).
+  std::function<bool()> stopping;
+  /// @brief The flag that stops the local BA (`mbAbortBA`); not owned.
+  const std::atomic<bool>* abort = nullptr;
+  /// @brief Publish the map so far for tracking, the keyframe's new points made (the
+  ///        baseline: let the map's lock go there, between steps).
+  std::function<void(const Map&)> publish;
+  /// @brief What the local BA does around its solves (the baseline's lock); not owned, null
+  ///        for nothing.
+  const Around* around = nullptr;
+};
+
 /// @brief A keyframe mapped (`slam_it.edge.mapping.Mapped`, the map aside: it changes in
 ///        place): how it went, and the points made of its keypoints.
 struct Mapped {
@@ -53,6 +101,8 @@ struct Mapped {
   ///        triangulated), -1 where none: as made, though fusion or culling may since have
   ///        removed it.
   std::vector<std::int64_t> made;
+  /// @brief How its steps were scheduled.
+  Schedule schedule;
 };
 
 /// @brief The depth below which a point is close (`slam_it.edge.mapping.close_depth`).
@@ -70,14 +120,19 @@ struct Mapped {
 /// @param reference Its reference keyframe's row (`LocalTracking::reference`).
 /// @param mode The pipeline's mode.
 /// @param options The ratios and counts.
+/// @param idle Whether local mapping is idle (as when it runs inline).
+/// @param since_keyframe The frames since the last keyframe, read only with mapping busy; none,
+///        as if too few.
+/// @param keyframes The whole map's keyframes, which the rules count, when `m` is a view of it
+///        (`sub_map`); none, `m`'s own.
 /// @return Whether to insert a keyframe; `InvalidInput` for a map without keyframes, matches
 ///         that are not one per depth, a reference out of range, or an invalid camera or
 ///         settings.
-[[nodiscard]] foundations::Result<bool> need_keyframe(const Map& m, const Camera& camera,
-                                                      std::span<const double> depth,
-                                                      const Tracked& tracked,
-                                                      std::int64_t reference, Mode mode,
-                                                      const Options& options);
+[[nodiscard]] foundations::Result<bool> need_keyframe(
+    const Map& m, const Camera& camera, std::span<const double> depth, const Tracked& tracked,
+    std::int64_t reference, Mode mode, const Options& options, bool idle = true,
+    std::optional<std::int64_t> since_keyframe = std::nullopt,
+    std::optional<std::int64_t> keyframes = std::nullopt);
 
 /// @brief Create points from the newest keyframe's close depth
 ///        (`slam_it.edge.mapping.create_points_from_depth`, ORB-SLAM's `CreateNewKeyFrame`).
@@ -175,12 +230,15 @@ struct Mapped {
 /// @param mode The pipeline's mode.
 /// @param options The settings.
 /// @param held The ids of the keyframes loop detection holds, which culling spares.
-/// @return How each step went, and the points made for the keyframe's keypoints;
-///         `InvalidInput` for matches that are not one per keypoint, or an invalid camera or
-///         settings.
+/// @param interrupts What local mapping's thread is asked between the steps; null inline, every
+///        step run.
+/// @return How each step went and was scheduled, and the points made for the keyframe's
+///         keypoints; `InvalidInput` for matches that are not one per keypoint, or an invalid
+///         camera or settings.
 [[nodiscard]] foundations::Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame,
                                                   const Tracked& tracked, Mode mode,
                                                   const Options& options,
-                                                  std::span<const std::int64_t> held = {});
+                                                  std::span<const std::int64_t> held = {},
+                                                  const Interrupts* interrupts = nullptr);
 
 }  // namespace slam_it::edge

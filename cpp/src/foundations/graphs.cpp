@@ -36,7 +36,7 @@ namespace {
 
 /// @brief Each termination's name, in code order (`graphs.Termination`).
 constexpr std::array<const char*, static_cast<std::size_t>(Termination::kCount)> kTerminationNames =
-    {"function", "max_iterations", "damping_limit"};
+    {"function", "max_iterations", "damping_limit", "stopped"};
 
 /// @brief A similarity's rotation, translation and scale.
 struct Parts {
@@ -275,6 +275,10 @@ Result<Solved> solve(const gtsam::NonlinearFactorGraph& graph, const gtsam::Valu
     Termination termination = Termination::kMaxIterations;
     int iterations = 0;
     while (current > 0.0 && iterations < options.max_iterations) {
+      if (options.stop != nullptr && options.stop->load(std::memory_order_relaxed)) {
+        termination = Termination::kStopped;
+        break;
+      }
       optimizer.iterate();
       ++iterations;
       const double error = optimizer.error();

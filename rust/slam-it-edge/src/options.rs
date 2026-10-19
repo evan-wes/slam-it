@@ -276,6 +276,10 @@ pub struct KeyframeOptions {
     pub close_tracked: usize,
     /// Untracked close points above which they do.
     pub close_untracked: usize,
+    /// With local mapping busy, in threads of their own, a stereo or RGB-D frame tracking fewer
+    /// than this fraction of its reference keyframe's points still asks for a keyframe
+    /// (`NeedNewKeyFrame`'s `c1c`).
+    pub busy_ref_ratio: f64,
 }
 
 impl Default for KeyframeOptions {
@@ -289,6 +293,7 @@ impl Default for KeyframeOptions {
             min_inliers: 15,
             close_tracked: 100,
             close_untracked: 70,
+            busy_ref_ratio: 0.25,
         }
     }
 }
@@ -334,6 +339,9 @@ pub struct MappingOptions {
     pub redundant_fraction: f64,
     /// By at least this many other keyframes.
     pub redundant_observers: usize,
+    /// With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is queued
+    /// only while fewer than this many wait (`KeyframesInQueue() < 3`).
+    pub max_queued: usize,
 }
 
 impl Default for MappingOptions {
@@ -358,6 +366,7 @@ impl Default for MappingOptions {
             min_point_observations_depth: 3,
             redundant_fraction: 0.9,
             redundant_observers: 3,
+            max_queued: 3,
         }
     }
 }
@@ -781,8 +790,8 @@ named_settings!(
     initialization: InitializationOptions { min_features: Integer, min_features_depth: Integer, window: Real, ratio: Real, min_matches: Integer, parallax_cos: Real, ba_iterations: Integer, ransac_iterations: Integer },
     tracking: TrackingOptions { motion_window: Real, stereo_motion_window: Real, min_motion_matches: Integer, min_motion_inliers: Integer, local_window: Real, rgbd_local_window: Real, recovery_local_window: Real, recovery_window_frames: Integer, aligned_view_cos: Real, aligned_view_radius: Real, oblique_view_radius: Real, local_map_ratio: Real, min_tracked: Integer, recovery_tracked: Integer, max_frames: Integer, view_cos_limit: Real, min_distance_margin: Real, max_distance_margin: Real, pnp_threshold: Real, pnp_min_inliers: Integer },
     adjustment: AdjustmentOptions { chi2_mono: Real, chi2_stereo: Real, pose_rounds: Integer, iterations: Integer, refine_iterations: Integer, min_keyframes: Integer },
-    keyframes: KeyframeOptions { ref_ratio: Real, mono_ref_ratio: Real, first_ref_ratio: Real, ref_min_observations: Integer, ref_min_observations_early: Integer, min_inliers: Integer, close_tracked: Integer, close_untracked: Integer },
-    mapping: MappingOptions { min_new_points: Integer, triangulation_neighbours: Integer, mono_triangulation_neighbours: Integer, epipolar_chi2: Real, min_epipole_distance2: Real, min_baseline_depth: Real, max_parallax_cos: Real, scale_ratio: Real, fuse_window: Real, fuse_neighbours: Integer, mono_fuse_neighbours: Integer, fuse_second_neighbours: Integer, found_ratio: Real, recent_point_keyframes: Integer, point_cull_age: Integer, min_point_observations: Integer, min_point_observations_depth: Integer, redundant_fraction: Real, redundant_observers: Integer },
+    keyframes: KeyframeOptions { ref_ratio: Real, mono_ref_ratio: Real, first_ref_ratio: Real, ref_min_observations: Integer, ref_min_observations_early: Integer, min_inliers: Integer, close_tracked: Integer, close_untracked: Integer, busy_ref_ratio: Real },
+    mapping: MappingOptions { min_new_points: Integer, triangulation_neighbours: Integer, mono_triangulation_neighbours: Integer, epipolar_chi2: Real, min_epipole_distance2: Real, min_baseline_depth: Real, max_parallax_cos: Real, scale_ratio: Real, fuse_window: Real, fuse_neighbours: Integer, mono_fuse_neighbours: Integer, fuse_second_neighbours: Integer, found_ratio: Real, recent_point_keyframes: Integer, point_cull_age: Integer, min_point_observations: Integer, min_point_observations_depth: Integer, redundant_fraction: Real, redundant_observers: Integer, max_queued: Integer },
     covisibility: CovisibilityOptions {
         min_points: Integer,
         local_keyframes: Integer,
@@ -901,6 +910,7 @@ fn check_counts(options: &Options) -> Result<()> {
             "mapping.redundant_observers",
             options.mapping.redundant_observers,
         ),
+        ("mapping.max_queued", options.mapping.max_queued),
         ("tracking.pnp_min_inliers", options.tracking.pnp_min_inliers),
         ("loss.lost_frames", options.loss.lost_frames),
         (
@@ -1118,6 +1128,7 @@ fn check_reals(options: &Options) -> Result<()> {
             "keyframes.first_ref_ratio",
             options.keyframes.first_ref_ratio,
         ),
+        ("keyframes.busy_ref_ratio", options.keyframes.busy_ref_ratio),
         (
             "mapping.min_baseline_depth",
             options.mapping.min_baseline_depth,
@@ -1173,7 +1184,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 132);
+        assert_eq!(settings.len(), 134);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
         options

@@ -5,6 +5,7 @@
 use nalgebra::{Matrix4, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::matching::{Match, Projection, SearchOptions};
+use slam_it_foundations::nls::Stop;
 use slam_it_foundations::triangulation;
 use slam_it_foundations::twoview::{self, Status};
 
@@ -514,7 +515,14 @@ pub fn initialize_monocular(
     covisibility::adopt(&mut m, 1)?; // the second keyframe's parent
     let mut adjusted = *options;
     adjusted.adjustment.iterations = options.initialization.ba_iterations;
-    let adjustment = bundle_adjust(&mut m, camera, &[0, 1], &[true, false], &adjusted)?;
+    let adjustment = bundle_adjust(
+        &mut m,
+        camera,
+        &[0, 1],
+        &[true, false],
+        &adjusted,
+        &Stop::never(),
+    )?;
     if m.points() < options.initialization.min_matches {
         // ORB-SLAM resets with fewer than 100 tracked points
         return failed(Outcome::TooFewPoints, adjustment.solves);

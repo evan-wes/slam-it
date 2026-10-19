@@ -166,6 +166,23 @@ def test_levenberg_marquardt_reaches_rosenbrock_minimum() -> None:
     assert summary.trace[0].cost == summary.initial_cost
 
 
+def test_a_stop_ends_the_solve_between_steps() -> None:
+    """Asked before each step, a stop ends the solve there: the steps taken kept, not converged."""
+    asked: list[bool] = []
+
+    def stop() -> bool:
+        asked.append(True)
+        return len(asked) > 2
+
+    solution = nls.solve(Rosenbrock(), np.array([-1.2, 1.0]), TIGHT, stop=stop)
+    summary = solution.summary
+    assert (summary.iterations, summary.termination) == (2, nls.Termination.STOPPED)
+    assert not summary.converged
+    assert summary.final_cost <= summary.initial_cost
+    never = nls.solve(Rosenbrock(), np.array([-1.2, 1.0]), TIGHT, stop=lambda: False)
+    assert never.summary == nls.solve(Rosenbrock(), np.array([-1.2, 1.0]), TIGHT).summary
+
+
 def test_summary_meets_the_shared_contract() -> None:
     """The NLS summary is a :class:`solve.Summary`; mypy checks the assignment."""
     shared: solve.Summary = nls.solve(Rosenbrock(), np.array([-1.2, 1.0]), TIGHT).summary

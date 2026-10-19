@@ -1076,7 +1076,7 @@ shared with the owner's other projects.
   - **The C++ edge tests' layout (H18).** Options' checks live in `test_map.cpp` and the
     residuals' in `test_adjust.cpp`, not in tests mirroring their modules.
 - **Found while building PR 9:**
-  - **Mapping in a thread of its own, in milestone 2B's B3b (was milestone 7).** The
+  - Closed by milestone 2B's B3b: **Mapping in a thread of its own (was milestone 7).** The
     edge rung maps after tracking in one thread, so runs are deterministic and the languages
     compare frame by frame; PR 9 judges mapping by its load, as a thread of its own would run
     it. A real mapping thread, and ORB-SLAM's interruption of a local BA when a keyframe
@@ -1087,7 +1087,11 @@ shared with the owner's other projects.
     design (decided with evan-wes on 2026-10-16;
     [the test-set note](../notes/test-set.md#b2-the-covisibility-graph)). *2026-10-17:* real
     threads, a design of our own, in B3b ([the 2B design](2026-10-14-online-slam.md),
-    section 4).
+    section 4). *B3b (2026-10-18):* tracking, local mapping, loop closing and each global BA run
+    in threads of their own, with ORB-SLAM's scheduling (a local BA interrupted when a keyframe
+    arrives, keyframes queued or refused while mapping is busy) and its locking as C++'s
+    baseline ([the 2B design](2026-10-14-online-slam.md), section 12); a run in order stays the
+    default.
 - **Found while designing milestone 2B's B3:**
   - **Hand-built parts a standard library could replace** (decided with evan-wes on
     2026-10-17). What rung 0 and the edge rung built by hand before libraries were welcome
@@ -1100,6 +1104,41 @@ shared with the owner's other projects.
     sequences and the test set, several runs each since it is threaded, and scored by our
     evaluation: the whole system's yardstick, and the bar's anchor where ORB-SLAM's papers
     publish no figure.
+- **Deferred from milestone 2B's B3b** ([the 2B design](2026-10-14-online-slam.md), section 12;
+  decided by evan-wes on 2026-10-18):
+  - **B3b's measurements, not run.** Section 13's measurements were not run for B3b's PR (no long
+    runs for it): the latency bar (at least 99% of the frames built and tracked within their
+    deadline, C++ and Rust each alone on cores of its own), the accuracy threaded on the loop
+    sequences and the test set against B3's runs in order, and our design against ORB-SLAM's
+    scheme in C++. The scripts take them: `scripts/measure_testset.py`'s `--threaded`, `--locks`
+    and `--budget`, and `scripts/measure_sharded.py`'s `--cores`.
+  - **A flaky threaded run of the loop room.** Its bar threaded in C++, the TUM monocular case
+    (`test_every_backend_closes_the_loop_room`), missed its 2 cm final-ATE bound in one of four
+    runs (8.99 cm; 1.54 to 1.62 cm in the others), on a busy machine. Run it about 20 times on a
+    quiet machine before and after B3b's commit that publishes a view of what tracking reads,
+    and decide from the failure rates: a flaky bar would fail layer 1 and offline CI at random.
+  - **A failed loop correction (the 2B design's section 12, item 14; B3's review panel, H17).**
+    Still open, with no decision yet: whether a GTSAM failure inside a loop's correction should
+    be recorded and the loop skipped.
+- **Deferred from milestone 2B's B3b review panel**
+  ([report](../reviews/2026-10-18-feature-2b-b3b-threads.md); decided by evan-wes on
+  2026-10-18):
+  - **A Python test of a threaded loop (H3).** Python's threaded loop correction, its global
+    BA and `follow` after a correction run in no test (the threaded tests' room has no loop):
+    one that closes a loop threaded, applies a global BA and leaves no thread, once H11 and A10
+    are understood.
+  - **The flaky threaded case of the loop room (H10, L3).** "A flaky threaded run of the loop
+    room", above; the panel's pointer, a global BA that shrank the map (scale 0.276), is in
+    the 2B design's section 12, "Deferred for this PR".
+  - **Python's threaded loop room (H11, A10).** Through `vo.run`, Python's threaded RGB-D run
+    ended at 7.38 cm final ATE against 4.67 cm in order (one run each), above the 7 cm bound
+    the natives are held to; in memory with the tests' settings, its threaded runs closed no
+    loop (RGB-D 263 of 280 frames tracked, stereo 255, monocular in 10 maps). Find why before
+    Python's threaded run is held to the bar.
+  - **The map's owner, a module of its own (A9, with H13's file split).** `MapOwner`, its
+    `View` and the publishing grow inside the pipeline modules (`pipeline.py` 1,655 lines and
+    `pipeline.rs` 2,738 at the review); an `edge` owner module, before B4's merges enter
+    through it, would keep the pipeline the composition.
 - **Deferred from milestone 2B's B3 review panel**
   ([report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md); decided by evan-wes on
   2026-10-17):
@@ -1288,14 +1327,17 @@ shared with the owner's other projects.
     `MapPointCulling` reads; the fix moves decisions, so it is a PR of its own.
 - **Deferred from PR 9's review panel**
   ([report](../reviews/2026-10-08-feature-real-time.md)):
-  - **A mapping thread's backlog, with milestone 2B's B3b (L8).** `judge` measures mapping by
-    its load over the run and over its busiest window; the lag a mapping thread of its own would
-    build up is the waiting time of a FIFO queue, Lindley's recursion
+  - Closed by milestone 2B's B3b: **A mapping thread's backlog (L8).** `judge` measures mapping
+    by its load over the run and over its busiest window; the lag a mapping thread of its own
+    would build up is the waiting time of a FIFO queue, Lindley's recursion
     (`W' = max(0, W + S - A)`, keyframe arrivals A, mapping times S), an upper bound where
-    ORB-SLAM also holds back keyframes and stops its local BA. Add it with the thread.
-  - **Physical cores for a budget, with milestone 2B's B3b (L12).** A budget's cores are logical
-    CPUs: this machine has no SMT, but on one that has, the four highest-numbered CPUs can be
-    two physical cores. Read `topology/thread_siblings_list` when a budget runs threads.
+    ORB-SLAM also holds back keyframes and stops its local BA. *B3b:* `budgets.backlog` gives it
+    for runs made in order; a threaded run's mapping is judged as it ran, by the keyframes asked
+    for and refused, the largest queue and the local BAs aborted.
+  - Closed by milestone 2B's B3b: **Physical cores for a budget (L12).** A budget's cores were
+    logical CPUs: this machine has no SMT, but on one that has, the four highest-numbered CPUs
+    can be two physical cores. *B3b:* `budgets.cpus` pins one logical CPU of each physical core,
+    read from `topology/thread_siblings_list` (`budgets.physical`).
   - **The anchored point's own observation (L10).** A host's observation of its own anchored
     point is analytically null (the point is on the host's ray whatever the host pose,
     intrinsics or inverse depth), but the BA's pairwise products over its repeated columns leave

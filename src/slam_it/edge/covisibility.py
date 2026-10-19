@@ -108,6 +108,16 @@ class Implementation(Protocol):
         """Return the strong links, (L, 3)."""
         ...
 
+    def view_keyframes(
+        self,
+        m: dict[str, Any],
+        last: NDArray[np.int64],
+        reference: int,
+        options: dict[str, Any],
+    ) -> NDArray[np.int64]:
+        """Return the keyframes a view holds, by row."""
+        ...
+
 
 # --- reference ----------------------------------------------------------------------------
 
@@ -231,6 +241,26 @@ def _local_map(m: Map, points: IntArray, options: Options) -> LocalMap:
         if parent >= 0 and int(parent) not in inside:
             add(int(parent))
     return LocalMap(keyframes=np.array(local, dtype=np.int64), reference=int(k1[0]))
+
+
+def _view_keyframes(m: Map, last: IntArray, reference: int, options: Options) -> IntArray:
+    """Return the keyframes a view holds (reference)."""
+    local = _local_map(m, last, options).keyframes
+    pairs = _pairs(m)
+    first = np.flatnonzero(_observing(m, pairs, m.pt_id[m.observed_by(local)]) > 0)
+    inside = np.zeros(m.keyframes, dtype=bool)
+    for k in first.tolist():
+        inside[k] = True
+        inside |= _shared_in(m, pairs, k) > 0
+        inside |= m.kf_parent == m.kf_id[k]  # its children
+        parent = int(m.keyframe_rows(m.kf_parent[k : k + 1])[0])
+        if parent >= 0:
+            inside[parent] = True
+    if reference >= 0:
+        row = int(m.keyframe_rows(np.array([reference], dtype=np.int64))[0])
+        if row >= 0:
+            inside[row] = True
+    return np.flatnonzero(inside).astype(np.int64)
 
 
 def _adopt(m: Map, k: int) -> Map:
@@ -421,6 +451,63 @@ def local_map(m: Map, points: ArrayLike, options: Options, *, backend: str = "py
             keyframes=backends.checked_array(raw["keyframes"], np.int64, 1, "local keyframes"),
             reference=int(raw["reference"]),
         ),
+    )
+
+
+def view_keyframes(
+    m: Map,
+    last: ArrayLike,
+    reference: int,
+    options: Options,
+    *,
+    backend: str = "python",
+) -> IntArray:
+    """Return the keyframes tracking's next frame may read, from where the last frame left it.
+
+    What the view a writer publishes holds (the online-SLAM design's section 12, item 3; the
+    natives' pipelines in threads of their own), so that tracking on it decides as on the whole
+    map: the last frame's local map (:func:`local_map`) gives the points tracking may match, by
+    the motion model or the local fallback; then the keyframes observing them (the K1 of any
+    frame matching them) and, for each of those, every keyframe sharing a point with it, its
+    children and its parent, which K2 and the keyframe decision read; and the last frame's
+    reference keyframe. Python's own view is its immutable map, published by reference.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map.
+    last : array_like of int
+        The point each of the last frame's keypoints tracked, -1 for none.
+    reference : int
+        Its reference keyframe's id, or -1.
+    options : slam_it.edge.options.Options
+        The local map's settings (``covisibility``).
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    ndarray of int64, shape (V,)
+        The keyframes' rows, ascending.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `last` is not a vector of ids.
+    """
+    checked = as_points(last)
+    return backends.call(
+        backend,
+        __name__,
+        "view_keyframes",
+        reference=lambda: _view_keyframes(m, checked, int(reference), options),
+        arguments={
+            "m": m.as_dict(),
+            "last": checked,
+            "reference": int(reference),
+            "options": options.as_dict(),
+        },
+        decode=lambda raw, codes: backends.checked_array(raw, np.int64, 1, "view keyframes"),
     )
 
 

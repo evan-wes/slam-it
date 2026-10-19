@@ -2,16 +2,19 @@
 
 A run is a folder, written by any backend's pipeline (C++ and Rust write the same files):
 
-- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 7, "dataset", "sequence",
-  "mode", "backend", "settings", "vocabulary", "record_features", "peak_memory", "cpus",
-  "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of ``python``, ``cpp`` and
-  ``rust``; ``settings`` holds the pipeline's options as JSON (the edge pipeline's an object per
-  group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary`` the vocabulary a run
-  relocalising or closing loops used, as its folder's header and checksums record it
-  (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k, levels,
-  words and each array's SHA-256), null for a run that did neither (``relocalization.enabled``
-  and ``loops.enabled`` off); ``record_features`` whether the run recorded its features
-  (below). The last three describe the program that ran it, as it recorded them before writing
+- ``run.json``: what ran: ``{"format": "slam-it-run", "version": 8, "dataset", "sequence",
+  "mode", "backend", "settings", "vocabulary", "record_features", "threaded", "locks",
+  "peak_memory", "cpus", "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of
+  ``python``, ``cpp`` and ``rust``; ``settings`` holds the pipeline's options as JSON (the edge
+  pipeline's an object per group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary``
+  the vocabulary a run relocalising or closing loops used, as its folder's header and checksums
+  record it (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k,
+  levels, words and each array's SHA-256), null for a run that did neither
+  (``relocalization.enabled`` and ``loops.enabled`` off); ``record_features`` whether the run
+  recorded its features (below); ``threaded`` whether its steps ran in threads of their own
+  (:class:`slam_it.edge.pipeline.Pipeline`'s ``threaded``), and ``locks`` whether those threads
+  shared the map by ORB-SLAM's locks, C++'s baseline (its program's ``--locks``; only threaded,
+  only C++). The last three describe the program that ran it, as it recorded them before writing
   (:mod:`slam_it.eval.budgets`), and are null when the run was not a program's of its own
   (Python's in-process run) or the system does not say: ``peak_memory``, its largest resident
   set in bytes; ``cpus``, the CPUs it could run on, ascending (a budget pins them);
@@ -64,7 +67,19 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   their steps, in seconds (:data:`STEPS`), which the budget harness judges
   (:func:`slam_it.eval.budgets.judge`), and say how their stages went
   (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it did
-  not run.
+  not run. And they say how the threads' handshakes went (:data:`HANDSHAKES`), which the budget
+  harness judges too: ``wait_seconds``, the part of ``track_seconds`` tracking waited for the
+  map; ``asked``, whether the frame wanted a keyframe, ``refused``, whether mapping could not
+  take it, and ``queue``, the keyframes waiting for mapping then; ``schedule``, on a keyframe
+  mapped, how mapping scheduled its fusion, local BA and culling
+  (:meth:`slam_it.edge.mapping.Schedule.as_dict`), else null; and ``global_ba``, the global BAs
+  that ended on the frame (:meth:`slam_it.edge.loops.GlobalSummary.as_dict`), with
+  ``global_ba_seconds`` their time; and ``views``, the views a writer published for tracking
+  while the frame was tracked, each its ``keyframes``, ``points`` and the ``bytes`` its copy
+  holds (the native pipelines' copy of the part of the map tracking may read; Python's view is
+  the map itself, published by reference, and lists none). Inline, nothing waits, nothing is
+  refused, global BA runs in a loop's correction, and no view is published. A threaded run's
+  mapping and loop closing are its keyframe's frame's, though they ended later.
 
 :func:`write_run` checks everything before it writes, and replaces each file whole (written
 to a temporary sibling, then renamed); :func:`read_run` checks every file's shape;
@@ -96,12 +111,13 @@ from slam_it.foundations.errors import DegenerateError, InvalidInputError
 FORMAT = "slam-it-run"
 """``run.json``'s ``format``."""
 
-VERSION = 7
+VERSION = 8
 """``run.json``'s ``version``: this module's layout (2 added ``peak_memory``, ``cpus`` and
 ``memory_cap``; 3 every point and keyframe the run made, with their lives; 4 the maps, and the
 removal ``reset``; 5 the ``vocabulary`` a relocalising run used; 6 the settings grouped, each
 keyframe's parent and the strong links; 7 the final trajectory, the poses as tracked beside it,
-the loops closed, and loop closing's time)."""
+the loops closed, and loop closing's time; 8 ``threaded`` and ``locks``, and the threads'
+handshakes on each frame)."""
 
 REMOVALS = ("culled", "fused", "weak", "reset")
 """Why a point or keyframe was removed, a life's code being the index: culled (a recent point
@@ -126,6 +142,19 @@ delivering its images decoded (and a stereo pair rectified), building the frame 
 tracking it (initialisation included), mapping it, 0 exactly when it is not a keyframe mapped,
 and closing loops on it, 0 when it is not a keyframe searched (correction included). C++ and
 Rust write the same keys (:mod:`slam_it.orchestration.vo`)."""
+
+HANDSHAKES = (
+    "wait_seconds",
+    "asked",
+    "refused",
+    "queue",
+    "schedule",
+    "global_ba",
+    "global_ba_seconds",
+    "views",
+)
+"""The keys each frame of the edge pipeline gives how the threads' handshakes went (the module
+docstring)."""
 
 DATASETS = ("tum", "euroc")
 """The datasets a sequence can come from: those this package reads (:func:`ground_truth`)."""
@@ -160,6 +189,8 @@ _INFO_KEYS = (
     "settings",
     "vocabulary",
     "record_features",
+    "threaded",
+    "locks",
     "peak_memory",
     "cpus",
     "memory_cap",
@@ -223,6 +254,10 @@ class Run:
         closed.
     record_features : bool
         Whether the run recorded its features (:func:`read_features` reads them).
+    threaded : bool
+        Whether its steps ran in threads of their own.
+    locks : bool
+        Whether those threads shared the map by ORB-SLAM's locks (C++'s baseline).
     pose_maps : ndarray of int64, shape (F,)
         The map each tracked frame's pose is in.
     keyframe_maps : ndarray of int64, shape (K,)
@@ -259,6 +294,8 @@ class Run:
         default_factory=lambda: np.zeros((0, 2), dtype=np.int64)
     )
     record_features: bool = False
+    threaded: bool = False
+    locks: bool = False
     pose_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     keyframe_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     point_maps: NDArray[np.int64] = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
@@ -626,8 +663,11 @@ def write_run(folder: str | Path, run: Run) -> None:
         raise InvalidInputError("settings: expected a dict")
     if run.vocabulary is not None:
         vocabularies.check_record(run.vocabulary)
-    if not isinstance(run.record_features, bool):
-        raise InvalidInputError("record_features: expected a bool")
+    for name in ("record_features", "threaded", "locks"):
+        if not isinstance(getattr(run, name), bool):
+            raise InvalidInputError(f"{name}: expected a bool")
+    if run.locks and not run.threaded:
+        raise InvalidInputError("locks: only a threaded run shares the map by locks")
     _check_process(run.peak_memory, run.cpus, run.memory_cap, "")
     info = {
         "format": FORMAT,
@@ -639,6 +679,8 @@ def write_run(folder: str | Path, run: Run) -> None:
         "settings": run.settings,
         "vocabulary": run.vocabulary,
         "record_features": run.record_features,
+        "threaded": run.threaded,
+        "locks": run.locks,
         "peak_memory": run.peak_memory,
         "cpus": run.cpus,
         "memory_cap": run.memory_cap,
@@ -741,8 +783,11 @@ def _read_info(path: Path) -> dict[str, Any]:
             vocabularies.check_record(info["vocabulary"])
         except InvalidInputError as error:
             raise InvalidInputError(f"{path}: {error}") from None
-    if not isinstance(info["record_features"], bool):
-        raise InvalidInputError(f"{path}: record_features must be true or false")
+    for key in ("record_features", "threaded", "locks"):
+        if not isinstance(info[key], bool):
+            raise InvalidInputError(f"{path}: {key} must be true or false")
+    if info["locks"] and not info["threaded"]:
+        raise InvalidInputError(f"{path}: locks is true, threaded false")
     _check_process(info["peak_memory"], info["cpus"], info["memory_cap"], f"{path}: ")
     _check_names(info["mode"], info["backend"])
     return info
@@ -849,6 +894,8 @@ def read_run(folder: str | Path) -> Run:
         keyframe_links=links,
         keyframe_loops=loops,
         record_features=info["record_features"],
+        threaded=info["threaded"],
+        locks=info["locks"],
         pose_maps=maps["pose_maps"],
         keyframe_maps=maps["keyframe_maps"],
         point_maps=maps["point_maps"],

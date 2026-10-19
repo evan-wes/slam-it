@@ -145,6 +145,8 @@ runs::Run golden_run() {
       .keyframe_links = lives(values["keyframe_links"]),
       .keyframe_loops = values["keyframe_loops"].get<std::vector<std::array<std::int64_t, 2>>>(),
       .record_features = values["record_features"].get<bool>(),
+      .threaded = values["threaded"].get<bool>(),
+      .locks = values["locks"].get<bool>(),
       .pose_maps = values["pose_maps"].get<std::vector<std::int64_t>>(),
       .keyframe_maps = values["keyframe_maps"].get<std::vector<std::int64_t>>(),
       .point_maps = values["point_maps"].get<std::vector<std::int64_t>>()};

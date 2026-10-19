@@ -153,6 +153,14 @@ nb::dict erase_keyframe(const nb::dict& m, std::int64_t k) {
   return map_dict(out);
 }
 
+/// @brief The part of a map some of its keyframes make.
+/// @param m The map, as a dict.
+/// @param rows The keyframes' rows, ascending.
+/// @return The sub-map, as a dict.
+nb::dict sub_map(const nb::dict& m, const Int64In& rows) {
+  return map_dict(edge::sub_map(map_in(m), int64_in(rows)));
+}
+
 /// @brief Add to points' visible and found counts.
 /// @param m The map, as a dict.
 /// @param ids Point ids.
@@ -187,6 +195,8 @@ void bind_map(nb::module_& m) {
   m.def("forget_observations", &forget_observations, nb::arg("m"), nb::arg("rows").noconvert(),
         "Remove keypoints' observations.");
   m.def("erase_keyframe", &erase_keyframe, nb::arg("m"), nb::arg("k"), "Remove a keyframe.");
+  m.def("sub_map", &sub_map, nb::arg("m"), nb::arg("rows").noconvert(),
+        "The part of a map some of its keyframes make.");
   m.def("count", &count, nb::arg("m"), nb::arg("ids").noconvert(), nb::arg("visible").noconvert(),
         nb::arg("found").noconvert(), "Add to points' visible and found counts.");
 }

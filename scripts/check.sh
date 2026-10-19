@@ -89,6 +89,26 @@ check "clang-tidy (benchmarks)" clang-tidy -p build/bench --quiet \
   --extra-arg=-isystem"${ENV_INCLUDE}" "${BENCH_TU[@]}"
 check "doxygen (every declaration documented)" doxygen Doxyfile
 check "C++ tests (ctest)" ctest --test-dir build/native --output-on-failure
+# The C++ tests once more under ThreadSanitizer (the online-SLAM design's section 12, item 13):
+# built apart in build/tsan, with debug information for the reports' stacks, so that a data
+# race in the threads' handshakes or the threaded pipeline fails the check; both of the
+# pipeline's threaded schemes run there (cpp/tests/edge/test_pipeline.cpp). Rust's threads are
+# safe code. GCC's -Wmaybe-uninitialized misfires at -O2 on Eigen matrices held in a
+# std::optional (RANSAC's best model), so that warning is off in this build alone.
+check "cmake configure, ThreadSanitizer" \
+  cmake -S . -B build/tsan -G Ninja -DSLAM_IT_BUILD_TESTS=ON -DSLAM_IT_BUILD_BENCHMARKS=OFF \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo "-DCMAKE_CXX_FLAGS=-fsanitize=thread -Wno-maybe-uninitialized" \
+  -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=thread
+check "C++ build, ThreadSanitizer" cmake --build build/tsan -j4
+check "C++ tests under ThreadSanitizer (ctest)" \
+  env TSAN_OPTIONS=halt_on_error=1:second_deadlock_stack=1 \
+  ctest --test-dir build/tsan --output-on-failure
+# The native tests' scene has no loop, so once more with loops on (B3b's review panel, A3): the
+# loop room threaded through the instrumented program, in both schemes, so that a loop's stop and
+# correction, a global BA's thread and its result carried onto the map run under the sanitizer.
+check "C++ loop room threaded under ThreadSanitizer" \
+  env SLAM_IT_TSAN_VO=build/tsan/slam_it_vo \
+  python -m pytest -q -m tsan tests/orchestration/test_loop_room_tsan.py
 
 # Rust
 check "rustfmt" cargo fmt --manifest-path rust/Cargo.toml --all --check
@@ -119,7 +139,8 @@ check "prettier (viewer)" viewer/node_modules/.bin/prettier --check \
 # Docstrings, doc comments, `#include`s and Rust `use`s are not counted (.jscpd.json): files
 # that bind one library import the same headers, which is not duplicated code.
 check "jscpd (duplication)" jscpd --config .jscpd.json
-check "pytest (parity, doctests; CPU subset)" python -m pytest -q -m "not gpu and not budget"
+check "pytest (parity, doctests; CPU subset)" \
+  python -m pytest -q -m "not gpu and not budget and not tsan"
 
 printf '\n'
 if [[ ${#failed[@]} -gt 0 ]]; then

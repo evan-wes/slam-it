@@ -24,7 +24,7 @@ inline constexpr std::array<const char*, 2> kDatasets{"tum", "euroc"};
 inline constexpr const char* kUsage =
     "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode monocular|stereo|rgbd "
     "--out RUN_DIR [--first I] [--count N] [--vocabulary FOLDER] [--record-features] "
-    "[--option KEY=VALUE ...]";
+    "[--threaded [--locks] | --views] [--option KEY=VALUE ...]";
 
 /// @brief The program's exit code for a command line it cannot read.
 inline constexpr int kExitUsage = 2;
@@ -69,10 +69,20 @@ struct Request {
   /// @brief The vocabulary's folder: required with `relocalization.enabled` or `loops.enabled`
   ///        on, refused with both off.
   std::optional<std::string> vocabulary;
+  /// @brief Whether the steps run in threads of their own, the frames fed at their recorded
+  ///        rate.
+  bool threaded{false};
+  /// @brief Whether those threads share the map by ORB-SLAM's locks, the baseline
+  ///        (`edge::Threading::kLocks`; C++ alone).
+  bool locks{false};
+  /// @brief Whether the steps run in turn, tracking each frame on the view a writer would
+  ///        publish (`edge::Threading::kInlineView`): a test that it decides as on the map.
+  bool views{false};
 };
 
 /// @brief Read the command line: `kUsage`, flags in any order, each with its value but
-///        `--record-features`, `--option` repeatable and naming a field of
+///        `--record-features`, `--threaded`, `--locks` and `--views`, `--option` repeatable and
+///        naming a field of
 ///        `slam_it.edge.options.Options`.
 /// @param arguments The arguments after the program's name.
 /// @return The request; `InvalidInput` for an unknown, repeated or missing flag, a flag
@@ -83,12 +93,17 @@ struct Request {
 /// @param request The request.
 /// @return Nothing; `InvalidInput` for an unknown dataset, a mode it does not record (TUM has
 ///         no stereo pairs, EuRoC no depth maps), a negative `first` or `count`, settings
-///         out of range, or a vocabulary missing while relocalising or given while not.
+///         out of range, a vocabulary missing while relocalising or given while not,
+///         `--locks` without `--threaded`, or `--views` with it.
 [[nodiscard]] foundations::Result<void> check(const Request& request);
 
 /// @brief Run a sequence through the pipeline: the run, not yet written, as Python's program
 ///        builds it before writing (`slam_it.orchestration.vo.main`). The program records its
 ///        own process in it (slam_it/eval/budgets.hpp) and writes it to `request.out`.
+///        Threaded, each frame is given its interval since the last, as ORB-SLAM3's examples
+///        give theirs, with none dropped (a late frame delays the next); a frame's line is what
+///        tracking made of it, its keyframe's mapping and loop closing added once the run's end
+///        has waited for them, and its features are written then.
 /// @param request The request.
 /// @return The run; the check's, a reader's or the pipeline's error.
 [[nodiscard]] foundations::Result<eval::runs::Run> run(const Request& request);

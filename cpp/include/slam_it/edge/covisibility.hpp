@@ -69,6 +69,22 @@ struct LocalMap {
                                                       std::span<const std::int64_t> points,
                                                       const Options& options);
 
+/// @brief The keyframes tracking's next frame may read, from where the last frame left it: what
+///        the view a writer publishes holds (the online-SLAM design's section 12, item 3), so
+///        that tracking on it decides as on the whole map. The last frame's local map
+///        (`local_map`) gives the points tracking may match, by the motion model or the local
+///        fallback; the keyframes observing them (the K1 of any frame matching them), and for
+///        each of those, every keyframe sharing a point with it, its children and its parent
+///        (what K2 and the keyframe decision read); and the last frame's reference keyframe.
+/// @param m The map.
+/// @param last The point each of the last frame's keypoints tracked, -1 for none.
+/// @param reference Its reference keyframe's id, or -1.
+/// @param options The settings: the `covisibility` group's.
+/// @return The keyframes' rows, ascending; `InvalidInput` for an id below -1.
+[[nodiscard]] foundations::Result<std::vector<std::int64_t>> view_keyframes(
+    const Map& m, std::span<const std::int64_t> last, std::int64_t reference,
+    const Options& options);
+
 /// @brief Give a keyframe its parent, if it has none yet (`slam_it.edge.covisibility.adopt`).
 ///
 /// For the keyframe being inserted, the map's newest, every other already in the tree: given an

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <Eigen/Core>
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -36,8 +37,10 @@ enum class Termination : std::uint8_t {
   /// @brief Not converged: no step lowered the error before the damping reached its upper
   ///        bound (also how a solve at its minimum ends when both tolerances are 0).
   kDampingLimit = 2,
+  /// @brief Not converged: stopped from outside, between iterations (`Options::stop`).
+  kStopped = 3,
   /// @brief The number of terminations (a sentinel, not a termination).
-  kCount = 3,
+  kCount = 4,
 };
 
 /// @brief The termination's name, as `slam_it.foundations.graphs.Termination` spells it.
@@ -64,6 +67,9 @@ struct Options {
   /// @brief An iteration lowering the error by at most this ends the solve as converged;
   ///        non-negative.
   double absolute_tolerance = 0.0;
+  /// @brief A flag another thread may set to stop the solve before its next iteration (a
+  ///        global BA superseded, ORB-SLAM's `mbStopGBA`); not owned, null for never.
+  const std::atomic<bool>* stop = nullptr;
 };
 
 /// @brief Check a solve's options.

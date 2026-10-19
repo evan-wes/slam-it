@@ -13,11 +13,13 @@
 #include <filesystem>
 #include <functional>
 #include <iterator>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -56,8 +58,17 @@ using foundations::camera::Model;
 
 using foundations::image::Image;
 
-/// @brief The one flag without a value: record each frame's keypoints, with their fates.
+/// @brief A flag without a value: record each frame's keypoints, with their fates.
 constexpr std::string_view kRecordFeatures = "--record-features";
+
+/// @brief A flag without a value: run the steps in threads of their own.
+constexpr std::string_view kThreaded = "--threaded";
+
+/// @brief A flag without a value: with `kThreaded`, share the map by ORB-SLAM's locks.
+constexpr std::string_view kLocks = "--locks";
+
+/// @brief A flag without a value: in turn, track each frame on the view a writer would publish.
+constexpr std::string_view kViews = "--views";
 
 /// @brief A stereo pair, rectified.
 struct StereoImages {
@@ -633,6 +644,35 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
   return out;
 }
 
+/// @brief How local mapping scheduled a keyframe's steps, as JSON
+///        (`slam_it.edge.mapping.Schedule.as_dict`).
+/// @param schedule The schedule.
+/// @return Its object.
+Result<eval::runs::JsonValue> schedule_json(const edge::Schedule& schedule) {
+  return nested({{"fusion", name_json(edge::name(schedule.fusion))},
+                 {"adjustment", name_json(edge::name(schedule.adjustment))},
+                 {"culling", name_json(edge::name(schedule.culling))}});
+}
+
+/// @brief How a global BA in a thread of its own went, as JSON
+///        (`slam_it.edge.loops.GlobalSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object; `InvalidInput` for an error that is not finite.
+Result<eval::runs::JsonValue> global_json(const edge::loops::GlobalSummary& s) {
+  auto solve = graph_solve_json(s.solve);
+  if (!solve) {
+    return std::unexpected(std::move(solve.error()));
+  }
+  const edge::loops::Propagated moved = s.propagation.value_or(edge::loops::Propagated{});
+  return nested({{"generation", s.generation},
+                 {"applied", s.applied},
+                 {"solve", *std::move(solve)},
+                 {"adjusted", moved.adjusted},
+                 {"propagated", moved.propagated},
+                 {"points", moved.points},
+                 {"carried", moved.carried}});
+}
+
 /// @brief Record a frame's result: its diagnostics (the trajectory is the pipeline's, at the
 ///        end: `record_trajectory`).
 /// @param out The run.
@@ -659,6 +699,21 @@ Result<void> record(eval::runs::Run& out, const edge::FrameResult& result, doubl
   for (auto& item : *summary) {
     out.diagnostics.back().push_back(std::move(item));
   }
+  auto schedule =
+      result.schedule ? schedule_json(*result.schedule) : Result<eval::runs::JsonValue>(nullptr);
+  auto none = eval::runs::json_array({});
+  if (!schedule || !none) {
+    return std::unexpected(!schedule ? schedule.error() : none.error());
+  }
+  eval::runs::JsonObject& line = out.diagnostics.back();
+  line.emplace_back("wait_seconds", result.wait_seconds);
+  line.emplace_back("asked", result.asked);
+  line.emplace_back("refused", result.refused);
+  line.emplace_back("queue", result.queue);
+  line.emplace_back("schedule", *std::move(schedule));
+  line.emplace_back("global_ba", *none);
+  line.emplace_back("global_ba_seconds", 0.0);
+  line.emplace_back("views", *std::move(none));
   return {};
 }
 
@@ -711,27 +766,233 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   return {};
 }
 
-/// @brief Append a frame's keypoints, with their fates, to the run's feature files.
-/// @param features The writer.
+/// @brief A frame's keypoints as a run records them: pixels, levels, and their fates
+///        (`slam_it.orchestration.vo._Keypoints`).
+struct Keypoints {
+  /// @brief Each keypoint's pixel.
+  std::vector<std::array<double, 2>> xy;
+  /// @brief Its pyramid level.
+  std::vector<std::int64_t> level;
+  /// @brief What became of it.
+  edge::Fates fates;
+};
+
+/// @brief A frame's keypoints, with their fates.
 /// @param frame The frame.
 /// @param fates What became of each of its keypoints.
-/// @return Nothing; the writer's error.
-Result<void> write_features(eval::runs::FeatureWriter& features, const edge::Frame& frame,
-                            const edge::Fates& fates) {
-  std::vector<std::array<double, 2>> xy;
-  std::vector<std::int64_t> level;
+/// @return The keypoints.
+Keypoints keypoints_of(const edge::Frame& frame, edge::Fates fates) {
+  Keypoints out{.xy = {}, .level = {}, .fates = std::move(fates)};
   for (const foundations::orb::Keypoint& keypoint : frame.features.keypoints) {
-    xy.push_back(keypoint.xy);
-    level.push_back(keypoint.level);
+    out.xy.push_back(keypoint.xy);
+    out.level.push_back(keypoint.level);
   }
+  return out;
+}
+
+/// @brief Append a frame's keypoints, with their fates, to the run's feature files.
+/// @param features The writer.
+/// @param keypoints The keypoints.
+/// @return Nothing; the writer's error.
+Result<void> write_features(eval::runs::FeatureWriter& features, const Keypoints& keypoints) {
   std::vector<std::int64_t> fate;
-  std::ranges::transform(fates.fate, std::back_inserter(fate),
+  std::ranges::transform(keypoints.fates.fate, std::back_inserter(fate),
                          [](edge::Fate f) { return static_cast<std::int64_t>(f); });
-  return features.write(xy, level, fate, fates.point);
+  return features.write(keypoints.xy, keypoints.level, fate, keypoints.fates.point);
+}
+
+/// @brief Set a key of a frame's diagnostics, in its place, or last if it is new.
+/// @param line The frame's diagnostics.
+/// @param key The key.
+/// @param value Its value.
+void set_key(eval::runs::JsonObject& line, std::string_view key, eval::runs::JsonValue value) {
+  for (auto& [name, held] : line) {
+    if (name == key) {
+      held = std::move(value);
+      return;
+    }
+  }
+  line.emplace_back(std::string(key), std::move(value));
+}
+
+/// @brief Give the keypoints mapping made a point of the fate `Fate::kMade` (threaded).
+/// @param fates The keypoints' fates, changed.
+/// @param made The point made of each keypoint, by the run's ids, -1 where none.
+void mark_made(edge::Fates& fates, const std::vector<std::int64_t>& made) {
+  for (std::size_t j = 0; j < std::min(made.size(), fates.fate.size()); ++j) {
+    if (made[j] >= 0) {
+      fates.fate[j] = edge::Fate::kMade;
+      fates.point[j] = made[j];
+    }
+  }
+}
+
+/// @brief A frame's global BAs and views published, as the completions bring them.
+struct Globals {
+  /// @brief Each global BA's record.
+  std::vector<eval::runs::JsonValue> listed;
+  /// @brief Their time, in seconds.
+  double seconds{0.0};
+  /// @brief Each view's size.
+  std::vector<eval::runs::JsonValue> views;
+};
+
+/// @brief Add one completion to its frame's diagnostics: a keyframe's mapping, its schedule and
+///        loop closing set, a global BA and a view published kept for the frame's lists.
+/// @param line The frame's diagnostics.
+/// @param completion The completion.
+/// @param globals The frame's global BAs so far.
+/// @return Nothing; a summary's error.
+Result<void> merge_one(eval::runs::JsonObject& line, const edge::Completion& completion,
+                       Globals& globals) {
+  if (completion.map_seconds) {
+    set_key(line, "map_seconds", *completion.map_seconds);
+  }
+  if (completion.loop_seconds) {
+    set_key(line, "loop_seconds", *completion.loop_seconds);
+  }
+  const auto value = [&](std::string_view key, Result<eval::runs::JsonValue> json) -> Result<void> {
+    if (!json) {
+      return std::unexpected(std::move(json.error()));
+    }
+    set_key(line, key, *std::move(json));
+    return {};
+  };
+  if (completion.mapping) {
+    if (auto ok = value("mapping", mapping_json(*completion.mapping)); !ok) {
+      return ok;
+    }
+  }
+  if (completion.schedule) {
+    if (auto ok = value("schedule", schedule_json(*completion.schedule)); !ok) {
+      return ok;
+    }
+  }
+  if (completion.loop) {
+    if (auto ok = value("loop", loop_json(*completion.loop)); !ok) {
+      return ok;
+    }
+  }
+  if (completion.global_ba) {
+    auto global = global_json(*completion.global_ba);
+    if (!global) {
+      return std::unexpected(std::move(global.error()));
+    }
+    globals.listed.push_back(*std::move(global));
+    globals.seconds += completion.global_ba_seconds;
+  }
+  if (completion.view) {
+    auto view = nested({{"keyframes", completion.view->keyframes},
+                        {"points", completion.view->points},
+                        {"bytes", completion.view->bytes}});
+    if (!view) {
+      return std::unexpected(std::move(view.error()));
+    }
+    globals.views.push_back(*std::move(view));
+  }
+  return {};
+}
+
+/// @brief Add what the threads finished to the frames' diagnostics (a keyframe's mapping and
+///        loop closing on its frame, a global BA on the frame it ended on, listed, its time
+///        summed), and give the keypoints mapping made a point of the fate `Fate::kMade`
+///        (`slam_it.orchestration.vo._merge`).
+/// @param out The run, each frame recorded.
+/// @param held Each frame's keypoints, when the run records them; else empty.
+/// @param done The completions.
+/// @return Nothing; a summary's error.
+Result<void> merge(eval::runs::Run& out, std::vector<Keypoints>& held,
+                   const std::vector<edge::Completion>& done) {
+  if (out.diagnostics.empty()) {
+    return {};
+  }
+  std::map<std::size_t, Globals> globals;
+  for (const edge::Completion& completion : done) {
+    const auto frame = static_cast<std::size_t>(completion.frame);
+    const std::size_t at = std::min(frame, out.diagnostics.size() - 1);
+    if (auto ok = merge_one(out.diagnostics[at], completion, globals[at]); !ok) {
+      return ok;
+    }
+    if (frame < held.size()) {
+      mark_made(held[frame].fates, completion.made);
+    }
+  }
+  for (auto& [at, global] : globals) {
+    if (!global.listed.empty()) {
+      auto listed = eval::runs::json_array(global.listed);
+      if (!listed) {
+        return std::unexpected(std::move(listed.error()));
+      }
+      set_key(out.diagnostics[at], "global_ba", *std::move(listed));
+      set_key(out.diagnostics[at], "global_ba_seconds", global.seconds);
+    }
+    if (!global.views.empty()) {
+      auto views = eval::runs::json_array(global.views);
+      if (!views) {
+        return std::unexpected(std::move(views.error()));
+      }
+      set_key(out.diagnostics[at], "views", *std::move(views));
+    }
+  }
+  return {};
+}
+
+/// @brief The clock a run is timed and paced by.
+using Clock = std::chrono::steady_clock;
+
+/// @brief Seconds, as a run records them.
+using Seconds = std::chrono::duration<double>;
+
+/// @brief Feeds frames at their recorded rate (threaded): each is given its interval since
+///        the last, as ORB-SLAM3's examples sleep out the rest of theirs, a late frame delaying
+///        the next.
+class Pacer {
+ public:
+  /// @brief Wait until a frame is due: the last frame's interval after the last was given.
+  /// @param timestamp The frame's time.
+  void wait(double timestamp) {
+    if (last_) {
+      const auto interval = std::chrono::duration_cast<Clock::duration>(
+          Seconds(std::max(0.0, timestamp - last_->second)));
+      std::this_thread::sleep_until(last_->first + interval);
+    }
+    last_ = {Clock::now(), timestamp};
+  }
+
+ private:
+  /// @brief When the last frame was given, and its time.
+  std::optional<std::pair<Clock::time_point, double>> last_;
+};
+
+/// @brief End a run's tracking: wait for the threads (threaded), add what they finished to the
+///        frames' diagnostics, and write the keypoints held for it.
+/// @param pipeline The pipeline.
+/// @param out The run, each frame recorded.
+/// @param held Each frame's keypoints, held while their keyframes were mapped; else empty.
+/// @param features The writer of each frame's keypoints, if the run records them.
+/// @return Nothing; a thread's, a summary's or the feature writer's error.
+Result<void> finish(edge::Pipeline& pipeline, eval::runs::Run& out, std::vector<Keypoints>& held,
+                    eval::runs::FeatureWriter* features) {
+  if (const auto finished = pipeline.finish(); !finished) {
+    return finished;
+  }
+  if (const auto merged = merge(out, held, pipeline.completed()); !merged) {
+    return merged;
+  }
+  if (features == nullptr) {
+    return {};
+  }
+  for (const Keypoints& keypoints : held) {
+    if (const auto written = write_features(*features, keypoints); !written) {
+      return written;
+    }
+  }
+  return {};
 }
 
 /// @brief Track a sequence's frames, from the first asked for, to the end: a lost track
-///        closes its map, and the next frame starts a new one.
+///        closes its map, and the next frame starts a new one. Threaded, the frames come at
+///        their recorded rate, and the run's end waits for the threads.
 /// @param source The sequence.
 /// @param pipeline The pipeline.
 /// @param request The request.
@@ -740,14 +1001,14 @@ Result<void> write_features(eval::runs::FeatureWriter& features, const edge::Fra
 /// @return Nothing; a reader's, a frame builder's, the pipeline's or the feature writer's error.
 Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request& request,
                    eval::runs::Run& out, eval::runs::FeatureWriter* features) {
-  using Clock = std::chrono::steady_clock;
-  using Seconds = std::chrono::duration<double>;
   const auto first = static_cast<std::size_t>(request.first);
   const std::size_t end =
       request.count.has_value()
           ? std::min(source.frames, first + static_cast<std::size_t>(*request.count))
           : source.frames;
   const foundations::stereo::MatchOptions matching = edge::stereo_matching(request.options);
+  Pacer pacer;
+  std::vector<Keypoints> held;  // threaded: written once their keyframes are mapped
   for (std::size_t i = first; i < end; ++i) {
     const auto start = Clock::now();
     const Read delivered = source.read(i);
@@ -758,6 +1019,10 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
     if (!delivered->has_value()) {
       continue;
     }
+    if (request.threaded) {
+      pacer.wait((*delivered)->timestamp);
+    }
+    const auto given = Clock::now();
     const auto frame = build(**delivered, source.camera, pipeline.extraction(), matching,
                              source.mask ? &*source.mask : nullptr);
     const auto built = Clock::now();
@@ -769,17 +1034,20 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
       return std::unexpected(result.error());
     }
     if (const auto recorded =
-            record(out, *result, Seconds(read - start).count(), Seconds(built - read).count());
+            record(out, *result, Seconds(read - start).count(), Seconds(built - given).count());
         !recorded) {
       return recorded;
     }
     if (features != nullptr) {
-      if (const auto written = write_features(*features, *frame, result->fates); !written) {
+      Keypoints keypoints = keypoints_of(*frame, result->fates);
+      if (request.threaded) {
+        held.push_back(std::move(keypoints));
+      } else if (const auto written = write_features(*features, keypoints); !written) {
         return written;
       }
     }
   }
-  return {};
+  return finish(pipeline, out, held, features);
 }
 
 /// @brief Read a mode's name.
@@ -914,6 +1182,36 @@ Result<void> read_flag(Request& out, std::string_view flag, const std::string& v
   return {};
 }
 
+/// @brief The request's switch a flag without a value sets.
+/// @param out The request.
+/// @param flag The flag.
+/// @return The switch, or null for a flag with a value.
+bool* switched(Request& out, std::string_view flag) {
+  if (flag == kRecordFeatures) {
+    return &out.record_features;
+  }
+  if (flag == kThreaded) {
+    return &out.threaded;
+  }
+  if (flag == kLocks) {
+    return &out.locks;
+  }
+  if (flag == kViews) {
+    return &out.views;
+  }
+  return nullptr;
+}
+
+/// @brief How a request's steps run.
+/// @param request The request.
+/// @return Inline, or in threads of their own by our design or by ORB-SLAM's locks.
+edge::Threading threading_of(const Request& request) {
+  if (!request.threaded) {
+    return request.views ? edge::Threading::kInlineView : edge::Threading::kInline;
+  }
+  return request.locks ? edge::Threading::kLocks : edge::Threading::kView;
+}
+
 }  // namespace
 
 Result<Request> parse(std::span<const std::string> arguments) {
@@ -925,9 +1223,9 @@ Result<Request> parse(std::span<const std::string> arguments) {
     if (flag != "--option" && std::ranges::find(seen, flag) != seen.end()) {
       return fail(ErrorKind::kInvalidInput, flag + ": given twice");
     }
-    if (flag == kRecordFeatures) {
+    if (bool* const set = switched(out, flag)) {
       seen.emplace_back(flag);
-      out.record_features = true;
+      *set = true;
       ++i;
       continue;
     }
@@ -971,6 +1269,12 @@ Result<void> check(const Request& request) {
     return fail(ErrorKind::kInvalidInput,
                 "--vocabulary: given, but relocalization.enabled and loops.enabled are both off");
   }
+  if (request.locks && !request.threaded) {
+    return fail(ErrorKind::kInvalidInput, "--locks: needs --threaded");
+  }
+  if (request.views && request.threaded) {
+    return fail(ErrorKind::kInvalidInput, "--views: tracks in turn, not with --threaded");
+  }
   return edge::check_options(request.options);
 }
 
@@ -993,8 +1297,8 @@ Result<eval::runs::Run> run(const Request& request) {
     words = std::move(read->vocabulary);
     record = read->header;
   }
-  auto pipeline =
-      edge::Pipeline::create(request.mode, source->camera, request.options, std::move(words));
+  auto pipeline = edge::Pipeline::create(request.mode, source->camera, request.options,
+                                         std::move(words), threading_of(request));
   if (!pipeline) {
     return std::unexpected(pipeline.error());
   }
@@ -1010,6 +1314,8 @@ Result<eval::runs::Run> run(const Request& request) {
   out.settings = *std::move(recorded);
   out.vocabulary = record;
   out.record_features = request.record_features;
+  out.threaded = request.threaded;
+  out.locks = request.locks;
   std::optional<eval::runs::FeatureWriter> features;
   if (request.record_features) {
     auto opened = eval::runs::FeatureWriter::open(request.out);

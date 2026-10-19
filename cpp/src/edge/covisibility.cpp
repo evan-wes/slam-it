@@ -202,6 +202,48 @@ Result<LocalMap> local_map(const Map& m, std::span<const std::int64_t> points,
   return out;
 }
 
+Result<std::vector<std::int64_t>> view_keyframes(const Map& m, std::span<const std::int64_t> last,
+                                                 std::int64_t reference, const Options& options) {
+  auto near = local_map(m, last, options);
+  if (!near) {
+    return std::unexpected(std::move(near.error()));
+  }
+  std::vector<bool> first(keyframe_count(m), false);  // the K1 of the points tracking may match
+  for (const std::int64_t p : observed_by(m, near->keyframes)) {
+    for (const std::int64_t k : observers(m, static_cast<std::size_t>(p))) {
+      first[static_cast<std::size_t>(k)] = true;
+    }
+  }
+  std::vector<bool> inside(keyframe_count(m), false);
+  for (std::size_t k = 0; k < first.size(); ++k) {
+    if (!first[k]) {
+      continue;
+    }
+    inside[k] = true;
+    const std::vector<std::int64_t> shared = shared_points(m, k);
+    for (std::size_t other = 0; other < shared.size(); ++other) {
+      inside[other] = inside[other] || shared[other] > 0;
+    }
+    for (const std::size_t child : children_of(m, k)) {
+      inside[child] = true;
+    }
+    if (const std::int64_t parent = m.kf_parent[k] >= 0 ? keyframe_row(m, m.kf_parent[k]) : -1;
+        parent >= 0) {
+      inside[static_cast<std::size_t>(parent)] = true;
+    }
+  }
+  if (const std::int64_t row = reference >= 0 ? keyframe_row(m, reference) : -1; row >= 0) {
+    inside[static_cast<std::size_t>(row)] = true;
+  }
+  std::vector<std::int64_t> out;
+  for (std::size_t k = 0; k < inside.size(); ++k) {
+    if (inside[k]) {
+      out.push_back(static_cast<std::int64_t>(k));
+    }
+  }
+  return out;
+}
+
 Result<void> adopt(Map& m, std::int64_t k) {
   if (auto ok = check_row(m, k); !ok) {
     return ok;

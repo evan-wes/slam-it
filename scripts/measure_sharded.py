@@ -1,4 +1,4 @@
-"""Measure the test set side by side: a worker a CPU, each pinned to its own, at several seeds.
+"""Measure the test set side by side: a worker a CPU (or cores), each pinned, at several seeds.
 
 The edge pipeline runs in one thread and, for a RANSAC seed, decides alike every time, so a run's
 tracking and ATE do not depend on what else the machine runs: only its latency does. This runs
@@ -9,15 +9,19 @@ each result's ``options`` naming its ``seed``. A result is written there as its 
 measure stopped part way keeps what it finished, and a run whose worker failed is a result
 saying why; once every run has ended, the file is rewritten in the config's order::
 
-    python scripts/measure_sharded.py CONFIG OUT [--seeds 0 1 2] [--jobs N] [--backend cpp]
-        [--features by-size|default] [--camera exact|nominal] [--only NAME ...]
-        [--option KEY=VALUE ...]
+    python scripts/measure_sharded.py CONFIG OUT [--seeds 0 1 2] [--jobs N] [--cores C]
+        [--backend cpp] [--features by-size|default] [--camera exact|nominal] [--only NAME ...]
+        [--option KEY=VALUE ...] [--threaded [--locks]]
 
-``--jobs`` is the workers, at most the CPUs this process may run on (by default, all of them),
-the highest-numbered first, as :func:`slam_it.eval.budgets.cpus` takes them. Read only the
-tracking and the ATE from these runs: side by side, they share the caches, the memory's bandwidth
-and the power, so their latency is not a run's alone (``measure_testset.py`` says how to measure
-it).
+The workers run on the physical cores this process may run on, one logical CPU of each
+(:func:`slam_it.eval.budgets.physical`), so no two share a core's hyperthreads. ``--cores``
+gives each worker that many of them (default 1): a threaded run (``--threaded``) needs its
+tracking, mapping and loop closing on cores of their own. ``--jobs`` is the workers, ``--jobs``
+times ``--cores`` at most those physical cores, the highest-numbered first, as
+:func:`slam_it.eval.budgets.cpus` takes them; by default, as many workers as the cores make.
+Read only the tracking and the ATE from these runs: side by side, they share the caches, the
+memory's bandwidth and the power, so their latency is not a run's alone (``measure_testset.py``
+says how to measure it).
 
 The workers are forked from this process once it has found the backend's program, which for C++
 imports the extension, and an editable install's import checks the build: each worker has it, so
@@ -39,6 +43,7 @@ from typing import Any
 
 import measure_testset  # this script's neighbour: its folder is on the path when it runs
 
+from slam_it.eval import budgets
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.orchestration import vo
 
@@ -48,6 +53,18 @@ Job = tuple[int, measure_testset.Entry]
 
 def cpus_for(jobs: int | None, offered: set[int]) -> list[int]:
     """Return the CPUs of `jobs` workers: the highest-numbered of those offered, or all of them.
+
+    Parameters
+    ----------
+    jobs : int or None
+        The CPUs wanted (the workers times their cores), or None for all of them.
+    offered : set of int
+        The CPUs to take them from.
+
+    Returns
+    -------
+    list of int
+        The CPUs, ascending.
 
     Raises
     ------
@@ -59,6 +76,72 @@ def cpus_for(jobs: int | None, offered: set[int]) -> list[int]:
     if not 0 < jobs <= len(offered):
         raise InvalidInputError(f"--jobs: expected 1 to {len(offered)}, got {jobs}")
     return sorted(offered)[-jobs:]
+
+
+def groups_of(cpus: list[int], cores: int) -> list[list[int]]:
+    """Return the workers' CPUs, `cores` each, the highest-numbered whole groups.
+
+    Parameters
+    ----------
+    cpus : list of int
+        The CPUs the workers run on.
+    cores : int
+        Each worker's.
+
+    Returns
+    -------
+    list of list of int
+        Each worker's CPUs, ascending, the workers in ascending order; the lowest-numbered CPUs
+        that make no whole group are left out.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `cores` is not positive or is more than the CPUs.
+    """
+    if not 0 < cores <= len(cpus):
+        raise InvalidInputError(f"--cores: expected 1 to {len(cpus)}, got {cores}")
+    ordered = sorted(cpus)[len(cpus) % cores :]
+    return [ordered[i : i + cores] for i in range(0, len(ordered), cores)]
+
+
+def workers(jobs: int | None, cores: int, offered: set[int]) -> list[list[int]]:
+    """Return each worker's CPUs: `jobs` workers of `cores` physical cores each.
+
+    One logical CPU of each physical core offered (:func:`slam_it.eval.budgets.physical`),
+    the highest-numbered whole groups.
+
+    Parameters
+    ----------
+    jobs : int or None
+        The workers, or None for as many as the cores make.
+    cores : int
+        Each worker's physical cores.
+    offered : set of int
+        The CPUs this process may run on.
+
+    Returns
+    -------
+    list of list of int
+        Each worker's CPUs (:func:`groups_of`).
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `cores` is not 1 to the physical cores offered, checked first, or `jobs` times it
+        is not, the product named.
+    """
+    physical = budgets.physical(offered)
+    if not 0 < cores <= len(physical):
+        raise InvalidInputError(
+            f"--cores: expected 1 to {len(physical)} physical cores, got {cores}"
+        )
+    if jobs is not None and not 0 < jobs * cores <= len(physical):
+        raise InvalidInputError(
+            f"--jobs x --cores: expected 1 to {len(physical)} physical cores in all, "
+            f"got {jobs} x {cores}"
+        )
+    return groups_of(cpus_for(None if jobs is None else jobs * cores, set(physical)), cores)
 
 
 def frames_of(folder: Path) -> int:
@@ -81,9 +164,9 @@ def schedule(
     return sorted(jobs, key=lambda job: -frames[job[1].name])
 
 
-def _pin(cpus: Queue[int]) -> None:
-    """Pin a new worker, and the programs it starts, to the next of the CPUs."""
-    os.sched_setaffinity(0, {cpus.get()})
+def _pin(groups: Queue[list[int]]) -> None:
+    """Pin a new worker, and the programs it starts, to the next of the groups of CPUs."""
+    os.sched_setaffinity(0, set(groups.get()))
 
 
 def _work(
@@ -101,7 +184,12 @@ def main(arguments: list[str]) -> int:
     parser.add_argument(
         "--seeds", nargs="+", type=int, default=[0], metavar="SEED", help="the RANSAC seeds"
     )
-    parser.add_argument("--jobs", type=int, help="the workers (default: one a CPU)")
+    parser.add_argument(
+        "--jobs", type=int, help="the workers (default: as many as the physical cores make)"
+    )
+    parser.add_argument(
+        "--cores", type=int, default=1, help="each worker's physical cores (default: 1)"
+    )
     args = parser.parse_args(arguments)
     if any(option.partition("=")[0] == "seed" for option in args.option):
         parser.error("--option seed: the seeds are --seeds")
@@ -110,7 +198,7 @@ def main(arguments: list[str]) -> int:
     try:
         for seed in args.seeds:
             measure_testset.read_options([f"seed={seed}"])
-        cpus = cpus_for(args.jobs, os.sched_getaffinity(0))
+        groups = workers(args.jobs, args.cores, os.sched_getaffinity(0))
     except InvalidInputError as error:
         parser.error(str(error))
     entries, replaced = measure_testset.chosen(args, parser)
@@ -123,10 +211,11 @@ def main(arguments: list[str]) -> int:
         (args.out / f"seed-{seed}").mkdir()
     # Forked: each worker has the measure and the backend's program as this process found them.
     context = multiprocessing.get_context("fork")
-    free: Queue[int] = context.Queue()
-    for cpu in cpus:
-        free.put(cpu)
-    print(f"{len(jobs)} runs, on CPUs {', '.join(map(str, cpus))}", flush=True)
+    free: Queue[list[int]] = context.Queue()
+    for group in groups:
+        free.put(group)
+    shown = ", ".join("+".join(map(str, group)) for group in groups)
+    print(f"{len(jobs)} runs, on CPUs {shown}", flush=True)
     results: dict[int, dict[str, dict[str, Any]]] = {seed: {} for seed in args.seeds}
     with contextlib.ExitStack() as stack:
         streams = {
@@ -134,7 +223,7 @@ def main(arguments: list[str]) -> int:
             for seed in args.seeds
         }
         pool = stack.enter_context(
-            ProcessPoolExecutor(len(cpus), mp_context=context, initializer=_pin, initargs=(free,))
+            ProcessPoolExecutor(len(groups), mp_context=context, initializer=_pin, initargs=(free,))
         )
         futures = {
             pool.submit(_work, seed, e, args.out / f"seed-{seed}", args, replaced): (seed, e)

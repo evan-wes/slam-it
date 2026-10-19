@@ -37,6 +37,7 @@ nb::dict bundle_adjust(const nb::dict& m, const nb::dict& camera,
   out["outliers"] = adjustment.outliers;
   out["free"] = adjustment.free;
   out["fixed"] = adjustment.fixed;
+  out["aborted"] = adjustment.aborted;
   return out;
 }
 

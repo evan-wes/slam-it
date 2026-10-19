@@ -11,6 +11,7 @@
 
 #include <Eigen/Core>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <concepts>
 #include <cstddef>
@@ -111,6 +112,9 @@ struct Options {
   double min_relative_decrease = 1e-3;
   /// @brief Fail with `NotConverged` instead of returning an unconverged estimate.
   bool strict = false;
+  /// @brief A flag another thread may set to stop the solve before its next step (g2o's
+  ///        `setForceStopFlag`, as ORB-SLAM's threads use it); not owned, null for never.
+  const std::atomic<bool>* stop = nullptr;
 };
 
 /// @brief The method's name, as `slam_it.foundations.nls.METHODS` spells it.
@@ -144,10 +148,12 @@ enum class Termination : std::uint8_t {
   kNoDecrease = 5,
   /// @brief Not converged: the undamped Gauss-Newton system is not positive definite.
   kSingular = 6,
+  /// @brief Not converged: stopped from outside, between steps (`Options::stop`).
+  kStopped = 7,
   /// @brief The number of terminations (a sentinel, not a termination): the bindings check
   ///        their code count against it, so an enumerator added without its name fails to
   ///        build.
-  kCount = 7,
+  kCount = 8,
 };
 
 /// @brief Whether a termination counts as converged.
@@ -339,11 +345,15 @@ class Damping {
 /// @param damping The damping `mu` (0 for Gauss-Newton).
 /// @param number The step's index, from 1.
 /// @param options The settings.
-/// @return The trial, or `kGradient`/`kStep` if a convergence test stops the solve first.
+/// @return The trial; `kStopped` if `options.stop` is set; or `kGradient`/`kStep` if a
+///         convergence test stops the solve first.
 template <Problem P, LinearSystem S>
 [[nodiscard]] std::variant<Trial<typename P::State>, Termination> try_step(
     const P& problem, const typename P::State& state, const Evaluation& current, const S& system,
     double damping, int number, const Options& options) {
+  if (options.stop != nullptr && options.stop->load(std::memory_order_relaxed)) {
+    return Termination::kStopped;  // stopped from outside, before this step
+  }
   constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
   const auto& gradient = system.gradient();
   // A NaN entry makes the norm NaN, so a corrupted linearisation never passes as converged

@@ -538,6 +538,68 @@ pub fn clear_gone(m: &mut Map) {
     m.gone_kf_relative.clear();
 }
 
+/// The part of a map some of its keyframes make (`slam_it.edge.map.sub_map`): those keyframes,
+/// every keypoint of theirs, and the points they observe, ids kept and in the same order, each
+/// point's observations those keyframes' (a writer's view,
+/// [`crate::covisibility::view_keyframes`]).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `rows` - The keyframes' rows, ascending, each a row of `m` once.
+///
+/// # Returns
+///
+/// The map of them: a parent not among them -1, as for a keyframe without one; the archive of
+/// removals empty, the loops and next ids as `m`'s.
+#[must_use]
+pub fn sub_map(m: &Map, rows: &[usize]) -> Map {
+    let mut out = Map::empty(m.levels, m.scale_factor);
+    out.next_kf_id = m.next_kf_id;
+    out.next_pt_id = m.next_pt_id;
+    out.loop_edges.clone_from(&m.loop_edges);
+    let mut seen = vec![false; m.points()];
+    for &k in rows {
+        out.kf_id.push(m.kf_id[k]);
+        out.kf_time.push(m.kf_time[k]);
+        out.kf_pose.push(m.kf_pose[k]);
+        out.kf_parent.push(m.kf_parent[k]);
+        for row in m.kf_start[k]..m.kf_start[k + 1] {
+            out.kp_xy.push(m.kp_xy[row]);
+            out.kp_level.push(m.kp_level[row]);
+            out.kp_angle.push(m.kp_angle[row]);
+            out.kp_descriptor.push(m.kp_descriptor[row]);
+            out.kp_bearing.push(m.kp_bearing[row]);
+            out.kp_depth.push(m.kp_depth[row]);
+            out.kp_right.push(m.kp_right[row]);
+            out.kp_point.push(m.kp_point[row]);
+            if let Some(p) = m.point_row(m.kp_point[row]) {
+                seen[p] = true;
+            }
+        }
+        out.kf_start.push(out.kp_point.len());
+    }
+    for p in (0..m.points()).filter(|&p| seen[p]) {
+        out.pt_id.push(m.pt_id[p]);
+        out.pt_xyz.push(m.pt_xyz[p]);
+        out.pt_descriptor.push(m.pt_descriptor[p]);
+        out.pt_normal.push(m.pt_normal[p]);
+        out.pt_min_distance.push(m.pt_min_distance[p]);
+        out.pt_max_distance.push(m.pt_max_distance[p]);
+        out.pt_visible.push(m.pt_visible[p]);
+        out.pt_found.push(m.pt_found[p]);
+        out.pt_first_kf.push(m.pt_first_kf[p]);
+        out.pt_reference_kf.push(m.pt_reference_kf[p]);
+    }
+    out.kf_parent = out
+        .kf_parent
+        .iter()
+        .map(|&parent| out.keyframe_row(parent).map_or(-1, |_| parent))
+        .collect();
+    index_observations(&mut out);
+    out
+}
+
 /// Builds `pt_observations` from `kp_point`, for a map assembled column by column.
 ///
 /// # Arguments

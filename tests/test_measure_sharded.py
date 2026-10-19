@@ -51,6 +51,16 @@ def test_workers_take_the_highest_numbered_cpus(script: ModuleType) -> None:
             script.cpus_for(jobs, offered)
 
 
+def test_workers_take_whole_groups_of_cores(script: ModuleType) -> None:
+    """A worker's cores are a group of its own, the highest-numbered whole groups."""
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 1) == [[0], [1], [2], [3], [8], [9]]
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 4) == [[2, 3, 8, 9]]
+    assert script.groups_of([0, 1, 2, 3, 8, 9], 2) == [[0, 1], [2, 3], [8, 9]]
+    for cores in (0, 7):
+        with pytest.raises(InvalidInputError, match="--cores: expected 1 to 6"):
+            script.groups_of([0, 1, 2, 3, 8, 9], cores)
+
+
 def test_a_sequences_frames_are_its_listed_images(script: ModuleType, tmp_path: Path) -> None:
     """Comments and blank lines are not frames; a folder without the list has none."""
     (tmp_path / "rgb.txt").write_text("# timestamp filename\n0.0 rgb/0.png\n\n0.1 rgb/1.png\n")
@@ -75,14 +85,21 @@ def test_the_longest_sequences_run_first(script: ModuleType) -> None:
         (["--option", "seed=1"], "the seeds are --seeds"),
         (["--seeds", "0", "0"], "a seed given twice"),
         (["--seeds", "-1"], "seed"),
-        (["--jobs", "0"], "--jobs: expected 1 to"),
+        (["--jobs", "0"], "--jobs x --cores: expected 1 to"),
+        (["--cores", "0"], "--cores: expected 1 to"),
+        (["--jobs", "1", "--cores", "100000"], "--cores: expected 1 to"),
+        (["--jobs", "100000"], "got 100000 x 1"),
     ],
 )
 def test_main_refuses_a_seed_twice_or_out_of_range_and_jobs_beyond_the_cpus(
     extra: list[str], message: str, script: ModuleType, config: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:  # fmt: skip
-    """A seed is given through ``--seeds`` once each; the workers are at most the CPUs."""
+    """A seed is given through ``--seeds`` once each; the workers' cores are at most the cores.
+
+    ``--cores`` is checked first, then ``--jobs`` times it, the product named (B3b's review
+    panel, H7).
+    """
     out = config.with_name("refused")
     with pytest.raises(SystemExit):
         script.main([str(config), str(out), *extra])

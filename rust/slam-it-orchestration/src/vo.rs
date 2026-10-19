@@ -2,16 +2,19 @@
 //! (its docstring states the run), behind the native program `slam_it_vo` (`src/main.rs`).
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use nalgebra::{Matrix4, Vector2};
 
 use slam_it_edge::adjust::Solve;
+use slam_it_edge::atlas::{Lifetimes, Trajectory};
 use slam_it_edge::frames::{self, Camera, DepthMap, Frame};
-use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummary};
+use slam_it_edge::loops::{CandidateSummary, ConfirmationSummary, DetectionSummary, GlobalSummary};
+use slam_it_edge::mapping::{MappingSummary, Schedule};
 use slam_it_edge::options::{Mode, Options, Setting, check_options};
 use slam_it_edge::pipeline::{
-    Fates, FrameResult, FrameSummary, Lifetimes, LoopSummary, Pipeline, Trajectory,
+    Completion, Fate, Fates, FrameResult, FrameSummary, LoopSummary, Pipeline, Threading, ViewSize,
 };
 use slam_it_edge::relocalization::RelocalizationSummary;
 use slam_it_eval::runs::{FeatureWriter, JsonObject, JsonValue, Run};
@@ -28,10 +31,17 @@ pub const DATASETS: [&str; 2] = ["tum", "euroc"];
 /// The program's command line.
 pub const USAGE: &str = "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode \
                          monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] \
-                         [--vocabulary FOLDER] [--record-features] [--option KEY=VALUE ...]";
+                         [--vocabulary FOLDER] [--record-features] [--threaded | --views] \
+                         [--option KEY=VALUE ...]";
 
-/// The one flag without a value: record each frame's keypoints, with their fates.
+/// A flag without a value: record each frame's keypoints, with their fates.
 const RECORD_FEATURES: &str = "--record-features";
+
+/// A flag without a value: run the steps in threads of their own.
+const THREADED: &str = "--threaded";
+
+/// A flag without a value: track in turn, each frame on the view a writer would publish.
+const VIEWS: &str = "--views";
 
 /// The program's exit code for a command line it cannot read.
 pub const EXIT_USAGE: u8 = 2;
@@ -61,6 +71,11 @@ pub struct Request {
     /// The vocabulary's folder: required with `relocalization.enabled` or `loops.enabled` on,
     /// refused with both off.
     pub vocabulary: Option<PathBuf>,
+    /// Whether the steps run in threads of their own, the frames fed at their recorded rate.
+    pub threaded: bool,
+    /// In turn, whether each frame is tracked on the view a writer would publish then: a test
+    /// that tracking decides on it as on the whole map.
+    pub views: bool,
 }
 
 impl Request {
@@ -89,6 +104,8 @@ impl Request {
             options: Options::default(),
             record_features: false,
             vocabulary: None,
+            threaded: false,
+            views: false,
         }
     }
 }
@@ -652,6 +669,30 @@ fn matrix_json(matrix: &Matrix4<f64>) -> JsonValue {
     )
 }
 
+/// Local mapping's summary as JSON (`slam_it.edge.mapping.MappingSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, in order.
+fn mapping_json(s: &MappingSummary) -> JsonValue {
+    object([
+        ("from_depth", count(s.from_depth)),
+        ("culled_points", count(s.culled_points)),
+        ("triangulated", count(s.triangulated)),
+        ("fused", count(s.fused)),
+        ("ba", solves_json(&s.solves)),
+        ("free", count(s.free)),
+        ("fixed", count(s.fixed)),
+        ("outliers", count(s.outliers)),
+        ("weak_points", count(s.weak_points)),
+        ("culled_keyframes", count(s.culled_keyframes)),
+    ])
+}
+
 /// Loop closing's summary as JSON (`slam_it.edge.pipeline.LoopSummary.as_dict`).
 ///
 /// # Arguments
@@ -775,20 +816,10 @@ fn summary_json(summary: &FrameSummary) -> JsonObject {
             ("reference", JsonValue::Integer(s.reference)),
         ])
     });
-    let mapping = summary.mapping.as_ref().map_or(JsonValue::Null, |s| {
-        object([
-            ("from_depth", count(s.from_depth)),
-            ("culled_points", count(s.culled_points)),
-            ("triangulated", count(s.triangulated)),
-            ("fused", count(s.fused)),
-            ("ba", solves_json(&s.solves)),
-            ("free", count(s.free)),
-            ("fixed", count(s.fixed)),
-            ("outliers", count(s.outliers)),
-            ("weak_points", count(s.weak_points)),
-            ("culled_keyframes", count(s.culled_keyframes)),
-        ])
-    });
+    let mapping = summary
+        .mapping
+        .as_ref()
+        .map_or(JsonValue::Null, mapping_json);
     let loop_closing = summary
         .loop_closing
         .as_ref()
@@ -850,7 +881,68 @@ fn record(out: &mut Run, result: &FrameResult, read_seconds: f64, build_seconds:
         ),
     ];
     diagnostic.extend(summary_json(&result.summary));
+    diagnostic.extend(
+        [
+            ("wait_seconds", JsonValue::Number(result.wait_seconds)),
+            ("asked", JsonValue::Bool(result.asked)),
+            ("refused", JsonValue::Bool(result.refused)),
+            ("queue", count(result.queue)),
+            (
+                "schedule",
+                result.schedule.map_or(JsonValue::Null, schedule_json),
+            ),
+            ("global_ba", JsonValue::Array(Vec::new())),
+            ("global_ba_seconds", JsonValue::Number(0.0)),
+            ("views", JsonValue::Array(Vec::new())),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value)),
+    );
     out.diagnostics.push(diagnostic);
+}
+
+/// How local mapping scheduled a keyframe's steps, as JSON
+/// (`slam_it.edge.mapping.Schedule.as_dict`).
+///
+/// # Arguments
+///
+/// * `schedule` - The schedule.
+///
+/// # Returns
+///
+/// Its fields by name.
+fn schedule_json(schedule: Schedule) -> JsonValue {
+    object([
+        ("fusion", name_json(schedule.fusion.name())),
+        ("adjustment", name_json(schedule.adjustment.name())),
+        ("culling", name_json(schedule.culling.name())),
+    ])
+}
+
+/// How a global BA in a thread of its own went, as JSON
+/// (`slam_it.edge.loops.GlobalSummary.as_dict`).
+///
+/// # Arguments
+///
+/// * `s` - The summary.
+///
+/// # Returns
+///
+/// Its fields, the keyframes and points carried 0 when not applied.
+fn global_json(s: &GlobalSummary) -> JsonValue {
+    let moved = s.propagation.unwrap_or_default();
+    object([
+        (
+            "generation",
+            JsonValue::Integer(i64::try_from(s.generation).unwrap_or(i64::MAX)),
+        ),
+        ("applied", JsonValue::Bool(s.applied)),
+        ("solve", graph_solve_json(&s.solve)),
+        ("adjusted", count(moved.adjusted)),
+        ("propagated", count(moved.propagated)),
+        ("points", count(moved.points)),
+        ("carried", count(moved.carried)),
+    ])
 }
 
 /// Records the run's trajectory: each tracked frame's final pose and its pose as tracked, as
@@ -936,6 +1028,8 @@ fn track(
             .min(first.saturating_add(usize::try_from(count).unwrap_or(0)))
     });
     let matching = request.options.stereo_matching();
+    let mut pacer = Pacer::default();
+    let mut held: Vec<Keypoints> = Vec::new(); // threaded: written once their keyframes are mapped
     for i in first..end {
         let start = Instant::now();
         let delivered = (source.read)(i)?;
@@ -943,6 +1037,10 @@ fn track(
         let Some(delivered) = delivered else {
             continue;
         };
+        if request.threaded {
+            pacer.wait(delivered.timestamp);
+        }
+        let given = Instant::now();
         let frame = build(
             &delivered,
             &source.camera,
@@ -950,36 +1048,217 @@ fn track(
             &matching,
             source.mask.as_ref(),
         )?;
-        let built = start.elapsed().as_secs_f64();
+        let built = given.elapsed().as_secs_f64();
         let result = pipeline.track(&frame)?;
-        record(out, &result, read, built - read);
+        record(out, &result, read, built);
         if let Some(writer) = features.as_deref_mut() {
-            write_features(writer, &frame, &result.fates)?;
+            let keypoints = Keypoints::of(&frame, result.fates);
+            if request.threaded {
+                held.push(keypoints);
+            } else {
+                keypoints.write(writer)?;
+            }
+        }
+    }
+    pipeline.finish()?;
+    merge(out, &mut held, &pipeline.completed());
+    if let Some(writer) = features {
+        for keypoints in &held {
+            keypoints.write(writer)?;
         }
     }
     Ok(())
 }
 
-/// Appends a frame's keypoints, with their fates, to the run's feature files.
+/// Feeds frames at their recorded rate (threaded): each is given its interval since the last,
+/// as ORB-SLAM3's examples sleep out the rest of theirs, a late frame delaying the next.
+#[derive(Default)]
+struct Pacer {
+    /// When the last frame was given, and its time.
+    last: Option<(Instant, f64)>,
+}
+
+impl Pacer {
+    /// Waits until a frame is due: the last frame's interval after the last was given.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` - The frame's time.
+    fn wait(&mut self, timestamp: f64) {
+        if let Some((given, time)) = self.last {
+            let due = given + Duration::from_secs_f64((timestamp - time).max(0.0));
+            let now = Instant::now();
+            if due > now {
+                thread::sleep(due - now);
+            }
+        }
+        self.last = Some((Instant::now(), timestamp));
+    }
+}
+
+/// A frame's keypoints as a run records them: pixels, levels, and their fates
+/// (`slam_it.orchestration.vo._Keypoints`).
+struct Keypoints {
+    /// Each keypoint's pixel.
+    xy: Vec<[f64; 2]>,
+    /// Its pyramid level.
+    level: Vec<i64>,
+    /// What became of it.
+    fates: Fates,
+}
+
+impl Keypoints {
+    /// A frame's keypoints, with their fates.
+    ///
+    /// # Arguments
+    ///
+    /// * `frame` - The frame.
+    /// * `fates` - What became of each of its keypoints.
+    ///
+    /// # Returns
+    ///
+    /// The keypoints.
+    fn of(frame: &Frame, fates: Fates) -> Self {
+        let keypoints = &frame.features.keypoints;
+        Self {
+            xy: keypoints.iter().map(|k| k.xy).collect(),
+            level: keypoints
+                .iter()
+                .map(|k| i64::try_from(k.level).unwrap_or(i64::MAX))
+                .collect(),
+            fates,
+        }
+    }
+
+    /// Gives the keypoints mapping made a point of the fate [`Fate::Made`] (threaded).
+    ///
+    /// # Arguments
+    ///
+    /// * `made` - The point made of each keypoint, by the run's ids, -1 where none.
+    fn made(&mut self, made: &[i64]) {
+        for ((fate, point), &id) in self
+            .fates
+            .fate
+            .iter_mut()
+            .zip(&mut self.fates.point)
+            .zip(made)
+        {
+            if id >= 0 {
+                *fate = Fate::Made;
+                *point = id;
+            }
+        }
+    }
+
+    /// Appends them to the run's feature files.
+    ///
+    /// # Arguments
+    ///
+    /// * `features` - The writer.
+    ///
+    /// # Errors
+    ///
+    /// The writer's.
+    fn write(&self, features: &mut FeatureWriter) -> Result<()> {
+        let fate: Vec<i64> = self.fates.fate.iter().map(|&f| f as i64).collect();
+        features.write(&self.xy, &self.level, &fate, &self.fates.point)
+    }
+}
+
+/// Sets a key of a frame's diagnostics, in its place, or last if it is new.
 ///
 /// # Arguments
 ///
-/// * `features` - The writer.
-/// * `frame` - The frame.
-/// * `fates` - What became of each of its keypoints.
+/// * `line` - The frame's diagnostics.
+/// * `key` - The key.
+/// * `value` - Its value.
+fn set_key(line: &mut JsonObject, key: &str, value: JsonValue) {
+    if let Some((_, held)) = line.iter_mut().find(|(name, _)| name == key) {
+        *held = value;
+    } else {
+        line.push((key.to_owned(), value));
+    }
+}
+
+/// A view a writer published, as JSON: its keyframes, points and bytes.
 ///
-/// # Errors
+/// # Arguments
 ///
-/// The writer's.
-fn write_features(features: &mut FeatureWriter, frame: &Frame, fates: &Fates) -> Result<()> {
-    let keypoints = &frame.features.keypoints;
-    let xy: Vec<[f64; 2]> = keypoints.iter().map(|k| k.xy).collect();
-    let level: Vec<i64> = keypoints
-        .iter()
-        .map(|k| i64::try_from(k.level).unwrap_or(i64::MAX))
-        .collect();
-    let fate: Vec<i64> = fates.fate.iter().map(|&f| f as i64).collect();
-    features.write(&xy, &level, &fate, &fates.point)
+/// * `view` - Its size.
+///
+/// # Returns
+///
+/// The record.
+fn view_json(view: ViewSize) -> JsonValue {
+    object([
+        ("keyframes", count(view.keyframes)),
+        ("points", count(view.points)),
+        ("bytes", count(view.bytes)),
+    ])
+}
+
+/// Adds a global BA to a frame's diagnostics: listed, its time summed.
+///
+/// # Arguments
+///
+/// * `line` - The frame's diagnostics.
+/// * `global` - The global BA's record.
+/// * `seconds` - Its time.
+fn add_global(line: &mut JsonObject, global: &JsonValue, seconds: f64) {
+    for (name, value) in line.iter_mut() {
+        match (name.as_str(), value) {
+            ("global_ba", JsonValue::Array(listed)) => listed.push(global.clone()),
+            ("global_ba_seconds", JsonValue::Number(total)) => *total += seconds,
+            _ => {}
+        }
+    }
+}
+
+/// Adds what the threads finished to the frames' diagnostics (a keyframe's mapping, its
+/// schedule and loop closing on its frame, a global BA on the frame it ended on, listed, its
+/// time summed), and gives the keypoints mapping made a point of the fate
+/// [`Fate::Made`] (`slam_it.orchestration.vo._merge`).
+///
+/// # Arguments
+///
+/// * `out` - The run, each frame recorded.
+/// * `held` - Each frame's keypoints, when the run records them; else empty.
+/// * `done` - The completions.
+fn merge(out: &mut Run, held: &mut [Keypoints], done: &[Completion]) {
+    let Some(last) = out.diagnostics.len().checked_sub(1) else {
+        return;
+    };
+    for completion in done {
+        let frame = usize::try_from(completion.frame).unwrap_or(usize::MAX);
+        let line = &mut out.diagnostics[frame.min(last)];
+        if let Some(seconds) = completion.map_seconds {
+            set_key(line, "map_seconds", JsonValue::Number(seconds));
+        }
+        if let Some(mapping) = &completion.mapping {
+            set_key(line, "mapping", mapping_json(mapping));
+        }
+        if let Some(seconds) = completion.loop_seconds {
+            set_key(line, "loop_seconds", JsonValue::Number(seconds));
+        }
+        if let Some(schedule) = completion.schedule {
+            set_key(line, "schedule", schedule_json(schedule));
+        }
+        if let Some(looped) = &completion.loop_closing {
+            set_key(line, "loop", loop_json(looped));
+        }
+        if let Some(global) = &completion.global_ba {
+            add_global(line, &global_json(global), completion.global_ba_seconds);
+        }
+        if let Some(view) = completion.view
+            && let Some((_, JsonValue::Array(views))) =
+                line.iter_mut().find(|(name, _)| name == "views")
+        {
+            views.push(view_json(view));
+        }
+        if let Some(keypoints) = held.get_mut(frame) {
+            keypoints.made(&completion.made);
+        }
+    }
 }
 
 /// Fails with `InvalidInput`.
@@ -1106,7 +1385,7 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
 }
 
 /// Reads the command line: [`USAGE`], flags in any order, each with its value but
-/// `--record-features`, `--option` repeatable and naming a field of
+/// `--record-features`, `--threaded` and `--views`, `--option` repeatable and naming a field of
 /// `slam_it.edge.options.Options`.
 ///
 /// # Arguments
@@ -1131,8 +1410,8 @@ pub fn parse(arguments: &[String]) -> Result<Request> {
             return invalid(format!("{flag}: given twice"));
         }
         seen.push(flag);
-        if flag == RECORD_FEATURES {
-            out.record_features = true;
+        if let Some(set) = switch(&mut out, flag) {
+            *set = true;
             rest = after;
             continue;
         }
@@ -1150,6 +1429,25 @@ pub fn parse(arguments: &[String]) -> Result<Request> {
     Ok(out)
 }
 
+/// The switch a flag without a value sets.
+///
+/// # Arguments
+///
+/// * `request` - The request.
+/// * `flag` - The flag.
+///
+/// # Returns
+///
+/// The request's field it sets, or `None` for a flag with a value.
+fn switch<'a>(request: &'a mut Request, flag: &str) -> Option<&'a mut bool> {
+    match flag {
+        RECORD_FEATURES => Some(&mut request.record_features),
+        THREADED => Some(&mut request.threaded),
+        VIEWS => Some(&mut request.views),
+        _ => None,
+    }
+}
+
 /// Checks a request (`slam_it.orchestration.vo.check`).
 ///
 /// # Arguments
@@ -1159,7 +1457,8 @@ pub fn parse(arguments: &[String]) -> Result<Request> {
 /// # Errors
 ///
 /// `InvalidInput` for an unknown dataset, a mode it does not record (TUM has no stereo pairs,
-/// EuRoC no depth maps), a negative `first` or `count`, or settings out of range.
+/// EuRoC no depth maps), a negative `first` or `count`, `views` with `threaded`, or settings
+/// out of range.
 pub fn check(request: &Request) -> Result<()> {
     if !DATASETS.contains(&request.dataset.as_str()) {
         return invalid(format!(
@@ -1187,6 +1486,9 @@ pub fn check(request: &Request) -> Result<()> {
             "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
                 .to_owned(),
         );
+    }
+    if request.views && request.threaded {
+        return invalid("--views: tracks in turn, not with --threaded".to_owned());
     }
     check_options(&request.options)
 }
@@ -1220,7 +1522,19 @@ pub fn run(request: &Request) -> Result<Run> {
         }
         None => (None, None),
     };
-    let mut pipeline = Pipeline::new(request.mode, source.camera.clone(), request.options, words)?;
+    let mut pipeline = Pipeline::new(
+        request.mode,
+        source.camera.clone(),
+        request.options,
+        words,
+        if request.threaded {
+            Threading::View
+        } else if request.views {
+            Threading::InlineView
+        } else {
+            Threading::Inline
+        },
+    )?;
     let mut out = Run {
         dataset: request.dataset.clone(),
         sequence: sequence_name(&request.sequence),
@@ -1229,6 +1543,7 @@ pub fn run(request: &Request) -> Result<Run> {
         settings: settings(&request.options),
         vocabulary: record,
         record_features: request.record_features,
+        threaded: request.threaded,
         ..Run::default()
     };
     let mut features = if request.record_features {

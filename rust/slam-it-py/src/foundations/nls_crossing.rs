@@ -119,6 +119,7 @@ impl OptionsIn {
             max_diagonal: self.max_diagonal,
             min_relative_decrease: self.min_relative_decrease,
             strict: self.strict,
+            stop: nls::Stop::never(), // a compiled core's stop is its own threads'
         })
     }
 }

@@ -283,7 +283,7 @@ Each gets its own section here before its PR, its forks put to the owner then.
 - **Global BA's damping** (after B3, its own PR; B3's review panel, L2, section 11): scaled
   Levenberg-Marquardt damping in the three languages, measured on the loop sequences and the
   test set, the records regenerated.
-- **B3b** (0.3.12.0 -> 0.3.13.0, section 12): the seams, which change no decision; the threads,
+- **B3b** (0.3.13.0 -> 0.3.14.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
   review panel on the finished slice; offline CI before the merge.
@@ -630,7 +630,7 @@ alone, and runs on real data only when asked.
     after B3, measured on the loop sequences and the test set, since it changes decisions and
     the records (section 7).
 
-## 12. B3b: the threads (0.3.12.0 -> 0.3.13.0)
+## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
 Decided with evan-wes on 2026-10-17, following ORB-SLAM's papers and a reading of its source
 (ORB-SLAM3's `Tracking.cc`, `LocalMapping.cc`, `LoopClosing.cc` and `Optimizer.cc`). Until now
@@ -665,10 +665,11 @@ measures how much.
      locks; global BA's results are carried through the spanning tree under the lock, over the
      whole map, while tracking waits. Its source shows where that sharing slips (read from the
      source, not observed): the abort flags are plain `bool`s, written and read across threads
-     unlocked; `CorrectLoop` empties mapping's queue before mapping has stopped (`MergeLocal`
-     waits first); an aborted global BA can still be writing its results' fields as the next one
-     starts; and tracking can read keyframes and points partway through a change that spans
-     several of them.
+     unlocked; `CorrectLoop` empties mapping's queue (`EmptyQueue`, its handling of the
+     keyframes in flight, below) before mapping has stopped (`MergeLocal` waits first); an
+     aborted global BA can still be writing its results' fields as the next one starts; and
+     tracking can read keyframes and points partway through a change that spans several of
+     them.
    - Ours: one thread changes the map at a time, mapping or, with mapping stopped, loop closing
      (ORB-SLAM's `RequestStop`). After making a keyframe's points, after its local BA and after
      each correction, the writer publishes a view of what tracking reads: the local map's
@@ -677,6 +678,28 @@ measures how much.
      never changed after. Tracking reads only the view and takes no lock. What it writes (each
      point's counts of frames seen and found in, and the keyframes it asks for) goes to mapping as
      messages. Relocalisation, rare, reads the whole map and its database with mapping held off.
+     *As built* (B3b's review panel, A1): a view carries the corrections applied to its map,
+     stamped by its writer, which counts a correction before it publishes the corrected view,
+     and tracking reads the view once a frame, so the last frame follows each correction.
+   - **A keyframe in flight across a correction** (decided by evan-wes on 2026-10-18; B3b's
+     review panel, A2 and L1). ORB-SLAM3 lets none enter its map in a stale world frame, three
+     ways: `CorrectLoop` first inserts the keyframes queued for mapping (`EmptyQueue`, each
+     through `ProcessNewKeyFrame`), so the correction moves them with their neighbours;
+     `LocalMapping::Release` deletes any keyframe queued while mapping was stopped, after a
+     loop's correction and after a global BA's result; and tracking holds `mMutexMapUpdate`
+     through its frame, keyframe creation included, while `NeedNewKeyFrame` asks for none with
+     mapping stopped or being stopped. Ours re-places it: a keyframe's request keeps its
+     reference keyframe, its pose relative to it (`T_frame_reference`) and the corrections the
+     view it was tracked on carried; at insertion, if a correction (a loop's, or a global BA's
+     result) has moved the map since, local mapping places it where its reference keyframe now
+     is, `T_frame_reference T_reference_world`, ORB-SLAM's `UpdateLastFrame` rule, which the
+     last frame follows too, through the reference's culled ancestors as the final trajectory
+     places a frame (`Atlas.pose_by`), and keeps its pose as tracked if that chain ends at no
+     keyframe of the map. Why not ORB-SLAM's queue-emptying: our tracking deliberately holds no
+     lock across its frame, so a frame tracked on the view before a correction can ask for its
+     keyframe just after the stop is released, and a rule applied to the queue at the correction
+     would miss it; re-placing at insertion catches it and a queued one alike. The C++ baseline
+     (item 7) re-places the same way, so section 13's comparison differs only in the sharing.
    - Python's map is already immutable, each operation returning a new one, so its view is the
      map itself, published by reference.
    - Why: tracking never waits on a lock, and no thread changes what another is reading, by
@@ -701,7 +724,12 @@ measures how much.
 6. **A map lost:** tracking closes it by a message to mapping, which first finishes the keyframes
    queued for it (ORB-SLAM3's `CreateMapInAtlas` does not drain them; its queued keyframes carry
    their map), and tracking starts the next map at once. A map of 10 keyframes or fewer is reset
-   only once both workers have stopped, as `ResetActiveMap` waits for them.
+   only once both workers have stopped, as `ResetActiveMap` waits for them. *As built* (B3b's
+   review panel, A5): no message; tracking settles the threads itself, on the frame that loses
+   the track: local mapping and loop closing finish the keyframes given, a global BA running is
+   superseded and waited for, and only then is the map closed, kept or reset, the next frame
+   starting the next map. Simpler, and as safe: the map is never closed under a thread still
+   working on it. Its cost is that frame's wait, recorded in its `wait_seconds`.
 7. **ORB-SLAM's own scheme, in our C++,** the baseline (section 4): its locks, held where it
    holds them. Our map has no lock per keyframe or point, so where ORB-SLAM takes those, the
    baseline takes the map's. That is stricter than ORB-SLAM, and is said beside each comparison.
@@ -732,11 +760,40 @@ measures how much.
     - each handshake (stop, release, abort, the view's swap) is tested natively in each
       language;
     - layer 1 builds the C++ tests once more with ThreadSanitizer; Rust's threads are safe code.
+      *As built* (B3b's review panel, A3): the native tests' scene has no loop, so the step also
+      runs the loop room threaded, RGB-D, through the instrumented program, in both schemes
+      (`tests/orchestration/test_loop_room_tsan.py`, marked `tsan`): a loop's stop and
+      correction, a global BA's thread and its result carried onto the map run under the
+      sanitizer.
 14. **A failed correction, a question from B3's review panel** (H17;
     [the report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md)): a GTSAM failure inside a
     loop's correction propagates out of the pipeline's loop closing and ends the whole run.
     Whether a failed correction should instead be recorded and the loop skipped is decided with
     B3b's design, where loop closing runs in a thread of its own.
+
+**Deferred for this PR** (decided by evan-wes on 2026-10-18: no long runs for this PR; tracked in
+the ladder's open items):
+- **Section 13's measurements** are not run for this PR: the latency bar, the accuracy threaded
+  on the loop sequences and the test set, and our design against ORB-SLAM's scheme in C++. The
+  judge and the scripts that make them are built (item 11: `scripts/measure_testset.py`'s
+  `--threaded`, `--locks` and `--budget`, and `scripts/measure_sharded.py`'s `--cores`).
+- **A flaky test, not investigated.** The loop room's bar threaded in C++, its TUM monocular
+  case (`tests/orchestration/test_loop_room.py`'s `test_every_backend_closes_the_loop_room`):
+  in one of four runs the final ATE was 8.99 cm against the 2 cm bound, and 1.54 to 1.62 cm in
+  the other three, on a busy machine; threaded runs do not repeat exactly. It was to be run about
+  20 times on a quiet machine before and after the commit that publishes a view of what
+  tracking reads in place of the whole map (item 3), and the failure rates compared; that was
+  not done, so whether the commit changed it is not known. B3b's review panel (L3, with H10:
+  the flaky case ships in layer 1) found it is neither of the races the panel confirmed (A1,
+  A2): of 33 repeats, two missed the bound, one at 15.22 cm and one at 2.16 cm (the others
+  1.27 to 1.90 cm), and neither had a keyframe in flight across the correction. In the worse
+  one, a global BA shrank the map: aligning the final positions to those as tracked between the
+  correction and the global BA gives a scale of 0.276 (0.821 in the narrow miss, 0.93 to 1.32
+  in the other 31). The investigation starts from that copy: dump it from such a run, solve it
+  inline, and compare GTSAM's absolute initial damping (`lambdaInitial`) with g2o's,
+  τ·max(diag H), which ORB-SLAM3's global BA starts from.
+- **A failed correction (item 14) is still open,** with no decision yet: whether a GTSAM failure
+  inside a loop's correction should be recorded and the loop skipped.
 
 ## 13. Measurements (B3b)
 

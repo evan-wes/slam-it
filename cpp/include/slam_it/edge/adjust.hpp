@@ -10,7 +10,9 @@
 /// refreshed. The result records how each solve went, which a run records per keyframe.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -48,12 +50,27 @@ struct Adjustment {
   /// @brief The keyframes held fixed: those given that were, and every other observing their
   ///        points.
   std::int64_t fixed{0};
+  /// @brief Whether an abort stopped it early: before its first solve, between iterations, or
+  ///        before the refining solve (`slam_it.edge.adjust`'s "Stopped early").
+  bool aborted{false};
 };
 
 /// @brief A solve's record, from its summary (`slam_it.edge.adjust.Solve.of`).
 /// @param summary The solve's summary.
 /// @return Its costs, iterations and termination.
 [[nodiscard]] Solve solve_of(const foundations::nls::Summary& summary);
+
+/// @brief What a local BA does around its solves: ORB-SLAM's locking, C++'s baseline (the
+///        online-SLAM design's section 12, item 7), where `LocalBundleAdjustment` holds the
+///        map's update lock only to write its result. `leave` runs once the problem is built,
+///        before the first solve; `enter` before the result is written back, and before any
+///        error is returned after leaving.
+struct Around {
+  /// @brief Let the map's lock go.
+  std::function<void()> leave;
+  /// @brief Take it back.
+  std::function<void()> enter;
+};
 
 /// @brief Bundle-adjust keyframes and the points they observe
 ///        (`slam_it.edge.adjust.bundle_adjust`, ORB-SLAM's `LocalBundleAdjustment`).
@@ -64,13 +81,19 @@ struct Adjustment {
 ///        points is held fixed.
 /// @param fixed One flag per keyframe: nonzero to hold it fixed even among `keyframes`.
 /// @param options The iterations and thresholds.
+/// @param abort A flag local mapping's thread sets to stop it early: checked before its first
+///        solve, between its iterations and before its refining solve (ORB-SLAM's
+///        `pbStopFlag`); not owned, null for never.
+/// @param around What it does around its solves (the baseline's lock); not owned, null for
+///        nothing.
 /// @return The two solves (none, the map as it was, if no point was observed or no keyframe
-///         was held fixed, as ORB-SLAM3 skips it) and the outliers dropped;
-///         `InvalidInput` for a keyframe row out of range, flags that are not one per
-///         keyframe, or an invalid camera or settings.
-[[nodiscard]] foundations::Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
-                                                            std::span<const std::int64_t> keyframes,
-                                                            std::span<const std::uint8_t> fixed,
-                                                            const Options& options);
+///         was held fixed, as ORB-SLAM3 skips it, or if aborted before the first; one if
+///         aborted before the second) and the outliers dropped; `InvalidInput` for a keyframe
+///         row out of range, flags that are not one per keyframe, or an invalid camera or
+///         settings.
+[[nodiscard]] foundations::Result<Adjustment> bundle_adjust(
+    Map& m, const Camera& camera, std::span<const std::int64_t> keyframes,
+    std::span<const std::uint8_t> fixed, const Options& options,
+    const std::atomic<bool>* abort = nullptr, const Around* around = nullptr);
 
 }  // namespace slam_it::edge

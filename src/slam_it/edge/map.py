@@ -697,6 +697,25 @@ def _erase_keyframe(m: Map, k: int) -> Map:
     )
 
 
+def _sub_map(m: Map, rows: IntArray) -> Map:
+    """Return the part of a map some of its keyframes make (reference)."""
+    keypoints = np.flatnonzero(np.isin(m.keypoint_keyframe(), rows))
+    taken = {"K": rows, "T": keypoints, "P": m.observed_by(rows)}
+    arrays = {
+        name: getattr(m, name)[taken[group]] if group in taken else getattr(m, name)
+        for name, (group, _, _) in _SHAPES.items()
+        if group != "E"
+    }
+    for name, (group, _, _) in _SHAPES.items():
+        if group in ("G", "H"):  # the archive of removals: none in a view
+            arrays[name] = getattr(m, name)[:0]
+    parents = arrays["kf_parent"]
+    arrays["kf_parent"] = np.where(np.isin(parents, arrays["kf_id"]), parents, -1)
+    counts = np.diff(m.kf_start)[rows]
+    starts = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
+    return replace(m, kf_start=starts, **arrays)
+
+
 def _count(m: Map, ids: IntArray, visible: IntArray, found: IntArray) -> Map:
     """Add to points' visible and found counts (reference)."""
     rows = m.point_rows(ids)
@@ -860,6 +879,10 @@ class Implementation(Protocol):
 
     def erase_keyframe(self, m: dict[str, Any], k: int) -> dict[str, Any]:
         """Remove a keyframe."""
+        ...
+
+    def sub_map(self, m: dict[str, Any], rows: NDArray[np.int64]) -> dict[str, Any]:
+        """Return the part of a map some of its keyframes make."""
         ...
 
     def count(
@@ -1490,6 +1513,50 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
         "erase_keyframe",
         reference=lambda: _erase_keyframe(m, row),
         arguments={"m": m.as_dict(), "k": row},
+        decode=decode,
+    )
+
+
+def sub_map(m: Map, rows: ArrayLike, *, backend: str = "python") -> Map:
+    """Return the part of a map some of its keyframes make: a view of it.
+
+    Those keyframes, every keypoint of theirs, and the points they observe, ids kept and in the
+    same order (so a point's observations are those keyframes'); a parent not among them -1, as
+    for a keyframe without one; the archive of removals empty, the loops and the next ids the
+    map's. What a native pipeline's writer publishes for tracking
+    (:func:`slam_it.edge.covisibility.view_keyframes`).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    rows : array_like of int
+        The keyframes' rows, ascending, each once.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Map
+        The map of them.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `rows` are not ascending keyframe rows of the map.
+    """
+    chosen = np.asarray(rows)
+    if chosen.ndim != 1 or (len(chosen) and not np.issubdtype(chosen.dtype, np.integer)):
+        raise InvalidInputError("rows: expected keyframe rows")
+    chosen = chosen.astype(np.int64)
+    if len(chosen) and (chosen[0] < 0 or chosen[-1] >= m.keyframes or np.any(np.diff(chosen) <= 0)):
+        raise InvalidInputError("rows: expected ascending keyframe rows of the map, each once")
+    return backends.call(
+        backend,
+        __name__,
+        "sub_map",
+        reference=lambda: _sub_map(m, chosen),
+        arguments={"m": m.as_dict(), "rows": chosen},
         decode=decode,
     )
 

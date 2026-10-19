@@ -222,6 +222,61 @@ pub fn local_map(m: &Map, points: &[i64], options: &Options) -> Result<LocalMap>
     })
 }
 
+/// The keyframes tracking's next frame may read, from where the last frame left it
+/// (`slam_it.edge.covisibility.view_keyframes`): what the view a writer publishes holds (the
+/// online-SLAM design's section 12, item 3), so that tracking on it decides as on the whole
+/// map. The last frame's local map ([`local_map`]) gives the points tracking may match, by the
+/// motion model or the local fallback; the keyframes observing them (the K1 of any frame
+/// matching them), and for each of those, every keyframe sharing a point with it, its children
+/// and its parent (what K2 and the keyframe decision read); and the last frame's reference
+/// keyframe.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `last` - The point each of the last frame's keypoints tracked, -1 for none.
+/// * `reference` - Its reference keyframe's id, or -1.
+/// * `options` - The settings: the `covisibility` group's.
+///
+/// # Returns
+///
+/// The keyframes' rows, ascending.
+///
+/// # Errors
+///
+/// `InvalidInput` for an id below -1.
+pub fn view_keyframes(
+    m: &Map,
+    last: &[i64],
+    reference: i64,
+    options: &Options,
+) -> Result<Vec<usize>> {
+    let near = local_map(m, last, options)?;
+    let mut first = vec![false; m.keyframes()]; // the K1 of the points tracking may match
+    for p in m.observed_by(&near.keyframes) {
+        for k in observers(m, p) {
+            first[k] = true;
+        }
+    }
+    let mut inside = vec![false; m.keyframes()];
+    for k in (0..m.keyframes()).filter(|&k| first[k]) {
+        inside[k] = true;
+        for (other, &shared) in shared_points(m, k).iter().enumerate() {
+            inside[other] |= shared > 0;
+        }
+        for child in children_of(m, k) {
+            inside[child] = true;
+        }
+        if let Some(parent) = m.keyframe_row(m.kf_parent[k]) {
+            inside[parent] = true;
+        }
+    }
+    if let Some(row) = m.keyframe_row(reference) {
+        inside[row] = true;
+    }
+    Ok((0..m.keyframes()).filter(|&k| inside[k]).collect())
+}
+
 /// Gives a keyframe its parent, if it has none yet (`slam_it.edge.covisibility.adopt`).
 ///
 /// For the keyframe being inserted, the map's newest, every other already in the tree: given an

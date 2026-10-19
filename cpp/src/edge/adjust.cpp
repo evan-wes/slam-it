@@ -275,6 +275,37 @@ Result<std::int64_t> forget_and_refresh(Map& m, const std::vector<std::int64_t>&
   return static_cast<std::int64_t>(dropped.size());
 }
 
+/// @brief Write a solve back to the map, forget the observations it failed, and report it.
+/// @param m The map.
+/// @param built The problem and its rows.
+/// @param solution The solve kept.
+/// @param points The points' rows.
+/// @param failing Each observation's flag: dropped as an outlier.
+/// @param solves The solves run.
+/// @param out The report so far: the keyframes free and fixed, and whether it was aborted.
+/// @return The report with the solves and the outliers dropped; an error if a pose cannot be
+///         inverted, or the map's.
+Result<Adjustment> written_back(Map& m, const Built& built, const ba::Solution& solution,
+                                const std::vector<std::int64_t>& points,
+                                const std::vector<bool>& failing, std::vector<Solve> solves,
+                                Adjustment out) {
+  if (auto ok = write_back(m, built, solution, points); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  std::vector<std::int64_t> ids;
+  ids.reserve(points.size());
+  for (const std::int64_t p : points) {
+    ids.push_back(m.pt_id[static_cast<std::size_t>(p)]);
+  }
+  auto dropped = forget_and_refresh(m, built.rows, failing, ids);
+  if (!dropped) {
+    return std::unexpected(std::move(dropped.error()));
+  }
+  out.solves = std::move(solves);
+  out.outliers = *dropped;
+  return out;
+}
+
 }  // namespace
 
 Solve solve_of(const foundations::nls::Summary& summary) {
@@ -284,9 +315,49 @@ Solve solve_of(const foundations::nls::Summary& summary) {
           .termination = summary.termination};
 }
 
+namespace {
+
+/// @brief Holds a local BA outside the map's lock while it lives (`Around`): left on making,
+///        entered again before the result is written, or on the way out.
+class Outside {
+ public:
+  /// @brief Leave the map's lock.
+  /// @param around What to do around the solves; null for nothing.
+  explicit Outside(const Around* around) : around_(around) {
+    if (around_ != nullptr) {
+      around_->leave();
+    }
+  }
+
+  /// @brief Enter it again, if not yet.
+  ~Outside() { enter(); }
+
+  Outside(const Outside&) = delete;
+  Outside& operator=(const Outside&) = delete;
+  Outside(Outside&&) = delete;
+  Outside& operator=(Outside&&) = delete;
+
+  /// @brief Enter the map's lock again, before writing the result back.
+  void enter() {
+    if (around_ != nullptr && !entered_) {
+      entered_ = true;
+      around_->enter();
+    }
+  }
+
+ private:
+  /// @brief What to do around the solves.
+  const Around* around_;
+  /// @brief Whether the lock was entered again.
+  bool entered_{false};
+};
+
+}  // namespace
+
 Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
                                  std::span<const std::int64_t> keyframes,
-                                 std::span<const std::uint8_t> fixed, const Options& options) {
+                                 std::span<const std::uint8_t> fixed, const Options& options,
+                                 const std::atomic<bool>* abort, const Around* around) {
   if (auto ok = check(m, camera, keyframes, fixed, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -304,7 +375,14 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
   if (held == 0) {
     return Adjustment{};  // no gauge: ORB-SLAM3 skips it
   }
-  auto first = ba::solve(problem, solver_options(options, options.adjustment.iterations));
+  const auto stopped = [abort] { return abort != nullptr && abort->load(); };
+  if (stopped()) {
+    return Adjustment{.solves = {}, .outliers = 0, .free = 0, .fixed = 0, .aborted = true};
+  }
+  Outside outside(around);
+  ba::Options first_options = solver_options(options, options.adjustment.iterations);
+  first_options.solver.stop = abort;
+  auto first = ba::solve(problem, first_options);
   if (!first) {
     return std::unexpected(std::move(first.error()));
   }
@@ -315,8 +393,19 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
   if (!outlier) {
     return std::unexpected(std::move(outlier.error()));
   }
-  auto second = ba::solve(refined_problem(problem, start, *outlier),
-                          solver_options(options, options.adjustment.refine_iterations));
+  if (stopped()) {  // ORB-SLAM2's bDoMore: the first solve kept, its outliers dropped
+    ba::Solution kept = std::move(*first);
+    kept.poses = problem.poses;
+    kept.points = problem.points;
+    outside.enter();
+    return written_back(
+        m, *built, kept, points, *outlier, {solve_of(kept.summary.solve)},
+        Adjustment{
+            .solves = {}, .outliers = 0, .free = posed - held, .fixed = held, .aborted = true});
+  }
+  ba::Options second_options = solver_options(options, options.adjustment.refine_iterations);
+  second_options.solver.stop = abort;
+  auto second = ba::solve(refined_problem(problem, start, *outlier), second_options);
   if (!second) {
     return std::unexpected(std::move(second.error()));
   }
@@ -326,22 +415,17 @@ Result<Adjustment> bundle_adjust(Map& m, const Camera& camera,
   if (!still) {
     return std::unexpected(std::move(still.error()));
   }
-  if (auto ok = write_back(m, *built, *second, points); !ok) {
-    return std::unexpected(std::move(ok.error()));
-  }
-  std::vector<std::int64_t> ids;
-  ids.reserve(points.size());
-  for (const std::int64_t p : points) {
-    ids.push_back(m.pt_id[static_cast<std::size_t>(p)]);
-  }
-  auto dropped = forget_and_refresh(m, built->rows, *still, ids);
-  if (!dropped) {
-    return std::unexpected(std::move(dropped.error()));
-  }
-  return Adjustment{.solves = {solve_of(first->summary.solve), solve_of(second->summary.solve)},
-                    .outliers = *dropped,
-                    .free = posed - held,
-                    .fixed = held};
+  const std::vector<Solve> solves{solve_of(first->summary.solve), solve_of(second->summary.solve)};
+  const bool interrupted = std::ranges::any_of(solves, [](const Solve& solve) {
+    return solve.termination == foundations::nls::Termination::kStopped;
+  });
+  outside.enter();
+  return written_back(m, *built, *second, points, *still, solves,
+                      Adjustment{.solves = {},
+                                 .outliers = 0,
+                                 .free = posed - held,
+                                 .fixed = held,
+                                 .aborted = interrupted});
 }
 
 }  // namespace slam_it::edge

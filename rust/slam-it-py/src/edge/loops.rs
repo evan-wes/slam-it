@@ -19,6 +19,7 @@ use slam_it_edge::loops::{
     Outcome, Pending, Search,
 };
 use slam_it_foundations::graphs::{self, Termination};
+use slam_it_foundations::nls::Stop;
 
 use super::edge_crossing::{
     camera_in, count_or_none, database_in, indices, indices_array, map_dict, map_in, mode_in,
@@ -576,13 +577,51 @@ fn global_bundle_adjust<'py>(
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut adjusted = map_in(py, m)?;
+    let (camera, options) = (camera_in(camera)?, options_in(options)?);
+    let never = Stop::never(); // a compiled core's stop is its own threads'
     let summary = unwrap(
         py,
-        core::global_bundle_adjust(&mut adjusted, &camera_in(camera)?, &options_in(options)?),
+        core::global_bundle_adjust(&mut adjusted, &camera, &options, &never),
     )?;
     let out = PyDict::new(py);
-    out.set_item("map", map_dict(py, &adjusted)?)?;
     out.set_item("summary", solve_dict(py, &summary)?)?;
+    out.set_item("map", map_dict(py, &adjusted)?)?;
+    Ok(out)
+}
+
+/// Carries a global BA's result onto the map as it has become.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `now` - The map now, as a dict.
+/// * `solved` - The copy the global BA solved, as a dict.
+///
+/// # Returns
+///
+/// `map`, and the keyframes and points carried each way.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+#[pyo3(signature = (now, solved))]
+fn propagate_global_ba<'py>(
+    py: Python<'py>,
+    now: &Bound<'py, PyDict>,
+    solved: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let mut moved = map_in(py, now)?;
+    let carried = unwrap(
+        py,
+        core::propagate_global_ba(&mut moved, &map_in(py, solved)?),
+    )?;
+    let out = PyDict::new(py);
+    out.set_item("map", map_dict(py, &moved)?)?;
+    out.set_item("adjusted", to_i64(carried.adjusted))?;
+    out.set_item("propagated", to_i64(carried.propagated))?;
+    out.set_item("points", to_i64(carried.points))?;
+    out.set_item("carried", to_i64(carried.carried))?;
     Ok(out)
 }
 
@@ -706,6 +745,7 @@ pub fn loops(m: &Bound<'_, PyModule>) -> PyResult<()> {
         refine,
         fuse_by_similarity,
         global_bundle_adjust,
+        propagate_global_ba,
         detect,
         correct
     );

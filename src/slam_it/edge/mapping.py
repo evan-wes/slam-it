@@ -20,6 +20,17 @@ runs ORB-SLAM's local mapping steps in order, single-threaded:
 :func:`process` returns the map with how each step went (:class:`MappingSummary`), which a
 run records per keyframe.
 
+**In a thread of its own** (milestone 2B's B3b), local mapping is asked between its steps what
+ORB-SLAM's ``LocalMapping::Run`` asks (:class:`Interrupts`): fusion runs only while no keyframe
+waits (``CheckNewKeyFrames``); local BA and keyframe culling only while none waits and no stop
+is requested (``stopRequested``); local BA stops early when aborted (``mbAbortBA``,
+:func:`slam_it.edge.adjust.bundle_adjust`); and the map is published for tracking once the
+keyframe's points are made. How each was scheduled is kept (:class:`Schedule`). Tracking asks
+for a keyframe as ORB-SLAM's ``NeedNewKeyFrame`` does whether mapping is idle or busy
+(:func:`need_keyframe`). The C++ and Rust cores are interrupted the same way, by their own
+threads; their bindings do not cross Python's callables, so a compiled backend given
+``interrupts`` is refused.
+
 A keyframe's neighbours are its links in the covisibility graph
 (:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Lite: matching for triangulation has no
 bag of words: every free keypoint pair within the stricter distance and the epipolar band is a
@@ -28,6 +39,7 @@ candidate (:func:`match_for_triangulation`).
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -41,7 +53,7 @@ from slam_it.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
 from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options, check_mode
 from slam_it.foundations import matching, triangulation
-from slam_it.foundations.arrays import as_real
+from slam_it.foundations.arrays import as_count, as_flag, as_real
 from slam_it.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
@@ -51,6 +63,70 @@ Mask = NDArray[np.bool_]
 
 Crossing = dict[str, Any]
 """A map, camera, tracked frame or the settings, as it crosses the bindings."""
+
+
+class Interrupts(Protocol):
+    """What local mapping's own thread is asked between its steps (the module docstring)."""
+
+    def waiting(self) -> bool:
+        """Return whether another keyframe waits to be mapped (``CheckNewKeyFrames``)."""
+        ...
+
+    def stopping(self) -> bool:
+        """Return whether a stop of local mapping is requested (``stopRequested``)."""
+        ...
+
+    def aborted(self) -> bool:
+        """Return whether the local BA is to stop now (``mbAbortBA``)."""
+        ...
+
+    def publish(self, m: Map) -> None:
+        """Publish the map so far for tracking, the keyframe's new points made."""
+        ...
+
+
+class Scheduled(enum.StrEnum):
+    """How a step local mapping schedules went (:class:`Schedule`)."""
+
+    RAN = "ran"
+    """It ran (and may have found nothing to do)."""
+    SKIPPED = "skipped"
+    """It was passed over: a keyframe waited, or a stop was requested."""
+    ABORTED = "aborted"
+    """It started and was stopped early."""
+
+
+@dataclass(frozen=True)
+class Schedule:
+    """How local mapping scheduled a keyframe's steps (the module docstring).
+
+    Attributes
+    ----------
+    fusion : Scheduled
+        Fusing duplicates with the neighbours (``SearchInNeighbors``).
+    adjustment : Scheduled
+        The local BA.
+    culling : Scheduled
+        Culling redundant keyframes.
+    """
+
+    fusion: Scheduled
+    adjustment: Scheduled
+    culling: Scheduled
+
+    def as_dict(self) -> dict[str, str]:
+        """Return the schedule as JSON values.
+
+        Returns
+        -------
+        dict
+            ``fusion``, ``adjustment`` and ``culling``, each by name.
+        """
+        return {
+            "fusion": self.fusion.value,
+            "adjustment": self.adjustment.value,
+            "culling": self.culling.value,
+        }
 
 
 @dataclass(frozen=True)
@@ -133,11 +209,14 @@ class Mapped:
         The id of the point made for each of the keyframe's keypoints (from its depth, or
         triangulated), -1 where none: as made, though fusion or culling may since have removed
         it.
+    schedule : Schedule
+        How its steps were scheduled.
     """
 
     map: Map
     summary: MappingSummary
     made: IntArray
+    schedule: Schedule
 
 
 _COUNTS = (
@@ -160,7 +239,8 @@ class Implementation(Protocol):
     The map crosses as :meth:`Map.as_dict`, a frame as
     :meth:`slam_it.edge.frames.Frame.as_dict`, a tracked frame as :meth:`Tracked.as_dict`, the
     mode by name. A mapped keyframe crosses back as a dict of ``map``, the summary's counts,
-    ``solves`` (as :func:`slam_it.edge.adjust.decode_solves` reads them) and ``made``.
+    ``solves`` (as :func:`slam_it.edge.adjust.decode_solves` reads them), ``made`` and
+    ``schedule`` (each step's :class:`Scheduled` by name).
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -177,6 +257,9 @@ class Implementation(Protocol):
         reference: int,
         mode: str,
         options: Crossing,
+        idle: bool,
+        since_keyframe: int | None,
+        keyframes: int | None,
     ) -> bool:
         """Decide whether a tracked frame becomes a keyframe."""
         ...
@@ -256,6 +339,7 @@ def _decode_mapped(raw: Crossing, codes: backends.Codes) -> Mapped:
         map=maps.decode(raw["map"], codes),
         summary=MappingSummary(solves=adjust.decode_solves(raw["solves"], codes), **counts),
         made=backends.checked_array(raw["made"], np.int64, 1, "made ids"),
+        schedule=Schedule(**{step: Scheduled(name) for step, name in raw["schedule"].items()}),
     )
 
 
@@ -316,9 +400,13 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
     reference: int,
     mode: str,
     options: Options,
+    idle: bool = True,
+    since_keyframe: int | None = None,
+    keyframes: int | None = None,
 ) -> bool:
     """Decide whether a tracked frame becomes a keyframe (reference)."""
-    early = m.keyframes <= 2  # NeedNewKeyFrame's nKFs <= 2
+    total = m.keyframes if keyframes is None else keyframes
+    early = total <= 2  # NeedNewKeyFrame's nKFs <= 2
     min_observations = (
         options.keyframes.ref_min_observations_early
         if early
@@ -337,11 +425,18 @@ def _need_keyframe(  # noqa: PLR0913 -- the stage's state
             tracked_close < options.keyframes.close_tracked
             and untracked_close > options.keyframes.close_untracked
         )
-    ratio = options.keyframes.first_ref_ratio if m.keyframes < 2 else options.keyframes.ref_ratio
+    ratio = options.keyframes.first_ref_ratio if total < 2 else options.keyframes.ref_ratio
     if mode == "monocular":
         ratio = options.keyframes.mono_ref_ratio
     weak = tracked.inliers < tracked_reference * ratio or need_close
-    return bool(weak and tracked.inliers > options.keyframes.min_inliers)
+    wanted = bool(weak and tracked.inliers > options.keyframes.min_inliers)  # c2
+    if idle:  # c1b: no frames need pass, with mapping idle
+        return wanted
+    late = since_keyframe is not None and since_keyframe >= options.tracking.max_frames  # c1a
+    poor = mode != "monocular" and (  # c1c
+        tracked.inliers < tracked_reference * options.keyframes.busy_ref_ratio or need_close
+    )
+    return wanted and (late or poor)
 
 
 def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
@@ -353,17 +448,23 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     reference: int,
     mode: str,
     options: Options,
+    idle: bool = True,
+    since_keyframe: int | None = None,
+    keyframes: int | None = None,
     backend: str = "python",
 ) -> bool:
-    """Decide whether a tracked frame becomes a keyframe (``NeedNewKeyFrame``, single-threaded).
+    """Decide whether a tracked frame becomes a keyframe (``NeedNewKeyFrame``).
 
-    With mapping never busy, ORB-SLAM's conditions reduce to: the frame tracks fewer than
+    With mapping idle, ORB-SLAM's conditions reduce to: the frame tracks fewer than
     ``keyframes.ref_ratio`` (``keyframes.mono_ref_ratio``; ``keyframes.first_ref_ratio`` with one
     keyframe) of the points the frame's reference keyframe (the one sharing the most of its points,
     :func:`slam_it.edge.covisibility.local_map`) sees from two keyframes (three once there are more
     than two), or, with depth, fewer than ``keyframes.close_tracked`` close points while more than
     ``keyframes.close_untracked`` close ones go untracked; and it tracks more than
-    ``keyframes.min_inliers``.
+    ``keyframes.min_inliers``. With mapping busy, those hold and also: ``tracking.max_frames``
+    frames have passed since the last keyframe, or, with depth, the frame tracks fewer than
+    ``keyframes.busy_ref_ratio`` of the reference's points, or the close points ask for one. Whether
+    mapping then takes the keyframe is the pipeline's (:mod:`slam_it.edge.pipeline`).
 
     Parameters
     ----------
@@ -381,6 +482,14 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
         The pipeline's mode.
     options : Options
         The ratios and counts.
+    idle : bool, optional
+        Whether local mapping is idle (default: it is, as when it runs inline).
+    since_keyframe : int, optional
+        The frames since the last keyframe, read only with mapping busy (default: unknown, as
+        if too few).
+    keyframes : int, optional
+        The whole map's keyframes, which the rules count, when `m` is a view of it
+        (:func:`slam_it.edge.map.sub_map`; default: `m`'s own).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -392,11 +501,18 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the mode is unknown, the map has no keyframe, the depths are infinite, or the
-        matches are not one per depth.
+        If the mode is unknown, the map has no keyframe, the depths are infinite, the matches
+        are not one per depth, `idle` is not a boolean, `since_keyframe` is not an integer of
+        0 or more, or `keyframes` is not an integer of at least `m`'s keyframes.
     """
     check_mode(mode)
     _check_newest(m)
+    idle = as_flag(idle, "idle")
+    most = int(np.iinfo(np.int64).max)
+    if since_keyframe is not None:
+        since_keyframe = as_count(since_keyframe, "since_keyframe", 0, most)
+    if keyframes is not None:  # the whole map holds every keyframe of its view
+        keyframes = as_count(keyframes, "keyframes", m.keyframes, most)
     depths = as_real(depth, "depth", allow_nan=True).reshape(-1)
     ids = np.asarray(tracked.points)
     if ids.shape != depths.shape or not np.issubdtype(ids.dtype, np.integer):
@@ -408,10 +524,28 @@ def need_keyframe(  # noqa: PLR0913 -- the stage's state, and the backend
         __name__,
         "need_keyframe",
         reference=lambda: _need_keyframe(
-            m, camera, depths, checked, reference=row, mode=mode, options=options
+            m,
+            camera,
+            depths,
+            checked,
+            reference=row,
+            mode=mode,
+            options=options,
+            idle=idle,
+            since_keyframe=since_keyframe,
+            keyframes=keyframes,
         ),
         arguments=_arguments(
-            m, camera, options, depth=depths, tracked=checked.as_dict(), reference=row, mode=mode
+            m,
+            camera,
+            options,
+            depth=depths,
+            tracked=checked.as_dict(),
+            reference=row,
+            mode=mode,
+            idle=idle,
+            since_keyframe=since_keyframe,
+            keyframes=keyframes,
         ),
         decode=lambda raw, codes: bool(raw),
     )
@@ -1131,6 +1265,7 @@ def _process(  # noqa: PLR0913 -- the stage's state
     mode: str,
     options: Options,
     held: IntArray,
+    interrupts: Interrupts | None = None,
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (reference)."""
     m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
@@ -1146,18 +1281,30 @@ def _process(  # noqa: PLR0913 -- the stage's state
     triangulated = m.points
     # Taken before fusion, which may replace a new point; a depth point culled since stays made.
     made = np.where(from_depth >= 0, from_depth, _made_since(m, first))
-    m = covisibility.adopt(_fuse_points(m, camera, mode, options), m.keyframes - 1)
+    if interrupts is not None:
+        interrupts.publish(m)
+    fusion = Scheduled.RAN if interrupts is None or not interrupts.waiting() else Scheduled.SKIPPED
+    if fusion is Scheduled.RAN:
+        m = covisibility.adopt(_fuse_points(m, camera, mode, options), m.keyframes - 1)
+    else:
+        m = covisibility.adopt(m, m.keyframes - 1)
     fused = m.points
+    quiet = interrupts is None or not (interrupts.waiting() or interrupts.stopping())
+    adjustment = culling = Scheduled.RAN if quiet else Scheduled.SKIPPED
     solves: tuple[adjust.Solve, ...] = ()
     outliers = 0
     free = fixed = 0
-    if m.keyframes >= options.adjustment.min_keyframes:
+    if quiet and m.keyframes >= options.adjustment.min_keyframes:
         local = _local_ba_keyframes(m, options)
-        adjusted = adjust.bundle_adjust(m, camera, local, m.kf_id == 0, options)
+        abort = None if interrupts is None else interrupts.aborted
+        adjusted = adjust.bundle_adjust(m, camera, local, m.kf_id == 0, options, abort=abort)
         m, solves, outliers = adjusted.map, adjusted.solves, adjusted.outliers
         free, fixed = adjusted.free, adjusted.fixed
+        if adjusted.aborted:
+            adjustment = Scheduled.ABORTED
     keyframes = m.keyframes
-    m = _cull_keyframes(m, camera, mode, options, held)
+    if quiet:
+        m = _cull_keyframes(m, camera, mode, options, held)
     summary = MappingSummary(
         from_depth=with_depth - start,
         culled_points=with_depth - culled,
@@ -1170,7 +1317,7 @@ def _process(  # noqa: PLR0913 -- the stage's state
         weak_points=fused - m.points,
         culled_keyframes=keyframes - m.keyframes,
     )
-    return Mapped(map=m, summary=summary, made=made)
+    return Mapped(map=m, summary=summary, made=made, schedule=Schedule(fusion, adjustment, culling))
 
 
 def process(  # noqa: PLR0913 -- the stage's state, and the backend
@@ -1182,6 +1329,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     mode: str,
     options: Options,
     held: ArrayLike = (),
+    interrupts: Interrupts | None = None,
     backend: str = "python",
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (the module docstring's six steps).
@@ -1202,21 +1350,27 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
         The settings.
     held : array_like of int, optional
         The ids of the keyframes loop detection holds, which culling spares (default: none).
+    interrupts : Interrupts, optional
+        What local mapping's thread is asked between the steps (the module docstring); default:
+        none, every step run, as inline.
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
     Mapped
-        The map after local mapping, how each step went, and the points made for the
-        keyframe's keypoints.
+        The map after local mapping, how each step went and was scheduled, and the points made
+        for the keyframe's keypoints.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the mode is unknown, the matches are not one per keypoint, or `held` is not ids.
+        If the mode is unknown, the matches are not one per keypoint, `held` is not ids, or
+        `interrupts` is given to a compiled backend.
     """
     check_mode(mode)
+    if interrupts is not None and backend != "python":
+        raise InvalidInputError("interrupts: a compiled backend's own threads interrupt it")
     checked = checked_tracked(tracked, frame)
     kept = covisibility.as_held(held)
     return backends.call(
@@ -1224,7 +1378,14 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
         __name__,
         "process",
         reference=lambda: _process(
-            m, camera, frame, checked, mode=mode, options=options, held=kept
+            m,
+            camera,
+            frame,
+            checked,
+            mode=mode,
+            options=options,
+            held=kept,
+            interrupts=interrupts,
         ),
         arguments=_arguments(
             m,
