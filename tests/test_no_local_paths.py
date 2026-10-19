@@ -6,8 +6,9 @@ on one machine, or anything from one person's own tools; and the owner is named 
 handle alone. This scans the text of every file git would commit (this one excepted, since it
 spells out the patterns).
 
-The owner's full name is not written here: it is held as the SHA-256 of each of its words,
-lowercased, and every run of words in a file is compared with it.
+The owner's full name, the folders the project lived in and the personal tools' folders are not
+written here: each is held as the SHA-256 of each of its words, lowercased, and every run of
+words in a file is compared with them.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import functools
 import hashlib
 import re
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -26,19 +28,51 @@ FORBIDDEN = {
     "a folder under the home folder": r"~/projects|~/\.claude",
     "a session's scratch folder": r"/tmp/claude-\d+",
     "a link to a Claude Code session": r"claude\.ai/code/session",
-    "a personal tool": r"claude-scripts|\.gstack",
-    "a folder the project lived in": r"(?:slamlab|slam_it_all|slam_it|reifyscene)_project",
     "a note kept outside the repository": r"\[\[[a-z0-9]+(?:-[a-z0-9]+)+\]\]",
     "a personal email address": r"[\w.+-]*(?i:@gmail\.com)",
 }
 PATTERN = re.compile("|".join(f"(?P<g{i}>{p})" for i, p in enumerate(FORBIDDEN.values())))
 WHAT = list(FORBIDDEN)
 
-# The owner's full name: the SHA-256 of each word, lowercased, in order.
-NAME = (
-    "ae74f72d212fb9871302a2459aeaf7b20bc2f792e4852be648a7d4e63967d9b1",
-    "2be4e33aa3e21f6ff7ad144f8fd58228a1cce3b50340b4805ff0c63480eec488",
-)
+# What the guard holds as digests, by what it reports: each spelling the SHA-256 of each of its
+# words, lowercased, in order. Anything but a letter parts two words, so a spelling is found
+# whatever joins them: an underscore, a hyphen, a slash, a dot, a space or a line break.
+HIDDEN: dict[str, tuple[tuple[str, ...], ...]] = {
+    "the owner's full name": (
+        (
+            "ae74f72d212fb9871302a2459aeaf7b20bc2f792e4852be648a7d4e63967d9b1",
+            "2be4e33aa3e21f6ff7ad144f8fd58228a1cce3b50340b4805ff0c63480eec488",
+        ),
+    ),
+    "a folder the project lived in": (
+        (
+            "e590d8e002b4908002fd31c750d0b43e93b9ed13ee1eeb8842501e96795f2752",
+            "244210e48437b6556980a70249a99369934a352429034cef9d7bd253b3bf2c01",
+        ),
+        (
+            "8e6a0ab2937027144d3c821bfbc92cc153ab0d161908dffe54149df13044096a",
+            "2ad8a7049d7c5511ac254f5f51fe70a046ebd884729056f0fe57f5160d467153",
+            "5ef5ef0364b6939c4ca61f34b393f7b368d1be8619647aaf83d5b395919ab629",
+            "244210e48437b6556980a70249a99369934a352429034cef9d7bd253b3bf2c01",
+        ),
+        (
+            "8e6a0ab2937027144d3c821bfbc92cc153ab0d161908dffe54149df13044096a",
+            "2ad8a7049d7c5511ac254f5f51fe70a046ebd884729056f0fe57f5160d467153",
+            "244210e48437b6556980a70249a99369934a352429034cef9d7bd253b3bf2c01",
+        ),
+        (
+            "93b943cfeefedf0b64488bbe917d852a6ab9657c9e38955511bcdfcda5f1f9d9",
+            "244210e48437b6556980a70249a99369934a352429034cef9d7bd253b3bf2c01",
+        ),
+    ),
+    "a personal tool": (
+        (
+            "c857d09db23e6822e3600bc06ad8d58f92ed62bc8efd81c753f77048662cb97d",
+            "8c5967fd8486f34493710cc39b240aad46536cf4ee421ffd0479e6542db03e36",
+        ),
+        ("556d1f14c80f008eb61334df7417e0adb53464a22552ce44913c435fd39f3fe5",),
+    ),
+}
 _WORD = re.compile(r"[^\W\d_]+")
 
 # Mentions kept on purpose: the Eigen-derived SVD carries Eigen's copyright lines as Eigen's
@@ -107,7 +141,7 @@ def _mentions(text: str) -> list[tuple[int, str, str]]:
     return found
 
 
-def _names(text: str, name: tuple[str, ...] = NAME) -> list[int]:
+def _names(text: str, name: tuple[str, ...]) -> list[int]:
     """Return the line of each place a name's words appear in a text, in order.
 
     The words may be split by anything that is not a letter (spaces, a line break, a dot), so
@@ -133,7 +167,9 @@ def _names(text: str, name: tuple[str, ...] = NAME) -> list[int]:
     return lines
 
 
-def _problems(rel: str, data: bytes) -> list[str]:
+def _problems(
+    rel: str, data: bytes, hidden: Mapping[str, tuple[tuple[str, ...], ...]] = HIDDEN
+) -> list[str]:
     """Return what the guard reports in one file.
 
     Parameters
@@ -142,13 +178,15 @@ def _problems(rel: str, data: bytes) -> list[str]:
         The file's path, relative to the repository (``ALLOWED`` is keyed by it).
     data : bytes
         The file's content.
+    hidden : mapping of str to tuple of tuple of str, optional
+        What is held as digests, by what it is reported as (``HIDDEN``'s form).
 
     Returns
     -------
     list of str
         One ``path:line: what (match)`` per forbidden mention that ``ALLOWED`` does not exempt
-        in this file, and one per occurrence of the owner's name; none for a binary file (one
-        holding a NUL byte).
+        in this file, and one ``path:line: what``, never echoing the text, per occurrence of a
+        spelling held as digests; none for a binary file (one holding a NUL byte).
     """
     if b"\0" in data:
         return []  # binary
@@ -158,7 +196,12 @@ def _problems(rel: str, data: bytes) -> list[str]:
         for n, what, hit in _mentions(text)
         if (rel, hit) not in ALLOWED
     ]
-    problems += [f"{rel}:{n}: the owner's full name" for n in _names(text)]
+    problems += [
+        f"{rel}:{n}: {what}"
+        for what, spellings in hidden.items()
+        for spelling in spellings
+        for n in _names(text, spelling)
+    ]
     return problems
 
 
@@ -180,21 +223,17 @@ def test_the_guard_sees_each_kind_of_mention() -> None:
         ("ls ~/projects", "a folder under the home folder"),
         ("d = '~/.claude/x'", "a folder under the home folder"),
         ("ls ~/.claude", "a folder under the home folder"),
-        ("e = '/tmp/claude-1000/x'", "a session's scratch folder"),
-        ("f = 'claude-scripts'", "a personal tool"),
-        ("g = '~/.gstack/x'", "a personal tool"),
-        ("h = 'slam_it_project'", "a folder the project lived in"),
-        ("i = 'see [[some-note]]'", "a note kept outside the repository"),
-        ("j = 'me@Gmail.com'", "a personal email address"),
-        ("k = 'https://claude.ai/code/session_0123'", "a link to a Claude Code session"),
+        ("e = '/tmp/claude-1234/x'", "a session's scratch folder"),
+        ("f = 'see [[some-note]]'", "a note kept outside the repository"),
+        ("g = 'me@Gmail.com'", "a personal email address"),
+        ("h = 'https://claude.ai/code/session_0123'", "a link to a Claude Code session"),
     ]
     alike = [
-        "l = [[0]]",
-        "m = '/tmp/x'",
-        "n = '~/.cache/x'",
-        "o = 'slam_it.project'",
-        "p = '/home/'",
-        "q = 'https://claude.ai/code'",
+        "i = [[0]]",
+        "j = '/tmp/x'",
+        "k = '~/.cache/x'",
+        "l = '/home/'",
+        "m = 'https://claude.ai/code'",
     ]
     found = _mentions("\n".join([line for line, _ in cases] + alike) + "\n")
     assert [(n, what) for n, what, _ in found] == [
@@ -227,3 +266,45 @@ def test_the_guard_sees_a_name_by_its_digests() -> None:
     name = (_digest("ada"), _digest("lovelace"))
     text = "Ada Lovelace\nwrote to ada.\nLovelace\nLovelace Ada\nada lovelaces\n"
     assert _names(text, name) == [1, 2]
+
+
+def test_the_guard_reports_each_kind_it_holds_as_digests() -> None:
+    """Each kind held as digests is reported as itself, by line, never echoing what it found.
+
+    Stand-ins take the real spellings' places, in their shapes: a folder named ``<name>_project``
+    in a path or a string, a tool's folder hyphenated or dotted in the home folder.
+    """
+
+    def held(*spellings: str) -> tuple[tuple[str, ...], ...]:
+        """Return spellings as ``HIDDEN`` holds them."""
+        return tuple(tuple(_digest(word) for word in s.split()) for s in spellings)
+
+    hidden = {
+        "the owner's full name": held("ada lovelace"),
+        "a folder the project lived in": held("babbage project", "analytical engine project"),
+        "a personal tool": held("difference engines", "mill"),
+    }
+    assert hidden.keys() == HIDDEN.keys()  # a stand-in for every kind the guard holds
+    cases = [
+        ("by Ada Lovelace", "the owner's full name"),
+        ("cd /srv/babbage_project/x", "a folder the project lived in"),
+        ("x = 'analytical_engine_project'", "a folder the project lived in"),
+        ("see difference-engines/run.py", "a personal tool"),
+        ("ls ~/.mill/x", "a personal tool"),
+    ]
+    alike = [
+        "babbage_projects",
+        "project babbage",
+        "analytical_project",
+        "difference engine",
+        "mills",
+    ]
+    text = "\n".join([line for line, _ in cases] + alike) + "\n"
+    assert sorted(_problems("a.txt", text.encode(), hidden)) == sorted(
+        f"a.txt:{n}: {what}" for n, (_, what) in enumerate(cases, 1)
+    )  # one report per case, of its kind; the alike lines give none
+    # the real spellings are whole SHA-256 digests, and no kind is also a pattern's
+    for spelling in (s for spellings in HIDDEN.values() for s in spellings):
+        assert spelling
+        assert all(re.fullmatch(r"[0-9a-f]{64}", digest) for digest in spelling)
+    assert not HIDDEN.keys() & FORBIDDEN.keys()

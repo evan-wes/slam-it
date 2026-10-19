@@ -46,6 +46,11 @@ template is `docs/dashcam.template.toml`.
   and smoothing and the planar scoring; each calibration stage on a synthetic rig drive; a
   damaged segment skipped by each step, one failing partway taken back, all damaged refused,
   and a segment with concealed corrupt frames kept.
+- The guard against local paths and personal details (`tests/test_no_local_paths.py`) holds
+  the folders the project lived in and the personal tools' folders as SHA-256 digests, as it
+  holds the owner's name, so it no longer spells them out; it finds them whatever joins their
+  words, and its self-test has a stand-in for each kind it holds so. Its scratch-folder case is
+  a generic one.
 
 ## [0.3.12.0] - 2026-10-17
 
