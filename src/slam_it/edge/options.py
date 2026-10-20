@@ -492,6 +492,11 @@ class LoopOptions:
     its source hard-codes. A distance named here is a Hamming distance; ORB-SLAM writes the
     projection searches' as ``TH_LOW`` (50) times a ratio.
 
+    A merge's welding window (``MergeLocal``'s) is built in three steps: the merge's keyframe
+    and its best ``weld_neighbours`` links; then, while it holds fewer than ``weld_neighbours``
+    keyframes, each member's best ``weld_widen`` links taken in; that at most ``weld_rounds``
+    times.
+
     Attributes
     ----------
     enabled : bool
@@ -580,13 +585,14 @@ class LoopOptions:
     global_iterations : int
         Its iterations (``GlobalBundleAdjustemnt``'s 10).
     weld_neighbours : int
-        A merge's welding window is a keyframe and its best this many links, widened to this
-        many when it holds fewer (ORB-SLAM3's ``numTemporalKFs``, 25, which ``MergeLocal`` uses
-        for visual maps too)...
+        The best links of the merge's keyframe a welding window starts with, and the keyframes
+        it is widened to while it holds fewer (ORB-SLAM3's ``numTemporalKFs``, 25, which
+        ``MergeLocal`` uses for visual maps too).
     weld_widen : int
-        ...each member's best this many links taken in (``numTemporalKFs / 2``, 12)...
+        The best links of each member a welding window takes in each time it is widened
+        (``numTemporalKFs / 2``, 12).
     weld_rounds : int
-        ...at most this many times (``nMaxTries``, 5); 0 widens none.
+        The most times a welding window is widened (``nMaxTries``, 5); 0 widens it none.
     """
 
     enabled: bool = True

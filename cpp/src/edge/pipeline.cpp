@@ -1762,13 +1762,17 @@ Trajectory Pipeline::trajectory() const {
       [&] { return shared_->atlas().trajectory(owner.map() ? &*owner.map() : nullptr); });
 }
 
-Result<LostSummary> Pipeline::leave(bool dated, std::int64_t small) {
+Result<LostSummary> Pipeline::leave(Closing why) {
   auto [m, database] = shared_->owner().close();
   const std::size_t keyframes = m ? keyframe_count(*m) : 0;
+  const LossOptions& loss = options_.loss;
   const LostSummary out{.keyframes = static_cast<std::int64_t>(keyframes),
                         .points = m ? static_cast<std::int64_t>(point_count(*m)) : 0,
-                        .reset = std::cmp_less(keyframes, small)};
+                        .reset = why == Closing::kSession
+                                     ? std::cmp_less(keyframes, loss.session_keyframes)
+                                     : std::cmp_less_equal(keyframes, loss.reset_keyframes)};
   if (m) {
+    const bool dated = why == Closing::kLost;
     if (auto ok = shared_->atlas().close(std::move(*m), std::move(database), out.reset, dated);
         !ok) {
       return std::unexpected(std::move(ok.error()));
@@ -1785,7 +1789,7 @@ Result<void> Pipeline::close_lost(Step& step) {
   if (!step.lost || !shared_->owner().map()) {  // a lost frame was tracking a map
     return {};
   }
-  auto closed = leave(true, options_.loss.reset_keyframes + 1);
+  auto closed = leave(Closing::kLost);
   if (!closed) {
     return std::unexpected(std::move(closed.error()));
   }
@@ -1806,7 +1810,7 @@ Result<std::optional<LostSummary>> Pipeline::start_session() {
         return std::unexpected(std::move(ok.error()));
       }
     }
-    auto left = leave(false, options_.loss.session_keyframes);
+    auto left = leave(Closing::kSession);
     if (!left) {
       return std::unexpected(std::move(left.error()));
     }
@@ -1835,7 +1839,7 @@ Result<std::pair<LostSummary, double>> Pipeline::switch_map(std::int64_t number,
     }
     waited = Seconds(Clock::now() - settling).count();
   }
-  auto left = leave(false, options_.loss.reset_keyframes + 1);
+  auto left = leave(Closing::kLeft);
   if (!left) {
     return std::unexpected(std::move(left.error()));
   }

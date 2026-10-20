@@ -466,6 +466,10 @@ def loop_candidates(
 class Indexed:
     """A map with its keyframe database, and its number among a run's maps.
 
+    What merge detection and relocalisation search a map by. The atlas keeps a map that is not
+    being tracked as a :class:`slam_it.edge.atlas.Kept`, which adds its ids' run ids, and gives
+    the searches each as an Indexed (:meth:`slam_it.edge.atlas.Atlas.indexed`).
+
     Attributes
     ----------
     number : int

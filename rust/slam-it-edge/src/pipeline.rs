@@ -3108,8 +3108,7 @@ impl Pipeline {
         let mut summary = step.summary;
         if step.lost && self.shared.owner.map().is_some() {
             // A lost frame was tracking a map.
-            let small = self.options.loss.reset_keyframes + 1;
-            summary.lost = Some(leave(&self.shared, small, true)?);
+            summary.lost = Some(leave(&self.shared, Closing::Lost, &self.options)?);
             self.tracking = TrackingState::default();
             self.state = State::NotInitialized;
         }
@@ -3229,11 +3228,7 @@ impl Pipeline {
             if let Some(threads) = &self.threads {
                 threads.settle(false)?;
             }
-            closed = Some(leave(
-                &self.shared,
-                self.options.loss.session_keyframes,
-                false,
-            )?);
+            closed = Some(leave(&self.shared, Closing::Session, &self.options)?);
         }
         self.tracking = TrackingState::default();
         self.state = State::NotInitialized;
@@ -3337,7 +3332,7 @@ impl Pipeline {
                 } else {
                     0.0
                 };
-                let left = leave(shared, options.loss.reset_keyframes + 1, false)?;
+                let left = leave(shared, Closing::Left, options)?;
                 let kept = lock(&shared.atlas).resume(number)?;
                 shared.owner.resume(kept.map, kept.database);
                 tracking.change_map();
@@ -3515,17 +3510,29 @@ impl Pipeline {
     }
 }
 
+/// Why the map being tracked closes (`slam_it.edge.pipeline._Closing`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Closing {
+    /// The track was lost on this frame.
+    Lost,
+    /// Relocalisation found this frame in a kept map, which tracking takes up.
+    Left,
+    /// A new session starts ([`Pipeline::start_session`]).
+    Session,
+}
+
 /// Closes the map being tracked (`slam_it.edge.pipeline.Pipeline._leave`): keeps it whole, or
-/// resets it if it has fewer than `small` keyframes ([`Atlas::close`]). Loop closing's state
+/// resets it if it is small ([`Atlas::close`]): a map lost or left with `loss.reset_keyframes`
+/// keyframes or fewer, one a new session closes with fewer than `loss.session_keyframes`. A map
+/// lost is closed after its frame is dated, one left or a session's before. Loop closing's state
 /// goes with it, a merge waiting too; threaded, the threads have settled first.
 ///
 /// # Arguments
 ///
 /// * `shared` - The map's owner, giving the map up; the atlas, keeping or resetting it; and
 ///   loop closing's state, cleared.
-/// * `small` - The keyframes a map must hold to be kept.
-/// * `dated` - Whether this frame is dated already: a map lost on a frame is closed after it,
-///   one left for another kept map while tracking it.
+/// * `why` - Why it closes.
+/// * `options` - The settings: `loss`.
 ///
 /// # Returns
 ///
@@ -3534,18 +3541,24 @@ impl Pipeline {
 /// # Errors
 ///
 /// The atlas's ([`Atlas::close`]).
-fn leave(shared: &Shared, small: usize, dated: bool) -> Result<LostSummary> {
+fn leave(shared: &Shared, why: Closing, options: &Options) -> Result<LostSummary> {
     // Shared with loop closing's thread, settled by now; a merge waiting goes with it.
     *lock(&shared.closing) = LoopState::default();
     shared.waiting.store(false, Ordering::SeqCst);
     let (Some(m), database) = shared.owner.close() else {
         return Ok(LostSummary::default());
     };
+    let loss = &options.loss;
+    let reset = if why == Closing::Session {
+        m.keyframes() < loss.session_keyframes
+    } else {
+        m.keyframes() <= loss.reset_keyframes
+    };
     let out = LostSummary {
         keyframes: m.keyframes(),
         points: m.points(),
-        reset: m.keyframes() < small,
+        reset,
     };
-    lock(&shared.atlas).close(m, database, out.reset, dated)?;
+    lock(&shared.atlas).close(m, database, reset, why == Closing::Lost)?;
     Ok(out)
 }

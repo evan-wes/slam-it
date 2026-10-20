@@ -452,6 +452,10 @@ impl Default for RelocalizationOptions {
 }
 
 /// Loop closure: detection, the loop's similarity, its correction (`Options.loops`).
+///
+/// A merge's welding window (`MergeLocal`'s) is built in three steps: the merge's keyframe and
+/// its best `weld_neighbours` links; then, while it holds fewer than `weld_neighbours`
+/// keyframes, each member's best `weld_widen` links taken in; that at most `weld_rounds` times.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoopOptions {
     /// Close loops in the map being tracked (needs the keyframe database).
@@ -524,12 +528,13 @@ pub struct LoopOptions {
     pub global_ba: bool,
     /// Its iterations.
     pub global_iterations: usize,
-    /// A merge's welding window: a keyframe and its best this many links, widened to this many
-    /// when it holds fewer (`numTemporalKFs`)...
+    /// The best links of the merge's keyframe a welding window starts with, and the keyframes it
+    /// is widened to while it holds fewer (`numTemporalKFs`).
     pub weld_neighbours: usize,
-    /// ...each member's best this many links taken in (`numTemporalKFs / 2`)...
+    /// The best links of each member a welding window takes in each time it is widened
+    /// (`numTemporalKFs / 2`).
     pub weld_widen: usize,
-    /// ...at most this many times (`nMaxTries`); 0 widens none.
+    /// The most times a welding window is widened (`nMaxTries`); 0 widens it none.
     pub weld_rounds: usize,
 }
 

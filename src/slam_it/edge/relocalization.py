@@ -56,6 +56,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from slam_it import backends
+from slam_it.backends import Crossing
 from slam_it.edge import database, frames, tracking
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
@@ -68,10 +69,6 @@ from slam_it.foundations.errors import InvalidInputError
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
-
-
-Crossing = dict[str, Any]
-"""A value as it crosses the bindings: a dict of arrays, numbers, and dicts of them."""
 
 
 @dataclass(frozen=True)

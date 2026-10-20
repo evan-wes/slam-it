@@ -949,14 +949,24 @@ class Pipeline {
   foundations::Result<Keyframed> make_keyframe(const Map& m, const Frame& frame,
                                                const Tracked& tracked, FrameSummary& summary);
 
-  /// @brief Close the map being tracked: keep it whole, or reset it if it has fewer than
-  ///        `small` keyframes (`Atlas::close`). Loop closing's state goes with it, a merge
-  ///        waiting too; threaded, the threads have settled first.
-  /// @param dated Whether this frame is dated already: a map lost on a frame is closed after
-  ///        it, one left for another kept map while tracking it.
-  /// @param small The keyframes a map must hold to be kept.
+  /// @brief Why the map being tracked closes (`slam_it.edge.pipeline._Closing`).
+  enum class Closing : std::uint8_t {
+    /// @brief The track was lost on this frame.
+    kLost,
+    /// @brief Relocalisation found this frame in a kept map, which tracking takes up.
+    kLeft,
+    /// @brief A new session starts (`start_session`).
+    kSession,
+  };
+
+  /// @brief Close the map being tracked: keep it whole, or reset it if it is small
+  ///        (`Atlas::close`): a map lost or left with `loss.reset_keyframes` keyframes or fewer,
+  ///        one a new session closes with fewer than `loss.session_keyframes`. A map lost is
+  ///        closed after its frame is dated, one left or a session's before. Loop closing's
+  ///        state goes with it, a merge waiting too; threaded, the threads have settled first.
+  /// @param why Why it closes.
   /// @return The closed map's summary; the atlas's error (`Atlas::close`).
-  [[nodiscard]] foundations::Result<LostSummary> leave(bool dated, std::int64_t small);
+  [[nodiscard]] foundations::Result<LostSummary> leave(Closing why);
 
   /// @brief On a frame that lost the track of a map, close it (`leave`, dated) and start none
   ///        until the next frame: its summary's `lost` set; nothing on any other frame.

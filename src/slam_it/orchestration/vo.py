@@ -824,8 +824,23 @@ def _world_cam(poses: NDArray[np.float64]) -> NDArray[np.float64]:
     return se3.inverse(poses) if len(poses) else np.zeros((0, 4, 4))
 
 
-_Turns = tuple[list[Source], list[float], list[tuple[int, int]]]
-"""A run's sequences in turn: their sources, the sessions' offsets, and the frames in order."""
+@dataclass(frozen=True)
+class _Turns:
+    """A run's sequences in turn.
+
+    Attributes
+    ----------
+    sources : list of Source
+        Each sequence's source, a session each, in order.
+    offsets : list of float
+        Each session's clock offset, in seconds (:func:`session_offsets`).
+    order : list of tuple of int
+        The frames in the order run, each ``(session, frame)``.
+    """
+
+    sources: list[Source]
+    offsets: list[float]
+    order: list[tuple[int, int]]
 
 
 def _in_turn(request: Request) -> _Turns:
@@ -839,7 +854,7 @@ def _in_turn(request: Request) -> _Turns:
         raise InvalidInputError("--sequence: the sequences' cameras differ")
     offsets = session_offsets([s.times for s in sources])
     order = [(k, i) for k, s in enumerate(sources) for i in range(len(s.times))]
-    return sources, offsets, order
+    return _Turns(sources, offsets, order)
 
 
 def _start_session(
@@ -863,7 +878,7 @@ def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
     turns = _in_turn(request)
     matching = request.options.stereo_matching()
     tracker = Pipeline(
-        request.mode, turns[0][0].camera, request.options, words, threaded=request.threaded
+        request.mode, turns.sources[0].camera, request.options, words, threaded=request.threaded
     )
     try:
         return _track_here(request, turns, matching, tracker)
@@ -875,7 +890,7 @@ def _track_here(
     request: Request, turns: _Turns, matching: stereo.Options, tracker: Pipeline
 ) -> runs.Run:
     """Track the request's frames in turn with `tracker`, then finish it, and give the run."""
-    sources, offsets, order = turns
+    sources, offsets, order = turns.sources, turns.offsets, turns.order
     source = sources[0]
     end = len(order)
     if request.count is not None:

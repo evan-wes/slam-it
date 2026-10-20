@@ -355,6 +355,10 @@ def dispatch(
 Codes = dict[str, list[str]]
 """A compiled module's enum tables, from its ``codes()``: each enum's names in code order."""
 
+Crossing = dict[str, Any]
+"""A value as it crosses the bindings: a dict of arrays, numbers, and dicts of them (a map, a
+camera, a tracked frame, the settings, a stage's result)."""
+
 
 def decode_name(codes: Codes, table: str, code: SupportsInt) -> str:
     """Return the name a compiled backend's code stands for in one of its enum tables.

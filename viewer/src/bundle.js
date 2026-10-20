@@ -219,8 +219,7 @@ function expectShape(name, shape, trailing, rows) {
  * @param {Int32Array} values Its values.
  * @param {number} keyframes The run's keyframes.
  * @param {number} stride Values a row: 1 for parents (-1 for none), 2 for loops and merges (two
- *     ids), 3 for
- *     links (two ids, then the points shared, not an id).
+ *     ids), 3 for links (two ids, then the points shared, not an id).
  * @returns {Int32Array} The values.
  * @throws {Error} If one names no keyframe.
  */

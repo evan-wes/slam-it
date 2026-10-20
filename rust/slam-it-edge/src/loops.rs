@@ -2206,7 +2206,8 @@ pub struct MergeDetection {
 /// # Errors
 ///
 /// `InvalidInput` for a keyframe the map or a database does not hold, two maps with one
-/// number, or a merge being confirmed in a map not given; a stage's.
+/// number, or a merge being confirmed in a map not given; `NotConverged` for GTSAM's failure
+/// refining a candidate's similarity; a stage's.
 #[allow(
     clippy::too_many_arguments,
     reason = "the map, its database and camera, the keyframe, the others, the state, as Python's"
@@ -3715,8 +3716,9 @@ fn check_pyramids(active: &Map, matched: &Map) -> Result<()> {
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a keyframe its map does not hold, or maps of different pyramids; a
-/// stage's.
+/// `InvalidInput` for a keyframe its map does not hold, or maps of different pyramids;
+/// `NotConverged` for GTSAM's failure solving the welding BA, the essential graph or global BA;
+/// a stage's.
 pub fn merge(
     active: &Map,
     matched: &Map,

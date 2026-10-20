@@ -307,15 +307,13 @@ def _failures(
 @pytest.mark.parametrize(
     ("reset_keyframes", "step", "lost_on", "seconds"),
     [
-        (
-            0,
-            0.25,
-            14,
-            3.0,
-        ),  # a kept map: lost past 3 s after the first failure, at 0.25 s: at 3.5 s
-        (1, 0.25, 5, 3.0),  # a small map: lost on the fifth failure, whatever the time
+        # A kept map: lost past 3 s after the first failure, at 0.25 s: at 3.5 s.
+        (0, 0.25, 14, 3.0),
+        # A small map: lost on the fifth failure, whatever the time.
+        (1, 0.25, 5, 3.0),
         (1, 0.001, 5, 3.0),
-        (0, 0.25, 1, 0.0),  # no window: a kept map lost on its first failure
+        # No window: a kept map lost on its first failure.
+        (0, 0.25, 1, 0.0),
     ],
 )
 def test_a_large_map_is_lost_in_time_and_a_small_one_in_frames(

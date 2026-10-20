@@ -96,6 +96,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
+from slam_it.backends import Crossing
 from slam_it.edge import covisibility, database, residuals
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
@@ -2346,9 +2347,6 @@ def _merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the setting
 
 # --- the backends -------------------------------------------------------------------------
 
-Crossing = dict[str, Any]
-"""A value as it crosses the bindings: a dict of arrays, numbers, and dicts of them."""
-
 
 class Implementation(Protocol):
     """The functions a compiled backend's ``edge.loops`` submodule provides.
@@ -3342,6 +3340,9 @@ def detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyf
         If the keyframe is not in the map, the mode is unknown, two maps share a number, the
         merge being confirmed names a map not among `others` or holds a similarity that is not
         one.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while refining a candidate's similarity
+        (:func:`slam_it.foundations.graphs.refine_similarity`).
     """
     check_mode(mode)
     maps.keyframe_row(m, keyframe)
@@ -3469,6 +3470,9 @@ def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
     slam_it.foundations.errors.InvalidInputError
         If either keyframe is not in its map, the mode is unknown, the similarity is not one,
         or the maps' pyramids differ.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while solving the welding BA, the essential graph or global BA
+        (:mod:`slam_it.foundations.graphs`).
     """
     check_mode(mode)
     region = found.loop
