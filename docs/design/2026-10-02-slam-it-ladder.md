@@ -1104,6 +1104,31 @@ shared with the owner's other projects.
     sequences and the test set, several runs each since it is threaded, and scored by our
     evaluation: the whole system's yardstick, and the bar's anchor where ORB-SLAM's papers
     publish no figure.
+- **Deferred from milestone 2B's B4** ([the 2B design](2026-10-14-online-slam.md), section 14;
+  decided by evan-wes on 2026-10-18):
+  - **B4's measurements, not run.** Section 15's measurements were not run for B4's PR (no long
+    runs for it): multi-session EuRoC, the bar (MH_01 to MH_03, MH_01 to MH_05 and V1_01 to
+    V1_03, monocular and stereo, against ORB-SLAM3's Table V); TUM's fr2_360_kidnap; 7-Scenes
+    across sequences (chess, fire, heads and stairs, each scene's sequences in one run, the
+    scenes unpacked first, their size checked); the loss window, the test set at 3 s and at 0,
+    which section 14's item 6 decides on (B1's 3 s stays the default meanwhile); and the test
+    set and the loop sequences against B3b's. The measure takes them
+    (`scripts/measure_testset.py`'s `folders`, run in turn as sessions, its merges judged), and
+    `slam_it.eval.sevenscenes` imports 7-Scenes.
+  - **Left open after B4.** The 2B design's section 14, item 10 (Sim(3) as a group in rung 0;
+    B3's review panel, A5 with H3), and the items below meant for when B4 lands: loop closing's
+    APIs mirrored unevenly (A14), the `loops` split (A15) and GTSAM's native confinement (A24)
+    from B3's panel, and one native `.npy` module (A21) from B1's. B4 addresses none of them.
+  - **Threaded map merging without blocking tracking (option C).** B4 merges threaded by pausing
+    tracking at a frame boundary for the whole merge (option B; the 2B design's section 14, item
+    4; decided by evan-wes on 2026-10-18). The later design is option C, the closest to
+    ORB-SLAM3's `MergeLocal`: the heavy solves (the welding BA, the essential graph) with mapping
+    stopped while tracking reads the old view, then a short pause at a frame boundary to swap in
+    the merged map and remap tracking's state once. Option B's tests are its required
+    behaviour: a threaded run of the merge room merges in each language, tracking's state after
+    the merge names the merged map's ids, no thread is left
+    (`tests/orchestration/test_merge_room_threads.py`), and a threaded merge runs under
+    ThreadSanitizer in both of C++'s schemes (`tests/orchestration/test_merge_room_tsan.py`).
 - **Deferred from milestone 2B's B3b** ([the 2B design](2026-10-14-online-slam.md), section 12;
   decided by evan-wes on 2026-10-18):
   - **B3b's measurements, not run.** Section 13's measurements were not run for B3b's PR (no long
@@ -1160,7 +1185,7 @@ shared with the owner's other projects.
   - **Loop closing's APIs mirrored unevenly (A14).** `essential_graph` is public in Python and
     Rust but internal in C++, and the search settings are `Window` in C++ and `Search` in Rust;
     the Protocol checks only the dispatched functions. Align them when B4 reuses the essential
-    graph.
+    graph. Still open after B4.
   - **`loops` split for B4 (A15, H8).** 2,208 lines in Python, 2,284 in Rust and 1,685 in C++
     (at `eedb319`; B3's review panel, run 2, H29), half of which B4's merge reuses (detection's
     stages, the essential graph and global BA: the online-SLAM design's section 14, items 3 and
@@ -1168,13 +1193,15 @@ shared with the owner's other projects.
     modules of their own, rather than growing `loops` or having merging reach into it; and split
     `correct` (about 115 lines in C++, under a cognitive-complexity NOLINT) into moving,
     replacing and fusing, collecting the new links, and the solves, and
-    `slam_it.eval.loops.judge_loops` into its place and pose judgements.
+    `slam_it.eval.loops.judge_pairs` (which `judge_loops` calls) into its place and pose
+    judgements. Still open after B4.
   - **GTSAM's native confinement, widened with B4's bridges (run 2, A24).** `check_layers.py`'s
     `check_confined` scans `cpp/` and each crate's `cxx/` alone: a C++ bridge placed elsewhere
     in a crate, or another crate's `build.rs` linking GTSAM, would escape it. Today only
     `slam-it-foundations` has a bridge, its `ffi` module private. If B4 adds a bridge, scan every
     C++ file under `rust/` (but `target/`), or check that only `slam-it-foundations` depends on
-    `cxx`.
+    `cxx`. Still open after B4, which adds no bridge: its Huber loss crosses
+    `slam-it-foundations`' own.
   - **The GitHub workflow's runner (run 2, H30 with A22).** Since B3 its setup builds GTSAM's
     Python wrapper, whose largest file needs more than 8 GB, uncapped; GitHub's standard Linux
     runner for a private repository may have less memory than that (the reviewers' recollection,
@@ -1204,7 +1231,8 @@ shared with the owner's other projects.
   - **One native `.npy` module, with B4 (run 2, A21).** `slam_it_eval` and `slam-it-eval` write
     `.npy` in their run writers and read it in their vocabulary readers. When a second native
     reader arrives (B4's kept maps), give the format one module beside `text` and `png` rather
-    than copying the reader.
+    than copying the reader. Still open after B4, whose kept maps stay in memory: no native
+    reader arrived.
   - **H21's check made per setting (run 2, L14).** `test_the_moved_settings_change_the_decisions`
     checks that `MOVED_OPTIONS` together change the gap room's decisions; reverting each alone,
     11 of its 33 settings change none (among them `stereo_search`, `init_parallax_cos`,

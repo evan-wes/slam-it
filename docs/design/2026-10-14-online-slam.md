@@ -287,7 +287,7 @@ Each gets its own section here before its PR, its forks put to the owner then.
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
   review panel on the finished slice; offline CI before the merge.
-- **B4** (0.3.13.0 -> 0.3.14.0, section 14): the atlas; relocalisation in every map; merge
+- **B4** (0.3.16.2 -> 0.3.17.0, section 14): the atlas; relocalisation in every map; merge
   detection and the merge; sessions; the run format 9 and the bundle's 5; the merge room and the
   records; multi-session EuRoC, the kidnap, 7-Scenes, the loss window, and the test set. The
   review panel on the finished slice; offline CI before the merge.
@@ -764,7 +764,8 @@ measures how much.
       runs the loop room threaded, RGB-D, through the instrumented program, in both schemes
       (`tests/orchestration/test_loop_room_tsan.py`, marked `tsan`): a loop's stop and
       correction, a global BA's thread and its result carried onto the map run under the
-      sanitizer.
+      sanitizer. B4 adds the merge room so (`tests/orchestration/test_merge_room_tsan.py`): a
+      merge made by tracking between two frames, mapping drained and then stopped.
 14. **A failed correction, a question from B3's review panel** (H17;
     [the report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md)): a GTSAM failure inside a
     loop's correction propagates out of the pipeline's loop closing and ends the whole run.
@@ -810,7 +811,7 @@ Once, on the finished branch, C++ and Rust (section 11's rule).
 - **Our design against ORB-SLAM's scheme,** in C++ on the same runs: the latency (median, 99th
   percentile, worst), the time tracking waited, and the accuracy.
 
-## 14. B4: merging maps (0.3.13.0 -> 0.3.14.0)
+## 14. B4: merging maps (0.3.16.2 -> 0.3.17.0)
 
 Decided with evan-wes on 2026-10-17, following ORB-SLAM3's paper (its section VI) and a reading
 of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc` and
@@ -845,7 +846,8 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    `lost` (null otherwise); tracking goes on in the map found, the last frame's points and
    motion left behind. When every candidate fails and the last one tried was another map's, its
    rejected matches are points of that map: they are dropped from the frame's keypoint fates
-   rather than read by the tracked map's ids, in all three languages.
+   rather than read by the tracked map's ids, in all three languages. Threaded, the map left
+   waits for the threads first, as a lost map does (section 12, item 6).
 3. **Detecting a merge, ORB-SLAM3's** (`NewDetectCommonRegions`'s merge branch). It runs on each
    keyframe beside loop detection, by the same stages (section 10, item 2, with B3's
    departures):
@@ -894,6 +896,31 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    merged map: its ids moved on by the merge's offsets, and its similarity S carried into the
    matched map's world, S G⁻¹ for the merge's similarity G. The frame the merge is made on
    reports the map it was tracked in, the one merged away.
+
+   *Threaded, as built (option B, decided by evan-wes on 2026-10-18):* loop closing's thread
+   searches each keyframe for a merge beside the loop, as inline does; a merge found waits for
+   tracking (`LoopState.waiting`), which makes it between two frames, pausing for the whole
+   merge, as ORB-SLAM3's tracking waits for its map while `MergeLocal` runs. A merge moves the
+   active map's keyframe and point ids on, so nothing may hold the old ones across it:
+   - mapping's queue is emptied first: each keyframe waiting is mapped (ORB-SLAM3's `EmptyQueue`
+     inserts them), and loop closing passes them by while the merge waits, their ids about to
+     move; culling spares the merge's current keyframe while it waits (`SetNotErase`);
+   - with mapping stopped, a global BA still running is superseded, and the merge is made as
+     inline, without global BA; one is started on the merged map only if one was superseded
+     (ORB-SLAM3's `bRelaunchBA`), where inline runs one after every merge;
+   - the merged view is published with a new correction count, as is a kept map's taken up; the
+     native owners' anchor, which their views follow, takes the merged map's ids;
+   - tracking's last frame takes the new ids, its anchor keyframe too, and its velocity and its
+     pose relative to the anchor take G's scale; the next frame first places it by its anchor in
+     the merged map, as after a correction (section 12).
+
+   A merge found last is made as the run finishes; one still waiting when the track leaves its
+   map (lost, relocalised in a kept map, or a new session) is dropped with the map's
+   loop-closing state. The merge is recorded on the frame whose keyframe found it, and the frame
+   tracking paused before counts the pause in its `wait_seconds`. A merge that does not block
+   tracking (option C, the closest to ORB-SLAM3's: the heavy solves while tracking reads the old
+   view, then a short pause to swap in the merged map) is the later design, in the ladder's open
+   items; option B's tests are its required behaviour.
 5. **Sessions:** a run over several sequences in turn, with a new map at each one's start, as
    ORB-SLAM3's `ChangeDataset` starts one (a map of fewer than 12 keyframes reset, others kept).
    The input takes a list of sequences.
@@ -907,7 +934,9 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    (`session`: its index, its sequence, its offset and how the map was closed), and the run's
    `sequence` names every folder, joined by `+`. The measure (`scripts/measure_testset.py`)
    takes a sequence's `folders` in turn, and scores the run against their ground truths in turn,
-   each moved on by its session's offset.
+   each moved on by its session's offset. Threaded, the map waits for the threads first, as a
+   lost map does, and each session's first frame is fed at once, the recorded rate kept within a
+   sequence, as ORB-SLAM3's examples sleep only within one.
 6. **The loss window, measured both ways:** B1's 3 s stays the default. A new map at once is
    measured beside it on the test set (section 15), and decided with evan-wes on the numbers.
 
@@ -945,7 +974,13 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    about 6 keyframes when the black frames begin, would be reset, and the second would not reach
    12 keyframes before the camera passes the first map's start. Its bounds are about half again
    the first runs' (2026-10-17, the same in every language), whose final ATE over the one merged
-   map, aligned once, was 5.46 cm (RGB-D), 5.17 cm (stereo) and 1.85 cm (monocular).
+   map, aligned once, was 5.46 cm (RGB-D), 5.17 cm (stereo) and 1.85 cm (monocular). Threaded
+   (`tests/orchestration/test_merge_room_threads.py`), each native program in each mode, C++ in
+   both schemes, holds the same bar fed at the room's rate, and its first frame after the merge
+   is placed by the motion model; Python's run, in process, each frame waiting for its threads,
+   reads tracking's state across the merge: its ids moved on by the merge's offsets, each still
+   naming what it named. ThreadSanitizer runs the merge room threaded in both C++ schemes
+   (section 12, item 13).
 9. **Not in B4:** reifyscene's adapter for several maps (A10, which lives in reifyscene);
    merging inertial maps (`MergeLocal2`, milestone 6).
 10. **Sim(3) as a group in rung 0, from B3's review panel** (A5, with H3;
@@ -956,6 +991,27 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
     similarity `loops.detect` accepts, `graphs` accepts too), and `so3.hat` in place of
     `graphs._hat`. B4's merge corrects by a Sim(3) with the same operations, and the scale has
     two definitions today (`cbrt(det)` and a column's norm), which agree only on exact inputs.
+
+**Deferred for this PR** (decided by evan-wes on 2026-10-18: no long runs for this PR; tracked in
+the ladder's open items):
+- **Section 15's measurements** are not run for this PR: multi-session EuRoC, the bar; TUM's
+  fr2_360_kidnap; 7-Scenes across sequences (chess, fire, heads and stairs); the loss window,
+  the test set at 3 s and at 0; and the test set and the loop sequences against B3b's. Item 6's
+  choice waits for those numbers, B1's 3 s staying the default. The measure takes them: it runs
+  a sequence's `folders` in turn as sessions and judges merges (item 5), and the 7-Scenes
+  importer (`slam_it.eval.sevenscenes`) makes 7-Scenes' sessions.
+- **Item 10 remains open after B4:** no B4 commit makes Sim(3) a group in rung 0. B4's review
+  panel checks it, as the item says.
+
+**Known gaps, for B4's review panel** (noted, not fixed in this PR):
+- **Inline, a monocular merge leaves tracking's velocity at the old scale.** The last frame is
+  moved to its keyframe's merged pose, but the velocity, from frame to frame, keeps the active
+  map's units through the merge's scale change; threaded, `TrackingState.merged` scales it with
+  the pose relative to the anchor.
+- **Tracking's last frame keeps the points fused away.** A point fused into another (by the
+  merge's fusion, or by mapping) leaves the map, and the last frame's keypoint keeps its id, so
+  the next frame's search drops it; ORB-SLAM3's `CheckReplacedInLastFrame` follows each
+  replaced point to its replacement.
 
 ## 15. Measurements (B4)
 
