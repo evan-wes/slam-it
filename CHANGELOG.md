@@ -120,6 +120,9 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   for its threads, keeps tracking's last frame naming the same keyframe and points through the
   merge, and leaves no thread. ThreadSanitizer runs it threaded in both C++ schemes
   (`tests/orchestration/test_merge_room_tsan.py`, in `scripts/check.sh`'s ThreadSanitizer step).
+  Known flaky: its TUM monocular case in C++'s own scheme failed in one of three full layer-1
+  runs, its first frame after the merge placed by relocalisation, and passed in three runs
+  alone; it is in the ladder's open items, beside the loop room's flaky threaded case.
 - **Sessions** (`tests/orchestration/test_sessions.py`): the room run twice in turn through every
   backend, the offsets, the shared camera and the refusals; `start_session` in each language's
   pipeline tests; a loss window of 0 in each language's loss rules.

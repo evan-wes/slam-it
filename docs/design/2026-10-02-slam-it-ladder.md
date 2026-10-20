@@ -1198,6 +1198,17 @@ shared with the owner's other projects.
     runs (8.99 cm; 1.54 to 1.62 cm in the others), on a busy machine. Run it about 20 times on a
     quiet machine before and after B3b's commit that publishes a view of what tracking reads,
     and decide from the failure rates: a flaky bar would fail layer 1 and offline CI at random.
+  - **A flaky threaded run of the merge room** (seen in B4's layer 1, not yet decided). Its TUM
+    monocular case in C++'s own scheme
+    (`test_a_native_threaded_run_merges_the_merge_room[tum-monocular-cpp]`) failed in one of the
+    three full layer-1 runs on B4's review panel's fixes, the run in which the loop room's case
+    above failed too: its first frame after the merge was placed by relocalisation, not the
+    motion model. It passed in the other two, and in three runs of it alone. The likely cause is
+    thread timing: loop closing finds the merge on a keyframe and tracking makes it before its
+    next frame (C++'s `merge_then_track`), so, the frames fed at the room's rate, how many
+    frames are tracked in the old map between the two, and what mapping has taken in when the
+    merge is made, vary from run to run. Not reproduced, so not confirmed; its bound is
+    unchanged. Run it about 20 times with the loop room's case, and decide from the failure rate.
   - **A failed loop correction (the 2B design's section 12, item 14; B3's review panel, H17).**
     Still open, with no decision yet: whether a GTSAM failure inside a loop's correction should
     be recorded and the loop skipped.
