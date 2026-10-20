@@ -8,17 +8,17 @@ is its format::
 
     [[sequence]]
     name = "advio-07"
-    folder = "/data/imported/advio-07"
+    folders = ["/data/imported/advio-07"]
     mode = "monocular"
     reference = "ADVIO: IMU and fixed points"
 
-A sequence may also name its ``dataset``, ``"tum"`` (the default) or ``"euroc"``: a EuRoC
-sequence's own folder, run as EuRoC (monocular or stereo; :func:`slam_it.eval.euroc`). In place
-of its ``folder`` it may list ``folders``, sequences of one camera run in turn in one run, each
-a session (:mod:`slam_it.orchestration.vo`): a session's times are moved on by its offset where
-they do not come after those before, its ground truth with them, and the sequences' ground
-truths are scored as one, so the run's maps are aligned once each across the sessions (the
-online-SLAM design's section 15)::
+A sequence's ``folders`` are a list of one for a single sequence. A sequence may also name its
+``dataset``, ``"tum"`` (the default) or ``"euroc"``: a EuRoC sequence's own folder, run as
+EuRoC (monocular or stereo; :func:`slam_it.eval.euroc`). Several ``folders`` are sequences of
+one camera run in turn in one run, each a session (:mod:`slam_it.orchestration.vo`): a
+session's times are moved on by its offset where they do not come after those before, its
+ground truth with them, and the sequences' ground truths are scored as one, so the run's maps
+are aligned once each across the sessions (the online-SLAM design's section 15)::
 
     [[sequence]]
     name = "euroc-MH01-03-stereo"
@@ -41,8 +41,9 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
   sessions' (section 15's bar: every session ending in one map);
 - ``tracked`` and ``share``: the frames tracked, in every map, and their share of the
   sequence's;
-- ``segments``: each map's stretch, ``map``, ``tracked`` and its first and last tracked frames'
-  times, ``tracked_from`` and ``tracked_to``; ``losses``, the frames the track was lost on,
+- ``segments``: each stretch of frames tracked in one map, ``map``, ``tracked`` and its first
+  and last tracked frames' times, ``tracked_from`` and ``tracked_to``
+  (:func:`slam_it.eval.runs.tracking`); ``losses``, the frames the track was lost on,
   ``resets``, the maps lost too soon to keep, and ``relocalizations``, the frames that tracking
   failed and relocalisation found in their map; and ``tracked_from``, ``tracked_to`` and
   ``ran_to`` for the whole run: every time since the sequence's first frame
@@ -142,10 +143,10 @@ from slam_it.foundations.errors import DegenerateError, InvalidInputError, SlamI
 from slam_it.orchestration import vo
 
 KEYS = ("name", "mode", "reference")
-"""Each sequence's keys in the config, every one a string, beside one of :data:`FOLDER_KEYS`."""
+"""Each sequence's keys in the config, every one a string, beside its :data:`FOLDERS`."""
 
-FOLDER_KEYS = ("folder", "folders")
-"""Where a sequence is: its ``folder``, or the ``folders`` of sequences run in turn (a list)."""
+FOLDERS = "folders"
+"""Where a sequence is: a list of folders, one for a single sequence, several run in turn."""
 
 OPTIONAL_KEYS = ("dataset",)
 """The keys a sequence may also have: its ``dataset``, ``"tum"`` unless given."""
@@ -315,9 +316,9 @@ def read_config(path: Path) -> list[Entry]:
     FileNotFoundError
         If the file does not exist.
     slam_it.foundations.errors.InvalidInputError
-        If it is not TOML, lists no sequence, a sequence lacks a key or has another, has both a
-        folder and folders or neither, a value is not a string, its folders not a list of them,
-        a mode or dataset is unknown, or two sequences share a name.
+        If it is not TOML, lists no sequence, a sequence lacks a key or has another, a value is
+        not a string, its folders not a list of them, a mode or dataset is unknown, or two
+        sequences share a name.
     """
     try:
         data = tomllib.loads(path.read_text())
@@ -328,17 +329,17 @@ def read_config(path: Path) -> list[Entry]:
         raise InvalidInputError(f"{path}: no [[sequence]]")
     entries: list[Entry] = []
     for number, item in enumerate(listed, start=1):
-        if (
-            not isinstance(item, dict)
-            or not set(KEYS) <= set(item) <= {*KEYS, *FOLDER_KEYS, *OPTIONAL_KEYS}
-            or len(set(FOLDER_KEYS) & set(item)) != 1
-        ):
+        if not isinstance(item, dict) or not {*KEYS, FOLDERS} <= set(item) <= {
+            *KEYS,
+            FOLDERS,
+            *OPTIONAL_KEYS,
+        }:
             raise InvalidInputError(
-                f"{path}: sequence {number}: expected the keys {KEYS}, one of {FOLDER_KEYS}, "
-                f"and maybe {OPTIONAL_KEYS}"
+                f"{path}: sequence {number}: expected the keys {(*KEYS, FOLDERS)}, and maybe "
+                f"{OPTIONAL_KEYS}"
             )
-        folders = item.get("folders", [item.get("folder")])
-        if not all(isinstance(item[key], str) for key in item if key != "folders") or not (
+        folders = item[FOLDERS]
+        if not all(isinstance(item[key], str) for key in item if key != FOLDERS) or not (
             isinstance(folders, list) and folders and all(isinstance(f, str) for f in folders)
         ):
             raise InvalidInputError(
@@ -421,6 +422,28 @@ def nominal_folder(sequence: Path, out: Path) -> Path:
         note=f"a nominal guess for {sequence.name}'s camera (scripts/measure_testset.py)",
     )
     return out
+
+
+def offsets_of(entry: Entry) -> list[float]:
+    """Return each of a sequence's sessions' clock offsets, as its run moved its times on.
+
+    :func:`slam_it.orchestration.vo.session_offsets` of its folders' frames' times; ``[0.0]``
+    for one folder, which keeps its own clock, without reading it.
+
+    Parameters
+    ----------
+    entry : Entry
+        The sequence.
+
+    Returns
+    -------
+    list of float
+        Each session's offset, in seconds.
+    """
+    if len(entry.folders) == 1:
+        return [0.0]
+    times = [vo.open_source(entry.dataset, folder, entry.mode).times for folder in entry.folders]
+    return vo.session_offsets(times)
 
 
 def truth_of(dataset: str, folders: Sequence[Path], offsets: Sequence[float]) -> runs.Truth | None:
@@ -512,7 +535,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         entry.dataset, folders, entry.mode, out / "run", backend=backend, options=options,
         threaded=threaded, locks=locks, budget=budget,
     )  # fmt: skip
-    offsets = vo.session_offsets([source.times for source in sources])
+    offsets = offsets_of(entry)
     times = np.concatenate([s.times + offset for s, offset in zip(sources, offsets, strict=True)])
     span = runs.tracking(run, times)
     result: dict[str, Any] = {

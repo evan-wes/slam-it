@@ -452,6 +452,19 @@ def test_the_bake_refuses_what_is_not_one_sequences_runs(
     assert [p.name for p in out.iterdir()] == ["kept.txt"]
 
 
+def test_a_run_of_sequences_in_turn_is_refused_by_name(room_folders: Room, tmp_path: Path) -> None:
+    """A run of the room twice, two sessions, bakes into no bundle: the message says why."""
+    folder = tmp_path / "twice"
+    vo.run(
+        "tum", [room_folders.tum, room_folders.tum], "rgbd", folder,
+        backend=require_program("cpp"), options=OPTIONS,
+    )  # fmt: skip
+    out = tmp_path / "bundle"
+    with pytest.raises(InvalidInputError, match="several sequences in turn"):
+        bundles.bake([folder], room_folders.tum, out)
+    assert not out.exists()
+
+
 def test_main_bakes_and_says_what(
     room_runs: RoomRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

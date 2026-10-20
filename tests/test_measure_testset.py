@@ -62,7 +62,7 @@ def cpp() -> None:
 def _config(path: Path, sequence: Path, name: str = "room") -> Path:
     """Write a config of one sequence, the room in RGB-D."""
     path.write_text(
-        f'[[sequence]]\nname = "{name}"\nfolder = "{sequence}"\nmode = "rgbd"\n'
+        f'[[sequence]]\nname = "{name}"\nfolders = ["{sequence}"]\nmode = "rgbd"\n'
         'reference = "the room\'s own poses"\n'
     )
     return path
@@ -183,7 +183,7 @@ def test_a_sequence_that_fails_is_recorded_and_the_rest_measured(tmp_path: Path)
     assert "camera.txt" in result["failed"]
 
 
-KEYS = 'name = "a"\nfolder = "/a"\nmode = "rgbd"\nreference = "r"\n'
+KEYS = 'name = "a"\nfolders = ["/a"]\nmode = "rgbd"\nreference = "r"\n'
 """A sequence's keys, all given."""
 
 
@@ -194,22 +194,23 @@ KEYS = 'name = "a"\nfolder = "/a"\nmode = "rgbd"\nreference = "r"\n'
         ('title = "nothing"\n', r"no \[\[sequence\]\]"),
         ("[[sequence]]\n" + KEYS.replace('mode = "rgbd"\n', ""), "expected the keys"),
         ("[[sequence]]\n" + KEYS + "extra = 1\n", "expected the keys"),
-        ("[[sequence]]\n" + KEYS.replace('"/a"', "1"), "expected strings"),
+        ("[[sequence]]\n" + KEYS.replace('"r"', "1"), "expected strings"),
         ("[[sequence]]\n" + KEYS.replace("rgbd", "lidar"), "unknown mode 'lidar'"),
         ("[[sequence]]\n" + KEYS + 'dataset = "kitti"\n', "unknown dataset 'kitti'"),
         ("[[sequence]]\n" + KEYS + "[[sequence]]\n" + KEYS, "share a name"),
-        ("[[sequence]]\n" + KEYS + 'folders = ["/b"]\n', "one of"),
-        ("[[sequence]]\n" + KEYS.replace('folder = "/a"\n', ""), "one of"),
-        ("[[sequence]]\n" + KEYS.replace('folder = "/a"', "folders = []"), "a list of them"),
-        ("[[sequence]]\n" + KEYS.replace('folder = "/a"', 'folders = ["/a", 1]'), "list of them"),
-        ("[[sequence]]\n" + KEYS.replace('folder = "/a"', 'folders = "/a"'), "a list of them"),
+        ("[[sequence]]\n" + KEYS + 'folder = "/b"\n', "expected the keys"),
+        ("[[sequence]]\n" + KEYS.replace('folders = ["/a"]\n', ""), "expected the keys"),
+        ("[[sequence]]\n" + KEYS.replace('["/a"]', "[]"), "a list of them"),
+        ("[[sequence]]\n" + KEYS.replace('["/a"]', '["/a", 1]'), "list of them"),
+        ("[[sequence]]\n" + KEYS.replace('["/a"]', '"/a"'), "a list of them"),
     ],
 )
 def test_a_malformed_config_is_refused(text: str, message: str, tmp_path: Path) -> None:
     """Each refusal of a config.
 
-    Not TOML, no sequence, a key missing or extra, a number for a path, a mode unknown, two
-    sequences of one name; a folder and folders both or neither, folders not a list of paths.
+    Not TOML, no sequence, a key missing or extra (``folder`` among them: ``folders`` alone
+    says where a sequence is), a number for a string, a mode unknown, two sequences of one name;
+    no folders, or folders not a list of paths.
     """
     path = tmp_path / "testset.toml"
     path.write_text(text)
@@ -249,6 +250,16 @@ def test_sequences_in_turn_are_measured_as_one_run(sequence: Path, tmp_path: Pat
     assert (result["loops"], result["merges"]) == ([], [])
 
 
+def test_a_sequence_s_sessions_offsets_are_its_run_s(sequence: Path) -> None:
+    """One folder keeps its own clock; the second of two is moved on past the first's end."""
+    script = _script()
+    once, twice = (script.Entry("room", (sequence,) * k, "rgbd", "r") for k in (1, 2))
+    times = vo.open_source("tum", sequence, "rgbd").times
+    assert script.offsets_of(once) == [0.0]
+    assert script.offsets_of(twice) == vo.session_offsets([times, times])
+    assert script.offsets_of(twice)[1] > times[-1] - times[0]
+
+
 def test_the_truths_in_turn_ascend(sequence: Path) -> None:
     """Each session's truth is moved on by its offset; times not after those before are dropped."""
     times, poses = runs.ground_truth("tum", sequence) or pytest.fail("the room has its truth")
@@ -272,7 +283,7 @@ def test_a_euroc_sequence_is_measured_from_its_own_folder(tmp_path: Path) -> Non
     write_euroc(folder, room.sequence(FRAMES, stereo=True))
     config = tmp_path / "testset.toml"
     config.write_text(
-        f'[[sequence]]\nname = "room"\nfolder = "{folder}"\nmode = "stereo"\n'
+        f'[[sequence]]\nname = "room"\nfolders = ["{folder}"]\nmode = "stereo"\n'
         'reference = "the room\'s own poses"\ndataset = "euroc"\n'
     )
     assert _script().main([str(config), str(tmp_path / "out")]) == 0

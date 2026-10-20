@@ -39,6 +39,11 @@ def pytest_configure(config: pytest.Config) -> None:
     collects as one naming them in order does. The top-level paths keep the order they were
     given in, so a run of whole directories (``testpaths``) is unchanged.
 
+    A workaround for pytest 9.1.1's regression (pinned in ``scripts/locks/slam-it.lock``),
+    pytest-dev/pytest#14635: fixed on pytest's 9.1.x branch (pytest-dev/pytest#14968), in no
+    release yet on 2026-10-19 (9.1.1 the latest). Remove this hook once the lock takes a
+    release with the fix (``tests/test_collection_order.py`` goes with it).
+
     Parameters
     ----------
     config : pytest.Config

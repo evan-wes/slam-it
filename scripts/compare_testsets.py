@@ -50,7 +50,6 @@ import numpy as np
 
 from slam_it.eval import runs
 from slam_it.foundations.errors import DegenerateError, InvalidInputError
-from slam_it.orchestration import vo
 
 SHARE_MOVED = 0.01
 """A run's share tracked moved when it changed by more than this."""
@@ -130,10 +129,7 @@ def summarize(folder: Path, config: Path) -> int:
             raise InvalidInputError(f"{config}: no sequence {row['name']!r}")
         entry = entries[row["name"]]
         run = runs.read_run(folder / row["name"] / "run")
-        offsets = [0.0]  # one sequence keeps its own clock: only sessions after it move on
-        if len(entry.folders) > 1:
-            times = [vo.open_source(entry.dataset, f, entry.mode).times for f in entry.folders]
-            offsets = vo.session_offsets(times)
+        offsets = measure_testset.offsets_of(entry)
         truth = measure_testset.truth_of(entry.dataset, entry.folders, offsets)
         scored = None
         if truth is not None:

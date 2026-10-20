@@ -1,7 +1,9 @@
 """The run viewer's bundles: one sequence's runs, baked with its images for the page.
 
 A bundle is a folder any plain file server can serve; the page (``viewer/``) reads nothing else.
-It holds one sequence's runs in one mode, at most one per backend, and the frames they ran:
+It holds one sequence's runs in one mode, at most one per backend, and the frames they ran. A
+run of several sequences in turn (sessions, :mod:`slam_it.orchestration.vo`) is refused: its
+frames are several sequences', each on its own clock, and a bundle's are one's:
 
 - ``bundle.json``: ``{"format": "slam-it-bundle", "version": 5, "dataset", "sequence",
   "mode", "camera", "frames", "first_time", "extent", "images", "truth", "fates", "steps",
@@ -149,12 +151,20 @@ def _score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
 
 
 def _read(folders: Sequence[str | Path]) -> list[_Baked]:
-    """Read the runs, refusing any that are not of one sequence and mode, one per backend."""
+    """Read the runs, refusing any that are not of one sequence and mode, one per backend.
+
+    A run of several sequences in turn is refused by name (the module docstring).
+    """
     if not folders:
         raise InvalidInputError("runs: expected at least one run folder")
     baked = []
     for folder in map(Path, folders):
         run = runs.read_run(folder)
+        if any("session" in entry for entry in run.diagnostics):
+            raise InvalidInputError(
+                f"{folder}: a run of several sequences in turn ({run.sequence}), each a session: "
+                "a bundle holds one sequence's frames"
+            )
         features = runs.read_features(folder, run) if run.record_features else None
         baked.append(_Baked(folder, run, features))
     first = baked[0].run
@@ -494,10 +504,10 @@ def bake(run_folders: Sequence[str | Path], sequence: str | Path, out: str | Pat
     FileNotFoundError
         If a run's or the sequence's file is missing.
     slam_it.foundations.errors.InvalidInputError
-        If there are no runs, they are not of one sequence and mode, two are of one backend,
-        the sequence's folder is not theirs, a run's frame is not one of the sequence's, or
-        `out` is not empty; or a reader's error. A run its ATE alignment cannot place is not
-        an error: it stays in its own frame.
+        If there are no runs, one is of several sequences in turn (sessions), they are not of
+        one sequence and mode, two are of one backend, the sequence's folder is not theirs, a
+        run's frame is not one of the sequence's, or `out` is not empty; or a reader's error.
+        A run its ATE alignment cannot place is not an error: it stays in its own frame.
     """
     baked = _read(run_folders)
     first = baked[0].run
