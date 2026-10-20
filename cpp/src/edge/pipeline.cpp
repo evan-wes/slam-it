@@ -96,7 +96,8 @@ struct Joined {
 
 /// @brief A loop being confirmed in the active map, as it stands in the merged map
 ///        (`slam_it.edge.pipeline._carried`): its ids moved on by the merge's offsets, its
-///        similarity carried into the matched map's world, `S G^-1`.
+///        similarity carried into the matched map's world and units,
+///        `diag(1/s, 1/s, 1/s, 1) S G^-1` with `s = scale_of(G^-1)`, so it keeps its own scale.
 /// @param pending The loop, changed in place.
 /// @param merged The merge.
 /// @param to_world `G`.
@@ -104,7 +105,9 @@ void carry_through(loops::Pending& pending, const loops::Merged& merged,
                    const Eigen::Matrix4d& to_world) {
   pending.matched += merged.keyframe_offset;
   pending.last += merged.keyframe_offset;
-  pending.similarity = pending.similarity * foundations::sim3::inverse(to_world);
+  const Eigen::Matrix4d back = foundations::sim3::inverse(to_world);
+  pending.similarity = pending.similarity * back;
+  pending.similarity.topRows<3>() /= loops::scale_of(back);
   offset_ids(pending.points, merged.point_offset);
   offset_ids(pending.matched_points, merged.point_offset);
 }

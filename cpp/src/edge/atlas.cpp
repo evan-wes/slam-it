@@ -227,6 +227,13 @@ Database Atlas::merge(std::int64_t matched, const Eigen::Matrix4d& to_world) {
       gone->second.second.topRightCorner<3, 1>() /= scale;
     }
   }
+  // The frames tracked in the current map, or in a map merged into it before: their poses
+  // relative to their keyframes take the merged map's units, as the culled keyframes' do.
+  for (FramePlace& placed : placements_) {
+    if (ends_in(placed.map) == current) {
+      placed.relative.topRightCorner<3, 1>() /= scale;
+    }
+  }
   runs.keyframes.insert(runs.keyframes.end(), runs_.keyframes.begin(), runs_.keyframes.end());
   runs.points.insert(runs.points.end(), runs_.points.begin(), runs_.points.end());
   runs_ = std::move(runs);

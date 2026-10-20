@@ -1364,14 +1364,20 @@ def _carried(pending: Pending, merged: loops.Merged, to_world: Array) -> Pending
     """Return a loop being confirmed in the active map, as it stands in the merged map.
 
     Its ids move on by the merge's offsets, and its similarity is carried into the matched
-    map's world: ``S G⁻¹``.
+    map's world and units: ``diag(1/s, 1/s, 1/s, 1) S G⁻¹``, ``s = scale_of(G⁻¹)``. The merge
+    carries the keyframes into rigid poses in the matched map's units (``rigid_of(T G⁻¹)``), so
+    the loop keeps its own scale (the map's drift it measured) when detection composes it with
+    the rigid step from its last keyframe to the next.
     """
     kf, pt = merged.keyframe_offset, merged.point_offset
+    back = sim3.inverse(to_world)
+    similarity = pending.similarity @ back
+    similarity[:3, :] /= loops.scale_of(back)
     return replace(
         pending,
         matched=pending.matched + kf,
         last=pending.last + kf,
-        similarity=pending.similarity @ sim3.inverse(to_world),
+        similarity=similarity,
         points=_offset(pending.points, pt),
         matched_points=_offset(pending.matched_points, pt),
     )

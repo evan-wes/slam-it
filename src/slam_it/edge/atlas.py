@@ -28,8 +28,10 @@ item 1):
   keyframes after the frame was tracked. The poses as tracked are kept beside it, with the map
   each frame was tracked in.
 - **Records carried through a merge.** What the active map removed before a merge (its points'
-  and keyframes' last places, and each culled keyframe's pose relative to its parent) is carried
-  into the matched map's world by the merge's similarity, as the map itself is.
+  and keyframes' last places, and each culled keyframe's pose relative to its parent), and each
+  of its frames' pose relative to its reference keyframe, is carried into the matched map's
+  world by the merge's similarity, as the map itself is: the relative poses' translations into
+  the matched map's units.
 
 The atlas only reads the map being tracked: it, and every change to it, belong to the pipeline's
 owner (:class:`slam_it.edge.pipeline.MapOwner`).
@@ -398,7 +400,10 @@ class Atlas:
 
         The merged map is the current one after, with the matched map's number; its run ids are
         the matched map's, then the current map's, as the merge's offsets moved its ids. What
-        the current map removed before is carried into the matched map's world by `to_world`.
+        the current map removed before, and its frames' places, are carried into the matched
+        map's world by `to_world`: the frames' and the culled keyframes' poses relative to their
+        keyframes take its units (their translations divided by ``scale_of(G⁻¹)``, 1 but in
+        monocular), as the keyframes' own poses do (:func:`slam_it.edge.loops.rigid_of`).
 
         Parameters
         ----------
@@ -436,9 +441,13 @@ class Atlas:
                 self._past_keyframes[run_id] = (seconds, loops.rigid_of(pose @ back), parent)
             if run_id in self._culled:
                 parent, relative = self._culled[run_id]
-                carried = relative.copy()
-                carried[:3, 3] /= scale
-                self._culled[run_id] = (parent, carried)
+                self._culled[run_id] = (parent, _in_units(relative, scale))
+        # The frames tracked in the current map, or in a map merged into it before.
+        self._placements = [
+            replace(p, relative=_in_units(p.relative, scale)) if self._ends_in(p.map) == current
+            else p
+            for p in self._placements
+        ]  # fmt: skip
         self._kf_runs = kept.keyframe_runs + self._kf_runs
         self._pt_runs = kept.point_runs + self._pt_runs
         self._merged_into[current] = matched
@@ -747,6 +756,18 @@ def _runs_of(ids: IntArray, runs: list[int]) -> IntArray:
         return np.full(values.shape, -1, dtype=np.int64)
     table = np.array(runs, dtype=np.int64)
     return np.where(values >= 0, table[np.clip(values, 0, None)], -1).astype(np.int64)
+
+
+def _in_units(relative: Array, scale: float) -> Array:
+    """Return a pose relative to a keyframe in a merged map's units: its translation / `scale`.
+
+    A merge carries the active map's keyframes by ``rigid_of(T G⁻¹)``, whose translations are
+    the active map's divided by ``scale = scale_of(G⁻¹)``; a pose relative to one of them keeps
+    its rotation, and its translation shrinks alike.
+    """
+    out = relative.copy()
+    out[:3, 3] /= scale
+    return out
 
 
 def _ascending(links: list[IntArray]) -> IntArray:

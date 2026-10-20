@@ -150,6 +150,20 @@ fn pair_of(runs: &[i64], [first, second]: [i64; 2]) -> [i64; 2] {
     [a.min(b), a.max(b)]
 }
 
+/// Takes a pose relative to a keyframe into a merged map's units (`slam_it.edge.atlas._in_units`):
+/// a merge carries the active map's keyframes by `rigid_of(T G⁻¹)`, whose translations are the
+/// active map's divided by `scale_of(G⁻¹)`, and a pose relative to one shrinks alike.
+///
+/// # Arguments
+///
+/// * `relative` - The pose, its translation divided in place.
+/// * `scale` - `scale_of(G⁻¹)`.
+fn in_units(relative: &mut Matrix4<f64>, scale: f64) {
+    for r in 0..3 {
+        relative[(r, 3)] /= scale;
+    }
+}
+
 /// The run's maps and records (`slam_it.edge.atlas.Atlas`): every map kept whole with its
 /// database, the maps' numbers and each one's ids' run ids, every point's and keyframe's life,
 /// and each tracked frame's place for the final trajectory.
@@ -421,7 +435,10 @@ impl Atlas {
     /// Takes the current map into the kept map it merged with (`loops::merge`): the merged map
     /// is the current one after, with the matched map's number, its run ids the matched map's
     /// then the current map's, as the merge's offsets (the matched map's next ids) moved them;
-    /// what the current map removed before is carried into the matched map's world by `G`.
+    /// what the current map removed before, and its frames' places, are carried into the matched
+    /// map's world by `G`, the frames' and the culled keyframes' poses relative to their
+    /// keyframes into its units (their translations divided by `scale_of(G⁻¹)`, 1 but in
+    /// monocular).
     ///
     /// # Arguments
     ///
@@ -455,9 +472,13 @@ impl Atlas {
                 lives.keyframe_poses[row] = rigid_of(&(lives.keyframe_poses[row] * back));
             }
             if let Some((_, relative)) = self.culled.get_mut(&id) {
-                for r in 0..3 {
-                    relative[(r, 3)] /= scale;
-                }
+                in_units(relative, scale);
+            }
+        }
+        // The frames tracked in the current map, or in a map merged into it before.
+        for at in 0..self.placements.len() {
+            if self.ends_in(self.placements[at].map) == current {
+                in_units(&mut self.placements[at].relative, scale);
             }
         }
         runs.keyframes.append(&mut self.runs.keyframes);

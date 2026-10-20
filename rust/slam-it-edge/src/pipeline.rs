@@ -1841,7 +1841,8 @@ struct Joined {
 /// Merges the map being tracked into the kept map a merge found
 /// (`slam_it.edge.pipeline._merge_maps`): the merged map is tracked on, with the matched map's
 /// number and database, published with the correction it counts ([`MapOwner::take_merged`]);
-/// the loop being confirmed is carried into it (ids offset, similarity `S G⁻¹`). Threaded,
+/// the loop being confirmed is carried into it (ids offset, similarity
+/// `diag(1/s, 1/s, 1/s, 1) S G⁻¹` with `s = scale_of(G⁻¹)`, so it keeps its own scale). Threaded,
 /// tracking holds mapping stopped around it ([`Threads::merge_waiting`]).
 ///
 /// # Arguments
@@ -1905,7 +1906,10 @@ fn merge_maps(
     if let Some(pending) = &mut state.pending {
         pending.matched += keyframe_offset;
         pending.last += keyframe_offset;
-        pending.similarity *= sim3::inverse(&to_world);
+        let back = sim3::inverse(&to_world);
+        pending.similarity *= back;
+        let mut rows = pending.similarity.fixed_rows_mut::<3>(0);
+        rows /= loops::scale_of(&back);
         offset_ids(&mut pending.points, point_offset);
         offset_ids(&mut pending.matched_points, point_offset);
     }

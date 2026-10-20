@@ -16,15 +16,16 @@ import numpy as np
 import pytest
 
 from slam_it import backends
-from slam_it.edge import covisibility, loops
+from slam_it.edge import covisibility, loops, pipeline
 from slam_it.edge import map as maps
 from slam_it.edge.database import Indexed
 from slam_it.edge.loops import Merge, MergeDetection, Merging, Outcome, Pending
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
+from slam_it.foundations import sim3, vocabulary
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
-from tests.edge.conftest import MERGE_SCALE, SPLIT, TwoMaps
+from tests.edge.conftest import MERGE_SCALE, SPLIT, TwoMaps, keyframe_database
 from tests.edge.support import (
     CAMERA,
     GRAPH_TOLERANCE,
@@ -358,6 +359,56 @@ def test_the_merge_refuses_what_it_cannot_join(two_rigid: TwoMaps) -> None:
     other = replace(two_rigid.matched, scale_factor=two_rigid.matched.scale_factor * 1.1)
     with pytest.raises(InvalidInputError, match="pyramids differ"):
         loops.merge(two_rigid.active, other, CAMERA, found, mode="rgbd", options=OPTIONS)
+
+
+LOOP_MATCHED = 9
+"""A loop being confirmed in the active map matched this active keyframe (row), one whose points
+the active map's last keyframe observes (:data:`tests.edge.conftest.LOOP_WINDOW`)."""
+
+
+def test_a_loop_being_confirmed_is_carried_through_a_monocular_merge(
+    two_scaled: TwoMaps, words: vocabulary.Vocabulary
+) -> None:
+    """A loop carried into the merged map keeps its own scale; the next keyframe confirms it.
+
+    The loop places its last keyframe, the one the merge is found on, where the active map has
+    it. Carried into the merged map (:func:`slam_it.edge.pipeline._carried`), it places it where
+    the merge carried it, rigidly (``rigid_of(T G⁻¹)``), its scale still 1; on the active map's
+    last keyframe, the next, it is confirmed, its projection finding at least as many points as
+    the same loop found in the active map (316; carried in the active map's units, 198).
+    """
+    a = two_scaled.active
+    options = OPTIONS.with_settings({"loops.global_ba": False})
+    last, following = a.keyframes + FOUND_AT, a.keyframes - 1
+    pending = Pending(
+        matched=int(a.kf_id[LOOP_MATCHED]), last=int(a.kf_id[last]),
+        similarity=a.kf_pose[last].copy(), confirmations=1, misses=0,
+        points=np.zeros(0, dtype=np.int64),
+        matched_points=np.full(int(a.kf_start[last + 1] - a.kf_start[last]), -1, dtype=np.int64),
+    )  # fmt: skip
+    before = loops.detect(
+        a, two_scaled.active_database, CAMERA, int(a.kf_id[following]), pending,
+        mode="monocular", options=options,
+    ).summary.confirmation  # fmt: skip
+    assert before is not None
+    assert before.confirmed
+    found = _found(two_scaled)
+    to_world = loops.merge_transform(a, found)
+    merged = loops.merge(a, two_scaled.matched, CAMERA, found, mode="monocular", options=options)
+    carried = pipeline._carried(pending, merged, to_world)
+    assert (carried.matched, carried.last) == (
+        pending.matched + merged.keyframe_offset, pending.last + merged.keyframe_offset,
+    )  # fmt: skip
+    rigid = loops.rigid_of(pending.similarity @ sim3.inverse(to_world))
+    np.testing.assert_allclose(carried.similarity, rigid, rtol=0, atol=1e-12)
+    m = merged.map
+    after = loops.detect(
+        m, keyframe_database(m, words), CAMERA, int(a.kf_id[following]) + merged.keyframe_offset,
+        carried, mode="monocular", options=options,
+    )  # fmt: skip
+    assert after.summary.outcome is Outcome.CONFIRMED
+    assert after.summary.confirmation is not None
+    assert after.summary.confirmation.projected >= before.projected
 
 
 # --- each backend as Python ---------------------------------------------------------------

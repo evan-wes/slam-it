@@ -152,8 +152,10 @@ class Atlas {
   /// @brief Take the current map into the kept map it merged with (`loops::merge`): the merged
   ///        map is the current one after, with the matched map's number, its run ids the
   ///        matched map's then the current map's, as the merge's offsets (the matched map's
-  ///        next ids) moved them; what the current map removed before is carried into the
-  ///        matched map's world by `to_world`.
+  ///        next ids) moved them; what the current map removed before, and its frames' places,
+  ///        are carried into the matched map's world by `to_world`, the frames' and the culled
+  ///        keyframes' poses relative to their keyframes into its units (their translations
+  ///        divided by `scale_of(G^-1)`, 1 but in monocular).
   /// @param matched The kept map's number.
   /// @param to_world `G`, the similarity carrying the current map's world into the matched
   ///        map's (`loops::merge_transform`).

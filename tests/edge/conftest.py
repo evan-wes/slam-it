@@ -320,8 +320,21 @@ def loop_scaled(loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map]
     return _loop(loop_keyframes, scaled=True)
 
 
-def _database(m: Map, words: vocabulary.Vocabulary) -> Database:
-    """Put a map's keyframes in a database."""
+def keyframe_database(m: Map, words: vocabulary.Vocabulary) -> Database:
+    """Put a map's keyframes in a database.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    words : slam_it.foundations.vocabulary.Vocabulary
+        The vocabulary.
+
+    Returns
+    -------
+    slam_it.edge.database.Database
+        A database holding every keyframe of `m`, by its id.
+    """
     db = Database(words)
     for k in range(m.keyframes):
         db.add(int(m.kf_id[k]), m.kp_descriptor[m.keypoint_rows(k)])
@@ -334,7 +347,7 @@ def loop_database(
     words: vocabulary.Vocabulary,
 ) -> Database:
     """Put the loop map's keyframes in a database (tests must not change it)."""
-    return _database(loop_keyframes[2], words)
+    return keyframe_database(loop_keyframes[2], words)
 
 
 SPLIT = 14
@@ -389,8 +402,8 @@ def _two_maps(
     if scaled:
         matched, active = _without_depth(matched), _without_depth(active)
     return TwoMaps(
-        built, poses, matched, active, _database(matched, words), _database(active, words),
-        world, scaled,
+        built, poses, matched, active, keyframe_database(matched, words),
+        keyframe_database(active, words), world, scaled,
     )  # fmt: skip
 
 
