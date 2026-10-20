@@ -80,7 +80,7 @@ async function rooms() {
 
 /**
  * The loops a case's record says its run closed, from its own columns: each frame whose summary
- * holds a correction, the record's keyframes counted from its map's first, which must be the
+ * holds a correction, the record's keyframe k its map's k-th run id, which must be the
  * `keyframe_loops` row of the same order.
  * @param {Case} c The case.
  * @returns {import("../src/loops.js").Loop[]} The loops.
@@ -93,8 +93,8 @@ function recordedLoops(c) {
   assert.equal(corrections.length, c.keyframe_loops[0].length, "a correction for each loop");
   return corrections.map(({ frame, correction }, e) => {
     const map = /** @type {number} */ (c.maps[frame]);
-    const first = c.keyframe_maps.indexOf(map);
-    const [older, newer] = [first + correction.matched, first + correction.current];
+    const ids = c.keyframe_maps.flatMap((m, id) => (m === map ? [id] : []));
+    const [older, newer] = [ids[correction.matched], ids[correction.current]];
     assert.deepEqual(
       [Math.min(older, newer), Math.max(older, newer)],
       [c.keyframe_loops[0][e], c.keyframe_loops[1][e]],
@@ -178,6 +178,47 @@ test("a record's keyframes count from its map's first: the run's ids are found f
   // Keyframes that are no loop the run holds: the bundle does not say what it shows.
   assert.throws(() => loopsOf(twoMaps([3, 7])), /frame 20: .* not a loop the run closed/);
   assert.throws(() => loopsOf(twoMaps([])), /not a loop the run closed/);
+});
+
+/**
+ * A made-up run whose map 0 is taken up again after map 1: map 0 makes its keyframes 0 to 2 at
+ * frames 0, 2 and 4 (the run's 0 to 2), map 1 its keyframes 0 and 1 at frames 10 and 12 (the
+ * run's 3 and 4), and map 0, taken up again, its keyframes 3 to 5 at frames 20, 22 and 24 (the
+ * run's 5 to 7). Map 0 closes a loop at frame 26 in its later stretch, between its keyframes 1
+ * and 5: the run's 1 and 7.
+ * @param {number[]} loops The run's loops, two ids a loop.
+ */
+function takenUpAgain(loops) {
+  const made = [0, 2, 4, 10, 12, 20, 22, 24];
+  const correction = { matched: 1, current: 5 };
+  return {
+    records: {
+      frame: [25, 26],
+      map: [0, 0],
+      loop: [null, { detection: null, correction }],
+    },
+    keyframeMaps: Int32Array.from([0, 0, 0, 1, 1, 0, 0, 0]),
+    keyframeLives: Int32Array.from(made.flatMap((frame) => [frame, -1, -1])),
+    keyframeLoops: Int32Array.from(loops),
+  };
+}
+
+test("a map taken up again after another counts its keyframes over both its stretches", () => {
+  // Counted on from the map's first run id, its keyframe 5 would be the run's 5, which is its
+  // keyframe 3; it is the run's 7, the map's sixth.
+  assert.deepEqual(loopsOf(takenUpAgain([1, 7])), [
+    {
+      frame: 26,
+      map: 0,
+      older: 1,
+      newer: 7,
+      matched: 1,
+      current: 5,
+      olderMade: 2,
+      newerMade: 24,
+    },
+  ]);
+  assert.throws(() => loopsOf(takenUpAgain([1, 5])), /frame 26: .* not a loop the run closed/);
 });
 
 test("the loop beside a frame is the nearest before it or after it, if there is one", () => {

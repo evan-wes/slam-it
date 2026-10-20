@@ -72,8 +72,9 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   with the covisibility graph in a colour of their own (`--graph-merge`). The map at a frame is
   the map it ends in: the records' `map` is written through each merge's destination, the
   header lists the maps a run ends with, each map's `frames` as stretches, and the viewer draws
-  a map through the runs of rows its poses come in (the panel's A1). A run of several sequences
-  in turn is refused by name (H13).
+  a map through the runs of rows its poses come in, and finds a loop's keyframes in a map taken
+  up again by the k-th of the map's run ids, not the first's offset (the panel's A1). A run of
+  several sequences in turn is refused by name (H13).
 - **A 7-Scenes importer** (`slam_it.eval.sevenscenes`, `python -m slam_it.eval.sevenscenes SCENE
   OUT`): a scene's sequences to TUM format, monocular, for section 15.
 - **The test-set measure takes sessions** (`scripts/measure_testset.py`): a sequence's `folders`

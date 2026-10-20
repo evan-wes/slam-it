@@ -49,6 +49,15 @@ export const EFFECT_FADE = 1;
 /**
  * The loops a run closed: each frame whose record shows a loop's correction, its keyframes
  * checked against the loops the run's map holds.
+ *
+ * A record names a keyframe by its id in its map, which counts the map's keyframes from 0 in
+ * the order the map made them; the run's ids count every map's, in the order the run made
+ * them. So a map's keyframe k is the k-th of the run ids whose map is the map's: a map taken up
+ * again after another holds its keyframes' run ids in several runs, the other map's between.
+ * That holds for a map no other was merged into. A merge numbers the merged-away map's keyframes
+ * after the matched map's (`loops.merge`), and the bundle names each keyframe and record by the
+ * map it ends in, so a loop closed in a map before it was merged away, or in a merged map whose
+ * matched map's keyframes do not all come before the other's, is not found: this throws.
  * @param {{records: Record<string, unknown[]> & {frame: number[]}, keyframeMaps: Int32Array,
  *     keyframeLives: Int32Array, keyframeLoops: Int32Array}} run The run: its records, and its
  *     keyframes' maps, lives and loops (`Backend`).
@@ -57,12 +66,15 @@ export const EFFECT_FADE = 1;
  *     frame's map, made before it.
  */
 export function loopsOf({ records, keyframeMaps, keyframeLives, keyframeLoops }) {
-  // A record counts a map's keyframes from 0; the run's ids count every map's, in order.
-  /** @type {Map<number, number>} */
-  const firsts = new Map();
+  // Each map's keyframes' run ids, ascending: the k-th is the map's keyframe k.
+  /** @type {Map<number, number[]>} */
+  const runIds = new Map();
   keyframeMaps.forEach((map, id) => {
-    if (!firsts.has(map)) {
-      firsts.set(map, id);
+    const ids = runIds.get(map);
+    if (ids === undefined) {
+      runIds.set(map, [id]);
+    } else {
+      ids.push(id);
     }
   });
   const pairs = new Set();
@@ -81,11 +93,12 @@ export function loopsOf({ records, keyframeMaps, keyframeLives, keyframeLoops })
     }
     const { matched, current } = correction;
     const map = records.map?.[k];
-    const first = typeof map === "number" ? firsts.get(map) : undefined;
-    const [older, newer] = first === undefined ? [-1, -1] : [first + matched, first + current];
+    const ids = typeof map === "number" ? runIds.get(map) : undefined;
+    const [older, newer] = [ids?.[matched] ?? -1, ids?.[current] ?? -1];
     const [olderMade, newerMade] = [keyframeLives[older * 3], keyframeLives[newer * 3]];
     const closed =
-      first !== undefined &&
+      older >= 0 &&
+      newer >= 0 &&
       pairs.has(`${Math.min(older, newer)} ${Math.max(older, newer)}`) &&
       keyframeMaps[older] === map &&
       keyframeMaps[newer] === map &&
