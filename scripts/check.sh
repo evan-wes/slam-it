@@ -106,8 +106,9 @@ check "C++ tests under ThreadSanitizer (ctest)" \
 # The native tests' scene has no loop, so once more with loops on (B3b's review panel, A3): the
 # loop room threaded through the instrumented program, in both schemes, so that a loop's stop and
 # correction, a global BA's thread and its result carried onto the map run under the sanitizer;
-# and the merge room so (B4), so that a merge, made by tracking between two frames, does too.
-check "C++ loop and merge rooms threaded under ThreadSanitizer" \
+# and the merge room so (B4), so that a merge, made by tracking between two frames, does too, and
+# the revisit room (in the merge room's file), so that a kept map taken up again does.
+check "C++ loop, merge and revisit rooms threaded under ThreadSanitizer" \
   env SLAM_IT_TSAN_VO=build/tsan/slam_it_vo \
   python -m pytest -q -m tsan tests/orchestration/test_loop_room_tsan.py \
   tests/orchestration/test_merge_room_tsan.py

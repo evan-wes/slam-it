@@ -3,9 +3,10 @@
 The room is rendered once per session and written whole, with its gap, lost (frames blanked
 to lose the track), found (blanked, then back at the start) and the window room (found, then
 lost by the time); the loop room is rendered apart, once, and written whole and blinded as the
-merge room (:func:`loop_folders`, :func:`merge_folders`). :func:`room_runs`, :func:`gap_runs`,
-:func:`lost_runs`, :func:`kept_runs`, :func:`found_runs`, :func:`window_runs`, :func:`loop_runs`
-and :func:`merge_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
+merge room and the revisit room (:func:`loop_folders`, :func:`merge_folders`,
+:func:`revisit_folders`). :func:`room_runs`, :func:`gap_runs`, :func:`lost_runs`,
+:func:`kept_runs`, :func:`found_runs`, :func:`window_runs`, :func:`loop_runs`, :func:`merge_runs`
+and :func:`revisit_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
 recording their features, and each again on views when asked (:meth:`RoomRun.viewed`);
 :func:`loop_threaded_runs` runs the loop room threaded.
 """
@@ -29,6 +30,7 @@ from tests.orchestration.datasets import (
     KEPT_OPTIONS,
     MERGE_OPTIONS,
     MOVED_OPTIONS,
+    REVISIT_OPTIONS,
     WINDOW_OPTIONS,
     Room,
     found_frames,
@@ -36,6 +38,7 @@ from tests.orchestration.datasets import (
     loop_frames,
     lost_frames,
     merge_frames,
+    revisit_frames,
     window_frames,
     write_room,
 )
@@ -129,6 +132,14 @@ def merge_folders(
 ) -> Room:
     """Write the merge room (:func:`merge_frames`) as both datasets' folders."""
     return write_room(tmp_path_factory.mktemp("merge"), merge_frames(rendered_loop))
+
+
+@pytest.fixture(scope="session")
+def revisit_folders(
+    rendered_loop: list[room.Frame], tmp_path_factory: pytest.TempPathFactory
+) -> Room:
+    """Write the revisit room (:func:`revisit_frames`) as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("revisit"), revisit_frames(rendered_loop))
 
 
 class RoomRun:
@@ -262,3 +273,9 @@ def loop_threaded_runs(loop_folders: Room, tmp_path_factory: pytest.TempPathFact
 def merge_runs(merge_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
     """Run the merge room with :data:`MERGE_OPTIONS`: its two maps merge."""
     return RoomRun(merge_folders, MERGE_OPTIONS, tmp_path_factory.mktemp("merge_runs"))
+
+
+@pytest.fixture(scope="session")
+def revisit_runs(revisit_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the revisit room with :data:`REVISIT_OPTIONS`: tracking takes its first map up again."""
+    return RoomRun(revisit_folders, REVISIT_OPTIONS, tmp_path_factory.mktemp("revisit_runs"))

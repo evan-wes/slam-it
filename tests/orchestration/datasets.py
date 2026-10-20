@@ -447,6 +447,40 @@ def merge_frames(rendered: list[room.Frame]) -> list[room.Frame]:
     return [blank(f) if k in black else f for k, f in enumerate(rendered)]
 
 
+REVISIT_AT = 230
+"""Where the revisit room's second black stretch begins: the camera at 345 degrees of its turn,
+its second map not yet back over where the first began."""
+
+REVISIT_BLANKS = 30
+"""The revisit room's second black frames: 1 s, within the 3 s ``loss.relocalize_seconds``, so
+its second map is not lost; the camera comes back at 390 degrees, over the first map's start,
+which the second map has not seen, so relocalisation finds the frame in the first map, kept,
+and tracking takes it up (``tests/orchestration/test_revisit_room.py``)."""
+
+REVISIT_OPTIONS = MERGE_OPTIONS.with_settings({"loops.enabled": False})
+"""The revisit room's settings: the merge room's, loop closing off, so the maps never merge and
+only relocalisation can bring the first map back."""
+
+
+def revisit_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the revisit room: the merge room, its frames from :data:`REVISIT_AT` blank too.
+
+    :data:`REVISIT_BLANKS` of them.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The loop room's frames (:func:`loop_frames`).
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        As many frames, at the same times, the merge room's black ones and these blank.
+    """
+    black = range(REVISIT_AT, REVISIT_AT + REVISIT_BLANKS)
+    return [blank(f) if k in black else f for k, f in enumerate(merge_frames(rendered))]
+
+
 def room_inputs() -> dict[str, Any]:
     """Return what the golden record's runs depend on besides the pipeline.
 
