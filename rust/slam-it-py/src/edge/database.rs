@@ -9,7 +9,7 @@
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use slam_it_edge::database as core;
+use slam_it_edge::database::{self as core, MapRef};
 use slam_it_foundations::vocabulary::BowVector;
 
 use super::edge_crossing::{database_in, indexed_in, map_in, options_in, vector_array};
@@ -127,9 +127,11 @@ fn merge_candidates<'py>(
         ids: contiguous(&ids)?.to_vec(),
         values: contiguous(&values)?.to_vec(),
     };
+    let others = indexed_in(py, others)?;
+    let others: Vec<MapRef<'_>> = others.iter().map(MapRef::from).collect();
     let found = unwrap(
         py,
-        core::merge_candidates(&vector, &indexed_in(py, others)?, &options_in(options)?),
+        core::merge_candidates(&vector, &others, &options_in(options)?),
     )?;
     let out = candidates_dict(
         py,

@@ -28,7 +28,7 @@ use slam_it_foundations::{orb, se3, sim3};
 
 use crate::atlas::{Atlas, Lifetimes, Trajectory};
 use crate::covisibility;
-use crate::database::{Database, MapRef};
+use crate::database::{Database, Indexed, MapRef};
 use crate::frames::{Camera, Frame, Tracked, check_setup};
 use crate::initialization::{self, InitSummary, Initialization, Outcome, Started};
 use crate::loops::{
@@ -1481,15 +1481,14 @@ fn place(
         let (Some(whole), Some(database)) = (held.map(), held.database()) else {
             return Ok(None);
         };
-        let (found, moved) = relocalize_everywhere(
-            whole,
+        let (number, kept) = kept_maps(atlas);
+        let searched = SearchedMaps {
+            number,
+            map: whole,
             database,
-            vocabulary,
-            &lock(atlas),
-            camera,
-            frame,
-            options,
-        )?;
+            kept: &kept,
+        };
+        let (found, moved) = relocalize_everywhere(&searched, vocabulary, camera, frame, options)?;
         // A view holds the part of the map its frame may read: the frame goes on with the view
         // of where it was placed; one placed in a kept map goes on in that map, once tracking
         // has taken it up.
@@ -1528,15 +1527,53 @@ fn place(
     })
 }
 
+/// The map tracked's number and the kept maps, shared ([`Atlas::kept`]): the atlas's lock is
+/// held only to copy them out, so that a search over them never holds it (B4's review panel,
+/// A2).
+///
+/// # Arguments
+///
+/// * `atlas` - The atlas.
+///
+/// # Returns
+///
+/// The number (0 with no map tracked) and the kept maps.
+fn kept_maps(atlas: &Mutex<Atlas>) -> (i64, Vec<Arc<Indexed>>) {
+    let atlas = lock(atlas);
+    (atlas.map_id().unwrap_or(0), atlas.kept())
+}
+
+/// The maps a search reads: the map tracked, with its database and number, and the kept maps
+/// the atlas shared ([`kept_maps`]), read with its lock let go.
+struct SearchedMaps<'a> {
+    /// The map tracked's number.
+    number: i64,
+    /// The map tracked.
+    map: &'a Map,
+    /// Its database.
+    database: &'a Database,
+    /// The kept maps, each with its database and number.
+    kept: &'a [Arc<Indexed>],
+}
+
+impl SearchedMaps<'_> {
+    /// The kept maps, as a search over maps held apart takes them.
+    ///
+    /// # Returns
+    ///
+    /// Each kept map by reference.
+    fn others(&self) -> Vec<MapRef<'_>> {
+        self.kept.iter().map(|kept| MapRef::from(&**kept)).collect()
+    }
+}
+
 /// Relocalises a frame in the map tracked, and in every kept map with it (the online-SLAM
 /// design's section 14, item 2) when there are any.
 ///
 /// # Arguments
 ///
-/// * `m` - The map tracked.
-/// * `database` - Its database.
+/// * `searched` - The map tracked, its database and number, and the kept maps.
 /// * `vocabulary` - The vocabulary.
-/// * `atlas` - The atlas: the map's number, and the kept maps.
 /// * `camera` - The camera.
 /// * `frame` - The frame.
 /// * `options` - The settings.
@@ -1550,27 +1587,24 @@ fn place(
 ///
 /// A stage's error.
 fn relocalize_everywhere(
-    m: &Map,
-    database: &Database,
+    searched: &SearchedMaps<'_>,
     vocabulary: &Vocabulary,
-    atlas: &Atlas,
     camera: &Camera,
     frame: &Frame,
     options: &Options,
 ) -> Result<(Relocalized, Option<i64>)> {
-    if atlas.kept().is_empty() {
+    let (m, database, number) = (searched.map, searched.database, searched.number);
+    if searched.kept.is_empty() {
         let found = relocalization::relocalize(m, database, vocabulary, camera, frame, options)?;
         return Ok((found, None));
     }
-    let number = atlas.map_id().unwrap_or(0);
-    let mut searched = vec![MapRef {
+    let mut maps = vec![MapRef {
         number,
         map: m,
         database,
     }];
-    searched.extend(atlas.kept().iter().map(MapRef::from));
-    let mut across =
-        relocalization::relocalize_across(&searched, vocabulary, camera, frame, options)?;
+    maps.extend(searched.others());
+    let mut across = relocalization::relocalize_across(&maps, vocabulary, camera, frame, options)?;
     if across.map.is_none() && across.maps.last().is_some_and(|&last| last != number) {
         // The last candidate's matches are points of another map, not this one's.
         across.relocalized.matched.fill(-1);
@@ -1874,8 +1908,8 @@ fn merge_maps(
     // The merge reads the map being tracked with mapping stopped, and makes the merged map,
     // which then replaces it ([`MapOwner::take_merged`]).
     shared.owner.stopped(|m| -> Result<Option<()>> {
-        let atlas = lock(&shared.atlas);
-        let Some(matched) = atlas.kept().iter().find(|kept| kept.number == found.map) else {
+        let (_, kept) = kept_maps(&shared.atlas);
+        let Some(matched) = kept.iter().find(|kept| kept.number == found.map) else {
             return fail(
                 ErrorKind::InvalidInput,
                 "merge: the matched map is not kept",
@@ -1939,11 +1973,9 @@ struct Found {
 /// # Arguments
 ///
 /// * `state` - Loop closing's state, carried on.
-/// * `m` - The map.
-/// * `database` - Its database.
-/// * `atlas` - The atlas: the maps kept.
+/// * `maps` - The map holding the keyframe, with its database, and the maps kept.
 /// * `camera` - The camera.
-/// * `keyframe` - The keyframe, by `m`'s id.
+/// * `keyframe` - The keyframe, by the map's id.
 /// * `mode` - The sensor mode.
 /// * `options` - The settings.
 ///
@@ -1954,20 +1986,15 @@ struct Found {
 /// # Errors
 ///
 /// Detection's.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "loop closing's state, the map and its holders, the keyframe, the settings"
-)]
 fn search(
     state: &mut LoopState,
-    m: &Map,
-    database: &Database,
-    atlas: &Atlas,
+    maps: &SearchedMaps<'_>,
     camera: &Camera,
     keyframe: i64,
     mode: Mode,
     options: &Options,
 ) -> Result<Found> {
+    let (m, database) = (maps.map, maps.database);
     let mut found = loops::detect(
         m,
         database,
@@ -1978,13 +2005,14 @@ fn search(
         options,
     )?;
     let mut merging = None;
-    if !atlas.kept().is_empty() {
+    let others = maps.others();
+    if !others.is_empty() {
         let searched = loops::detect_merge(
             m,
             database,
             camera,
             keyframe,
-            atlas.kept(),
+            &others,
             state.merging.as_ref(),
             mode,
             options,
@@ -2042,8 +2070,14 @@ fn close_loops(
         if !options.loops.enabled || keyframe == 0 {
             return Ok(None);
         }
-        let atlas = lock(&shared.atlas);
-        search(state, m, database, &atlas, camera, keyframe, mode, options).map(Some)
+        let (number, kept) = kept_maps(&shared.atlas);
+        let maps = SearchedMaps {
+            number,
+            map: m,
+            database,
+            kept: &kept,
+        };
+        search(state, &maps, camera, keyframe, mode, options).map(Some)
     })?;
     let Some(Found {
         mut summary,
@@ -2398,20 +2432,18 @@ fn search_loops(shared: &Arc<Shared>, steps: &Arc<Steps>, item: &Searched) -> Re
             if m.keyframe_row(item.keyframe).is_none() {
                 return Ok(None); // culled since it was mapped
             }
-            let mut closing = lock(&shared.closing);
-            let atlas = lock(&shared.atlas);
-            let (camera, mode, options) = (&steps.camera, steps.mode, &steps.options);
-            search(
-                &mut closing,
-                m,
+            // The kept maps shared: tracking takes the atlas's lock on every frame, and never
+            // waits on the search.
+            let (number, kept) = kept_maps(&shared.atlas);
+            let maps = SearchedMaps {
+                number,
+                map: m,
                 database,
-                &atlas,
-                camera,
-                item.keyframe,
-                mode,
-                options,
-            )
-            .map(Some)
+                kept: &kept,
+            };
+            let mut closing = lock(&shared.closing);
+            let (camera, mode, options) = (&steps.camera, steps.mode, &steps.options);
+            search(&mut closing, &maps, camera, item.keyframe, mode, options).map(Some)
         })?;
         let Some(Found {
             mut summary,

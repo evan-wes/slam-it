@@ -18,6 +18,7 @@ use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use slam_it_edge::database::MapRef;
 use slam_it_edge::loops::{
     self as core, CandidateSummary, ConfirmationSummary, CorrectionSummary, Detection,
     DetectionSummary, Loop, Merge, MergeDetection, Merging, Outcome, Pending, Search, WeldSummary,
@@ -1020,6 +1021,8 @@ fn detect_merge<'py>(
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let carried = pending.map(merging_in).transpose()?;
+    let others = indexed_in(py, others)?;
+    let others: Vec<MapRef<'_>> = others.iter().map(MapRef::from).collect();
     let found = unwrap(
         py,
         core::detect_merge(
@@ -1027,7 +1030,7 @@ fn detect_merge<'py>(
             &database_in(py, database)?,
             &camera_in(camera)?,
             keyframe,
-            &indexed_in(py, others)?,
+            &others,
             carried.as_ref(),
             mode_in(mode)?,
             &options_in(options)?,

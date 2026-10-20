@@ -447,7 +447,8 @@ pub struct Ranked {
 }
 
 /// A map with its keyframe database and number, held elsewhere: an [`Indexed`] by reference,
-/// for a search over maps owned apart (the one tracked and the kept ones).
+/// for a search over maps owned apart (relocalisation's over the one tracked and the kept ones;
+/// merge detection's over the kept ones, which the atlas shares, `crate::atlas::Atlas::kept`).
 #[derive(Clone, Copy, Debug)]
 pub struct MapRef<'a> {
     /// The map's number.
@@ -525,7 +526,7 @@ pub fn rank(found: &mut [Ranked]) {
 /// `InvalidInput` for a malformed vector or two maps with one number.
 pub fn merge_candidates(
     vector: &BowVector,
-    others: &[Indexed],
+    others: &[MapRef<'_>],
     options: &Options,
 ) -> Result<MergeCandidates> {
     vocabulary::check_vector(vector)?;
@@ -535,8 +536,8 @@ pub fn merge_candidates(
     let mut out = MergeCandidates::default();
     for other in others {
         let scored = scoring(
-            &other.database,
-            &other.map,
+            other.database,
+            other.map,
             vector,
             &[],
             (settings.common_words, settings.neighbours),

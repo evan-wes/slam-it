@@ -6,9 +6,11 @@
 //! record what they made and removed as they change it ([`Atlas::record`]), dated by the frame
 //! being tracked then, and tracking counts the frames ([`Atlas::tick`]); a frame that became a
 //! keyframe is placed before local mapping makes its keyframe ([`Atlas::place_pending`]), its
-//! reference set once it has ([`Atlas::resolve`]). The pipeline shares the atlas behind a lock.
+//! reference set once it has ([`Atlas::resolve`]). The pipeline shares the atlas behind a lock;
+//! the kept maps are shared on ([`Atlas::kept`]), so a search reads them with the lock let go.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_foundations::error::Result;
@@ -121,6 +123,17 @@ struct Runs {
     points: Vec<i64>,
 }
 
+/// A map kept whole, not being tracked (`slam_it.edge.atlas.Kept`): the map with its database
+/// and number, shared so that a search reads it with the atlas's lock let go ([`Atlas::kept`]),
+/// and its ids' run ids.
+#[derive(Debug, Clone)]
+struct Kept {
+    /// The map, its database and its number.
+    map: Arc<Indexed>,
+    /// Its ids' run ids.
+    runs: Runs,
+}
+
 /// An id of a map as the run's, by its table of run ids; -1 kept.
 ///
 /// # Arguments
@@ -179,10 +192,8 @@ pub struct Atlas {
     maps: i64,
     /// The current map's ids' run ids.
     runs: Runs,
-    /// The maps kept, by number, each with its database.
-    kept: Vec<Indexed>,
-    /// Each kept map's ids' run ids, in `kept`'s order.
-    kept_runs: Vec<Runs>,
+    /// The maps kept, by number, each with its database and its ids' run ids.
+    kept: Vec<Kept>,
     /// Each merged map's number to the number of the map it was merged into.
     merged_into: BTreeMap<i64, i64>,
     /// Lives, the map each point and keyframe was made in, and the removed ones' last places
@@ -217,7 +228,6 @@ impl Atlas {
             maps: 0,
             runs: Runs::default(),
             kept: Vec::new(),
-            kept_runs: Vec::new(),
             merged_into: BTreeMap::new(),
             lives: Lifetimes::default(),
             placements: Vec::new(),
@@ -273,14 +283,18 @@ impl Atlas {
     }
 
     /// The maps kept, not being tracked, by number, each with its database (empty when the run
-    /// does not relocalise).
+    /// does not relocalise), shared: taken with the atlas's lock held, they are read with it let
+    /// go, so that tracking, which takes the lock on every frame, never waits on a search over
+    /// them (threaded loop closing's, relocalisation's). Only tracking's thread changes the maps
+    /// kept ([`Atlas::close`], [`Atlas::resume`], [`Atlas::merge`]), with the threads settled or
+    /// drained; a map taken out while a search still holds it is copied out.
     ///
     /// # Returns
     ///
     /// The maps.
     #[must_use]
-    pub fn kept(&self) -> &[Indexed] {
-        &self.kept
+    pub fn kept(&self) -> Vec<Arc<Indexed>> {
+        self.kept.iter().map(|kept| Arc::clone(&kept.map)).collect()
     }
 
     /// Gives the map starting on this frame its number; its ids are the run's next.
@@ -379,16 +393,13 @@ impl Atlas {
         self.pending.clear();
         let runs = std::mem::take(&mut self.runs);
         if !reset {
-            let at = self.kept.partition_point(|kept| kept.number < number);
-            self.kept.insert(
-                at,
-                Indexed {
-                    number,
-                    map: m,
-                    database: database.unwrap_or_default(),
-                },
-            );
-            self.kept_runs.insert(at, runs);
+            let at = self.kept.partition_point(|kept| kept.map.number < number);
+            let map = Arc::new(Indexed {
+                number,
+                map: m,
+                database: database.unwrap_or_default(),
+            });
+            self.kept.insert(at, Kept { map, runs });
             return;
         }
         let frame = if dated { self.frames - 1 } else { self.frames };
@@ -426,10 +437,14 @@ impl Atlas {
     ///
     /// The map and its database, for the map's owner; `None` if no kept map has the number.
     pub fn resume(&mut self, number: i64) -> Option<Indexed> {
-        let at = self.kept.iter().position(|kept| kept.number == number)?;
+        let at = self
+            .kept
+            .iter()
+            .position(|kept| kept.map.number == number)?;
+        let kept = self.kept.remove(at);
         self.map_id = Some(number);
-        self.runs = self.kept_runs.remove(at);
-        Some(self.kept.remove(at))
+        self.runs = kept.runs;
+        Some(Arc::unwrap_or_clone(kept.map))
     }
 
     /// Takes the current map into the kept map it merged with (`loops::merge`): the merged map
@@ -451,10 +466,15 @@ impl Atlas {
     /// The matched map's database, which becomes the merged map's; `None` if no kept map has
     /// the number.
     pub fn merge(&mut self, matched: i64, to_world: &Matrix4<f64>) -> Option<Database> {
-        let at = self.kept.iter().position(|kept| kept.number == matched)?;
+        let at = self
+            .kept
+            .iter()
+            .position(|kept| kept.map.number == matched)?;
         let current = self.map_id.unwrap_or(0);
-        let kept = self.kept.remove(at);
-        let mut runs = self.kept_runs.remove(at);
+        let Kept {
+            map: kept,
+            mut runs,
+        } = self.kept.remove(at);
         let back = sim3::inverse(to_world);
         let scale = scale_of(&back);
         let lives = &mut self.lives;
@@ -486,7 +506,9 @@ impl Atlas {
         self.runs = runs;
         self.merged_into.insert(current, matched);
         self.map_id = Some(matched);
-        Some(kept.database)
+        Some(
+            Arc::try_unwrap(kept).map_or_else(|shared| shared.database.clone(), |own| own.database),
+        )
     }
 
     /// Keeps a tracked frame's place: its reference keyframe and its pose relative to it.
@@ -586,8 +608,7 @@ impl Atlas {
         let mut out: Vec<(&Map, &Runs)> = self
             .kept
             .iter()
-            .map(|kept| &kept.map)
-            .zip(&self.kept_runs)
+            .map(|kept| (&kept.map.map, &kept.runs))
             .collect();
         if let (Some(m), Some(_)) = (m, self.map_id) {
             out.push((m, &self.runs));

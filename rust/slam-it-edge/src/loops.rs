@@ -22,7 +22,7 @@ use slam_it_foundations::ransac;
 use slam_it_foundations::sim3;
 
 use crate::covisibility;
-use crate::database::{self, Database, Indexed};
+use crate::database::{self, Database, MapRef};
 use crate::frames::Camera;
 use crate::map::{self, Map, camera_centre, keyframe_row, predict_level, to_camera, viewing_cos};
 use crate::options::{Mode, Options};
@@ -1827,7 +1827,7 @@ impl<'a> Searching<'a> {
     /// # Errors
     ///
     /// `InvalidInput` for a keyframe the database does not hold; the search's or a candidate's.
-    fn search_merge(&self, others: &[Indexed]) -> Result<RegionSearch> {
+    fn search_merge(&self, others: &[MapRef<'_>]) -> Result<RegionSearch> {
         let keyframe = self.m.kf_id[self.k];
         let Some(words) = self.db.keyframes.get(&keyframe) else {
             return fail(
@@ -1850,8 +1850,8 @@ impl<'a> Searching<'a> {
             let at = place_of(others, number);
             let other = &others[at];
             let target = Target {
-                map: &other.map,
-                database: &other.database,
+                map: other.map,
+                database: other.database,
                 own: false,
             };
             let (summary, found) = self.try_candidate(keyframe, score, target)?;
@@ -1872,7 +1872,7 @@ impl<'a> Searching<'a> {
 /// # Returns
 ///
 /// The place, or the count when no map has it.
-fn place_of(maps: &[Indexed], number: i64) -> usize {
+fn place_of(maps: &[MapRef<'_>], number: i64) -> usize {
     maps.iter()
         .position(|map| map.number == number)
         .unwrap_or(maps.len())
@@ -2216,7 +2216,7 @@ pub fn detect_merge(
     db: &Database,
     camera: &Camera,
     keyframe: i64,
-    others: &[Indexed],
+    others: &[MapRef<'_>],
     pending: Option<&Merging>,
     mode: Mode,
     options: &Options,
@@ -2248,8 +2248,8 @@ pub fn detect_merge(
         pending: pending.map(|p| &p.pending),
         holding: match others.get(at) {
             Some(other) => Target {
-                map: &other.map,
-                database: &other.database,
+                map: other.map,
+                database: other.database,
                 own: false,
             },
             None => Target {
@@ -2259,7 +2259,7 @@ pub fn detect_merge(
             },
         },
         holding_at: at,
-        maps: others.iter().map(|other| &other.map).collect(),
+        maps: others.iter().map(|other| other.map).collect(),
     };
     let searching = Searching::new(m, db, camera, k, mode, options);
     let detected = detect_region(&searching, &looking, |searching| {
