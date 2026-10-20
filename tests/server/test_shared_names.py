@@ -65,7 +65,7 @@ def test_the_longest_summary_fits_what_the_server_keeps() -> None:
         "video", "clip", max(worker.RUN_MODES, key=len), "python", times,
         np.tile(np.eye(4), (len(times), 1, 1)), np.tile(np.eye(4), (len(times), 1, 1)),
         diagnostics=[{"timestamp": float(t), "state": "lost"} for t in times],
-        pose_maps=maps,
+        pose_maps=maps, tracked_maps=maps,
     )  # fmt: skip
     intrinsics = max(("stray-scanner", *lenses.SOURCES), key=len)
     summary = worker.summarize(run, times, intrinsics, (video.MAX_LONG_SIDE, video.MAX_LONG_SIDE))

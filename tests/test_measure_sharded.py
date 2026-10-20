@@ -35,7 +35,7 @@ def config(tmp_path_factory: pytest.TempPathFactory) -> Path:
     write_tum(base / "room", room.sequence(FRAMES))
     path = base / "testset.toml"
     path.write_text(
-        f'[[sequence]]\nname = "room"\nfolder = "{base / "room"}"\nmode = "rgbd"\n'
+        f'[[sequence]]\nname = "room"\nfolders = ["{base / "room"}"]\nmode = "rgbd"\n'
         'reference = "its own poses"\n'
     )
     return path
