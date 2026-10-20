@@ -23,6 +23,7 @@ from slam_it.edge.atlas import Atlas, Trajectory
 from slam_it.edge.database import Indexed
 from slam_it.edge.map import Map
 from slam_it.foundations import sim3
+from slam_it.foundations.errors import InvalidInputError
 from tests.edge.conftest import SPLIT, TwoMaps
 from tests.edge.support import CAMERA, OPTIONS, assert_close
 
@@ -112,3 +113,13 @@ def test_what_the_active_map_removed_is_carried_into_the_matched_world(merged: _
     pose = loops.rigid_of(merged.active.kf_pose[CULLED] @ back)
     assert_close(life.keyframe_poses[keyframe], pose)
     assert life.keyframe_maps[keyframe] == 0
+
+
+def test_a_kept_map_that_is_not_there_is_refused_by_its_number(merged: _Merged) -> None:
+    """Taking up, or merging with, a map the atlas does not keep: InvalidInputError naming it."""
+    atlas = Atlas(OPTIONS)
+    atlas.start()
+    with pytest.raises(InvalidInputError, match="resume: map 7 is not kept"):
+        atlas.resume(7)
+    with pytest.raises(InvalidInputError, match="merge: map 7 is not kept"):
+        atlas.merge(7, merged.merged, merged.to_world)

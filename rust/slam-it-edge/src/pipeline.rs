@@ -1922,12 +1922,7 @@ fn merge_maps(
     let Some(merged) = merged else {
         return fail(ErrorKind::InvalidInput, "merge: no map");
     };
-    let Some(database) = lock(&shared.atlas).merge(found.map, &to_world) else {
-        return fail(
-            ErrorKind::InvalidInput,
-            "merge: the matched map is not kept",
-        );
-    };
+    let database = lock(&shared.atlas).merge(found.map, &to_world)?;
     let loops::Merged {
         map,
         keyframe_offset,
@@ -3114,7 +3109,7 @@ impl Pipeline {
         if step.lost && self.shared.owner.map().is_some() {
             // A lost frame was tracking a map.
             let small = self.options.loss.reset_keyframes + 1;
-            summary.lost = Some(leave(&self.shared, small, true));
+            summary.lost = Some(leave(&self.shared, small, true)?);
             self.tracking = TrackingState::default();
             self.state = State::NotInitialized;
         }
@@ -3231,7 +3226,7 @@ impl Pipeline {
                 &self.shared,
                 self.options.loss.session_keyframes,
                 false,
-            ));
+            )?);
         }
         self.tracking = TrackingState::default();
         self.state = State::NotInitialized;
@@ -3335,11 +3330,9 @@ impl Pipeline {
                 } else {
                     0.0
                 };
-                let left = leave(shared, options.loss.reset_keyframes + 1, false);
-                let kept = lock(&shared.atlas).resume(number);
-                if let Some(kept) = kept {
-                    shared.owner.resume(kept.map, kept.database);
-                }
+                let left = leave(shared, options.loss.reset_keyframes + 1, false)?;
+                let kept = lock(&shared.atlas).resume(number)?;
+                shared.owner.resume(kept.map, kept.database);
                 tracking.change_map();
                 Ok((left, waited))
             },
@@ -3530,18 +3523,22 @@ impl Pipeline {
 /// # Returns
 ///
 /// The closed map's summary.
-fn leave(shared: &Shared, small: usize, dated: bool) -> LostSummary {
+///
+/// # Errors
+///
+/// The atlas's ([`Atlas::close`]).
+fn leave(shared: &Shared, small: usize, dated: bool) -> Result<LostSummary> {
     // Shared with loop closing's thread, settled by now; a merge waiting goes with it.
     *lock(&shared.closing) = LoopState::default();
     shared.waiting.store(false, Ordering::SeqCst);
     let (Some(m), database) = shared.owner.close() else {
-        return LostSummary::default();
+        return Ok(LostSummary::default());
     };
     let out = LostSummary {
         keyframes: m.keyframes(),
         points: m.points(),
         reset: m.keyframes() < small,
     };
-    lock(&shared.atlas).close(m, database, out.reset, dated);
-    out
+    lock(&shared.atlas).close(m, database, out.reset, dated)?;
+    Ok(out)
 }

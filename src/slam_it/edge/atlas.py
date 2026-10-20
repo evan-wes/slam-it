@@ -60,6 +60,7 @@ from slam_it.edge.database import Database, Indexed
 from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options
 from slam_it.foundations import se3, sim3
+from slam_it.foundations.errors import InvalidInputError
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -388,9 +389,14 @@ class Atlas:
         -------
         Kept
             The map and its database, for the map's owner.
+
+        Raises
+        ------
+        slam_it.foundations.errors.InvalidInputError
+            If no map kept has the number.
         """
         with self._lock:
-            kept = self._kept.pop(number)
+            kept = self._take("resume", number)
             self._map_id = number
             self._kf_runs, self._pt_runs = kept.keyframe_runs, kept.point_runs
             return kept
@@ -419,6 +425,11 @@ class Atlas:
         -------
         Kept
             The matched map as it was kept: its database is the merged map's to start from.
+
+        Raises
+        ------
+        slam_it.foundations.errors.InvalidInputError
+            If no map kept has the number `matched`.
         """
         with self._lock:
             return self._merge(matched, merged, to_world)
@@ -426,7 +437,7 @@ class Atlas:
     def _merge(self, matched: int, merged: loops.Merged, to_world: Array) -> Kept:
         """Take the current map into kept map `matched` (the lock held)."""
         current = self._current()
-        kept = self._kept.pop(matched)
+        kept = self._take("merge", matched)
         assert len(kept.keyframe_runs) == merged.keyframe_offset
         assert len(kept.point_runs) == merged.point_offset
         back = sim3.inverse(to_world)
@@ -736,6 +747,12 @@ class Atlas:
         while number in self._merged_into:
             number = self._merged_into[number]
         return number
+
+    def _take(self, name: str, number: int) -> Kept:
+        """Take kept map `number` out of the kept maps (the lock held); `name` is the caller's."""
+        if number not in self._kept:
+            raise InvalidInputError(f"{name}: map {number} is not kept")
+        return self._kept.pop(number)
 
     def _current(self) -> int:
         """Return the current map's number; a frame is placed only while one is tracked."""

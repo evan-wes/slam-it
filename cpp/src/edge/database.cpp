@@ -262,8 +262,17 @@ Result<Candidates> loop_candidates(const Database& db, const Map& m, std::int64_
                 static_cast<std::size_t>(settings.candidates));
 }
 
+std::vector<MapRef> refs_of(std::span<const Indexed> maps) {
+  std::vector<MapRef> out;
+  out.reserve(maps.size());
+  for (const Indexed& map : maps) {
+    out.push_back({.number = map.number, .map = &map.map, .database = &map.database});
+  }
+  return out;
+}
+
 Result<MergeCandidates> merge_candidates(const foundations::vocabulary::BowVector& vector,
-                                         std::span<const Indexed> others, const Options& options) {
+                                         std::span<const MapRef> others, const Options& options) {
   if (auto ok = vocabulary::check_vector(vector); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -273,8 +282,8 @@ Result<MergeCandidates> merge_candidates(const foundations::vocabulary::BowVecto
   const LoopOptions& settings = options.loops;
   std::vector<Ranked> found;
   MergeCandidates out;
-  for (const Indexed& other : others) {
-    auto scored = scoring(other.database, other.map, vector, {},
+  for (const MapRef& other : others) {
+    auto scored = scoring(*other.database, *other.map, vector, {},
                           {settings.common_words, settings.neighbours}, options);
     if (!scored) {
       return std::unexpected(std::move(scored.error()));

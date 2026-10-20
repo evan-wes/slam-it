@@ -955,8 +955,14 @@ class Pipeline {
   /// @param dated Whether this frame is dated already: a map lost on a frame is closed after
   ///        it, one left for another kept map while tracking it.
   /// @param small The keyframes a map must hold to be kept.
-  /// @return The closed map's summary.
-  LostSummary leave(bool dated, std::int64_t small);
+  /// @return The closed map's summary; the atlas's error (`Atlas::close`).
+  [[nodiscard]] foundations::Result<LostSummary> leave(bool dated, std::int64_t small);
+
+  /// @brief On a frame that lost the track of a map, close it (`leave`, dated) and start none
+  ///        until the next frame: its summary's `lost` set; nothing on any other frame.
+  /// @param step The frame's step.
+  /// @return Nothing; `leave`'s error.
+  [[nodiscard]] foundations::Result<void> close_lost(Step& step);
 
   /// @brief Take up kept map `number`, where relocalisation found this frame, leaving the map
   ///        tracked, kept or reset as a lost map is; tracking goes on in the map found

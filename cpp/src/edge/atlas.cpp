@@ -4,9 +4,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <expected>
 #include <map>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -14,6 +16,10 @@
 #include "slam_it/foundations/sim3.hpp"
 
 namespace slam_it::edge {
+
+using foundations::ErrorKind;
+using foundations::fail;
+using foundations::Result;
 
 namespace {
 
@@ -72,6 +78,16 @@ std::int64_t Atlas::frame_held() const { return ended_ ? frames_ - 1 : frames_; 
 void Atlas::end() {
   const std::scoped_lock lock(mutex_);
   ended_ = true;
+}
+
+std::vector<MapRef> Atlas::kept() const {
+  std::vector<MapRef> out;
+  out.reserve(kept_.size());
+  for (const Kept& kept : kept_) {
+    out.push_back(
+        {.number = kept.map.number, .map = &kept.map.map, .database = &kept.map.database});
+  }
+  return out;
 }
 
 void Atlas::start() {
@@ -145,21 +161,23 @@ void Atlas::record_held(const Map* m) {
   }
 }
 
-void Atlas::close(Map m, std::optional<Database> database, bool reset, bool dated) {
+Result<void> Atlas::close(Map m, std::optional<Database> database, bool reset, bool dated) {
   const std::scoped_lock lock(mutex_);
-  const std::int64_t number = map_id_.value_or(0);
+  if (!map_id_) {
+    return fail(ErrorKind::kInvalidInput, "close: no map is being tracked");
+  }
+  const std::int64_t number = *map_id_;
   map_id_.reset();
   pending_.clear();
   if (!reset) {
-    const auto at = static_cast<std::size_t>(
-        std::ranges::lower_bound(kept_, number, {}, &Indexed::number) - kept_.begin());
-    kept_.insert(kept_.begin() + static_cast<std::ptrdiff_t>(at),
-                 Indexed{.number = number,
-                         .map = std::move(m),
-                         .database = database ? std::move(*database) : Database{}});
-    kept_runs_.insert(kept_runs_.begin() + static_cast<std::ptrdiff_t>(at), std::move(runs_));
+    const auto at = std::ranges::lower_bound(kept_, number, {},
+                                             [](const Kept& kept) { return kept.map.number; });
+    kept_.insert(at, Kept{.map = {.number = number,
+                                  .map = std::move(m),
+                                  .database = database ? std::move(*database) : Database{}},
+                          .runs = std::move(runs_)});
     runs_ = {};
-    return;
+    return {};
   }
   const std::int64_t frame = dated ? frames_ - 1 : frames_;
   const auto code = static_cast<std::int64_t>(Removal::kReset);
@@ -183,32 +201,47 @@ void Atlas::close(Map m, std::optional<Database> database, bool reset, bool date
   }
   std::erase_if(placements_, [number](const FramePlace& p) { return p.map == number; });
   runs_ = {};
+  return {};
 }
 
-std::size_t Atlas::kept_at(std::int64_t number) const {
-  return static_cast<std::size_t>(std::ranges::find(kept_, number, &Indexed::number) -
-                                  kept_.begin());
+Result<std::size_t> Atlas::kept_at(std::int64_t number, const char* name) const {
+  const auto at =
+      std::ranges::find_if(kept_, [number](const Kept& kept) { return kept.map.number == number; });
+  if (at == kept_.end()) {
+    return fail(ErrorKind::kInvalidInput,
+                std::string(name) + ": map " + std::to_string(number) + " is not kept");
+  }
+  return static_cast<std::size_t>(at - kept_.begin());
 }
 
-Indexed Atlas::resume(std::int64_t number) {
+Result<Indexed> Atlas::resume(std::int64_t number) {
   const std::scoped_lock lock(mutex_);
-  const std::size_t at = kept_at(number);
-  Indexed out = std::move(kept_[at]);
+  auto at = kept_at(number, "resume");
+  if (!at) {
+    return std::unexpected(std::move(at.error()));
+  }
+  const auto place = kept_.begin() + static_cast<std::ptrdiff_t>(*at);
+  Indexed out = std::move(place->map);
   map_id_ = number;
-  runs_ = std::move(kept_runs_[at]);
-  kept_.erase(kept_.begin() + static_cast<std::ptrdiff_t>(at));
-  kept_runs_.erase(kept_runs_.begin() + static_cast<std::ptrdiff_t>(at));
+  runs_ = std::move(place->runs);
+  kept_.erase(place);
   return out;
 }
 
-Database Atlas::merge(std::int64_t matched, const Eigen::Matrix4d& to_world) {
+Result<Database> Atlas::merge(std::int64_t matched, const Eigen::Matrix4d& to_world) {
   const std::scoped_lock lock(mutex_);
-  const std::int64_t current = map_id_.value_or(0);
-  const std::size_t at = kept_at(matched);
-  Database out = std::move(kept_[at].database);
-  Runs runs = std::move(kept_runs_[at]);
-  kept_.erase(kept_.begin() + static_cast<std::ptrdiff_t>(at));
-  kept_runs_.erase(kept_runs_.begin() + static_cast<std::ptrdiff_t>(at));
+  if (!map_id_) {
+    return fail(ErrorKind::kInvalidInput, "merge: no map is being tracked");
+  }
+  const std::int64_t current = *map_id_;
+  auto at = kept_at(matched, "merge");
+  if (!at) {
+    return std::unexpected(std::move(at.error()));
+  }
+  const auto place = kept_.begin() + static_cast<std::ptrdiff_t>(*at);
+  Database out = std::move(place->map.database);
+  Runs runs = std::move(place->runs);
+  kept_.erase(place);
   const Eigen::Matrix4d back = foundations::sim3::inverse(to_world);
   const double scale = loops::scale_of(back);
   for (const std::int64_t id : runs_.points) {
@@ -318,8 +351,8 @@ Lifetimes Atlas::lifetimes(const Map* m) const {
                 .keyframe_merges = {},
                 .point_maps = {},
                 .keyframe_maps = {}};
-  for (std::size_t i = 0; i < kept_.size(); ++i) {
-    record_whole(kept_[i].map, kept_runs_[i], out);
+  for (const Kept& kept : kept_) {
+    record_whole(kept.map.map, kept.runs, out);
   }
   if (m != nullptr && map_id_) {
     record_whole(*m, runs_, out);
@@ -347,8 +380,8 @@ Trajectory Atlas::trajectory(const Map* m) const {
       last[run_of(runs.keyframes, whole.kf_id[k])] = whole.kf_pose[k];
     }
   };
-  for (std::size_t i = 0; i < kept_.size(); ++i) {
-    anchor_all(kept_[i].map, kept_runs_[i]);
+  for (const Kept& kept : kept_) {
+    anchor_all(kept.map.map, kept.runs);
   }
   if (m != nullptr && map_id_) {
     anchor_all(*m, runs_);

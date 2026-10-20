@@ -13,6 +13,7 @@
 
 #include <cstdint>
 #include <utility>
+#include <vector>
 
 #include "common.hpp"
 #include "edge/edge.hpp"
@@ -79,8 +80,9 @@ nb::dict merge_candidates(const edge_crossing::Int64In& ids, const VectorIn<doub
                           const nb::list& others, const nb::dict& options) {
   const foundations::vocabulary::BowVector vector{
       .ids = edge_crossing::int64_in(ids), .values = copy_vector<std::vector<double>>(values)};
-  edge::MergeCandidates found = unwrap(edge::merge_candidates(
-      vector, edge_crossing::indexed_in(others), edge_crossing::options_in(options)));
+  const std::vector<edge::Indexed> maps = edge_crossing::indexed_in(others);
+  edge::MergeCandidates found = unwrap(
+      edge::merge_candidates(vector, edge::refs_of(maps), edge_crossing::options_in(options)));
   nb::dict out = candidates_dict({.keyframes = std::move(found.keyframes),
                                   .scores = std::move(found.scores),
                                   .sharing = found.sharing,

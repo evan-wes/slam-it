@@ -1553,7 +1553,7 @@ Result<std::optional<graphs::Summary>> finish_correction(
 /// @param options The settings.
 /// @return The best that passed, and how the search went.
 Result<RegionSearch> search_merge(const Map& m, const Database& db, const Camera& camera,
-                                  std::size_t k, std::span<const Indexed> others, bool fixed_scale,
+                                  std::size_t k, std::span<const MapRef> others, bool fixed_scale,
                                   const Options& options) {
   const auto words = db.keyframes.find(m.kf_id[k]);
   if (words == db.keyframes.end()) {
@@ -1571,11 +1571,11 @@ Result<RegionSearch> search_merge(const Map& m, const Database& db, const Camera
   for (std::size_t i = 0; i < candidates->keyframes.size(); ++i) {
     const auto at = static_cast<std::size_t>(
         std::ranges::find_if(
-            others, [&](const Indexed& other) { return other.number == candidates->maps[i]; }) -
+            others, [&](const MapRef& other) { return other.number == candidates->maps[i]; }) -
         others.begin());
-    const Indexed& other = others[at];
+    const MapRef& other = others[at];
     auto tried = try_candidate(m, db, camera, k, {candidates->keyframes[i], candidates->scores[i]},
-                               {.map = &other.map, .database = &other.database, .own = false}, none,
+                               {.map = other.map, .database = other.database, .own = false}, none,
                                fixed_scale, options);
     if (!tried) {
       return std::unexpected(std::move(tried.error()));
@@ -2487,12 +2487,12 @@ Result<CorrectionSummary> correct(Map& m, const Camera& camera, const Loop& loop
 
 // NOLINTNEXTLINE(readability-function-cognitive-complexity): Python's _detect_merge, step for step
 Result<MergeDetection> detect_merge(const Map& m, const Database& db, const Camera& camera,
-                                    std::int64_t keyframe, std::span<const Indexed> others,
+                                    std::int64_t keyframe, std::span<const MapRef> others,
                                     const std::optional<Merging>& pending, const std::string& mode,
                                     const Options& options) {
   const auto place = [&others](std::int64_t number) {
     return static_cast<std::size_t>(
-        std::ranges::find_if(others, [number](const Indexed& o) { return o.number == number; }) -
+        std::ranges::find_if(others, [number](const MapRef& o) { return o.number == number; }) -
         others.begin());
   };
   // The mode, camera, settings and keyframe first, then the other maps, as Python checks them.
@@ -2518,13 +2518,13 @@ Result<MergeDetection> detect_merge(const Map& m, const Database& db, const Came
                   .holding = {.map = &m, .database = &db, .own = false},
                   .holding_at = 0,
                   .maps = {}};
-  for (const Indexed& other : others) {
-    looking.maps.push_back(&other.map);
+  for (const MapRef& other : others) {
+    looking.maps.push_back(other.map);
   }
   if (pending) {
     const std::size_t at = place(pending->map);
     looking.pending = pending->pending;
-    looking.holding = {.map = &others[at].map, .database = &others[at].database, .own = false};
+    looking.holding = {.map = others[at].map, .database = others[at].database, .own = false};
     looking.holding_at = at;
   }
   auto found = detect_region(

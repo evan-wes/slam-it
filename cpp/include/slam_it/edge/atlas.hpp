@@ -10,7 +10,6 @@
 #include <map>
 #include <mutex>
 #include <optional>
-#include <span>
 #include <utility>
 #include <vector>
 
@@ -18,6 +17,7 @@
 #include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/options.hpp"
+#include "slam_it/foundations/error.hpp"
 
 namespace slam_it::edge {
 
@@ -79,8 +79,9 @@ struct Trajectory {
 /// record what they made and removed as they change it (`record`), dated by the frame being
 /// tracked then, and tracking counts the frames (`tick`); a frame that became a keyframe is
 /// placed before local mapping makes its keyframe (`place_pending`), its reference set once it
-/// has (`resolve`). Every method holds the atlas's lock but `kept`, whose maps only tracking's
-/// thread reads and changes.
+/// has (`resolve`). Every method holds the atlas's lock but `kept`: the kept maps are changed by
+/// tracking's thread alone (`close`, `resume`, `merge`), with the threads settled or drained,
+/// and read by tracking and, threaded, by loop closing's search, which those changes wait for.
 class Atlas {
  public:
   /// @brief An atlas before the run's first frame.
@@ -103,11 +104,12 @@ class Atlas {
   void end();
 
   /// @brief The maps kept, not being tracked, by number, each with its database (empty when the
-  ///        run does not relocalise). Changed by tracking's thread alone (`close`, `resume`,
-  ///        `merge`), between frames with the threads settled or drained, and read by it and,
-  ///        threaded, by loop closing's search, which those changes wait for: so unlocked.
+  ///        run does not relocalise), by reference. Changed by tracking's thread alone (`close`,
+  ///        `resume`, `merge`), between frames with the threads settled or drained, and read by
+  ///        it and, threaded, by loop closing's search, which those changes wait for: so read
+  ///        without the lock, the references valid until the next change.
   /// @return The maps.
-  [[nodiscard]] std::span<const Indexed> kept() const { return kept_; }
+  [[nodiscard]] std::vector<MapRef> kept() const;
 
   /// @brief Give the map starting on this frame its number; its ids are the run's next.
   void start();
@@ -142,12 +144,15 @@ class Atlas {
   /// @param reset Whether it is reset rather than kept.
   /// @param dated Whether this frame is dated already: a map lost on a frame is closed after
   ///        it, one left for another kept map while tracking it.
-  void close(Map m, std::optional<Database> database, bool reset, bool dated);
+  /// @return Nothing; `InvalidInput` if no map is being tracked.
+  [[nodiscard]] foundations::Result<void> close(Map m, std::optional<Database> database, bool reset,
+                                                bool dated);
 
   /// @brief Take a kept map up again as the current one: relocalisation found the track in it.
   /// @param number The kept map's number.
-  /// @return The map and its database, for the map's owner.
-  [[nodiscard]] Indexed resume(std::int64_t number);
+  /// @return The map and its database, for the map's owner; `InvalidInput` naming the number if
+  ///         no map kept has it.
+  [[nodiscard]] foundations::Result<Indexed> resume(std::int64_t number);
 
   /// @brief Take the current map into the kept map it merged with (`loops::merge`): the merged
   ///        map is the current one after, with the matched map's number, its run ids the
@@ -159,8 +164,10 @@ class Atlas {
   /// @param matched The kept map's number.
   /// @param to_world `G`, the similarity carrying the current map's world into the matched
   ///        map's (`loops::merge_transform`).
-  /// @return The matched map's database, which becomes the merged map's.
-  [[nodiscard]] Database merge(std::int64_t matched, const Eigen::Matrix4d& to_world);
+  /// @return The matched map's database, which becomes the merged map's; `InvalidInput` naming
+  ///         the number if no map kept has it, or if no map is being tracked.
+  [[nodiscard]] foundations::Result<Database> merge(std::int64_t matched,
+                                                    const Eigen::Matrix4d& to_world);
 
   /// @brief Keep a tracked frame's place: its reference keyframe and its pose relative to it.
   /// @param m The current map.
@@ -277,8 +284,10 @@ class Atlas {
 
   /// @brief A kept map's place in `kept_`.
   /// @param number Its number.
-  /// @return The place.
-  [[nodiscard]] std::size_t kept_at(std::int64_t number) const;
+  /// @param name The caller's name, for the message.
+  /// @return The place; `InvalidInput` naming the number if no map kept has it.
+  [[nodiscard]] foundations::Result<std::size_t> kept_at(std::int64_t number,
+                                                         const char* name) const;
 
   /// @brief Write a whole map's points and keyframes, links, loops and merges into the record.
   /// @param m The map.
@@ -296,10 +305,17 @@ class Atlas {
   std::int64_t maps_{0};
   /// @brief The current map's ids' run ids.
   Runs runs_;
-  /// @brief The maps kept, by number, each with its database.
-  std::vector<Indexed> kept_;
-  /// @brief Each kept map's ids' run ids, in `kept_`'s order.
-  std::vector<Runs> kept_runs_;
+  /// @brief A map kept whole, not being tracked (`slam_it.edge.atlas.Kept`): the map with its
+  ///        database and number, and its ids' run ids.
+  struct Kept {
+    /// @brief The map, its database and number.
+    Indexed map;
+    /// @brief Its ids' run ids.
+    Runs runs;
+  };
+
+  /// @brief The maps kept, by number.
+  std::vector<Kept> kept_;
   /// @brief Each merged map's number to the number of the map it was merged into.
   std::map<std::int64_t, std::int64_t> merged_into_;
   /// @brief Each point's life, by the run's id.

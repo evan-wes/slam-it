@@ -2,7 +2,8 @@
 //! scene's map: frames tracked against the active map's keyframes, one keyframe then culled and
 //! one point removed, all carried into the matched map's world and units by a scaled `G`, against
 //! the known answer `rigid_of(T G⁻¹)` (as `tests/edge/test_atlas.py` holds Python's through a
-//! whole merge).
+//! whole merge); and the refusals of a kept map that is not there, and of a map closed or
+//! merged with none tracked.
 
 mod scene;
 
@@ -13,6 +14,7 @@ use slam_it_edge::atlas::Atlas;
 use slam_it_edge::loops::rigid_of;
 use slam_it_edge::map::{self, Map, Removal};
 use slam_it_edge::options::Options;
+use slam_it_foundations::error::{Error, ErrorKind};
 use slam_it_foundations::{sim3, so3};
 
 use scene::{KEYFRAMES, POINTS, frame, moved, points, pose, scene_map};
@@ -53,7 +55,7 @@ fn a_monocular_merge_carries_the_records_into_the_matched_maps_units() {
     let mut atlas = Atlas::new(Options::default());
     atlas.start();
     atlas.date(Some(&matched));
-    atlas.close(matched.clone(), None, false, true);
+    atlas.close(matched.clone(), None, false, true).unwrap();
     atlas.start();
     atlas.date(Some(&active));
     let through_culled = moved(0.2) * pose(2);
@@ -95,4 +97,22 @@ fn a_monocular_merge_carries_the_records_into_the_matched_maps_units() {
         (lives.keyframe_maps[keyframe], lives.point_maps[point]),
         (0, 0)
     );
+}
+
+/// A kept map that is not there is refused by its number, to take up or merge with; so is a map
+/// closed or merged with none tracked.
+#[test]
+fn a_kept_map_that_is_not_there_is_refused_by_its_number() {
+    let m = scene_map();
+    let mut atlas = Atlas::new(Options::default());
+    let refused =
+        |result: Result<(), Error>| result.is_err_and(|e| e.kind == ErrorKind::InvalidInput);
+    assert!(refused(atlas.close(m.clone(), None, false, false)));
+    assert!(refused(atlas.merge(0, &to_world()).map(|_| ())));
+    atlas.start();
+    atlas.date(Some(&m));
+    let resumed = atlas.resume(7);
+    assert!(resumed.as_ref().is_err_and(|e| e.message.contains("map 7")));
+    assert!(refused(resumed.map(|_| ())));
+    assert!(refused(atlas.merge(7, &to_world()).map(|_| ())));
 }

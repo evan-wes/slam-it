@@ -3,11 +3,13 @@
 ///        exact scene's map: frames tracked against the active map's keyframes, one keyframe
 ///        then culled and one point removed, all carried into the matched map's world and units
 ///        by a scaled `G`, against the known answer `rigid_of(T G^-1)` (as
-///        `tests/edge/test_atlas.py` holds Python's through a whole merge).
+///        `tests/edge/test_atlas.py` holds Python's through a whole merge); and the refusals of
+///        a kept map that is not there, and of a map closed or merged with none tracked.
 #include <Eigen/Core>
 #include <cstdint>
 #include <numbers>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "../foundations/fixture_support.hpp"
@@ -26,6 +28,7 @@ namespace edge = slam_it::edge;
 namespace scene = slam_it::testing::scene;
 namespace sim3 = slam_it::foundations::sim3;
 using slam_it::testing::expect;
+using slam_it::testing::is_invalid_input;
 
 /// @brief The scale `G` carries the active map's world into the matched map's by: its world
 ///        is the matched map's scaled by 0.7, as a monocular map started apart has its own units.
@@ -79,7 +82,8 @@ void check_merge_carries_the_records(int& failures) {
   edge::Atlas atlas(edge::Options{});
   atlas.start();
   atlas.date(&*matched);
-  atlas.close(*matched, std::nullopt, false, true);
+  expect(atlas.close(*matched, std::nullopt, false, true).has_value(), "the first map is kept",
+         failures);
   atlas.start();
   atlas.date(&*active);
   const Eigen::Matrix4d through_culled = scene::moved(0.2) * scene::pose(2);
@@ -93,7 +97,7 @@ void check_merge_carries_the_records(int& failures) {
     return;
   }
   atlas.record(&*active);
-  static_cast<void>(atlas.merge(0, to_world()));
+  expect(atlas.merge(0, to_world()).has_value(), "the merge is made", failures);
   // The merged map: the matched map's keyframes, then the active map's left, carried.
   edge::Map merged = *matched;
   const std::vector<std::int64_t> none(scene::kPoints, -1);
@@ -123,11 +127,33 @@ void check_merge_carries_the_records(int& failures) {
          "the removed point's last place is carried by G", failures);
 }
 
+/// @brief Check the refusals: a kept map that is not there, by its number, to take up or merge
+///        with; a map to close or merge with none tracked.
+/// @param failures Running failure count.
+void check_refusals(int& failures) {
+  auto m = scene::map();
+  if (!m) {
+    expect(false, "the scene's map is built", failures);
+    return;
+  }
+  edge::Atlas atlas(edge::Options{});
+  expect(is_invalid_input(atlas.close(*m, std::nullopt, false, false)),
+         "no map tracked: none to close", failures);
+  expect(is_invalid_input(atlas.merge(0, to_world())), "no map tracked: none to merge", failures);
+  atlas.start();
+  atlas.date(&*m);
+  const auto resumed = atlas.resume(7);
+  expect(is_invalid_input(resumed) && resumed.error().message.contains("map 7"),
+         "an unknown kept map is refused by its number", failures);
+  expect(is_invalid_input(atlas.merge(7, to_world())), "nor merged with", failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run() {
   int failures = 0;
   check_merge_carries_the_records(failures);
+  check_refusals(failures);
   return slam_it::testing::finish("edge/atlas", failures);
 }
 

@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use nalgebra::{Matrix4, Vector3};
-use slam_it_foundations::error::Result;
+use slam_it_foundations::error::{ErrorKind, Result, fail};
 use slam_it_foundations::{se3, sim3};
 
 use crate::covisibility;
@@ -388,8 +388,20 @@ impl Atlas {
     /// * `reset` - Whether it is reset rather than kept.
     /// * `dated` - Whether this frame is dated already: a map lost on a frame is closed after it,
     ///   one left for another kept map while tracking it.
-    pub fn close(&mut self, m: Map, database: Option<Database>, reset: bool, dated: bool) {
-        let number = self.map_id.take().unwrap_or(0);
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` if no map is being tracked.
+    pub fn close(
+        &mut self,
+        m: Map,
+        database: Option<Database>,
+        reset: bool,
+        dated: bool,
+    ) -> Result<()> {
+        let Some(number) = self.map_id.take() else {
+            return fail(ErrorKind::InvalidInput, "close: no map is being tracked");
+        };
         self.pending.clear();
         let runs = std::mem::take(&mut self.runs);
         if !reset {
@@ -400,7 +412,7 @@ impl Atlas {
                 database: database.unwrap_or_default(),
             });
             self.kept.insert(at, Kept { map, runs });
-            return;
+            return Ok(());
         }
         let frame = if dated { self.frames - 1 } else { self.frames };
         let code = Removal::Reset.code();
@@ -425,6 +437,31 @@ impl Atlas {
                 .map(|&edge| pair_of(&runs.keyframes, edge)),
         );
         self.placements.retain(|p| p.map != number);
+        Ok(())
+    }
+
+    /// Takes a kept map out of the kept maps.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The caller's name, for the message.
+    /// * `number` - The kept map's number.
+    ///
+    /// # Returns
+    ///
+    /// The kept map.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` naming the number if no map kept has it.
+    fn take(&mut self, name: &str, number: i64) -> Result<Kept> {
+        let Some(at) = self.kept.iter().position(|kept| kept.map.number == number) else {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: map {number} is not kept"),
+            );
+        };
+        Ok(self.kept.remove(at))
     }
 
     /// Takes a kept map up again as the current one: relocalisation found the track in it.
@@ -435,16 +472,16 @@ impl Atlas {
     ///
     /// # Returns
     ///
-    /// The map and its database, for the map's owner; `None` if no kept map has the number.
-    pub fn resume(&mut self, number: i64) -> Option<Indexed> {
-        let at = self
-            .kept
-            .iter()
-            .position(|kept| kept.map.number == number)?;
-        let kept = self.kept.remove(at);
+    /// The map and its database, for the map's owner.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` naming the number if no map kept has it.
+    pub fn resume(&mut self, number: i64) -> Result<Indexed> {
+        let kept = self.take("resume", number)?;
         self.map_id = Some(number);
         self.runs = kept.runs;
-        Some(Arc::unwrap_or_clone(kept.map))
+        Ok(Arc::unwrap_or_clone(kept.map))
     }
 
     /// Takes the current map into the kept map it merged with (`loops::merge`): the merged map
@@ -463,18 +500,19 @@ impl Atlas {
     ///
     /// # Returns
     ///
-    /// The matched map's database, which becomes the merged map's; `None` if no kept map has
-    /// the number.
-    pub fn merge(&mut self, matched: i64, to_world: &Matrix4<f64>) -> Option<Database> {
-        let at = self
-            .kept
-            .iter()
-            .position(|kept| kept.map.number == matched)?;
-        let current = self.map_id.unwrap_or(0);
+    /// The matched map's database, which becomes the merged map's.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` if no map is being tracked, or naming the number if no map kept has it.
+    pub fn merge(&mut self, matched: i64, to_world: &Matrix4<f64>) -> Result<Database> {
+        let Some(current) = self.map_id else {
+            return fail(ErrorKind::InvalidInput, "merge: no map is being tracked");
+        };
         let Kept {
             map: kept,
             mut runs,
-        } = self.kept.remove(at);
+        } = self.take("merge", matched)?;
         let back = sim3::inverse(to_world);
         let scale = scale_of(&back);
         let lives = &mut self.lives;
@@ -506,9 +544,7 @@ impl Atlas {
         self.runs = runs;
         self.merged_into.insert(current, matched);
         self.map_id = Some(matched);
-        Some(
-            Arc::try_unwrap(kept).map_or_else(|shared| shared.database.clone(), |own| own.database),
-        )
+        Ok(Arc::try_unwrap(kept).map_or_else(|shared| shared.database.clone(), |own| own.database))
     }
 
     /// Keeps a tracked frame's place: its reference keyframe and its pose relative to it.

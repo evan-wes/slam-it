@@ -130,8 +130,8 @@ void carry_through(loops::Pending& pending, const loops::Merged& merged,
 Result<Joined> merge_held(LoopState& state, MapOwner& owner, Atlas& atlas, const Map& m,
                           const Camera& camera, const loops::Merge& found, Mode mode,
                           const Options& options) {
-  const std::span<const Indexed> others = atlas.kept();
-  const auto matched = std::ranges::find(others, found.map, &Indexed::number);
+  const std::vector<MapRef> others = atlas.kept();
+  const auto matched = std::ranges::find(others, found.map, &MapRef::number);
   if (matched == others.end()) {
     return fail(ErrorKind::kInvalidInput, "merge: the matched map is not kept");
   }
@@ -139,12 +139,15 @@ Result<Joined> merge_held(LoopState& state, MapOwner& owner, Atlas& atlas, const
   if (!to_world) {
     return std::unexpected(std::move(to_world.error()));
   }
-  auto merged = loops::merge(m, matched->map, camera, found, name(mode), options);
+  auto merged = loops::merge(m, *matched->map, camera, found, name(mode), options);
   if (!merged) {
     return std::unexpected(std::move(merged.error()));
   }
-  Database database = atlas.merge(found.map, *to_world);  // the matched map leaves the kept
-  if (auto ok = owner.take_merged(std::move(merged->map), std::move(database),
+  auto database = atlas.merge(found.map, *to_world);  // the matched map leaves the kept
+  if (!database) {
+    return std::unexpected(std::move(database.error()));
+  }
+  if (auto ok = owner.take_merged(std::move(merged->map), std::move(*database),
                                   merged->keyframe_offset, merged->point_offset);
       !ok) {
     return std::unexpected(std::move(ok.error()));
@@ -187,7 +190,7 @@ Result<Found> search(LoopState& state, const Map& m, const Database& db, const A
     return std::unexpected(std::move(found.error()));
   }
   std::optional<loops::MergeDetection> merging;
-  if (const std::span<const Indexed> others = atlas.kept(); !others.empty()) {
+  if (const std::vector<MapRef> others = atlas.kept(); !others.empty()) {
     auto searched =
         loops::detect_merge(m, db, camera, keyframe, others, state.merging, name(mode), options);
     if (!searched) {
@@ -763,6 +766,28 @@ void mark(Fates& fates, Fate fate, const std::vector<std::int64_t>& ids, const A
   }
 }
 
+/// @brief A frame's keypoints' fates (`slam_it.edge.pipeline._Step.fates`): rejected where its
+///        last stage matched them, then tracked where its pose's inliers are, then made where a
+///        point was made of them; unmatched elsewhere.
+/// @param frame The frame.
+/// @param matched The last stage's matches, by keypoint, -1 where none.
+/// @param tracked Its pose and matches, if it was tracked.
+/// @param made The points made of its keypoints, by keypoint, -1 where none.
+/// @param atlas The atlas, for the points' run ids.
+/// @return The fates.
+Fates fates_of(const Frame& frame, const std::vector<std::int64_t>& matched,
+               const std::optional<Tracked>& tracked, const std::vector<std::int64_t>& made,
+               const Atlas& atlas) {
+  Fates out{.fate = std::vector<Fate>(keypoint_count(frame), Fate::kUnmatched),
+            .point = std::vector<std::int64_t>(keypoint_count(frame), -1)};
+  mark(out, Fate::kRejected, matched, atlas);
+  if (tracked) {
+    mark(out, Fate::kTracked, tracked->points, atlas);
+  }
+  mark(out, Fate::kMade, made, atlas);
+  return out;
+}
+
 /// @brief A frame placed, as `place` gives it.
 struct Placed {
   /// @brief The placed frame, if any.
@@ -872,7 +897,7 @@ Result<std::pair<Relocalized, std::optional<std::int64_t>>> relocalize_everywher
     const Map& m, const Database& db, const foundations::vocabulary::Vocabulary& words,
     const Atlas& atlas, const Camera& camera, const Frame& frame, const Options& options) {
   using Found = std::pair<Relocalized, std::optional<std::int64_t>>;
-  const std::span<const Indexed> others = atlas.kept();
+  const std::vector<MapRef> others = atlas.kept();
   if (others.empty()) {
     return relocalize(m, db, words, camera, frame, options).transform([](Relocalized found) {
       return Found{std::move(found), std::nullopt};
@@ -880,9 +905,7 @@ Result<std::pair<Relocalized, std::optional<std::int64_t>>> relocalize_everywher
   }
   const std::int64_t number = atlas.map_id().value_or(0);
   std::vector<MapRef> searched{{.number = number, .map = &m, .database = &db}};
-  for (const Indexed& other : others) {
-    searched.push_back({.number = other.number, .map = &other.map, .database = &other.database});
-  }
+  searched.insert(searched.end(), others.begin(), others.end());
   return relocalize_across(searched, words, camera, frame, options).transform([number](Across a) {
     const std::optional<std::int64_t> moved =
         a.map && *a.map != number ? a.map : std::optional<std::int64_t>();
@@ -1681,17 +1704,9 @@ Result<FrameResult> Pipeline::track(const Frame& frame) {
   const State state = step.lost ? State::kLost : state_;
   const std::optional<std::int64_t> map_id = step.merged_from ? step.merged_from : atlas.map_id();
   const std::optional<Tracked>& tracked = step.tracked;
-  Fates fates{.fate = std::vector<Fate>(keypoint_count(frame), Fate::kUnmatched),
-              .point = std::vector<std::int64_t>(keypoint_count(frame), -1)};
-  mark(fates, Fate::kRejected, step.matched, atlas);
-  if (tracked) {
-    mark(fates, Fate::kTracked, tracked->points, atlas);
-  }
-  mark(fates, Fate::kMade, step.made, atlas);
-  if (step.lost && owner.map()) {  // a lost frame was tracking a map
-    step.summary.lost = leave(true, options_.loss.reset_keyframes + 1);
-    tracking_ = TrackingState{};
-    state_ = State::kNotInitialized;
+  Fates fates = fates_of(frame, step.matched, tracked, step.made, atlas);
+  if (auto ok = close_lost(step); !ok) {
+    return std::unexpected(std::move(ok.error()));
   }
   const Seconds took = Clock::now() - start;
   return FrameResult{.timestamp = frame.timestamp,
@@ -1747,20 +1762,37 @@ Trajectory Pipeline::trajectory() const {
       [&] { return shared_->atlas().trajectory(owner.map() ? &*owner.map() : nullptr); });
 }
 
-LostSummary Pipeline::leave(bool dated, std::int64_t small) {
+Result<LostSummary> Pipeline::leave(bool dated, std::int64_t small) {
   auto [m, database] = shared_->owner().close();
   const std::size_t keyframes = m ? keyframe_count(*m) : 0;
   const LostSummary out{.keyframes = static_cast<std::int64_t>(keyframes),
                         .points = m ? static_cast<std::int64_t>(point_count(*m)) : 0,
                         .reset = std::cmp_less(keyframes, small)};
   if (m) {
-    shared_->atlas().close(std::move(*m), std::move(database), out.reset, dated);
+    if (auto ok = shared_->atlas().close(std::move(*m), std::move(database), out.reset, dated);
+        !ok) {
+      return std::unexpected(std::move(ok.error()));
+    }
   }
   shared_->closing() = LoopState{};  // shared with loop closing's thread, settled by now
   if (threads_) {
     threads_->drop_merge();  // with the loop-closing state it was in
   }
   return out;
+}
+
+Result<void> Pipeline::close_lost(Step& step) {
+  if (!step.lost || !shared_->owner().map()) {  // a lost frame was tracking a map
+    return {};
+  }
+  auto closed = leave(true, options_.loss.reset_keyframes + 1);
+  if (!closed) {
+    return std::unexpected(std::move(closed.error()));
+  }
+  step.summary.lost = *closed;
+  tracking_ = TrackingState{};
+  state_ = State::kNotInitialized;
+  return {};
 }
 
 Result<std::optional<LostSummary>> Pipeline::start_session() {
@@ -1771,7 +1803,11 @@ Result<std::optional<LostSummary>> Pipeline::start_session() {
         return std::unexpected(std::move(ok.error()));
       }
     }
-    closed = leave(false, options_.loss.session_keyframes);
+    auto left = leave(false, options_.loss.session_keyframes);
+    if (!left) {
+      return std::unexpected(std::move(left.error()));
+    }
+    closed = *left;
   }
   tracking_ = TrackingState{};
   state_ = State::kNotInitialized;
@@ -1796,11 +1832,17 @@ Result<std::pair<LostSummary, double>> Pipeline::switch_map(std::int64_t number,
     }
     waited = Seconds(Clock::now() - settling).count();
   }
-  const LostSummary left = leave(false, options_.loss.reset_keyframes + 1);
-  Indexed kept = shared_->atlas().resume(number);
-  shared_->owner().resume(std::move(kept.map), std::move(kept.database));
+  auto left = leave(false, options_.loss.reset_keyframes + 1);
+  if (!left) {
+    return std::unexpected(std::move(left.error()));
+  }
+  auto kept = shared_->atlas().resume(number);
+  if (!kept) {
+    return std::unexpected(std::move(kept.error()));
+  }
+  shared_->owner().resume(std::move(kept->map), std::move(kept->database));
   change_map(tracking_);
-  return std::pair{left, waited};
+  return std::pair{*left, waited};
 }
 
 Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {

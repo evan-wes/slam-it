@@ -91,14 +91,10 @@ nb::dict relocalize(const nb::dict& m, const nb::dict& database, const nb::dict&
 nb::dict relocalize_across(const nb::list& searched, const nb::dict& vocabulary,
                            const nb::dict& camera, const nb::dict& frame, const nb::dict& options) {
   const std::vector<edge::Indexed> maps = edge_crossing::indexed_in(searched);
-  std::vector<edge::MapRef> held;
-  held.reserve(maps.size());
-  for (const edge::Indexed& map : maps) {
-    held.push_back({.number = map.number, .map = &map.map, .database = &map.database});
-  }
-  const edge::Across found = unwrap(edge::relocalize_across(
-      held, vocabulary_crossing::vocabulary_in(vocabulary), edge_crossing::camera_in(camera),
-      edge_crossing::frame_in(frame), edge_crossing::options_in(options)));
+  const edge::Across found = unwrap(
+      edge::relocalize_across(edge::refs_of(maps), vocabulary_crossing::vocabulary_in(vocabulary),
+                              edge_crossing::camera_in(camera), edge_crossing::frame_in(frame),
+                              edge_crossing::options_in(options)));
   nb::dict out;
   out["map"] = found.map ? nb::object(nb::int_(*found.map)) : nb::none();
   out["relocalized"] = relocalized_dict(found.relocalized);

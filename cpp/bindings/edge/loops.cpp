@@ -480,10 +480,11 @@ nb::dict detect_merge(const nb::dict& m, const nb::dict& database, const nb::dic
   if (!pending.is_none()) {
     carried = merging_in(nb::cast<nb::dict>(pending));
   }
-  const loops::MergeDetection found = unwrap(loops::detect_merge(
-      edge_crossing::map_in(m), edge_crossing::database_in(database),
-      edge_crossing::camera_in(camera), keyframe, edge_crossing::indexed_in(others), carried, mode,
-      edge_crossing::options_in(options)));
+  const std::vector<edge::Indexed> maps = edge_crossing::indexed_in(others);
+  const loops::MergeDetection found =
+      unwrap(loops::detect_merge(edge_crossing::map_in(m), edge_crossing::database_in(database),
+                                 edge_crossing::camera_in(camera), keyframe, edge::refs_of(maps),
+                                 carried, mode, edge_crossing::options_in(options)));
   nb::dict out;
   out["pending"] = found.pending ? nb::object(merging_dict(*found.pending)) : nb::none();
   out["merge"] = found.merge ? nb::object(merge_dict(*found.merge)) : nb::none();

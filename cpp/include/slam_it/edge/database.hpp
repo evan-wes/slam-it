@@ -115,7 +115,8 @@ struct Indexed {
 };
 
 /// @brief A map with its keyframe database and number, held elsewhere: an `Indexed` by
-///        reference, for a search over maps owned apart (the one tracked and the kept ones).
+///        reference, for a search over maps owned apart (relocalisation's over the one tracked
+///        and the kept ones; merge detection's over the kept ones, which the atlas holds).
 struct MapRef {
   /// @brief The map's number.
   std::int64_t number{0};
@@ -124,6 +125,11 @@ struct MapRef {
   /// @brief Its keyframe database, holding every keyframe of the map.
   const Database* database{nullptr};
 };
+
+/// @brief Maps with their databases and numbers, by reference.
+/// @param maps The maps, which must outlive the references.
+/// @return Each map's reference, in order.
+[[nodiscard]] std::vector<MapRef> refs_of(std::span<const Indexed> maps);
 
 /// @brief Check that no two maps share a number.
 /// @tparam Numbered `Indexed` or `MapRef`.
@@ -185,7 +191,7 @@ struct MergeCandidates {
 /// @return The candidates, best first; `InvalidInput` for a malformed vector or two maps with
 ///         one number.
 [[nodiscard]] foundations::Result<MergeCandidates> merge_candidates(
-    const foundations::vocabulary::BowVector& vector, std::span<const Indexed> others,
+    const foundations::vocabulary::BowVector& vector, std::span<const MapRef> others,
     const Options& options);
 
 }  // namespace slam_it::edge

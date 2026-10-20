@@ -430,7 +430,7 @@ struct MergeDetection {
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the stage's state, as Python's
 [[nodiscard]] foundations::Result<MergeDetection> detect_merge(
     const Map& m, const Database& db, const Camera& camera, std::int64_t keyframe,
-    std::span<const Indexed> others, const std::optional<Merging>& pending, const std::string& mode,
+    std::span<const MapRef> others, const std::optional<Merging>& pending, const std::string& mode,
     const Options& options);
 
 /// @brief Give a merge found on a keyframe priority over a loop closed on it
