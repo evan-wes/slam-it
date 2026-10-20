@@ -156,12 +156,16 @@ def test_cpus_pins_the_highest_fast_cores_offered(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A budget's cores are performance cores where there are two kinds, CPU 0 left alone."""
+    """A budget's cores are performance cores where there are two kinds, CPU 0 left alone.
+
+    No topology: each CPU is a core of its own, whatever hyperthreads the machine running the
+    test has (a CI runner's pair CPUs 2 and 3).
+    """
     monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(offered))
     listed = tmp_path / "cpus"
     if performance is not None:
         listed.write_text(performance)
-    assert budgets.cpus(LAPTOP, performance=listed) == pinned
+    assert budgets.cpus(LAPTOP, performance=listed, topology=tmp_path / "none") == pinned
 
 
 def test_cpus_pins_one_logical_cpu_a_physical_core(
@@ -191,12 +195,15 @@ def test_cpus_pins_one_logical_cpu_a_physical_core(
 def test_cpus_refuses_a_budget_the_machine_cannot_hold(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fewer fast cores than the budget's: refused, not quietly run on slow ones."""
+    """Fewer fast cores than the budget's: refused, not quietly run on slow ones.
+
+    No topology, as above: three CPUs are three cores on any machine running the test.
+    """
     monkeypatch.setattr(os, "sched_getaffinity", lambda pid: set(range(24)))
     listed = tmp_path / "cpus"
     listed.write_text("0-2\n")
     with pytest.raises(InvalidInputError, match="laptop-cpu: needs 4 cores, this machine offers 3"):
-        budgets.cpus(LAPTOP, performance=listed)
+        budgets.cpus(LAPTOP, performance=listed, topology=tmp_path / "none")
 
 
 def test_command_caps_memory_without_swap_and_pins_the_cores() -> None:
