@@ -374,6 +374,30 @@ def test_a_huber_loss_holds_bundle_adjustment_against_an_outlier(backend: str) -
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_the_huber_loss_acts_on_a_stereo_observation_s_whitened_norm(backend: str) -> None:
+    """A known answer: one stereo observation, its whitened error (3, 4, 0), k = √7.815.
+
+    The loss acts on the error's norm, as g2o's on chi² (GTSAM's ``Block`` reweighting):
+    ``k·5 - k²/2`` = 10.0702, where acting on each component would give 11.7537 and no loss
+    12.5. The camera, at the origin, is held; the point, 2 m ahead, is seen 3 px right and 4 px
+    down of where it projects, its right column where it projects.
+    """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    k = np.sqrt(7.815)
+    fx, fy, cx, cy = 500.0, 500.0, 320.0, 240.0
+    bf = 50.0
+    point = np.array([[0.0, 0.0, 2.0]])
+    right = cx - bf / point[0, 2]  # where the point projects in the right image
+    result = graphs.bundle_adjust(
+        np.eye(4)[None], point, [0], [0], np.array([[cx + 3.0, cy + 4.0]]), np.array([right]),
+        np.ones(1), model="pinhole", intrinsics=np.array([fx, fy, cx, cy]), bf=bf, fixed=[0],
+        huber=np.array([k]), options=graphs.Options(max_iterations=1), backend=chosen,
+    )  # fmt: skip
+    assert result.summary.initial_error == pytest.approx(k * 5.0 - k * k / 2.0, rel=1e-12)
+    assert result.summary.initial_error == pytest.approx(10.0702, abs=5e-5)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_a_solve_stops_by_its_iterations_its_tolerances_or_its_damping(backend: str) -> None:
     """Capped; converged by the relative tolerance; and, at a minimum, no step lowers the error."""
     chosen = require_function(backend, graphs.__name__, "optimize_pose_graph")
