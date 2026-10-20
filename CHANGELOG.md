@@ -4,6 +4,23 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.16.2] - 2026-10-19
+
+The two tests that failed the Test workflow on `main` no longer depend on the machine running
+them, and the workflow has more time.
+
+### Fixed
+
+- **`tests/eval/test_budgets.py`**: two tests of `budgets.cpus` faked the CPUs offered and the
+  performance cores but read the host's hyperthread layout, so they failed on a runner whose
+  CPUs 2 and 3 are one core. They now pass an absent topology, each CPU a core of its own on
+  any machine.
+
+### Changed
+
+- **`.github/workflows/test.yml`**: the job's time limit is 180 min, not 120; its last run took
+  118 min.
+
 ## [0.3.16.1] - 2026-10-19
 
 The showcase's home page shows only its runs: the demo shows the run viewer alone until public
