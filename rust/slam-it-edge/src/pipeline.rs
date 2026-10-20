@@ -1872,12 +1872,39 @@ struct Joined {
     to_world: Matrix4<f64>,
 }
 
+/// A loop being confirmed in the active map, carried into the merged map
+/// (`slam_it.edge.pipeline._carried`, C++'s `carry_through`): its ids moved on by the merge's
+/// offsets, its similarity carried into the matched map's world and units,
+/// `diag(1/s, 1/s, 1/s, 1) S G⁻¹` with `s = scale_of(G⁻¹)`, so it keeps its own scale (the
+/// map's drift it measured), as the merge carries its keyframes rigidly (`rigid_of(T G⁻¹)`).
+///
+/// # Arguments
+///
+/// * `pending` - The loop, changed in place.
+/// * `keyframe_offset` - How far the active map's keyframe ids moved on.
+/// * `point_offset` - How far its point ids moved on.
+/// * `to_world` - `G`, carrying the active map into the matched map's world.
+fn carry_through(
+    pending: &mut Pending,
+    keyframe_offset: i64,
+    point_offset: i64,
+    to_world: &Matrix4<f64>,
+) {
+    pending.matched += keyframe_offset;
+    pending.last += keyframe_offset;
+    let back = sim3::inverse(to_world);
+    pending.similarity *= back;
+    let mut rows = pending.similarity.fixed_rows_mut::<3>(0);
+    rows /= loops::scale_of(&back);
+    offset_ids(&mut pending.points, point_offset);
+    offset_ids(&mut pending.matched_points, point_offset);
+}
+
 /// Merges the map being tracked into the kept map a merge found
 /// (`slam_it.edge.pipeline._merge_maps`): the merged map is tracked on, with the matched map's
 /// number and database, published with the correction it counts ([`MapOwner::take_merged`]);
-/// the loop being confirmed is carried into it (ids offset, similarity
-/// `diag(1/s, 1/s, 1/s, 1) S G⁻¹` with `s = scale_of(G⁻¹)`, so it keeps its own scale). Threaded,
-/// tracking holds mapping stopped around it ([`Threads::merge_waiting`]).
+/// the loop being confirmed is carried into it ([`carry_through`]). Threaded, tracking holds
+/// mapping stopped around it ([`Threads::merge_waiting`]).
 ///
 /// # Arguments
 ///
@@ -1933,14 +1960,7 @@ fn merge_maps(
         .owner
         .take_merged(map, database, keyframe_offset, point_offset)?;
     if let Some(pending) = &mut state.pending {
-        pending.matched += keyframe_offset;
-        pending.last += keyframe_offset;
-        let back = sim3::inverse(&to_world);
-        pending.similarity *= back;
-        let mut rows = pending.similarity.fixed_rows_mut::<3>(0);
-        rows /= loops::scale_of(&back);
-        offset_ids(&mut pending.points, point_offset);
-        offset_ids(&mut pending.matched_points, point_offset);
+        carry_through(pending, keyframe_offset, point_offset, &to_world);
     }
     Ok(Joined {
         summary,
@@ -3561,4 +3581,73 @@ fn leave(shared: &Shared, why: Closing, options: &Options) -> Result<LostSummary
     };
     lock(&shared.atlas).close(m, database, reset, why == Closing::Lost)?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Native tests of the pipeline's internals, on hand-built values; the pipeline's behaviour
+    //! is tested through its public API by tests/pipeline.rs, and against the Python reference
+    //! through the bindings by tests/edge.
+
+    use super::*;
+    use nalgebra::{Matrix3, Vector3, Vector4};
+    use slam_it_foundations::so3;
+
+    /// A rigid `T_cw` from a rotation vector and a translation.
+    fn pose(rotation: [f64; 3], translation: [f64; 3]) -> Matrix4<f64> {
+        let mut out = Matrix4::identity();
+        out.fixed_view_mut::<3, 3>(0, 0)
+            .copy_from(&so3::exp(&Vector3::from(rotation)));
+        out.fixed_view_mut::<3, 1>(0, 3)
+            .copy_from(&Vector3::from(translation));
+        out
+    }
+
+    /// A loop being confirmed, of its own scale 1.25, carried through a merge whose `G` scales
+    /// by 1 / 0.7: it keeps its scale, `diag(1.25, 1.25, 1.25, 1) rigid_of(T G⁻¹)` for its
+    /// keyframe's pose `T`, written out by hand: for `G = [g R, t]`, rotation `1.25 R_T Rᵀ` and
+    /// translation `1.25 (g t_T - R_T Rᵀ t)`. Carried as `S G⁻¹` its scale would be
+    /// `1.25 / g`; as `rigid_of(S G⁻¹)`, 1. Its ids move on by the offsets, -1 kept.
+    #[test]
+    fn a_loop_being_confirmed_keeps_its_own_scale_through_a_monocular_merge() {
+        let sigma = 1.25;
+        let keyframe = pose([0.11, -0.21, 0.06], [0.31, -0.12, 1.21]);
+        let (g, turn) = (1.0 / 0.7, pose([0.3, 0.1, -0.2], [0.4, 0.2, -0.3]));
+        let to_world = Matrix4::from_diagonal(&Vector4::new(g, g, g, 1.0)) * turn;
+        let mut pending = Pending {
+            matched: 3,
+            last: 5,
+            similarity: Matrix4::from_diagonal(&Vector4::new(sigma, sigma, sigma, 1.0)) * keyframe,
+            confirmations: 1,
+            misses: 0,
+            points: vec![0, -1, 2],
+            matched_points: vec![-1, 1, -1],
+        };
+        carry_through(&mut pending, 10, 100, &to_world);
+
+        let (r_t, t_t): (Matrix3<f64>, Vector3<f64>) = (
+            keyframe.fixed_view::<3, 3>(0, 0).into(),
+            keyframe.fixed_view::<3, 1>(0, 3).into(),
+        );
+        let (r_g, t_g): (Matrix3<f64>, Vector3<f64>) = (
+            turn.fixed_view::<3, 3>(0, 0).into(),
+            to_world.fixed_view::<3, 1>(0, 3).into(),
+        );
+        let mut expected = Matrix4::identity();
+        expected
+            .fixed_view_mut::<3, 3>(0, 0)
+            .copy_from(&(sigma * r_t * r_g.transpose()));
+        expected
+            .fixed_view_mut::<3, 1>(0, 3)
+            .copy_from(&(sigma * (g * t_t - r_t * r_g.transpose() * t_g)));
+        assert!(
+            (pending.similarity - expected).abs().max() < 1e-12,
+            "carried {} expected {expected}",
+            pending.similarity
+        );
+        assert!((loops::scale_of(&pending.similarity) - sigma).abs() < 1e-12);
+        assert_eq!((pending.matched, pending.last), (13, 15));
+        assert_eq!(pending.points, vec![100, -1, 102]);
+        assert_eq!(pending.matched_points, vec![-1, 101, -1]);
+    }
 }

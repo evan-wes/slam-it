@@ -143,7 +143,8 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
     `cpp/tests/edge/test_atlas.cpp`, `rust/slam-it-edge/tests/atlas.rs`): frames placed through
     the merge, through a culled keyframe too, and the removed points and keyframes, against
     `rigid_of(T G⁻¹)`; a loop being confirmed carried through the merge and confirmed on the
-    next keyframe (`tests/edge/test_merges.py`).
+    next keyframe (`tests/edge/test_merges.py`), and in Rust the carry itself, a loop of scale
+    1.25 keeping it, against its known answer (`carry_through`, `pipeline.rs`'s own tests).
   - `held()` in each language, `TrackingState.merged` with a scaled `G`, a finished run's
     session refused in each language, and the Huber loss's known answer on one stereo
     observation in every backend (`initial_error` 10.0702).
