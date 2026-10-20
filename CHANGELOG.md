@@ -148,7 +148,9 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
     session refused in each language, and the Huber loss's known answer on one stereo
     observation in every backend (`initial_error` 10.0702).
   - **Two golden bundles** (`merge_bundle/`, `revisit_bundle/`), on which the viewer's tests
-    choose the map shown (`viewer/tests/maps.test.js`).
+    choose the map shown (`viewer/tests/maps.test.js`). They leave out their frames' JPEG
+    chunks, which no test reads, keeping the images' spans the page's loader reads; the layout
+    test compares them without the chunks.
 
 ## [0.3.16.2] - 2026-10-19
 
