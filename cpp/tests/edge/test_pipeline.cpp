@@ -273,7 +273,8 @@ void check_lost(int& failures) {
 /// @brief Check starting a session: the map of one keyframe is reset with
 ///        `loss.session_keyframes` 2 (fewer than 2) or kept with 1, nothing is closed with no
 ///        map tracked, and the session's first frame starts map 1, a reset map's lives ending
-///        on it and its frames leaving the trajectory.
+///        on it and its frames leaving the trajectory; once the run is finished, no session
+///        starts.
 /// @param failures Running failure count.
 void check_sessions(int& failures) {
   for (const std::int64_t session_keyframes : {std::int64_t{2}, std::int64_t{1}}) {
@@ -298,6 +299,9 @@ void check_sessions(int& failures) {
                pipeline.trajectory().maps == maps &&
                lived(pipeline.lifetimes(), started.tracked, reset, 1),
            "the session's first frame starts map 1", failures);
+    expect(pipeline.finish().has_value() && is_invalid_input(pipeline.start_session()) &&
+               pipeline.map(),
+           "a finished run starts no session, its map left as it was", failures);
   }
 }
 
@@ -745,6 +749,48 @@ void check_lost_threaded(int& failures) {
          "threaded, a lost map closes as inline, and the next frame starts map 1", failures);
 }
 
+/// @brief Check the keyframes culling spares (`edge::held`): a loop being confirmed's two, a
+///        merge being confirmed's last (its matched one is the other map's), a merge waiting's
+///        current, alone or together, each once.
+/// @param failures Running failure count.
+void check_held(int& failures) {
+  const auto pending = [](std::int64_t matched, std::int64_t last) {
+    edge::loops::Pending out;
+    out.matched = matched;
+    out.last = last;
+    return out;
+  };
+  edge::loops::Merging merging;
+  merging.pending = pending(1, 7);
+  edge::WaitingMerge waiting;
+  waiting.index = 12;
+  waiting.merge.loop.current = 9;
+  waiting.merge.loop.matched = 1;
+  const auto state = [](std::optional<edge::loops::Pending> loop,
+                        std::optional<edge::loops::Merging> merge,
+                        std::optional<edge::WaitingMerge> made) {
+    edge::LoopState out;
+    out.pending = std::move(loop);
+    out.merging = std::move(merge);
+    out.waiting = std::move(made);
+    return out;
+  };
+  const std::vector<std::pair<edge::LoopState, std::vector<std::int64_t>>> cases = {
+      {state(std::nullopt, std::nullopt, std::nullopt), {}},
+      {state(pending(2, 5), std::nullopt, std::nullopt), {2, 5}},
+      {state(std::nullopt, merging, std::nullopt), {7}},
+      {state(std::nullopt, std::nullopt, waiting), {9}},
+      {state(pending(2, 5), merging, std::nullopt), {2, 5, 7}},
+      {state(std::nullopt, merging, waiting), {7, 9}},
+      {state(pending(2, 5), merging, waiting), {2, 5, 7, 9}},
+      {state(pending(2, 7), merging, std::nullopt), {2, 7}},
+  };
+  for (const auto& [loop_state, held] : cases) {
+    expect(edge::held(loop_state) == held, "culling spares what each loop and merge holds",
+           failures);
+  }
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run_tests() {
@@ -753,6 +799,7 @@ int run_tests() {
   check_monocular(failures);
   check_lost(failures);
   check_sessions(failures);
+  check_held(failures);
   check_lost_relocalizing(failures);
   check_closing_loops_alone(failures);
   check_relocalized(failures);

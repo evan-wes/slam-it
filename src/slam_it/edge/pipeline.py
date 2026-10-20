@@ -2148,9 +2148,13 @@ class Pipeline:
 
         Raises
         ------
+        slam_it.foundations.errors.InvalidInputError
+            If the run was finished (:meth:`finish`): its maps are as they ended.
         BaseException
             Threaded, the error a thread failed with, if one did.
         """
+        if self._finished:
+            raise InvalidInputError("start_session: the run is finished")
         closed = None
         if self.owner.map is not None:
             if self._threads is not None:

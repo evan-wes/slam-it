@@ -790,8 +790,8 @@ class Pipeline {
   ///        `loss.session_keyframes` keyframes and kept whole otherwise, and tracking and loop
   ///        closing start again, so the sequence's first frames start a new map.
   ///        Threaded, the map waits for the threads first, as a lost map does.
-  /// @return How the map was closed; none if none was being tracked; the error a thread failed
-  ///         with.
+  /// @return How the map was closed; none if none was being tracked; `InvalidInput` if the run
+  ///         was finished (`finish`), its maps as they ended; the error a thread failed with.
   foundations::Result<std::optional<LostSummary>> start_session();
 
  private:

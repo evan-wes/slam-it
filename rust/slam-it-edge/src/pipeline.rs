@@ -3215,8 +3215,15 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// Threaded, the error a thread failed with.
+    /// `InvalidInput` if the run was finished ([`Pipeline::finish`]), its maps as they ended;
+    /// threaded, the error a thread failed with.
     pub fn start_session(&mut self) -> Result<Option<LostSummary>> {
+        if self.finished {
+            return fail(
+                ErrorKind::InvalidInput,
+                "start_session: the run is finished",
+            );
+        }
         let mut closed = None;
         if self.shared.owner.map().is_some() {
             if let Some(threads) = &self.threads {

@@ -8,13 +8,13 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from slam_it.edge import frames, pipeline, tracking
+from slam_it.edge import frames, loops, pipeline, tracking
 from slam_it.edge.initialization import Outcome
 from slam_it.edge.map import Removal
 from slam_it.edge.options import Options
 from slam_it.edge.pipeline import Placement
 from slam_it.eval.metrics import absolute_error
-from slam_it.foundations import orb
+from slam_it.foundations import orb, so3
 from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.conftest import Run
@@ -279,6 +279,18 @@ def test_a_new_session_closes_the_map_and_starts_another(
     np.testing.assert_array_equal(run.lifetimes().keyframe_lives[0, 1:], ended)
 
 
+def test_a_finished_run_starts_no_session(rendered: list[room.Frame]) -> None:
+    """After finish, start_session is refused, as track is, and the map tracked stays as it was."""
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    first = rendered[0]
+    run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction()))
+    run.finish()
+    with pytest.raises(InvalidInputError, match="start_session: the run is finished"):
+        run.start_session()
+    assert run.map is not None
+    np.testing.assert_array_equal(run.trajectory().maps, [0])
+
+
 def _failures(
     rendered: list[room.Frame], options: Options, step: float, count: int
 ) -> list[pipeline.FrameResult]:
@@ -498,3 +510,63 @@ def test_the_database_holds_the_maps_keyframes_through_culling(
         assert run.owner.database.keyframes.tolist() == sorted(run.map.kf_id.tolist())
     lives = run.lifetimes().keyframe_lives
     assert np.count_nonzero(lives[:, 2] == Removal.CULLED) > 0
+
+
+def _pending(matched: int, last: int) -> loops.Pending:
+    """Return a loop being confirmed between two keyframes, its similarity and points blank."""
+    none = np.zeros(0, dtype=np.int64)
+    return loops.Pending(matched, last, np.eye(4), 1, 0, none, none)
+
+
+def test_culling_spares_what_a_loop_or_merge_being_confirmed_holds() -> None:
+    """The loop's two keyframes, the merge's last, a merge waiting's current: alone or together.
+
+    A merge's matched keyframe is the other map's, so not held; a keyframe two hold is held once.
+    """
+    loop = _pending(2, 5)
+    merging = loops.Merging(0, _pending(1, 7))
+    none = np.zeros(0, dtype=np.int64)
+    found = loops.Loop(current=9, matched=1, similarity=np.eye(4), points=none, matched_points=none)
+    searched = pipeline.LoopSummary(loops.DetectionSummary(loops.Outcome.CLOSED), None)
+    waiting = pipeline.WaitingMerge(12, loops.Merge(0, found), searched, 0.1)
+    cases: list[tuple[pipeline.LoopState, list[int]]] = [
+        (pipeline.LoopState(), []),
+        (pipeline.LoopState(pending=loop), [2, 5]),
+        (pipeline.LoopState(merging=merging), [7]),
+        (pipeline.LoopState(waiting=waiting), [9]),
+        (pipeline.LoopState(pending=loop, merging=merging), [2, 5, 7]),
+        (pipeline.LoopState(merging=merging, waiting=waiting), [7, 9]),
+        (pipeline.LoopState(loop, merging, waiting), [2, 5, 7, 9]),
+        (pipeline.LoopState(pending=_pending(2, 7), merging=merging), [2, 7]),
+    ]
+    for state, held in cases:
+        assert np.asarray(state.held(), dtype=np.int64).tolist() == held
+
+
+def test_a_monocular_merge_carries_tracking_into_the_merged_maps_units() -> None:
+    """TrackingState.merged with a scaled G: ids moved on, -1 kept; motions' translations scaled.
+
+    The velocity and the pose relative to the anchor take G's scale (their rotations as they
+    were), the anchor keyframe and the last frame's points their offsets; no velocity stays none.
+    """
+    to_world = np.eye(4)
+    to_world[:3, :3] = so3.exp([0.0, 0.5, 0.0]) / 0.7
+    to_world[:3, 3] = [0.4, -0.1, 0.25]
+    motion = np.eye(4)
+    motion[:3, :3] = so3.exp([0.1, 0.0, 0.2])
+    motion[:3, 3] = [0.07, -0.02, 0.14]
+    state = pipeline.TrackingState(
+        last_tracked=frames.Tracked(np.eye(4), np.array([3, -1, 8], dtype=np.int64)),
+        velocity=motion.copy(), anchor=4, anchor_relative=motion.copy(),
+    )  # fmt: skip
+    state.merged(keyframe_offset=10, point_offset=100, to_world=to_world)
+    assert state.last_tracked is not None
+    np.testing.assert_array_equal(state.last_tracked.points, [103, -1, 108])
+    assert state.anchor == 14
+    for moved in (state.velocity, state.anchor_relative):
+        assert moved is not None
+        np.testing.assert_array_equal(moved[:3, :3], motion[:3, :3])
+        np.testing.assert_allclose(moved[:3, 3], motion[:3, 3] / 0.7, rtol=1e-12)
+    still = pipeline.TrackingState()
+    still.merged(keyframe_offset=10, point_offset=100, to_world=to_world)
+    assert (still.velocity, still.anchor, still.anchor_relative) == (None, None, None)

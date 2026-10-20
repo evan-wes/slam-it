@@ -1796,6 +1796,9 @@ Result<void> Pipeline::close_lost(Step& step) {
 }
 
 Result<std::optional<LostSummary>> Pipeline::start_session() {
+  if (finished_) {
+    return fail(ErrorKind::kInvalidInput, "start_session: the run is finished");
+  }
   std::optional<LostSummary> closed;
   if (shared_->owner().map()) {
     if (threads_) {  // the threads end the map's work first, as for a map lost

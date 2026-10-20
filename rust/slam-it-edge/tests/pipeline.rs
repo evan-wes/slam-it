@@ -11,12 +11,14 @@ mod scene;
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_edge::frames::Frame;
+use slam_it_edge::loops::{self, DetectionSummary, Loop, Merge, Merging, Pending};
 use slam_it_edge::map::{Map, Removal};
 use slam_it_edge::options::{
     InitializationOptions, LoopOptions, Mode, Options, RelocalizationOptions,
 };
 use slam_it_edge::pipeline::{
-    Fate, FrameResult, LostSummary, Pipeline, Placement, State, Threading,
+    Fate, FrameResult, LoopState, LoopSummary, LostSummary, Pipeline, Placement, State, Threading,
+    WaitingMerge,
 };
 use slam_it_foundations::error::ErrorKind;
 
@@ -246,7 +248,7 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
 /// A session started closes the map tracked: the map of one keyframe is reset with
 /// `loss.session_keyframes` 2 (fewer than 2) or kept with 1, nothing is closed with no map
 /// tracked, and the session's first frame starts map 1, a reset map's lives ending on it and
-/// its frames leaving the trajectory.
+/// its frames leaving the trajectory; once the run is finished, no session starts.
 #[test]
 fn a_new_session_closes_the_map_and_starts_another() {
     for session_keyframes in [2, 1] {
@@ -277,6 +279,11 @@ fn a_new_session_closes_the_map_and_starts_another() {
             [-1, -1]
         };
         assert_eq!(pipeline.lifetimes().keyframe_lives[0][1..], ended);
+        // A finished run starts no session, its map left as it was.
+        pipeline.finish().unwrap();
+        let refused = pipeline.start_session().unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::InvalidInput);
+        assert!(pipeline.map().is_some());
     }
 }
 
@@ -676,4 +683,74 @@ fn threaded_a_lost_map_settles_the_threads_then_closes() {
         outcomes[1].last().map(|o| (o.0, o.1)),
         Some((State::Tracking, Some(1)))
     );
+}
+
+/// A loop being confirmed between two keyframes, its similarity and points blank.
+fn pending(matched: i64, last: i64) -> Pending {
+    Pending {
+        matched,
+        last,
+        similarity: Matrix4::identity(),
+        confirmations: 1,
+        misses: 0,
+        points: Vec::new(),
+        matched_points: Vec::new(),
+    }
+}
+
+/// Culling spares a loop being confirmed's two keyframes, a merge being confirmed's last (its
+/// matched one is the other map's) and a merge waiting's current, alone or together, each once.
+#[test]
+fn culling_spares_what_a_loop_or_merge_being_confirmed_holds() {
+    let merging = Merging {
+        map: 0,
+        pending: pending(1, 7),
+    };
+    let waiting = WaitingMerge {
+        index: 12,
+        merge: Merge {
+            map: 0,
+            found: Loop {
+                current: 9,
+                matched: 1,
+                similarity: Matrix4::identity(),
+                points: Vec::new(),
+                matched_points: Vec::new(),
+            },
+        },
+        summary: LoopSummary {
+            detection: DetectionSummary::of(loops::Outcome::Closed),
+            correction: None,
+            merging: None,
+            merge: None,
+        },
+        seconds: 0.1,
+    };
+    let state =
+        |pending: Option<Pending>, merging: Option<&Merging>, waiting: Option<&WaitingMerge>| {
+            LoopState {
+                pending,
+                merging: merging.cloned(),
+                waiting: waiting.cloned(),
+            }
+        };
+    let cases: [(LoopState, Vec<i64>); 8] = [
+        (LoopState::default(), vec![]),
+        (state(Some(pending(2, 5)), None, None), vec![2, 5]),
+        (state(None, Some(&merging), None), vec![7]),
+        (state(None, None, Some(&waiting)), vec![9]),
+        (
+            state(Some(pending(2, 5)), Some(&merging), None),
+            vec![2, 5, 7],
+        ),
+        (state(None, Some(&merging), Some(&waiting)), vec![7, 9]),
+        (
+            state(Some(pending(2, 5)), Some(&merging), Some(&waiting)),
+            vec![2, 5, 7, 9],
+        ),
+        (state(Some(pending(2, 7)), Some(&merging), None), vec![2, 7]),
+    ];
+    for (state, held) in cases {
+        assert_eq!(state.held(), held);
+    }
 }
