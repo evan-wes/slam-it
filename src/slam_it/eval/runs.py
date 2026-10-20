@@ -22,9 +22,11 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
 - ``trajectory.txt``: each tracked frame's final ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
   the TUM tools write, so other systems' trajectories evaluate the same way. Numbers are
-  written to round-trip exactly. A run of several maps (below) holds each map's poses in
-  turn, each in its own frame, a ``# map <n>`` line before each map's first: an outside tool
-  must align one map at a time, splitting the file there or by ``pose_maps.npy``. The final
+  written to round-trip exactly. The frames come in the order tracked, each pose in the world
+  of the map it ends in (``pose_maps.npy``, below), a ``# map <n>`` line before each run of
+  one map's poses. A map's poses may come in several runs, with another map's between (a kept
+  map taken up again): an outside tool must align one map at a time, gathering each map's runs
+  by those lines or by ``pose_maps.npy``. The final
   pose is ORB-SLAM's (``SaveTrajectoryTUM``): the frame's pose relative to its reference
   keyframe, carried by that keyframe's last pose, so it follows what loop closing and bundle
   adjustment did after the frame was tracked (:meth:`slam_it.edge.pipeline.Pipeline.trajectory`).
@@ -425,7 +427,8 @@ def _trajectory_text(
 ) -> str:
     """Return checked stamped poses as TUM-format lines, each number round-tripping.
 
-    With `maps`, the poses' maps, a ``# map <n>`` line comes before each map's first pose.
+    With `maps`, the poses' maps, a ``# map <n>`` line comes before each run of one map's poses
+    (a map's may come in several runs).
     """
     quaternions = so3.to_quaternion(poses[:, :3, :3]) if len(poses) else np.zeros((0, 4))
     lines = ["# timestamp tx ty tz qx qy qz qw"]
@@ -1136,12 +1139,12 @@ def ground_truth(dataset: str, sequence: str | Path) -> Truth | None:
 
 @dataclass(frozen=True)
 class Segment:
-    """A map's stretch of a sequence: from its first tracked frame to its last.
+    """A stretch of a sequence tracked in one map: consecutive tracked frames tracked in it.
 
     Attributes
     ----------
     map : int
-        The map.
+        The map they were tracked in (``tracked_maps.npy``).
     tracked : int
         Its frames tracked.
     tracked_from, tracked_to : float
@@ -1159,10 +1162,11 @@ class Tracking:
     """What of a sequence a run ran and tracked; every time since the sequence's first frame.
 
     A lost track closes its map and the next frame starts a new one, so a run goes on to the
-    sequence's end (or the end of the frames it was given), tracking in segments, one per map
-    with a tracked frame; a map reset has none, its frames' poses dropped. A run tracks nothing
-    until it has made its first map, a monocular one from two views, an RGB-D one from a frame
-    with enough keypoints.
+    sequence's end (or the end of the frames it was given), tracking in segments, one per
+    stretch of frames tracked in one map: a map taken up again has one per stretch, and a map
+    merged into another keeps its own; a map reset has none, its frames' poses dropped. A run
+    tracks nothing until it has made its first map, a monocular one from two views, an RGB-D
+    one from a frame with enough keypoints.
 
     Attributes
     ----------
@@ -1173,7 +1177,7 @@ class Tracking:
     seconds : float
         The sequence's last frame's time.
     segments : tuple of Segment
-        Each map's stretch, in order.
+        Each stretch tracked in one map, in order.
     ran_to : float
         The last frame run's time.
     losses : int
@@ -1229,11 +1233,14 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
         return round(float(time) - start, 3)
 
     ran = [entry["timestamp"] for entry in run.diagnostics]
-    maps = _check_maps(run.pose_maps, len(run.timestamps), "pose_maps")
-    segments = []
-    for map_id in (int(m) for m in np.unique(maps)):
-        times_of = run.timestamps[maps == map_id]
-        segments.append(Segment(map_id, len(times_of), since(times_of[0]), since(times_of[-1])))
+    maps = _check_maps(run.tracked_maps, len(run.timestamps), "tracked_maps")
+    breaks = np.flatnonzero(np.diff(maps) != 0) + 1
+    segments = [
+        Segment(int(maps[rows[0]]), len(rows), since(run.timestamps[rows[0]]),
+                since(run.timestamps[rows[-1]]))
+        for rows in np.split(np.arange(len(maps)), breaks)
+        if len(rows)
+    ]  # fmt: skip
     return Tracking(
         frames=len(run.diagnostics),
         tracked=len(run.timestamps),

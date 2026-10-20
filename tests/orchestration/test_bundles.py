@@ -5,27 +5,45 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import numpy as np
 import pytest
 
 from slam_it import backends
+from slam_it.edge.options import Options
 from slam_it.eval import images, runs
 from slam_it.foundations.errors import InvalidInputError
 from slam_it.orchestration import bundles, vo
 from tests.conftest import FIXTURES
 from tests.edge.support import FRAMES, OPTIONS
-from tests.fixtures.orchestration.generate_bundle import found_run, short_runs
+from tests.fixtures.orchestration.generate_bundle import (
+    JPEG_CHUNKS,
+    found_run,
+    loop_room_run,
+    short_runs,
+)
 from tests.orchestration.conftest import RoomRun, require_program
-from tests.orchestration.datasets import Room
+from tests.orchestration.datasets import (
+    MERGE_OPTIONS,
+    REVISIT_AT,
+    REVISIT_BLANKS,
+    REVISIT_OPTIONS,
+    Room,
+)
 
 GOLDEN = FIXTURES / "orchestration" / "bundle"
 """The golden bundle (``generate_bundle.py``), whose values the page's tests read."""
 
 FOUND = FIXTURES / "orchestration" / "found_bundle"
 """The found bundle (``generate_bundle.py``): a relocalised frame, as the page's tests read it."""
+
+MERGE = FIXTURES / "orchestration" / "merge_bundle"
+"""The merge bundle (``generate_bundle.py``): a map merged into another, as the page reads it."""
+
+REVISIT = FIXTURES / "orchestration" / "revisit_bundle"
+"""The revisit bundle (``generate_bundle.py``): a kept map taken up again, as the page reads it."""
 
 
 def _keys(value: Any) -> Any:  # noqa: ANN401 -- a JSON value
@@ -169,8 +187,9 @@ def _split(run: runs.Run, at: int, moved: np.ndarray) -> runs.Run:
     links = links[keyframe_maps[links[:, 0]] == keyframe_maps[links[:, 1]]]
     return replace(
         run, poses=poses, keyframe_poses=keyframes, points=points, diagnostics=diagnostics,
-        pose_maps=pose_maps, keyframe_maps=keyframe_maps, point_maps=point_maps,
-        keyframe_parents=parents, keyframe_links=links, record_features=False,
+        pose_maps=pose_maps, tracked_maps=pose_maps, keyframe_maps=keyframe_maps,
+        point_maps=point_maps, keyframe_parents=parents, keyframe_links=links,
+        record_features=False,
     )  # fmt: skip
 
 
@@ -201,7 +220,7 @@ def test_each_map_is_moved_onto_the_truth_by_its_own_alignment(
     assert gap.max() < 0.05  # both maps on the truth: one alignment for both would be metres off
     assert [m["id"] for m in info["maps"]] == [0, 1]
     first, second = info["maps"]
-    assert (first["frames"], second["frames"]) == ([0, FRAMES // 2], [FRAMES // 2, FRAMES])
+    assert (first["frames"], second["frames"]) == ([[0, FRAMES // 2]], [[FRAMES // 2, FRAMES]])
     assert first["tracked"] + second["tracked"] == len(run.timestamps) == info["tracked"]
     assert not first["reset"]
     assert not second["reset"]
@@ -448,15 +467,66 @@ def test_a_merge_is_baked_as_made(merge_runs: RoomRun, tmp_path: Path) -> None:
     """The merge room's RGB-D run (C++): its merges are baked as the run made them.
 
     Each joins two keyframes of the map they were merged into, which the page draws while both
-    live; a bundle of merges is version 5.
+    live; a bundle of merges is version 5. Every frame's record names the map it ends in: the
+    second map's frames, tracked in map 1, name map 0, which their poses, keyframes and points
+    are in; the header lists map 0 alone, its frames the two stretches the black frames part.
     """
     run = merge_runs("tum", "rgbd", "cpp")
     assert len(run.keyframe_merges) >= 1
     out = tmp_path / "bundle"
     bundles.bake([merge_runs.folder("tum", "rgbd", "cpp")], merge_runs.sequence("tum"), out)
-    assert json.loads((out / "bundle.json").read_text())["version"] == bundles.VERSION == 5
+    info = json.loads((out / "bundle.json").read_text())
+    assert info["version"] == bundles.VERSION == 5
     baked = np.load(out / "cpp" / "keyframe_merges.npy")
     assert baked.dtype == np.int32
     np.testing.assert_array_equal(baked, run.keyframe_merges)
     maps = np.load(out / "cpp" / "keyframe_maps.npy")
     assert np.all(maps[baked[:, 0]] == maps[baked[:, 1]])
+    records = json.loads((out / "cpp" / "records.json").read_text())
+    assert 1 in [d["map"] for d in run.diagnostics]
+    assert set(records["map"]) == {0, None}
+    (merged,) = info["backends"]["cpp"]["maps"]
+    assert merged["id"] == 0
+    assert len(merged["frames"]) == 2
+
+
+def test_a_map_taken_up_again_is_baked_in_its_stretches(
+    revisit_runs: RoomRun, tmp_path: Path
+) -> None:
+    """The revisit room's RGB-D run (C++): map 0's frames are two stretches, map 1's between.
+
+    No map merged, so each frame's record names the map it was tracked in.
+    """
+    run = revisit_runs("tum", "rgbd", "cpp")
+    out = tmp_path / "bundle"
+    bundles.bake([revisit_runs.folder("tum", "rgbd", "cpp")], revisit_runs.sequence("tum"), out)
+    records = json.loads((out / "cpp" / "records.json").read_text())
+    assert records["map"] == [d["map"] for d in run.diagnostics]
+    first, second = json.loads((out / "bundle.json").read_text())["backends"]["cpp"]["maps"]
+    assert (first["id"], second["id"]) == (0, 1)
+    assert len(first["frames"]) == 2
+    assert first["frames"][1] == [REVISIT_AT + REVISIT_BLANKS, len(run.diagnostics)]
+    assert first["frames"][0][1] <= second["frames"][0][0] < second["frames"][0][1]
+    assert second["frames"][0][1] <= first["frames"][1][0]
+
+
+@pytest.mark.parametrize(
+    ("fixture", "options"), [(MERGE, MERGE_OPTIONS), (REVISIT, REVISIT_OPTIONS)],
+    ids=["merge", "revisit"],
+)  # fmt: skip
+def test_the_bake_keeps_the_merge_and_revisit_bundles_layouts(
+    fixture: Path, options: Options, merge_folders: Room, revisit_folders: Room, tmp_path: Path
+) -> None:
+    """The merge and revisit bundles' files, as the bake writes them (B4's review panel, A1).
+
+    So the page's tests of the map shown read what the bake writes. The fixtures leave out the
+    frames' JPEG chunks (``generate_bundle.py``), so the bake's are left out of the comparison.
+    """
+    folders = merge_folders if fixture == MERGE else revisit_folders
+    require_program("cpp")
+    run = loop_room_run(folders.tum, tmp_path / "runs", options)
+    bundles.bake([run], folders.tum, tmp_path / "bundle")
+    baked = _layout(tmp_path / "bundle")
+    chunks = [name for name in baked if PurePosixPath(name).match(JPEG_CHUNKS)]
+    assert chunks, "the bake writes the frames' JPEGs"
+    assert {name: kind for name, kind in baked.items() if name not in chunks} == _layout(fixture)

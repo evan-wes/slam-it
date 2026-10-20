@@ -260,8 +260,9 @@ def test_a_summary_lists_the_first_segments(
     maps = np.arange(len(run.timestamps), dtype=np.int64)  # a map per frame, as if lost each
     monkeypatch.setattr(worker, "SEGMENTS", 3)
     summary = worker.summarize(
-        replace(run, pose_maps=maps), room_folders.timestamps, "nominal", (320, 240)
-    )
+        replace(run, pose_maps=maps, tracked_maps=maps), room_folders.timestamps, "nominal",
+        (320, 240),
+    )  # fmt: skip
     assert len(summary["segments"]) == 3
     assert summary["segment_count"] == len(run.timestamps)
 

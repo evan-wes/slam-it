@@ -6,7 +6,7 @@
 
 import { seconds } from "./format.js";
 import { lowerBound, posesUpTo } from "./frames.js";
-import { centres } from "./geometry.js";
+import { centres, runsOf } from "./geometry.js";
 
 /** The "seen before" inset's window: from this long before a loop's frame, in seconds. */
 export const INSET_BEFORE = 3;
@@ -267,22 +267,23 @@ export function seenText({ loop, earlier }, frame, times) {
 
 /**
  * The trajectory's rows of a loop's cycle: its map's poses from the frame that made the matched
- * keyframe to the loop's frame.
+ * keyframe to the loop's frame, in the runs of rows the map's poses come in (`runsOf`), so that
+ * another map's frames between are left out.
  * @param {Loop} loop The loop.
  * @param {Int32Array} poseFrames The run's tracked frames, ascending.
- * @param {Int32Array} poseMaps Their maps, never descending.
- * @returns {[number, number]} The rows, `[start, end)`; empty if it has none.
+ * @param {Int32Array} poseMaps Their maps.
+ * @returns {[number, number][]} The runs' rows, each `[start, end)`, in order; none if it has
+ *     none.
  */
-export function cycleRows(loop, poseFrames, poseMaps) {
-  let start = lowerBound(poseFrames, 1, loop.olderMade);
-  let end = posesUpTo(poseFrames, loop.frame);
-  while (start < end && poseMaps[start] !== loop.map) {
-    start += 1;
-  }
-  while (end > start && poseMaps[end - 1] !== loop.map) {
-    end -= 1;
-  }
-  return [start, end];
+export function cycleRuns(loop, poseFrames, poseMaps) {
+  const from = lowerBound(poseFrames, 1, loop.olderMade);
+  const to = posesUpTo(poseFrames, loop.frame);
+  return runsOf(poseMaps, loop.map)
+    .map(
+      ([start, end]) =>
+        /** @type {[number, number]} */ ([Math.max(start, from), Math.min(end, to)]),
+    )
+    .filter(([start, end]) => end > start);
 }
 
 /**

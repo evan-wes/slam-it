@@ -1,6 +1,9 @@
-// The golden bundles the Python tests hold the bake to (tests/fixtures/orchestration/bundle/
-// and found_bundle/), fetched from disk as the page fetches a bundle over HTTP: the room run
-// briefly by every backend, and the found room, whose track is found again.
+// The golden bundles the Python tests hold the bake to (tests/fixtures/orchestration/bundle/,
+// found_bundle/, merge_bundle/ and revisit_bundle/), fetched from disk as the page fetches a
+// bundle over HTTP: the room run briefly by every backend; the found room, whose track is found
+// again; the merge room, whose second map is merged into its first; and the revisit room, whose
+// first map is taken up again. The last two hold no frame's JPEG, only the images' spans
+// (tests/fixtures/orchestration/generate_bundle.py).
 
 import { readFile } from "node:fs/promises";
 
@@ -41,3 +44,23 @@ export async function foundRoomRecords() {
   const bundle = await loadBundle(fetchFound);
   return (await loadTrack(fetchFound, bundle, "python")).records;
 }
+
+/**
+ * A fetcher of one of the golden bundles' files.
+ * @param {string} folder The bundle's folder under tests/fixtures/orchestration/, ending in "/".
+ * @returns {(path: string) => Promise<ArrayBuffer>} Fetches a file by its path in the bundle,
+ *     its bytes in a buffer of their own.
+ */
+function fetcher(folder) {
+  const base = new URL(`../../tests/fixtures/orchestration/${folder}`, import.meta.url);
+  return async (path) => {
+    const bytes = await readFile(new URL(path, base));
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  };
+}
+
+/** Fetch one of the merge bundle's files: the merge room run by C++, its two maps merged. */
+export const fetchMerge = fetcher("merge_bundle/");
+
+/** Fetch one of the revisit bundle's files: the revisit room run by C++, map 0 taken up again. */
+export const fetchRevisit = fetcher("revisit_bundle/");

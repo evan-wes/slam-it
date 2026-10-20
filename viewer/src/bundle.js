@@ -48,10 +48,13 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 /**
- * One of a run's maps (bundle.json's `maps`, each backend's): a lost track starts the next.
+ * One of a run's maps (bundle.json's `maps`, each backend's): a lost track starts the next. The
+ * maps the run ends with: a map merged into another is not one, its frames the other's.
  * @typedef {object} MapInfo
  * @property {number} id The map's number, from 0 in the order the maps started.
- * @property {[number, number]} frames The bundle's frames whose records name it, `[first, end)`.
+ * @property {[number, number][]} frames The bundle's frames whose records name it (the frames
+ *     that end in it), as stretches of consecutive frames, each `[first, end)`, in order: a map
+ *     taken up again has several.
  * @property {number} tracked Its frames tracked: none for a map reset.
  * @property {boolean} reset Whether it was reset, lost while too small to keep: its keyframes
  *     and points removed when the track was lost, its frames' poses dropped.
@@ -104,7 +107,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 /**
- * A backend's per-frame records: one column per diagnostics key, plus `frame`.
+ * A backend's per-frame records: one column per diagnostics key, plus `frame`; `map` is the map
+ * each frame ends in (the map it was tracked in, or the one that map was merged into).
  * @typedef {Record<string, unknown[]> & {frame: number[]}} Records
  */
 
@@ -117,7 +121,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Float32Array} poses Each tracked frame's final `T_world_cam` (the run format's
  *     final trajectory), its top three rows, (T, 3, 4).
  * @property {Int32Array} poseFrames Their frames, (T,).
- * @property {Int32Array} poseMaps Their maps, (T,), never descending.
+ * @property {Int32Array} poseMaps Their maps, (T,): the map each ends in. A map's poses may
+ *     come in several runs of rows, another map's between (a kept map taken up again).
  */
 
 /**
@@ -129,7 +134,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Float32Array} poses Each tracked frame's final `T_world_cam` (the run format's
  *     final trajectory), its top three rows, (T, 3, 4).
  * @property {Int32Array} poseFrames Their frames, (T,).
- * @property {Int32Array} poseMaps Their maps, (T,), never descending.
+ * @property {Int32Array} poseMaps Their maps, (T,): the map each ends in. A map's poses may
+ *     come in several runs of rows, another map's between (a kept map taken up again).
  * @property {Float32Array} keyframePoses Every keyframe's last pose, (K, 3, 4).
  * @property {Int32Array} keyframeLives Their lives, (K, 3): made, removed (-1 if never), why.
  * @property {Int32Array} keyframeMaps Their maps, (K,).

@@ -407,7 +407,7 @@ Result<void> check(const Run& run) {
 }
 
 /// @brief Stamped poses as TUM-format lines, each number round-tripping, a `# map <n>` line
-///        before each map's first pose.
+///        before each run of one map's poses (a map's may come in several runs).
 /// @param times The times.
 /// @param poses The poses.
 /// @param maps Their maps.

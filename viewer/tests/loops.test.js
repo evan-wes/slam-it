@@ -11,7 +11,7 @@ import {
   EFFECT_HOLD,
   INSET_AFTER,
   INSET_BEFORE,
-  cycleRows,
+  cycleRuns,
   effectChange,
   effectFrame,
   effectOpacity,
@@ -276,12 +276,19 @@ test("a loop's cycle is its map's trajectory from its matched keyframe's making 
   ]);
   const poseMaps = Int32Array.from(poseFrames, (frame) => (frame < 10 ? 0 : 1));
   const loop = { ...loopsOf(twoMaps([4, 7]))[0], frame: 17, map: 1, olderMade: 13 };
-  assert.deepEqual(cycleRows(loop, poseFrames, poseMaps), [11, 16]); // frames 13 to 17
+  assert.deepEqual(cycleRuns(loop, poseFrames, poseMaps), [[11, 16]]); // frames 13 to 17
   // Made before the map began: its cycle starts with the map.
-  assert.deepEqual(cycleRows({ ...loop, olderMade: 8 }, poseFrames, poseMaps), [10, 16]);
+  assert.deepEqual(cycleRuns({ ...loop, olderMade: 8 }, poseFrames, poseMaps), [[10, 16]]);
   // In the map before: its cycle stops where that map does.
-  assert.deepEqual(cycleRows({ ...loop, map: 0, olderMade: 3 }, poseFrames, poseMaps), [3, 10]);
-  assert.deepEqual(cycleRows({ ...loop, map: 2 }, poseFrames, poseMaps), [16, 16]);
+  assert.deepEqual(cycleRuns({ ...loop, map: 0, olderMade: 3 }, poseFrames, poseMaps), [[3, 10]]);
+  assert.deepEqual(cycleRuns({ ...loop, map: 2 }, poseFrames, poseMaps), []);
+  // Map 0 taken up again from frame 16: its loop's cycle leaves map 1's frames out.
+  const revisited = Int32Array.from(poseFrames, (frame) => (frame < 10 || frame >= 16 ? 0 : 1));
+  const again = { ...loop, map: 0, olderMade: 3, frame: 18 };
+  assert.deepEqual(cycleRuns(again, poseFrames, revisited), [
+    [3, 10],
+    [14, 17],
+  ]);
 });
 
 test("the loop effect holds, then fades, on its own clock", () => {

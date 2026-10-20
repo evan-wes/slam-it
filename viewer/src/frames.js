@@ -2,6 +2,8 @@
 // alive, its keypoints and their fates, its record and pose. No drawing: the views draw what
 // these return, and Node tests them.
 
+import { lastRow } from "./geometry.js";
+
 /** The fates a keypoint can have, by code (slam_it.eval.runs.FATES). */
 export const FATES = /** @type {const} */ (["unmatched", "rejected", "tracked", "made"]);
 
@@ -127,7 +129,9 @@ export function truthRange(ends, first, last) {
 
 /**
  * The map a backend shows at each of its frames: the frame's own, else the last before it, so
- * that between a lost map and the next the lost one stays in view.
+ * that between a lost map and the next the lost one stays in view. A record's map is the map
+ * the frame ends in (the bundle's), so a frame of a map merged later shows the merged map, and
+ * the maps shown need not rise: a kept map taken up again is shown again.
  * @param {{frame: number[], map?: unknown[]}} records Its records.
  * @returns {Int32Array} One map per record, -1 before its first.
  */
@@ -156,16 +160,6 @@ export function mapAt(shown, records, frame) {
   }
   const map = shown[Math.min(frame - records.frame[0], shown.length - 1)];
   return map < 0 ? null : map;
-}
-
-/**
- * The rows of a map's poses: a map's are consecutive, the maps never descending.
- * @param {Int32Array} poseMaps Each pose's map.
- * @param {number} map The map.
- * @returns {[number, number]} The rows `[start, end)`; empty if it has none.
- */
-export function mapRows(poseMaps, map) {
-  return [lowerBound(poseMaps, 1, map), lowerBound(poseMaps, 1, map + 1)];
 }
 
 /**
@@ -198,16 +192,16 @@ export function sharesFrame(mine, theirs, theirsPlaced, aligned) {
  * The camera's pose to show at a frame: the frame's own if tracked, else the last before it,
  * of a map's poses if given.
  * @param {Float32Array} poses Each tracked frame's pose, (T, 3, 4).
- * @param {Int32Array} poseFrames Their frames.
+ * @param {Int32Array} poseFrames Their frames, ascending.
  * @param {number} frame The frame.
- * @param {[number, number]} [rows] The rows of the map's poses (`mapRows`); every pose's if
- *     not given.
+ * @param {[number, number][]} [runs] The runs of the map's poses' rows (`runsOf`); every pose's
+ *     if not given.
  * @returns {{pose: Float32Array, tracked: boolean} | null} The pose and whether it is the
  *     frame's own; null before the first tracked frame (of the map).
  */
-export function cameraAt(poses, poseFrames, frame, rows = [0, poseFrames.length]) {
-  const k = Math.min(posesUpTo(poseFrames, frame), rows[1]) - 1;
-  if (k < rows[0]) {
+export function cameraAt(poses, poseFrames, frame, runs = [[0, poseFrames.length]]) {
+  const k = lastRow(runs, posesUpTo(poseFrames, frame));
+  if (k < 0) {
     return null;
   }
   return { pose: poses.subarray(k * 12, k * 12 + 12), tracked: poseFrames[k] === frame };

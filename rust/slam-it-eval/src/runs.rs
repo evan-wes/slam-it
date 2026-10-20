@@ -707,7 +707,8 @@ fn check_frame_maps(run: &Run) -> Result<()> {
 ///
 /// * `times` - The times.
 /// * `poses` - The poses.
-/// * `maps` - Their maps: a `# map <n>` line comes before each map's first pose.
+/// * `maps` - Their maps: a `# map <n>` line comes before each run of one map's poses (a
+///   map's may come in several runs).
 ///
 /// # Returns
 ///

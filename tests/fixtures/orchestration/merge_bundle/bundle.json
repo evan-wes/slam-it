@@ -1,0 +1,100 @@
+{
+ "format": "slam-it-bundle",
+ "version": 5,
+ "dataset": "tum",
+ "sequence": "room_tum",
+ "mode": "rgbd",
+ "camera": {
+  "model": "pinhole",
+  "width": 320,
+  "height": 240,
+  "intrinsics": [
+   262.5,
+   262.5,
+   159.5,
+   119.5
+  ],
+  "baseline": 0.1523809523809524
+ },
+ "frames": 280,
+ "first_time": 0.0,
+ "extent": {
+  "frames": 280,
+  "start": 0.0,
+  "end": 9.3
+ },
+ "images": {
+  "chunk": 100,
+  "quality": 75,
+  "colour": true
+ },
+ "truth": true,
+ "fates": [
+  "unmatched",
+  "rejected",
+  "tracked",
+  "made"
+ ],
+ "steps": [
+  "read_seconds",
+  "build_seconds",
+  "track_seconds",
+  "map_seconds",
+  "loop_seconds"
+ ],
+ "backends": {
+  "cpp": {
+   "frames": [
+    0,
+    280
+   ],
+   "tracked": 184,
+   "keyframes": 18,
+   "points": 2780,
+   "made": {
+    "keyframes": 18,
+    "points": 7955
+   },
+   "features": false,
+   "alignment": "se3",
+   "score": {
+    "matched": 184,
+    "ate_rmse": 0.05459661669207203,
+    "rpe_translation_rmse": 0.02379612228560019,
+    "rpe_rotation_rmse": 0.0066268720313212735
+   },
+   "maps": [
+    {
+     "id": 0,
+     "frames": [
+      [
+       0,
+       152
+      ],
+      [
+       156,
+       280
+      ]
+     ],
+     "tracked": 184,
+     "reset": false,
+     "score": {
+      "matched": 184,
+      "ate_rmse": 0.05459661669207203,
+      "rpe_translation_rmse": 0.02379612228560019,
+      "rpe_rotation_rmse": 0.0066268720313212735,
+      "scale": 1.0
+     }
+    }
+   ],
+   "latency": {
+    "deadline": 0.03333300000000028,
+    "median": 0.004035207000000001,
+    "p95": 0.0051838753,
+    "max": 0.007790958000000001,
+    "late": 0
+   },
+   "peak_memory": 59269120
+  }
+ }
+}

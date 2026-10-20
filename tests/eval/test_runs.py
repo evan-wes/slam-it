@@ -159,14 +159,17 @@ def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
         keyframe_lives=np.array([[1, -1, -1], [5, 6, 3], [7, -1, -1]], dtype=np.int64),
         pose_maps=np.array([0, 0, 2, 2], dtype=np.int64),
         keyframe_maps=np.array([0, 1, 2], dtype=np.int64),
+        tracked_maps=np.array([0, 0, 2, 2], dtype=np.int64),
     )  # fmt: skip
     span = runs.tracking(run, times)
     assert (span.frames, span.tracked, span.losses, span.resets) == (9, 4, 2, 1)
     assert span.relocalizations == 1
     assert span.segments == (runs.Segment(0, 2, 0.1, 0.2), runs.Segment(2, 2, 0.7, 0.8))
     assert (span.tracked_from, span.tracked_to, span.ran_to, span.seconds) == (0.1, 0.8, 0.8, 0.8)
+    none = np.zeros(0, np.int64)
     never = runs.tracking(
-        replace(run, timestamps=times[:0], poses=_poses(0), pose_maps=np.zeros(0, np.int64)), times
+        replace(run, timestamps=times[:0], poses=_poses(0), pose_maps=none, tracked_maps=none),
+        times,
     )
     assert (never.tracked, never.segments, never.tracked_from, never.tracked_to) == (
         0, (), None, None,
@@ -174,6 +177,27 @@ def test_tracking_says_what_of_a_sequence_a_run_ran_and_tracked() -> None:
     unstated = [{"timestamp": float(t)} for t in times]  # the format makes state optional
     assert runs.tracking(replace(run, diagnostics=unstated), times).losses == 0
     assert runs.tracking(replace(run, diagnostics=unstated), times).relocalizations == 0
+
+
+def test_tracking_gives_a_segment_per_stretch_tracked_in_one_map() -> None:
+    """A map merged into another keeps its stretch; a map taken up again has one per stretch.
+
+    Six frames tracked, in maps 0, 0, 1, 1, 0, 0 as tracked: map 1 merged into map 0 at the end
+    (every final pose in map 0), or map 0 taken up again on the fifth frame (final poses in their
+    maps as tracked). Either way, three stretches.
+    """
+    times = np.asarray(0.1 * np.arange(6), dtype=np.float64)
+    diagnostics = [{"timestamp": float(t), "state": "tracking"} for t in times]
+    tracked_in = np.array([0, 0, 1, 1, 0, 0], dtype=np.int64)
+    expected = (
+        runs.Segment(0, 2, 0.0, 0.1), runs.Segment(1, 2, 0.2, 0.3), runs.Segment(0, 2, 0.4, 0.5),
+    )  # fmt: skip
+    for final in (np.zeros(6, dtype=np.int64), tracked_in):
+        run = runs.Run(
+            "tum", "s", "rgbd", "python", times, _poses(6), _poses(6), diagnostics=diagnostics,
+            pose_maps=final, tracked_maps=tracked_in,
+        )  # fmt: skip
+        assert runs.tracking(run, times).segments == expected
 
 
 def _record_features(folder: Path) -> None:
