@@ -409,7 +409,7 @@ visible from its path and enforceable by contract.
 | `slam_it.calib` | library `slam_it_calib` | -- | Sensor calibration (the side track) |
 | `slam_it.dense` | -- | -- | Dense BA + depth prior |
 | `slam_it.learned` | -- | -- | DROID- and MegaSaM-style |
-| `slam_it.eval` | library `slam_it_eval`, `slam_it::eval` (native PNG and dataset readers, run writer, a program's process for its run, a vocabulary's folder) | crate `slam-it-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness; a phone video's import and intrinsics (`video`, `lenses`, Python only, from PR 11); dataset imports to TUM format (`zju`, `advio`, `arkitscenes`, with `lidar` and `sensor_yaml`), Python only, from milestone 2A's A1; a place-recognition vocabulary's folder, the committed one with it (`vocabularies`, from milestone 2B's B1) |
+| `slam_it.eval` | library `slam_it_eval`, `slam_it::eval` (native PNG and dataset readers, run writer, a program's process for its run, a vocabulary's folder) | crate `slam-it-eval` (the same) | Dataset readers, external references (COLMAP), metrics, benchmarks, budget harness; a phone video's import and intrinsics (`video`, `lenses`, Python only, from PR 11); dataset imports to TUM format (`zju`, `advio`, `arkitscenes`, with `lidar` and `sensor_yaml`), Python only, from milestone 2A's A1, and 7-Scenes' (`sevenscenes`, from milestone 2B's B4); a place-recognition vocabulary's folder, the committed one with it (`vocabularies`, from milestone 2B's B1) |
 | `slam_it.orchestration` | library `slam_it_orchestration` and program `slam_it_vo` (`cpp/apps/orchestration/`; from PR 8) | crate `slam-it-orchestration` and its program `slam_it_vo` (from PR 8) | End-to-end pipelines, the bake of their runs for the run viewer (`bundles`, Python only, above `vo`), and the worker that runs the upload server's jobs (`worker`, Python only, above `bundles`, from PR 11) |
 | `slam_it_server` (`server/`, its own package) | -- | -- | The upload server (from PR 11): the job list, storage's links, the guards; never imports `slam_it` |
 
@@ -543,16 +543,19 @@ edge rung holds what is its own, tracking, keyframes and local mapping.
 - **What it leaves out of ORB-SLAM:** no loop closure (milestone 2B's B3); one thread, mapping
   after tracking, so a run is deterministic, and so mapping is never busy: it neither refuses a
   keyframe nor cuts a local BA short, as ORB-SLAM's mapping thread does (milestone 2B's B3b
-  gives tracking, mapping and loop closing threads of their own); no map reuse.
+  gives tracking, mapping and loop closing threads of their own); no map reuse (milestone 2B's
+  B4 takes a kept map up again and merges maps).
 - **The covisibility graph** (milestone 2B's B2), in place of a sliding window of the last 10
   keyframes, gives tracking's local map, local BA, keyframe culling, triangulation and fusion
   their keyframes, as ORB-SLAM's does, and keeps the spanning tree for B3's essential graph
   ([the 2B design](2026-10-14-online-slam.md), section 8).
-- **A lost track is relocalised** against the whole active map through a bag of words, for up
-  to 3 s, as visual-only ORB-SLAM3's recently lost track is (milestone 2B's B1); then it closes
-  its map (kept, or reset if it has 10 keyframes or fewer, such a map lost after 5 failures)
-  and the next frame starts a new one, as ORB-SLAM3's atlas does (milestone 2A's A2); joining
-  maps is 2B's B4.
+- **A lost track is relocalised** through a bag of words, for up to 3 s, as visual-only
+  ORB-SLAM3's recently lost track is: against the whole active map (milestone 2B's B1), and
+  since B4 against every map the run keeps as well, as ORB-SLAM3's paper describes; found in a
+  kept map, the track takes it up, the map it left kept or reset as a lost map is. Otherwise it
+  closes its map (kept, or reset if it has 10 keyframes or fewer, such a map lost after 5
+  failures) and the next frame starts a new one, as ORB-SLAM3's atlas does (milestone 2A's
+  A2); B4 joins maps where a recognised place links them.
 - **Its state is a struct of arrays** in all three languages, so each stage function
   (initialise, track, map) crosses the bindings as dicts of arrays, as rung 0's do. Python
   runs the whole pipeline in-process; C++ and Rust run it in the native programs, not across
@@ -610,9 +613,9 @@ through the project.
     uses, read by all three languages; and the keyframe database, an inverted index, the edge
     rung's, beside its map (B1); when the classic rung needs retrieval, the generic index moves
     to rung 0 rather than being copied;
-  - relocalisation against the active map before a new one is started (ORB-SLAM's
-    `Tracking::Relocalization`: candidates from the database, matches by word, PnP RANSAC, a
-    guided search);
+  - relocalisation before a new map is started (ORB-SLAM's `Tracking::Relocalization`:
+    candidates from the database, matches by word, PnP RANSAC, a guided search), against the
+    active map (B1) and every kept map (B4);
   - the covisibility graph and the essential graph, in place of the window of 10 keyframes
     (B2; the essential graph's loop links come with loop closure);
   - loop closure: candidates checked for consistency, the loop's Sim(3) solved by RANSAC over
@@ -1114,11 +1117,17 @@ shared with the owner's other projects.
     which section 14's item 6 decides on (B1's 3 s stays the default meanwhile); and the test
     set and the loop sequences against B3b's. The measure takes them
     (`scripts/measure_testset.py`'s `folders`, run in turn as sessions, its merges judged), and
-    `slam_it.eval.sevenscenes` imports 7-Scenes.
+    `slam_it.eval.sevenscenes` imports 7-Scenes. With them, from B4's review panel (L5;
+    decided by evan-wes on 2026-10-19): the relocalisation candidates tried per failed frame,
+    which grow with the kept maps (each map's 75% cut is relative to its own best), and how
+    often the track leaves a healthy map for a kept one on a momentary failure; if either is
+    high, an atlas-wide floor, or the active map's candidates tried first.
   - **Left open after B4.** The 2B design's section 14, item 10 (Sim(3) as a group in rung 0;
     B3's review panel, A5 with H3), and the items below meant for when B4 lands: loop closing's
     APIs mirrored unevenly (A14), the `loops` split (A15) and GTSAM's native confinement (A24)
-    from B3's panel, and one native `.npy` module (A21) from B1's. B4 addresses none of them.
+    from B3's panel, the map's owner in a module of its own (A9) from B3b's, and one native
+    `.npy` module (A21) from B1's. B4 addresses none of them; A15's and A9's splits are the
+    first step of the merge-design follow-up (below).
   - **Threaded map merging without blocking tracking (option C).** B4 merges threaded by pausing
     tracking at a frame boundary for the whole merge (option B; the 2B design's section 14, item
     4; decided by evan-wes on 2026-10-18). The later design is option C, the closest to
@@ -1129,6 +1138,53 @@ shared with the owner's other projects.
     the merge names the merged map's ids, no thread is left
     (`tests/orchestration/test_merge_room_threads.py`), and a threaded merge runs under
     ThreadSanitizer in both of C++'s schemes (`tests/orchestration/test_merge_room_tsan.py`).
+- **Deferred from milestone 2B's B4 review panel**
+  ([report](../reviews/2026-10-19-feature-2b-b4-merging-maps.md); decided by evan-wes on
+  2026-10-19):
+  - **Map merging reviewed against the reference systems (the follow-up to B4).** B4's merge
+    is option B, accepted for its PR. Its design is reviewed as a whole against ORB-SLAM3
+    (`MergeLocal`, its `Atlas` and keyframe database) and the other reference systems, and the
+    outcomes weighed side by side: option C, a merge that does not block tracking (above),
+    beside an ORB-SLAM3-faithful staged merge. Its first step is the two splits B4 grew past
+    their records (A5): `loops`' merging into a `merging` module and the map's owner into an
+    `owner` module, in each language (A15 and A9, below). Then, from the panel:
+    - **Python's loop and merge detection written twice (H1).** `_detect` and `_detect_merge`,
+      `_search` and `_search_merge`, step for step, where the native cores share one driver
+      (`detect_region`): one `_detect_in` taking the searched map and the search, and the
+      `(score, number, keyframe)` ranking shared with relocalisation's.
+    - **The pause's work, the id remap, the kept maps' sharing (H14, with A8's design).** The
+      merge's pause re-quantises every absorbed keyframe into the matched map's database
+      (`MapOwner.apply_merge`), where moving the vectors with their ids offset would do
+      (ORB-SLAM3's database is atlas-wide); each holder of ids remaps them itself, where
+      ORB-SLAM3's atlas-unique ids need no remap; and C++ reads the kept maps unlocked, safe by
+      option B's protocol alone. One sharing design for the kept maps in all three languages
+      (Rust's are shared snapshots since B4's fixes, A2).
+    - **One remap API for a merge's result (A4).** `loops.merge` returns two offsets and `G`,
+      and about seven consumers per language apply "id + offset, -1 kept" and `G`'s scale
+      themselves (`_carried`, `TrackingState.merged`, the anchors, the atlas's records, the two
+      `_offset` helpers): `Merged.carry_points`, `carry_keyframes`, `carry_pending` and
+      `carry_motion`, or the like.
+    - **`LostSummary` names any map closed (B4's A9).** Lost, left for a kept one, or a
+      session's: `ClosedSummary` would say what it is.
+    - **The essential graph moves points the weld just solved (L3).** A weld point whose
+      reference keyframe lies outside the windows is moved again by its reference's correction;
+      ORB-SLAM3's graph corrects only the rest of the active map's points.
+    - **Threaded merges' global BA and the pause's size (L4).** Threaded, a global BA follows a
+      merge only where one was superseded (inline, every merge), and the pause covers the
+      essential graph over the whole merged map and the database's resync, so it grows with
+      both maps, unmeasured.
+    - **A monocular merge's unbounded scale (L6).** A merge at a wrong place with an extreme
+      scale rescales a whole map, irreversibly: a wide sanity bound, recorded when it refuses,
+      or a check of the links between maps (pairwise consistency, PCM; graduated non-convexity,
+      GNC), weighed with section 15's judged merges.
+    - **From a separate reference review:** the keyframes mapped while a merge waits are never
+      searched for a loop or a merge; the queue is drained by mapping each keyframe whole, where
+      ORB-SLAM3's `EmptyQueue` only inserts them; every merge copies whole maps; and
+      relocalisation in another map can drop a merge waiting.
+  - **Python's run-id tables rebuilt per call (H9).** `Atlas._runs_of` builds an array from a
+    map's run-id list on every call, up to about five a frame (the reviewer measured 2.3 ms for
+    100,000 entries, 3.5 ms for 300,000): grow the tables as arrays, or cache one until
+    `_extend`. Minor: Python is not held to real time.
 - **Deferred from milestone 2B's B3b** ([the 2B design](2026-10-14-online-slam.md), section 12;
   decided by evan-wes on 2026-10-18):
   - **B3b's measurements, not run.** Section 13's measurements were not run for B3b's PR (no long
@@ -1163,7 +1219,12 @@ shared with the owner's other projects.
   - **The map's owner, a module of its own (A9, with H13's file split).** `MapOwner`, its
     `View` and the publishing grow inside the pipeline modules (`pipeline.py` 1,655 lines and
     `pipeline.rs` 2,738 at the review); an `edge` owner module, before B4's merges enter
-    through it, would keep the pipeline the composition.
+    through it, would keep the pipeline the composition. Still open after B4 (B4's review
+    panel, A5): B4's merges enter through `MapOwner.apply_merge` and `take_merged` inside the
+    pipeline modules, now `pipeline.py` 2,325 lines, `pipeline.cpp` 2,084 and `pipeline.rs`
+    3,564 (at `5ffcf500`; 1,755, 1,543 and 2,811 at B4's base, `be801e8a`). An `owner` module
+    per language (`MapOwner`, `View`) is the first step of the merge-design follow-up, with
+    A15's split (B4's review panel, below).
 - **Deferred from milestone 2B's B3 review panel**
   ([report](../reviews/2026-10-17-feature-2b-b3-loop-closure.md); decided by evan-wes on
   2026-10-17):
@@ -1194,7 +1255,13 @@ shared with the owner's other projects.
     `correct` (about 115 lines in C++, under a cognitive-complexity NOLINT) into moving,
     replacing and fusing, collecting the new links, and the solves, and
     `slam_it.eval.loops.judge_pairs` (which `judge_loops` calls) into its place and pose
-    judgements. Still open after B4.
+    judgements. Still open after B4, and grown by it (B4's review panel, A5): B4 put merge
+    detection, the weld and the merge into `loops`, now 3,498 lines in Python, 2,664 in C++ and
+    3,823 in Rust (at `5ffcf500`; 2,413, 1,736 and 2,381 at B4's base, `be801e8a`), and the atlas
+    and the pipeline reach into it for Sim(3)'s `scale_of` and `rigid_of`. A `merging` module
+    per language (`detect_merge`, `merge_first`, `merge_transform`, `merge`, the weld), a new
+    layer in the edge rung's contracts, is the first step of the merge-design follow-up, with
+    B3b's owner module (A9) (B4's review panel, below).
   - **GTSAM's native confinement, widened with B4's bridges (run 2, A24).** `check_layers.py`'s
     `check_confined` scans `cpp/` and each crate's `cxx/` alone: a C++ bridge placed elsewhere
     in a crate, or another crate's `build.rs` linking GTSAM, would escape it. Today only
@@ -1241,17 +1308,17 @@ shared with the owner's other projects.
     (`tests/edge/test_relocalization.py`'s `DECISIVE`); the same would harden H21's.
 - **Deferred from milestone 2A's A2 review panel**
   ([report](../reviews/2026-10-14-feature-2a-a2-new-map.md)):
-  - **An atlas, with milestone 2B (A4, A9, H7, the rest of A8).** Map numbering, the id bases,
-    the lifetimes ledger and the closed maps are the seed of ORB-SLAM3's `Atlas`, grown inside
-    `Pipeline` in all three languages. A kept map's descriptors and observations are dropped,
-    which 2B's relocalisation against lost maps and their merging need whole. A reset map's
-    keyframes and points are reset by the pipeline but its poses dropped by each run program, so
-    one rule lives in six places: the pipeline should own the trajectory record, as ORB-SLAM3's
-    tracker does, and drop a reset map's entries itself. Closed by milestone 2B's B1: `State.LOST`
-    was both a frame's outcome and, for an instant, the pipeline's state; the loss is flagged on
-    the frame's step now, and the pipeline's state is two-valued. `_date` and `_close` walk a
-    map's arrays with the same arithmetic. An `edge.atlas` module, in the edge rung's import
-    order, holds them.
+  - Closed by milestone 2B: **an atlas (A4, A9, H7, the rest of A8).** Map numbering, the id
+    bases, the lifetimes ledger and the closed maps, the seed of ORB-SLAM3's `Atlas` grown inside
+    `Pipeline`, are the edge rung's `atlas` module (`slam_it.edge.atlas`, with C++ and Rust
+    twins, from B3b), in the edge rung's import order: it numbers the maps and their ids (a map's
+    own ids, with their run ids in a table since B4), dates every life, and owns the final
+    trajectory, a reset map's frames left out by it rather than by each run program. Since B4 it
+    keeps each map the track leaves whole, with its descriptors, observations and keyframe
+    database, which relocalisation in every map and merging search; a kept map is taken up
+    again, or merged with the map tracked. B1 closed the rest: `State.LOST` was both a frame's
+    outcome and, for an instant, the pipeline's state; the loss is flagged on the frame's step
+    now, and the pipeline's state is two-valued.
   - **A run of several maps across the reifyscene boundary, before milestone 3 (A10).** The
     `SlamResult` sketch has every pose in one world; say whether the adapter takes the largest
     map, every map with its id, or waits for 2B to join them.

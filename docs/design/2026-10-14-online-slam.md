@@ -628,7 +628,9 @@ alone, and runs on real data only when asked.
     ORB-SLAM, starts λ at τ times the Hessian's largest diagonal entry; GTSAM offers
     Marquardt's scaling (`setDiagonalDamping`). In the three languages, in a PR of its own
     after B3, measured on the loop sequences and the test set, since it changes decisions and
-    the records (section 7).
+    the records (section 7). It measures B4's merges' welding BAs too, which solve on the same
+    damping and apply their result whatever its termination (B4's review panel, L7; decided by
+    evan-wes on 2026-10-19).
 
 ## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
@@ -830,8 +832,10 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    run ids, which a merge joins. The active map's ids move on by the matched map's next keyframe
    and point ids (the merge's offsets), so the frame a merge is made on reports its matches and
    the points it made by the merged map's ids. What the active map removed before the merge (its
-   points' and keyframes' last places, each culled keyframe's pose relative to its parent) is
-   carried into the matched map's world by the merge's similarity, as the map itself is.
+   points' and keyframes' last places, each culled keyframe's pose relative to its parent), and
+   each of its frames' pose relative to its reference keyframe, is carried into the matched map's
+   world by the merge's similarity, as the map itself is: the relative poses' translations divided
+   by `s = scale_of(G⁻¹)`, the matched map's units (B4's review panel, L1).
 2. **Relocalisation in every map** (L7), as ORB-SLAM3's paper describes it; its source searches
    the active map alone.
    - Each map's database finds its own candidates, its words counted within the map. All maps'
@@ -894,7 +898,9 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
 
    *As built:* a loop being confirmed in the active map when it merges is carried into the
    merged map: its ids moved on by the merge's offsets, and its similarity S carried into the
-   matched map's world, S G⁻¹ for the merge's similarity G. The frame the merge is made on
+   matched map's world and units, `diag(1/s, 1/s, 1/s, 1) S G⁻¹` for the merge's similarity G,
+   `s = scale_of(G⁻¹)`, so it keeps its own scale (B4's review panel, L2; S G⁻¹ alone carried the
+   loop in the old map's units). The frame the merge is made on
    reports the map it was tracked in, the one merged away.
 
    *Threaded, as built (option B, decided by evan-wes on 2026-10-18):* loop closing's thread
@@ -960,7 +966,13 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    gains `merging` and `merge` (item 3), and a frame gains `left` (item 2) and, on a session's
    first frame, `session` (item 5), each null where absent. The bundle, version 5, holds each
    run's merges (`keyframe_merges.npy`), which the viewer draws with the graph as it draws the
-   loops, in a colour of their own.
+   loops, in a colour of their own. In the bundle, the map at a frame is the map it ends in (B4's
+   review panel, A1): the bake writes the records' `map` through each merge's destination, its
+   header lists the maps a run ends with (a map merged away is not listed), each with its frames
+   as stretches; the viewer draws a map through the runs of rows its poses come in, so a merged
+   map's frames show the merged map and a map taken up again is drawn without joining its runs.
+   `eval.runs.tracking` gives a segment per stretch tracked in one map. Two golden bundles hold
+   the cases: the merge room's and the revisit room's (item 8).
 8. **Tests:**
    - the merge room: the loop room's circle with black frames partway, longer than the loss
      window, so the track is lost and a new map starts, and the path passing its start again, so
@@ -981,6 +993,13 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    reads tracking's state across the merge: its ids moved on by the merge's offsets, each still
    naming what it named. ThreadSanitizer runs the merge room threaded in both C++ schemes
    (section 12, item 13).
+
+   *The revisit room* (B4's review panel, A3; `tests/orchestration/test_revisit_room.py`): the
+   merge room with loop closing off, blinded again for 1 s as the camera nears where it began,
+   so relocalisation finds the frame after in the first map, kept, and tracking takes it up.
+   Every language, inline, and each native scheme, threaded, records `left` there, tracks every
+   frame after it in map 0, the maps tracked in going 0, 1, 0; ThreadSanitizer runs it threaded
+   in both C++ schemes.
 9. **Not in B4:** reifyscene's adapter for several maps (A10, which lives in reifyscene);
    merging inertial maps (`MergeLocal2`, milestone 6).
 10. **Sim(3) as a group in rung 0, from B3's review panel** (A5, with H3;
@@ -1002,6 +1021,19 @@ the ladder's open items):
   importer (`slam_it.eval.sevenscenes`) makes 7-Scenes' sessions.
 - **Item 10 remains open after B4:** no B4 commit makes Sim(3) a group in rung 0. B4's review
   panel checks it, as the item says.
+- **From B4's review panel** ([the report](../reviews/2026-10-19-feature-2b-b4-merging-maps.md);
+  decided by evan-wes on 2026-10-19), each tracked in the ladder's open items:
+  - the merge design reviewed against the reference systems, the follow-up to B4: Python's
+    duplicate detection driver (H1); the database re-quantised in the pause, the bespoke id
+    remap and the unlocked read of the kept maps (H14); one remap API for a merge's result
+    (A4); `LostSummary` named for any map closed (A9); the essential graph moving points the
+    weld solved (L3); threaded merges' global BA and the pause's size (L4); a monocular merge's
+    unbounded scale (L6); the `loops` and owner splits (A15 and B3b's A9) first; option C
+    beside an ORB-SLAM3-faithful staged merge;
+  - section 15 measures, with its runs, the relocalisation candidates per failed frame and how
+    often the track leaves a healthy map (L5);
+  - the damping PR from B3's review panel (section 11, L2) measures the welds too (L7);
+  - Python's run-id tables, rebuilt per call (H9), a minor open item.
 
 **Known gaps, for B4's review panel** (noted, not fixed in this PR):
 - **Inline, a monocular merge leaves tracking's velocity at the old scale.** The last frame is
@@ -1034,3 +1066,6 @@ Once, on the finished branch, C++ and Rust, threaded and fed in real time (secti
 - **The loss window:** the test set with 3 s and with a new map at once: the share tracked, the
   maps, the merges and the final ATE.
 - **The test set and the loop sequences,** against B3b's.
+- **Relocalisation in every map, its cost** (B4's review panel, L5): the candidates tried per
+  failed frame, which grow with the kept maps, and how often the track leaves a healthy map for
+  a kept one on a momentary failure.
