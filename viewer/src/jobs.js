@@ -207,7 +207,8 @@ function times(count) {
  * What of the clip a done job ran and tracked, in words. A run tracks nothing until it has made
  * its first map, and a lost track closes its map, the next frame starting a new one, so the
  * clip can be tracked in stretches: this says why, so that a result is not taken for a cropped
- * video. Frames that tracking failed and relocalisation found again in their map are said too.
+ * video. Frames that tracking failed and relocalisation found again are said too: those found in
+ * their map, and those found in a map kept from earlier, which tracking went on in.
  * @param {Record<string, unknown>} summary The worker's summary
  *     (slam_it.orchestration.worker.summarize).
  * @returns {string} The words.
@@ -216,7 +217,8 @@ export function trackingText(summary) {
   const clip = Number(summary.clip_seconds);
   const losses = Number(summary.losses ?? 0);
   const resets = Number(summary.resets ?? 0);
-  const found = Number(summary.relocalizations);
+  const found = Number(summary.relocalizations ?? 0);
+  const takenUp = Math.min(found, Number(summary.taken_up ?? 0));
   /** @type {string[]} */
   const said = [];
   // An RGB-D run makes its first map from one frame's depth; a monocular one, from two views.
@@ -242,11 +244,20 @@ export function trackingText(summary) {
   }
   const from = Number(summary.tracked_from);
   said.push(`Tracked ${stretches(summary)} of your ${seconds(clip)} clip.`);
-  if (found > 0) {
-    const frames = found === 1 ? "one frame and found it" : `${found} frames and found each`;
+  if (found > takenUp) {
+    const same = found - takenUp;
+    const frames = same === 1 ? "one frame and found it" : `${same} frames and found each`;
     said.push(
       `Tracking failed on ${frames} again in the same map, by recognising a place it had ` +
         "seen.",
+    );
+  }
+  if (takenUp > 0) {
+    const frames = takenUp === 1 ? "one frame and found it" : `${takenUp} frames and found each`;
+    said.push(
+      `${found > takenUp ? "It also failed" : "Tracking failed"} on ${frames} in a map kept ` +
+        "from earlier in the clip, by recognising a place seen there, and went on in the map " +
+        "found.",
     );
   }
   if (losses > 0) {
@@ -295,7 +306,8 @@ export function sizeWarning(summary) {
 }
 
 /**
- * A done job's summary, as label and value pairs.
+ * A done job's summary, as label and value pairs. The maps are those the run ends with, not its
+ * stretches: a map taken up again is one, and a map merged into another is none.
  * @param {Record<string, unknown>} summary The worker's summary.
  * @returns {[string, string][]} The pairs, in the page's order.
  */
@@ -309,7 +321,7 @@ export function summaryRows(summary) {
     "tracked",
     frames > 0 ? `${tracked} (${Math.round((100 * tracked) / frames)}%)` : "0",
   ]);
-  const maps = Number(summary.segment_count ?? 0);
+  const maps = Number(summary.maps ?? 0);
   const resets = Number(summary.resets ?? 0);
   if (maps > 1 || resets > 0) {
     rows.push(["maps", resets > 0 ? `${maps} kept, ${resets} reset` : String(maps)]);

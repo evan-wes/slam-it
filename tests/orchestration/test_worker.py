@@ -252,6 +252,28 @@ def test_a_summary_counts_the_frames_found_again(found_runs: RoomRun, found_fold
     assert summary["segment_count"] == 1
 
 
+def test_a_summary_counts_the_maps_a_run_ends_with(
+    merge_runs: RoomRun, merge_folders: Room, revisit_runs: RoomRun, revisit_folders: Room
+) -> None:
+    """The maps are those the run ends with, not its stretches (B4's review panel, run 2, A11).
+
+    The merge room's run tracks in maps 0, 1 and 0 again, the second merged into the first, whose
+    number the merged map keeps: three stretches, one map. The revisit room's tracks in maps 0, 1
+    and 0 again, the first taken up again on the frame relocalisation found in it: three
+    stretches, two maps, and that frame counted apart.
+    """
+    merge = worker.summarize(
+        merge_runs("tum", "rgbd", "cpp"), merge_folders.timestamps, "nominal", (320, 240)
+    )
+    assert (merge["segment_count"], merge["maps"], merge["resets"]) == (3, 1, 0)
+    assert merge["taken_up"] == 0
+    revisit = worker.summarize(
+        revisit_runs("tum", "rgbd", "cpp"), revisit_folders.timestamps, "nominal", (320, 240)
+    )
+    assert (revisit["segment_count"], revisit["maps"], revisit["resets"]) == (3, 2, 0)
+    assert revisit["taken_up"] == 1 <= revisit["relocalizations"]
+
+
 def test_a_summary_lists_the_first_segments(
     monkeypatch: pytest.MonkeyPatch, room_runs: RoomRun, room_folders: Room
 ) -> None:

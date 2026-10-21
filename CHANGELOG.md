@@ -105,9 +105,12 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   `loops::detect_merge` and `merge_candidates` take the maps by reference in C++ and Rust, as
   relocalisation does; C++ and Rust keep each kept map as one `Kept`, its run ids with it (H2);
   `start_session` refuses a finished run in all three languages (H4); `eval.runs.tracking` gives
-  a segment per stretch tracked in one map; `Crossing` is `slam_it.backends`' alone (H10); each
-  weld setting's doc stands alone (H7); and why a map closes is named (`_Closing`), in place of
-  a keyframe count with `+ 1` (H8).
+  a segment per stretch tracked in one map, and the worker's summary counts the maps a run ends
+  with apart (`maps`, which the status page's "maps" row shows, where it showed the segments),
+  and the frames relocalisation found in a map kept from earlier (`taken_up`, which the status
+  page says apart from those found again in their map) (A11); `Crossing` is `slam_it.backends`'
+  alone (H10); each weld setting's doc stands alone (H7); and why a map closes is named
+  (`_Closing`), in place of a keyframe count with `+ 1` (H8).
 
 ### Tests
 

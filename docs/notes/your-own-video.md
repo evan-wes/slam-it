@@ -154,16 +154,19 @@ pages, its stylesheet and its modules.
 
 **A result in stretches.** A monocular run tracks nothing until its first map, and a lost track
 closes its map and the next frame starts a new one (since milestone 2A's A2), once
-relocalisation has tried for up to 3 s to find it again in the map it had (since 2B's B1). So a
-result can cover the video in stretches, which would otherwise look cropped. Both pages say so:
+relocalisation has tried for up to 3 s to find it again in the map it had (since 2B's B1) or in
+a map kept from earlier, which tracking then takes up again (since 2B's B4). So a result can
+cover the video in stretches, which would otherwise look cropped. Both pages say so:
 - the status page in words, from the worker's summary (`worker.summarize`: the clip's length,
-  each map's first and last tracked frames' times, the losses, the maps lost too soon to keep,
-  and the frames relocalised): "Tracked 0.0–15.9 s and 17.0–27.1 s of your 27.1 s clip.
-  Tracking failed on one frame and found it again in the same map, by recognising a place it had
-  seen. The track was lost twice, and each time a new map was started, so the rest of the clip
-  was still processed; one map was lost too soon to keep.", and, where finding a first map took
-  a while, "The first 2.5 s went to finding a first map; moving sideways at the start shortens
-  it.";
+  each stretch's first and last tracked frames' times, the losses, the maps lost too soon to
+  keep, and the frames relocalised, those found in a map kept from earlier apart): "Tracked
+  0.0–15.9 s and 17.0–27.1 s of your 27.1 s clip. Tracking failed on one frame and found it
+  again in the same map, by recognising a place it had seen. The track was lost twice, and each
+  time a new map was started, so the rest of the clip was still processed; one map was lost too
+  soon to keep.", and, where finding a first map took a while, "The first 2.5 s went to finding
+  a first map; moving sideways at the start shortens it."; its "maps" row counts the maps the
+  run ends with, not its stretches (a map taken up again is one map in several stretches, and a
+  map merged into another is none);
 - the viewer on its timeline: the frame slider spans the part the runs ran, beside the parts
   of the sequence none reached, each as wide as its time and labelled "not run"; under the
   slider, each backend's frames are coloured by state (faded before its first map, its colour

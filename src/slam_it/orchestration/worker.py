@@ -484,9 +484,11 @@ def summarize(
     """Return a job's summary: what its run made, and what of the clip it ran and tracked.
 
     What of the clip it ran and tracked is :func:`slam_it.eval.runs.tracking`'s: a segment per
-    map, a lost track starting the next. The status page says why the tracked parts can be fewer
-    than the clip's (``viewer/src/jobs.js``), so that a short result is not taken for a cropped
-    video, and warns when the frames arrived smaller than the import's short side.
+    stretch tracked in one map, a lost track starting the next, a map taken up again starting
+    one of its own. The maps are counted apart, as the run ends with them: a map merged into
+    another is not one, nor is a map reset. The status page says why the tracked parts can be
+    fewer than the clip's (``viewer/src/jobs.js``), so that a short result is not taken for a
+    cropped video, and warns when the frames arrived smaller than the import's short side.
 
     Parameters
     ----------
@@ -508,14 +510,18 @@ def summarize(
         ``mode`` (``"rgbd"`` for a recording with LiDAR depth), ``intrinsics``, ``size``;
         ``clip_seconds``, the clip's last frame's time; ``tracked_from`` and ``tracked_to``, the
         first and last tracked frames' times (null if none was tracked); ``segments``, each
-        map's first and last tracked frames' times, the first :data:`SEGMENTS` of them, and
+        stretch's first and last tracked frames' times, the first :data:`SEGMENTS` of them, and
         ``segment_count``, all of them; ``ran_to``, the last frame run's time; every time since
-        the clip's first frame, to the millisecond; ``losses``, the frames the track was lost
-        on; ``resets``, the maps lost too soon to keep; and ``relocalizations``, the frames
-        that tracking failed and relocalisation found in their map.
+        the clip's first frame, to the millisecond; ``maps``, the maps the run ends with, those
+        reset left out; ``losses``, the frames the track was lost on; ``resets``, the maps lost
+        too soon to keep; ``relocalizations``, the frames that tracking failed and
+        relocalisation found, in their map or in a map kept from earlier; and ``taken_up``,
+        those of them found in a map kept from earlier, which tracking went on in (each records
+        the map it ``left``).
     """
     span = runs.tracking(run, times)
     segments = [[s.tracked_from, s.tracked_to] for s in span.segments[:SEGMENTS]]
+    kept = np.setdiff1d(run.maps(), run.reset_maps())
     return {
         "frames": span.frames,
         "tracked": span.tracked,
@@ -530,9 +536,11 @@ def summarize(
         "segments": segments,
         "segment_count": len(span.segments),
         "ran_to": span.ran_to,
+        "maps": len(kept),
         "losses": span.losses,
         "resets": span.resets,
         "relocalizations": span.relocalizations,
+        "taken_up": sum(entry.get("left") is not None for entry in run.diagnostics),
     }
 
 

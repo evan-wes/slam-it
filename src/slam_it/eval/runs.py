@@ -71,8 +71,9 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   maps names each one a keyframe ends in on a frame); ``state``, ``"lost"`` on a frame that lost
   the track (:func:`tracking` counts them); ``lost``, that frame's account of the map it closed;
   and ``placed_by``, ``"relocalization"`` on a frame that tracking failed and relocalisation
-  found in its map (:func:`tracking` counts them too). The edge pipeline's frames also time
-  their steps, in seconds (:data:`STEPS`), which the budget harness judges
+  found, in its map or in a map kept from earlier, its ``left`` then the account of the map it
+  left (:func:`tracking` counts them too). The edge pipeline's frames also time their steps, in
+  seconds (:data:`STEPS`), which the budget harness judges
   (:func:`slam_it.eval.budgets.judge`), and say how their stages went
   (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it did
   not run. And they say how the threads' handshakes went (:data:`HANDSHAKES`), which the budget
@@ -1185,9 +1186,10 @@ class Tracking:
     resets : int
         The maps reset.
     relocalizations : int
-        The frames relocalised: each one that tracking failed and relocalisation found in its
-        map. A count of frames, not of times the track was dropped: relocalisation runs on the
-        frame tracking failed, so one can follow a tracked frame with none untracked between.
+        The frames relocalised: each one that tracking failed and relocalisation found, in its
+        map or in a kept one. A count of frames, not of times the track was dropped:
+        relocalisation runs on the frame tracking failed, so one can follow a tracked frame with
+        none untracked between.
     """
 
     frames: int

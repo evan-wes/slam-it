@@ -45,8 +45,8 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
   and last tracked frames' times, ``tracked_from`` and ``tracked_to``
   (:func:`slam_it.eval.runs.tracking`); ``losses``, the frames the track was lost on,
   ``resets``, the maps lost too soon to keep, and ``relocalizations``, the frames that tracking
-  failed and relocalisation found in their map; and ``tracked_from``, ``tracked_to`` and
-  ``ran_to`` for the whole run: every time since the sequence's first frame
+  failed and relocalisation found, in their map or in a kept one; and ``tracked_from``,
+  ``tracked_to`` and ``ran_to`` for the whole run: every time since the sequence's first frame
   (:func:`slam_it.eval.runs.tracking`);
 - ``ate``: the RMSE in metres over the tracked frames matched to the reference, each map aligned
   on its own, Sim(3) for monocular and SE(3) otherwise, with ``matched`` and the ``reference``
