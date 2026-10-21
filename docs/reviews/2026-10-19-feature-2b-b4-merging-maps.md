@@ -925,3 +925,381 @@ References: Strasdat, Montiel & Davison, RSS 2010, for Sim(3) gauge changes; ORB
   - The final ATE groups frames by `pose_maps` and the as-tracked ATE by `tracked_maps`. With L1, frames merged away are in the matched map's units, so one Sim(3) per final map is the right alignment.
 - **Taking up a kept map:** the poses after the take-up are in map 0's world in every mode and language (0.49–0.73 cm, table above).
 - **State of the art:** nothing in the fix range departs from the references. Carrying a pending loop through a merge goes beyond ORB-SLAM3, which drops `mg2oLoopSlw` in `MergeLocal` (Run 1), and it is now in the right units.
+
+## Run 3 -- 2026-10-20/21
+
+| | |
+|---|---|
+| **Branch** | `feature/2b-b4-merging-maps` |
+| **Range** | `5c24d437..dd965e04` (Run 2's head, as rewritten, to the reviewed head) |
+| **Reviewers** | architecture (opus), algorithm (opus); hygiene not re-run, the range being targeted fixes |
+| **How they ran** | registered slam-it-* agents, on a detached read-only worktree |
+| **Layer 1** | all checks passed at `dd965e04`, the code reviewed, and offline CI passed there (its results' last row) |
+
+Each reviewer numbered its own findings from 1; they continue Run 2's numbering here:
+architecture's three should-fix findings and its note are A15 to A18, and algorithm's should-fix
+finding and its note L14 and L15. B3's panel has an A15 too, which the ladder names, so the
+commits and the CHANGELOG write "run 3's A15", and so on. One edit keeps the report free of
+paths on one machine (`tests/test_no_local_paths.py`): the architecture review's closing list of
+files names them relative to the repository root, without the word "(absolute)", where the
+review gave them absolute, in its worktree. The algorithm review's closing note to the
+coordinator, which it marked as not part of the saved review, is left out.
+
+### Findings and resolutions
+
+| ID | Severity | Reviewer | Where | Finding | Recommended | Resolution |
+|---|---|---|---|---|---|---|
+| A15 | should-fix | architecture | `rust/slam-it-orchestration/src/vo.rs:711`, `cpp/src/orchestration/vo.cpp:645`, `src/slam_it/edge/pipeline.py:322` | A correction without run ids has three behaviours, and Rust's writes a run that format 9 forbids | fix: one `Corrected` (the summary and the run ids) at the pipeline level in each language; no `write_run` check, the loop room's oracle holding it | fixed (0a94d593) -- decided by evan-wes on 2026-10-21 |
+| A16 | should-fix | architecture | `cpp/include/slam_it/edge/pipeline.hpp:1010` | C++ `carry_through` is declared in the public header for its test, where the build's convention is an internal header | fix: an internal header, `cpp/src/edge/carry.hpp` | fixed (6a98ce3e) -- decided by evan-wes on 2026-10-21 |
+| A17 | should-fix | architecture | `src/slam_it/eval/runs.py:69`, `src/slam_it/orchestration/bundles.py:265`, `src/slam_it/orchestration/worker.py:524`, `docs/design/2026-10-14-online-slam.md:966` | The run format does not declare the merge record the bake now refuses runs by | fix: the format lists `loop.merge`; `Run.merged_into()`; `taken_up` and the maps kept in `Tracking`, read by the worker and the measure; section 14 item 7's list | fixed (b64ee04d) -- decided by evan-wes on 2026-10-21 |
+| A18 | note | architecture | `cpp/src/edge/pipeline.cpp:586`, `rust/slam-it-edge/src/pipeline.rs:2513` | (follow-up: merge design) C++ and Rust read the correction's run ids after the owner's hold; Python reads them inside it | fix: read them inside the hold, right after the atlas records the corrected map | fixed (0a94d593) -- decided by evan-wes on 2026-10-21 |
+| L14 | should-fix | algorithm | `tests/orchestration/test_revisit_room.py:107` | The revisit room's threaded C++ monocular case is flaky (3 of 17 runs, C++'s own scheme) and unrecorded | the reviewer: record it as known flaky; the owner: investigate and fix before the merge; after the investigation, pin the threaded room tests to the performance cores, with a follow-up | fixed (28bb2e2f); the follow-up deferred (the ladder's open item "Why one deferred keyframe starves a monocular map", from B4's review panel) -- decided by evan-wes on 2026-10-21 |
+| L15 | note | algorithm | `tests/orchestration/test_revisit_room.py:42` | L10's bar catches gross take-up failures but lets a moderate misplacement through | fix: map 0's frames from the take-up on under about 1.5 cm | fixed (707d7257) -- decided by evan-wes on 2026-10-21 |
+
+Resolution values: `fixed (<commit>)`, `deferred (<where tracked>)`, `waived: <reason>`,
+`disputed: <reason>`, each followed by `-- decided by <user>, <date>`.
+
+**Run 3 decisions** (evan-wes, 2026-10-21): A15 to A18 and L15 "as recommended"; L14
+"investigate before merge", then, once the investigation had found its cause, "pin + follow-up".
+A15 and A18 hold a correction's run ids with it, in a `Corrected`, read inside the stop in every
+scheme (0a94d593); A16 moves `carry_through`'s declaration into an internal header (6a98ce3e);
+A17 declares the merge record in the run format and reads the run one way in the worker and the
+measure (b64ee04d); L15 adds the take-up's own bar (707d7257), which a 2 cm shift of map 0's
+frames from the take-up on fails in 3 of 9 mode-axis cases and a 3 cm shift in all 9, the whole
+map's bar passing each. The fixes are commits 6a98ce3e to 28bb2e2f on this branch, the version
+still 0.3.17.0.
+
+L14's investigation (the coordinator, 2026-10-21; probes and kept runs outside the repository).
+The flaky case is a race the threads run by design, not a fault in the views. At frame 184 of
+the revisit room, local mapping is still mapping frame 183's keyframe (30.0 to 31.6 ms in C++'s
+own scheme in unpinned runs on the performance cores, where the next frame's decision comes
+about 29 to 37 ms after mapping starts, an estimate from frame 183's and 184's build and
+tracking times), so tracking reads the view published mid-mapping (11 keyframes, 761 points) and
+asks while mapping is busy; a monocular frame then gets no keyframe (ORB-SLAM3's
+`NeedNewKeyFrame`: c1b needs mapping to accept keyframes, c1a `max_frames` since the last, c1c
+is not for monocular), as ORB-SLAM3 decides, and frame 185, reading the finished view, has too
+many inliers to want one (178), so it comes at frame 186. Map 1 then starves: over frames 197 to
+210 its keyframes make 7 to 49 new points each, where a passing run's make 50 to 111, its
+tracked points fall from about 250 to 52, and it is lost at frame 213 and relocalised into map 0
+at 225, not 260. What tracking reads is what ORB-SLAM3's tracking would: the mid-mapping view
+mirrors its live map after `CreateNewMapPoints`. C++'s own scheme loses the race more often than
+the others because its two views a keyframe cost about 3.5 ms in mapping's turn (a view's
+medians: `view_keyframes` 1.23 ms, its local map 0.46 of it, and `sub_map` 0.53 ms), Rust's
+about 1.6 and the locks scheme's none: frame 183's keyframe takes 27.1 to 28.9 ms in the locks
+scheme and 21.5 to 27.5 in Rust. But the decisive factor is the CPU: on this machine's
+efficiency cores (8 to 23 of 0 to 23) mapping a keyframe takes about half again as long (C++'s
+own scheme pinned to them, 29.9 to 30.5 ms a keyframe and 76 to 78 keyframes; pinned to the
+performance cores, 20.4 to 20.5 ms and 85), and unpinned runs fell into a slow mode like it at
+random (2 of 30 in C++'s own scheme, 4 of 30 in its locks scheme, none of 30 in Rust). Delaying
+mapping 5 ms a keyframe failed the locks scheme's revisit case too (1 of 12), and the loop
+room's case failed in Rust as well (1 of 20), so the cause is not C++'s own scheme alone. An
+exact speedup of C++'s view publication saved about 0.3 ms a keyframe, too little against that
+spread, and is left out of B4.
+
+Rates (TUM monocular, threaded, each run judged as its test judges it):
+
+| Case | Unpinned | Pinned to the performance cores |
+|---|---|---|
+| revisit, C++ own scheme | 3 of 17 (the reviewer, `dd965e04`); 1 of 30 (`dd965e04`); 0 of 30 (`707d7257`) | 0 of 30 (`taskset`, `707d7257`); 2 of 30 (the tests' pinning, `28bb2e2f`) |
+| revisit, C++ locks | 0 of 17 (the reviewer); 0 of 30 (`707d7257`) | |
+| revisit, Rust | 0 of 17 (the reviewer); 0 of 30 (`707d7257`) | |
+| merge room, C++ own scheme | 1 of 3 full layer-1 runs (on Run 1's fixes); 0 of 20 (`dd965e04`) | 0 of 20 (`taskset`, `707d7257`); 0 of 5 (the tests' pinning, `28bb2e2f`) |
+| loop room, C++ own scheme | 2 of 20 (`dd965e04`: 21.10 and 3.34 cm) | 0 of 20 (`taskset`, `707d7257`); 0 of 10 (the tests' pinning, `28bb2e2f`) |
+| loop room, Rust | 1 of 20 (`707d7257`: 2.18 cm) | |
+
+The pinning (`28bb2e2f`): the threaded room tests run their native programs on the performance
+cores (`tests/orchestration/conftest.py`'s `fast_cores`, through `vo.run`'s `cpus` and
+`slam_it.eval.budgets.pin`), under ThreadSanitizer too, nothing pinned on a CPU with one kind of
+core, nor Python's threaded runs in process, which would pin the whole session; no bar changed.
+It closes the loop room's and merge room's flaky threaded cases (0 of 30 and 0 of 25 pinned).
+The revisit room's case still failed 2 of 60 pinned runs, the same way (taken up at frame 225):
+on the performance cores C++'s own scheme maps frame 183's keyframe in 29.2 to 29.9 ms (14 of 15
+runs measured), still close to frame 184's decision, so pinning removes the slow-core mode but
+not this near-miss. The question left, whether a monocular map should survive a deferred
+keyframe (we use ORB-SLAM2's 20 neighbours for monocular triangulation and fusion, ORB-SLAM3 30,
+and keyframe culling ran on keyframes made nearly every frame), is the ladder's open item,
+measured on the test set after B4, which records the revisit case's residual too.
+
+### Architecture review
+
+**Scope:** Run 3, a targeted re-review of the fixes after Run 2, range `5c24d437...dd965e04` (21 commits, 47 files).
+- **Commits read in full:** `da8e1849` (run format 9's correction run ids), `778e08ca` and `3b825bea` (A12), `edeca86f` (A11), `4009a8d5` (H20/A13), `eb88d6b3` (C++ `carry_through`), `a4bdcca3` (the k-th rule).
+- **Read by diff:** `09a2a530`, `69c096d3`, `1e4a8cc0`, `679906fd` and the loop room's new test.
+- **Folded into `85e45bbd` by the history rewrite** (not covered by Run 2): the generator, the layout test and `viewer/tests/golden.js`.
+- **Neighbours read to see how the fixes fit:**
+  - the run writers' format docs: `src/slam_it/eval/runs.py`, `cpp/include/slam_it/eval/runs.hpp`, `rust/slam-it-eval/src/runs.rs`;
+  - the native JSON writers: `cpp/src/orchestration/vo.cpp`, `rust/slam-it-orchestration/src/vo.rs`;
+  - C++'s `Atlas::run_id` and worker `drain`;
+  - `CMakeLists.txt`'s rule for tests;
+  - the 2B design's section 14.
+- **Ran:** read-only git and grep only, no test suites.
+
+**Summary:**
+- **The decided fixes in my area are correct and consistent across Python, C++ and Rust:**
+  - A12: `close` drops by `ends_in` in all three, and the bake reads merges from the records.
+  - A11: `maps` and `taken_up`.
+  - H20/A13: Rust refuses a kept map a search still holds.
+  - H15: the matched map's message names it.
+  - The `85e45bbd` fold is consistent.
+  - `a4bdcca3`'s k-th rule is fully gone.
+- **No must-fix.**
+- **Three should-fix:**
+  - Rust's third behaviour for a correction without run ids. The divergence is not acceptable as it stands, but the fix is cheap.
+  - C++ `carry_through` is exposed in the public header. That does not match the build's own convention for internals that tests reach.
+  - The run format's docs do not declare the merge record that the bake now refuses runs by.
+- **One note** for the merge follow-up.
+
+#### Findings
+
+##### [should-fix] A correction without run ids has three behaviours, and Rust's writes a run that format 9 forbids
+- **Where:**
+  - The writers:
+    - `rust/slam-it-orchestration/src/vo.rs:711-716` (writes nulls);
+    - `cpp/src/orchestration/vo.cpp:645-647` (`InvalidInput`);
+    - `src/slam_it/edge/pipeline.py:322-324` (`assert`).
+  - The paired optionals:
+    - `src/slam_it/edge/pipeline.py:308`;
+    - `cpp/include/slam_it/edge/pipeline.hpp:139`;
+    - `rust/slam-it-edge/src/pipeline.rs:179`.
+- **Issue:**
+  - "A correction carries its run ids" is held by convention only: two optionals that every construction site must set together. If they ever disagree, each writer does something different:
+    - Python asserts;
+    - C++ refuses with `InvalidInput`;
+    - Rust writes `"matched_run": null, "current_run": null`.
+  - No run checker reads the correction:
+    - `write_run`/`read_run` check only `keyframe_loops`' shape (`src/slam_it/eval/runs.py:733`, `cpp/src/eval/runs.cpp:375`, `rust/slam-it-eval/src/runs.rs:623`);
+    - the bake reads only `loop.merge` (`src/slam_it/orchestration/bundles.py:274`).
+  - So a Rust run with nulls is written, read and baked as valid. It fails only in the browser, when `loopsOf` throws (`viewer/src/loops.js:87`).
+- **Is the divergence acceptable?**
+  - Python asserting where C++ refuses has a precedent: H2's decision for `close`/`merge` with no map.
+  - Rust's behaviour does not. It is the only one that produces a file breaking format 9's documented contract (`src/slam_it/eval/runs.py:79-81`), and the failure shows up in another language, after the bake.
+- **Why should-fix, not must-fix:**
+  - It cannot happen today. Every site that sets a correction sets its run ids in the next statement:
+    - C++: `cpp/src/edge/pipeline.cpp:586-588`, `:1248-1249`;
+    - Rust: `rust/slam-it-edge/src/pipeline.rs:2140`, `:2513`;
+    - Python: `src/slam_it/edge/pipeline.py:1584-1587`, `:1901`.
+  - Nothing but that convention keeps it so.
+- **Evidence:** Rust's comment, `// Set with the correction ([`LoopSummary::run_ids`]); a reader refuses nulls.`, against `cpp/src/orchestration/vo.cpp:646`, `fail(ErrorKind::kInvalidInput, "loop: a correction without its keyframes' run ids")`.
+- **Suggested fix:**
+  - Make the bad state impossible to represent. At the pipeline level, hold the run ids with the correction in one optional: `correction: Corrected | None`, `std::optional<Corrected>` and `Option<Corrected>`, with `Corrected` holding the summary and the run ids.
+  - `loops.CorrectionSummary` stays as it is: `loops` is below the atlas and cannot know run ids.
+  - All three writers then lose the branch, and the assert, the error and the nulls go with it.
+  - Matching C++ in Rust instead would mean threading a `Result` through Rust's JSON writers, which are infallible throughout (`vo.rs:667`, `:875`). That costs more than the type change.
+  - Optional, stronger: make the loop room's new oracle a check in the three `write_run`s, beside `check_edges`. The oracle is: each correction's run ids, sorted, equal its `keyframe_loops.npy` row (`tests/orchestration/test_loop_room.py:93-110`).
+
+##### [should-fix] C++ `carry_through` is declared in the public header for its test, where the build's convention is an internal header
+- **Where:**
+  - `cpp/include/slam_it/edge/pipeline.hpp:1010-1023` (the declaration);
+  - `cpp/src/edge/pipeline.cpp:1258-1271` (the definition);
+  - `cpp/tests/edge/test_pipeline.cpp:869` (the use).
+- **Issue:**
+  - The build states how a test reaches a rung's internals: `CMakeLists.txt:53-54`, "Tests may include a rung's internal headers (cpp/src/<rung>/...) to unit-test them".
+  - One test already does this: `cpp/tests/foundations/test_gauge.cpp:7` includes `foundations/ba/gauge.hpp`, whose internals are in `slam_it::foundations::ba::detail` (`cpp/src/foundations/ba/gauge.hpp:20`).
+  - The commit cites `nls.hpp` and `ransac.hpp` as precedent. Their `detail` namespaces hold helpers that the headers' own templates call (`nls.hpp:413-432`, `ransac.hpp:177`, `:282-300`), and no test uses them.
+  - `carry_through` is not a template. It sits in the header only so that a test can call it. That makes it the first test-only declaration in the edge rung's public interface, and every includer of `pipeline.hpp` sees it, including the native program `cpp/src/orchestration/vo.cpp`.
+  - Its twins stay private: Rust's is private and tested in the file's trailing test module (`rust/slam-it-edge/src/pipeline.rs:1909`, `:3657`); Python's `_carried` is private.
+- **Answer to the brief:** no, this is not the way the other rungs expose internals.
+- **Suggested fix:**
+  - Move the declaration to an internal header, e.g. `cpp/src/edge/carry.hpp`, still in `slam_it::edge::detail`.
+  - Include it from `pipeline.cpp` and from the test (`#include "edge/carry.hpp"`), as `test_gauge.cpp` does.
+  - `pipeline.hpp` then returns to its interface before this range.
+
+##### [should-fix] The run format does not declare the merge record the bake now refuses runs by
+- **Where:**
+  - `src/slam_it/eval/runs.py:69-75` ("Four keys are read across a run's maps": `map`, `state`, `lost`, `placed_by`);
+  - `src/slam_it/orchestration/bundles.py:265-321` (`_merged_into`, `_ends_in` and its refusals);
+  - `src/slam_it/orchestration/worker.py:524`, `:543`;
+  - `docs/design/2026-10-14-online-slam.md:966-968`.
+- **Issue:**
+  - Since `3b825bea`, the bake builds its table of merges from `loop.merge` in the diagnostics:
+    - the record's `map` is the map merged into;
+    - the `map` of the frame carrying it is the map merged away.
+  - The bake refuses runs whose merge records and trajectory disagree. That makes `loop.merge`, and which frame it is recorded on, read across a run's maps just like the four keys the format lists.
+  - The format module does not list it; it describes the rest of the diagnostics as "otherwise what the pipeline wants to report". The C++ and Rust writers' docs defer to this module.
+  - Two further gaps:
+    - `edeca86f`'s `taken_up` reads `left` straight from the diagnostics in the worker, beside `runs.tracking`'s `relocalizations`. The measure counts relocalisations through `tracking` (`scripts/measure_testset.py:539`, `:569`), so it has no count of frames taken up.
+    - Section 14 item 7's as-built list of what format 9 adds to the diagnostics omits the correction's `matched_run`/`current_run`.
+- **Why it matters:**
+  - Option C, the deferred follow-up, changes how a merge is made, and therefore where it may be recorded.
+  - Nothing in the format would tell whoever changes the writers that the bake's map table depends on the merge being recorded on a frame tracked in the map merged away.
+  - If that changes, the bake refuses or misnames every merged run while the format doc stays as it is.
+- **Suggested fix:**
+  - In `eval.runs`' docstring, list `loop`'s `merge` among the keys read across a run's maps: its `map` is the map merged into, recorded on a frame tracked in the map merged away.
+  - Move `_merged_into` into `eval.runs` as `Run.merged_into()`, beside `maps()` and `reset_maps()`.
+  - Put `taken_up`, and the count of maps kept, in `Tracking`, so that the worker and the measure read the run one way.
+  - Add the correction's run ids to section 14 item 7's as-built list.
+
+##### [note] (follow-up: merge design) C++ and Rust read the correction's run ids after the owner's hold; Python reads them inside it
+- **Where:**
+  - C++: `cpp/src/edge/pipeline.cpp:586-588`, after `correct_loop` returns (`:630-652`);
+  - Rust: `rust/slam-it-edge/src/pipeline.rs:2513-2516`;
+  - Python: `src/slam_it/edge/pipeline.py:1901`, inside `owner.stopped()` (`:1892`).
+- **Note:**
+  - This is safe under option B:
+    - `Atlas::run_id` takes the atlas's lock (`cpp/src/edge/atlas.cpp:435-438`);
+    - every change to the current map waits for loop closing's `drain`, which counts the item being handled (`cpp/include/slam_it/edge/threads.hpp:181-184`, `:267`).
+  - Under option C, tracking could switch or merge maps between the correction and the lookup. `run_of` would then index the wrong map's table, without a bounds check in C++ (`cpp/src/edge/atlas.cpp:30-31`).
+  - Either move the lookup inside the hold now, right after `atlas_.record(&m)` (`pipeline.cpp:645`; Rust `:2590`) as Python does, or add this site to the ladder's L13 item.
+
+#### Checked and fine
+- **Run format 9 docs:**
+  - Python's `VERSION` and module docstring, C++'s `kVersion` and Rust's `VERSION` all name the correction's run ids.
+  - The three writers put `matched_run`/`current_run` in the correction object, matched first.
+  - `LoopSummary.run_ids` is mirrored: a tuple in Python, an optional array in C++, an `Option<[i64; 2]>` in Rust.
+  - No binding converts `LoopSummary`, so there is no fourth writer.
+  - The run ids are read after the atlas has recorded the corrected map, so the ids exist.
+- **Layering of the run ids:** they are added at the pipeline level, which knows the atlas, not in `loops`, which sits below it. Python's `as_dict` and the native programs' JSON writers mirror each other as before.
+- **`loopsOf`:**
+  - It takes a loop's keyframes from the run ids and throws on a missing one.
+  - It checks them against `keyframe_maps`, which agrees with the bake's records `map` (the map each frame ends in).
+  - No trace of `a4bdcca3`'s k-th rule remains.
+- **The loop room's new test:** each run is held to its own `keyframe_loops.npy`, in every language and mode, threaded too. No test asks the languages to decide alike.
+- **A12, `close`:**
+  - All three drop placements by `ends_in`, with the same comment and docs.
+  - Each language has a test of a merge followed by a reset.
+  - C++'s `ends_in` is private and called with the lock already held.
+  - Rust takes the placements out before filtering, so there is no borrow conflict.
+- **A12, bake:**
+  - `_merged_into`/`_ends_in` follow chains with a guard against cycles.
+  - The bake refuses both disagreements, as its Raises docs say, and each refusal is tested.
+  - A reset map still counts as a map the run ends with (`Run.maps()`).
+- **A11:**
+  - `maps` is `Run.maps()` less `Run.reset_maps()`, and `segment_count` stays the count of stretches.
+  - The status page reads `maps` and words frames taken up apart.
+  - The server reads none of the summary's keys, so no shared-name constant is needed.
+  - An old summary simply shows no maps row, in line with the no-shims policy.
+- **H20/A13:**
+  - `take` puts the map back where it was when it refuses.
+  - `merge` refuses before it changes any atlas state; the test checks that `map_id` is unchanged.
+  - The docs of `kept`, `resume` and `merge` agree.
+  - The held and unheld paths are both tested.
+  - How C++ and Python share kept maps stays the deferred A8/L13 design.
+- **H15 (`09a2a530`):** the matched map not kept is `InvalidInput` naming its number in all three languages, worded as the atlas words it.
+- **`85e45bbd`'s fold:** these agree that the merge and revisit golden bundles hold `images/spans.npy` and no JPEG chunks:
+  - the generator's `JPEG_CHUNKS` and `_copy(chunks=False)`;
+  - the layout test, which leaves the chunks out of its comparison but asserts that the bake writes them;
+  - the comment in `viewer/tests/golden.js`;
+  - the files in HEAD's tree.
+- **The revisit room's bar:** a per-mode final ATE for each map. Each run is held on its own.
+- **Ladder:** H23's `kept_maps` number and L13 are recorded in the follow-up item, and A14's origin is stated.
+- **Boundaries:**
+  - No binding, `Implementation` Protocol or dependency edge changed in the range.
+  - The edge order (`pipeline` > `atlas` > `loops | relocalization` > `database`) is unchanged.
+
+Relevant files:
+- rust/slam-it-orchestration/src/vo.rs
+- cpp/src/orchestration/vo.cpp
+- src/slam_it/edge/pipeline.py
+- cpp/include/slam_it/edge/pipeline.hpp
+- cpp/src/edge/pipeline.cpp
+- rust/slam-it-edge/src/pipeline.rs
+- CMakeLists.txt
+- cpp/src/foundations/ba/gauge.hpp
+- src/slam_it/eval/runs.py
+- src/slam_it/orchestration/bundles.py
+- src/slam_it/orchestration/worker.py
+- docs/design/2026-10-14-online-slam.md
+
+### Algorithm review
+
+**Scope:** Run 3, targeted re-review of `5c24d437...dd965e04` (`feature/2b-b4-merging-maps`).
+- **Read in full or by diff:**
+  - A12: `778e08ca`, `3b825bea`.
+  - L9: `77c23f80`.
+  - The native carry tests: Rust `9e21d8ab`, C++ `eb88d6b3`.
+  - H19: `2b2a8aec`.
+  - L10: `679906fd`.
+  - Run ids: `da8e1849`.
+  - Also `4009a8d5` and `69c096d3`.
+  - The Python, C++ and Rust atlas (`close`, `merge`, `ends_in`), each language's `TrackingState.merged`, its carry and its run-id paths (inline and threaded), and `eval.runs`' run format 9 and `_scored`.
+- **Ran:**
+  - The touched tests: Python atlas, carry and merged; C++ `edge_test_atlas` and `edge_test_pipeline`; Rust `slam_it_edge` lib, `atlas` and `pipeline`. All pass, on binaries newer than their sources.
+  - A numeric check of the hand-written known answer.
+  - A chained-merge probe.
+  - Revisit-room probes: how sensitive the bar is, an off-by-one take-up, and 17 threaded monocular runs per native scheme.
+  - Every probe was capped at 8G and saved outside the repository.
+- **References:** Strasdat, Montiel & Davison (RSS 2010) for the Sim(3) gauge change; ORB-SLAM3 (Campos et al., T-RO 2021) and its `LoopClosing.cc`; Umeyama (TPAMI 1991) and Sturm et al. (IROS 2012) for ATE.
+
+**Summary:** Every fix in my area is correct and consistent across Python, C++ and Rust.
+- **A12:** a reset after a merge now gives the trajectory run format 9 describes, and chained merges hold.
+- **Known answers:** the L9, Rust and C++ carry tests are right, checked numerically.
+- **H19:** right too.
+- **Run ids:** each pipeline maps a correction to the right keyframes in every scheme, including after a merge or a take-up.
+- **L10:** aligns map 0 once over both its stretches and catches the gross failures it names.
+
+One new should-fix comes out of L10's measurements. The revisit room's threaded C++ monocular case, in C++'s own scheme, fails about one run in six (3 of 17). That flake already existed and is not recorded. L10 adds a second assertion it fails. Because this room runs with loop closing off, the flake also narrows the cause of the two known flaky threaded C++ monocular cases. One note: L10's bar is loose on the take-up itself.
+
+#### Findings
+
+##### [should-fix] The revisit room's threaded C++ monocular case is flaky (3 of 17 runs, C++'s own scheme) and unrecorded; L10's bar is a second assertion it fails
+- **Where:**
+  - The case: `tests/orchestration/test_revisit_room.py:107` (`test_a_native_threaded_run_takes_the_first_map_up_again[tum-monocular-cpp]`). It fails at `:65` (`left == [REVISIT_AT + REVISIT_BLANKS]`) and at `:79` (L10's `REVISIT_ATE`).
+  - The ladder's known flaky cases, which do not list it: `docs/design/2026-10-02-slam-it-ladder.md:1207-1222`.
+- **Issue:**
+  - **The rate.** Of 17 threaded TUM monocular runs per scheme, C++'s own scheme failed 3; C++'s locking scheme and Rust failed none. The inline runs are deterministic and pass.
+  - **The failure is the same each time.** Map 1 ends at 6.85 cm against the 2.8 cm bar (2.08 cm in passing runs).
+  - **Where it starts.** Comparing a failing run with a passing one frame by frame: at frame 184, tracking reads one published view, not two, and asks for no keyframe. A passing run asks for one there.
+  - **Map 1 then degrades.**
+    - Its tracked points fall from about 250 to 73 by frame 208.
+    - Its second half drifts: 8.6 cm RMS against 0.86 cm.
+    - Tracking falls back to `local_pnp` at frame 211 and is lost from 213, while the camera can still see the room.
+    - It is relocalised into map 0 at frame 225, before the second blind stretch (230 to 259), not at frame 260.
+  - So the structural check at `:65`, which predates L10, already failed these runs. L10 did not create the flake, but layer 1 now fails this case on two counts.
+- **Why it matters:**
+  - **Layer 1.** About one layer-1 run in six fails here at random. That is on top of the loop room's and the merge room's known flaky cases, and the ladder itself says a flaky bar "would fail layer 1 and offline CI at random". Layer 1 at `03132905` passed by chance on this case.
+  - **The shared cause.** The revisit room has loop closing off (`REVISIT_OPTIONS`, `tests/orchestration/datasets.py:460`): no loop, global BA or merge runs. Yet it fails in the same family, the same mode and the same scheme as the merge room's recorded case. The loop room's item points at a global BA that shrank the map; the merge room's at merge timing. Neither can explain this run. The common factor is C++'s own scheme: tracking's keyframe decision on the views it reads.
+- **Evidence:**
+  ```
+  cpp #3: final map 0 1.22, map 1 6.85 cm (tracked 6.02); map 1 51 frames, 41 keyframes, scale 14.451, halves 4.27 / 8.63 cm, max 17.01 cm at frame 50; over bar [1]
+  cpp #6: final map 0 1.22, map 1 6.85 cm (tracked 5.95); ... identical ...                                                         over bar [1]
+  (the other 10 of that batch, and 4 of 5 earlier: map 0 1.13-1.22, map 1 2.08-2.11 cm; one earlier failure identical, 6.85 cm)
+  cpp locks: 17 of 17 pass (map 1 1.89-2.21 cm); rust: 17 of 17 pass (map 1 2.08 cm)
+  checks before L10 on the kept failing runs: FAIL "the first frame after the second blind stretch"
+  frame 184  pass {'asked': True,  'keyframe': True,  views: 2 read}
+             fail {'asked': False, 'keyframe': False, views: 1 read (11 keyframes, 761 points)}
+  passing run: map 1 tracked 160-229, left at 260 by relocalization; failing: 160-210, local_pnp 211, lost 213, relocalised into map 0 at 225
+  ```
+- **Suggested fix:** Record it as a known flaky case beside the other two, the project's practice for these:
+  - in the ladder's open items, and as "Known flaky" in the CHANGELOG's revisit-room entry (`CHANGELOG.md:153`);
+  - with its rate (3 of 17, C++'s own scheme only), its signature (frame 184), and the point that loop closing is off;
+  - with the investigation aimed at how C++'s own scheme publishes the views tracking's keyframe decision reads.
+
+  Do not widen the bar: the failure is real tracking degradation, not noise around the bar. If the owner wants layer 1 reliable before the merge, this is the cheapest of the three flaky cases to reproduce (about 15 s a run, about 1 in 6).
+
+##### [note] L10's bar catches gross take-up failures but lets a moderate misplacement through
+- **Where:** `tests/orchestration/test_revisit_room.py:42` (`REVISIT_ATE`) and `:76-79`.
+- **Issue:** Map 0 has 80 frames (76 in monocular), and only 20 come after the take-up. It is aligned once, so a constant error after the take-up is diluted by about √(f(1−f)) ≈ 0.43, and the alignment absorbs part of it. The bar is set from map 1, the map with the larger error, and leaves map 0 2.4 to 5 times headroom. This follows Run 2's own suggestion (the merge room's bar "would do"), so it is a note, not a defect.
+- **Evidence:** C++ inline. The shift is in metres in the truth's scale, along the worst world axis; the turn is about the take-up camera's centre.
+
+  | Mode | Shift that fails the bar now | Turn that fails it now | Off-by-one take-up anchor (map 0) | Shift that fails a 1.5 cm after-stretch check |
+  |---|---|---|---|---|
+  | RGB-D | 9.3 to 10.3 cm | 32.6° or more | 9.02 cm (fails) | 1.9 to 2.1 cm |
+  | stereo | 11.4 to 13.7 cm | 39.8° or more | 8.79 cm (fails) | 1.4 to 2.4 cm |
+  | monocular | 6.3 to 6.8 cm | 20.6° or more | 17.39 / 7.39 cm (fails) | 2.2 to 2.6 cm |
+
+  The stretch after the take-up measures 0.49, 0.73 and 0.51 cm as run. Off-by-one run ids are caught in every mode, so the commit's claim holds for that failure.
+- **Suggested fix:** Optional. Add the RMS of `final.maps[0].absolute.errors` over the frames from the take-up on (one alignment over map 0) under about 1.5 cm, 2 to 3 times what was measured. That checks the path the room exists for at about 2 cm.
+
+#### Checked and fine
+- **A12 matches run format 9.** All three `close` functions drop the places whose map ends in the closed one (`ends_in(p.map) == number`), the same rule `merge` uses. Run format 9 says a merged-away map's frames end in the map it joined (`src/slam_it/eval/runs.py:57-60`) and a reset map's frames are not in the trajectory. Pending places are cleared first, so no index goes stale. Each language's test passes.
+- **Chained merges.** In a Python atlas probe, map 2 was merged into map 1, then map 1 into map 0, with scales 0.7 and 0.625. Map 2's relative translations were divided by both scales and map 1's by the second (error 5.6e-17). Every frame ends in map 0. Resetting map 0 dropped all three maps' frames. C++ and Rust follow the same `ends_in` (Rust's with a cycle guard).
+- **The bake's merges.** All three languages record a merge on a frame tracked in the map merged away: inline via `merged_from` (`cpp/src/edge/pipeline.cpp:1721`, `rust/slam-it-edge/src/pipeline.rs:3157`), threaded on the frame of the keyframe that found it (`waiting.index`). Its `merge.map` is the map it joined, so `bundles._merged_into` and `follow` reproduce the atlas's `ends_in`, chains included.
+- **L9.** The test's `kept = D·Σ·T·G⁻¹ = Σ·rigid_of(T·G⁻¹)`, since D and Σ are both diagonal. The `S·G⁻¹` written before d0235820 (scale 0.875), `rigid_of(S·G⁻¹)` (scale 1) and `S·D·G⁻¹` all fail it. Tolerances are explicit (`rtol=0`, `atol=1e-12`).
+- **The native carry tests' known answer.** With `G = [gR, t]`, `G⁻¹ = [(1/g)Rᵀ, −(1/g)Rᵀt]` and `rigid_of(T·G⁻¹) = [R_T·Rᵀ, g·t_T − R_T·Rᵀ·t]`. Times 1.25, this is the test's value in both Rust and C++.
+  - Numerically, the hand-written value against `1.25·rigid_of(T·G⁻¹)` is 8.9e-16 apart, and the code against it 4.4e-16.
+  - `S·G⁻¹` is 0.76 off and `rigid_of(S·G⁻¹)` 0.51 off.
+  - The carried loop places the next keyframe at `D·(before)·G⁻¹` to 1.3e-15.
+  - C++'s `detail::carry_through` has the same steps as before its move into `detail`.
+- **H19.** A relative motion becomes `D·V·D⁻¹ = [R_V, g·t_V]` under the merge's re-posing. The tests check this (× 1/0.7, rotations left exactly as they were), ids moved on with -1 kept, and none stays none. Both pass. The last pose is left to `follow`, as documented.
+- **L10's alignment.**
+  - **Grouping.** `evaluate_absolute` groups by `pose_maps`, so map 0's two stretches are aligned once.
+  - **Alignment.** SE(3) in RGB-D and stereo; Sim(3) in monocular, one scale per map, which is right because a map taken up keeps its world and scale.
+  - **Unscored maps.** The `[0, 1]` assertion stops a map that cannot be scored from passing silently.
+  - **Margins.** The bars clear my Run 2 figures and every inline and locking or Rust threaded run, by 1.35 times (monocular map 1) to 1.55 times.
+- **Run ids.**
+  - **When they are read.** Each pipeline reads `matched_run`/`current_run` after the corrected keyframe has its run id: inline after `place_keyframe` (Python `:2326`, C++ `:1945`, Rust `:3544`), threaded after `atlas.record` inside the correction.
+  - **Numbering through a merge.** The run-id table is the matched map's, then the active map's, which lines up with `loops.merge`'s offsets (asserted in `_merge`).
+  - **After a take-up.** A map taken up again restores its own table.
+  - **In the viewer.** `loopsOf` matches by the sorted pair and the record's ends-in map, consistent with `keyframe_maps` and the merged map's loop edges.
+- **No new numerical or semantic faults** in `4009a8d5` (Rust's `merge_maps` lets its snapshot go before `atlas.merge`, so the refusal cannot fire there) or `69c096d3` (a pure refactor).
+- **State of the art:** the range makes no new method choices. The A12 rule and the loop's units are consistent with ORB-SLAM3's atlas semantics, and carrying the pending loop still goes beyond `MergeLocal`, which drops it.
