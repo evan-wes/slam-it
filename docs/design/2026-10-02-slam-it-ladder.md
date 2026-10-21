@@ -1177,10 +1177,21 @@ shared with the owner's other projects.
       scale rescales a whole map, irreversibly: a wide sanity bound, recorded when it refuses,
       or a check of the links between maps (pairwise consistency, PCM; graduated non-convexity,
       GNC), weighed with section 15's judged merges.
-    - **From a separate reference review:** the keyframes mapped while a merge waits are never
-      searched for a loop or a merge; the queue is drained by mapping each keyframe whole, where
-      ORB-SLAM3's `EmptyQueue` only inserts them; every merge copies whole maps; and
-      relocalisation in another map can drop a merge waiting.
+    - **The kept maps' number in Rust's searches (H23).** `kept_maps` returns
+      `map_id().unwrap_or(0)` as the tracked map's number, the default H2 removed from `close`
+      and `merge`; only relocalisation reads it, so loop closing's search and `merge_maps` could
+      take the kept maps alone.
+    - **A merge whose matched map is no longer kept, under option C (L13).** With loop closing
+      running while tracking switches or merges maps, Rust's `merge_maps` fails with
+      `InvalidInput`, ending the run, where it should drop the merge; and C++'s `Atlas::kept`
+      returns `MapRef`s pointing into its kept maps, which a change would leave dangling: C++
+      should hold its kept maps shared, as Rust does.
+    - **From a separate reference review** (a reference review of map merging against ORB-SLAM3
+      and other systems, written 2026-10-19 outside the repository; it is committed with the
+      follow-up): the keyframes mapped while a merge waits are never searched for a loop or a
+      merge; the queue is drained by mapping each keyframe whole, where ORB-SLAM3's `EmptyQueue`
+      only inserts them; every merge copies whole maps; and relocalisation in another map can
+      drop a merge waiting.
   - **Python's run-id tables rebuilt per call (H9).** `Atlas._runs_of` builds an array from a
     map's run-id list on every call, up to about five a frame (the reviewer measured 2.3 ms for
     100,000 entries, 3.5 ms for 300,000): grow the tables as arrays, or cache one until
