@@ -376,7 +376,9 @@ def test_a_loop_being_confirmed_is_carried_through_a_monocular_merge(
     it. Carried into the merged map (:func:`slam_it.edge.pipeline._carried`), it places it where
     the merge carried it, rigidly (``rigid_of(T G⁻¹)``), its scale still 1; on the active map's
     last keyframe, the next, it is confirmed, its projection finding at least as many points as
-    the same loop found in the active map (316; carried in the active map's units, 198).
+    the same loop found in the active map (316; carried in the active map's units, 198). A loop
+    of scale 1.25, the drift it measured, keeps it: ``diag(1.25, 1.25, 1.25, 1) rigid_of(T G⁻¹)``,
+    where ``rigid_of(S G⁻¹)``, equal at scale 1, would drop it (B4's review panel, run 2, L9).
     """
     a = two_scaled.active
     options = OPTIONS.with_settings({"loops.global_ba": False})
@@ -402,6 +404,11 @@ def test_a_loop_being_confirmed_is_carried_through_a_monocular_merge(
     )  # fmt: skip
     rigid = loops.rigid_of(pending.similarity @ sim3.inverse(to_world))
     np.testing.assert_allclose(carried.similarity, rigid, rtol=0, atol=1e-12)
+    sigma = np.diag([1.25, 1.25, 1.25, 1.0])
+    drifted = replace(pending, similarity=sigma @ a.kf_pose[last])
+    kept = pipeline._carried(drifted, merged, to_world).similarity
+    assert loops.scale_of(kept) == pytest.approx(1.25, rel=0, abs=1e-12)
+    np.testing.assert_allclose(kept, sigma @ rigid, rtol=0, atol=1e-12)
     m = merged.map
     after = loops.detect(
         m, keyframe_database(m, words), CAMERA, int(a.kf_id[following]) + merged.keyframe_offset,

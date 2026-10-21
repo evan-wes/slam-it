@@ -158,9 +158,9 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
     the merge, through a culled keyframe too, and the removed points and keyframes, against
     `rigid_of(T G⁻¹)`; a merged map reset, taking both maps' frames (A12); in Rust, a kept map
     a snapshot still holds refused, and moved out once let go (H20); a loop being confirmed
-    carried through the merge and confirmed on the next keyframe (`tests/edge/test_merges.py`),
-    and in Rust the carry itself, a loop of scale 1.25 keeping it, against its known answer
-    (`carry_through`, `pipeline.rs`'s own tests).
+    carried through the merge, a loop of scale 1.25 keeping it (L9), and confirmed on the next
+    keyframe (`tests/edge/test_merges.py`), and in Rust the carry itself, a loop of scale 1.25
+    keeping it, against its known answer (`carry_through`, `pipeline.rs`'s own tests).
   - `held()` and `TrackingState.merged` with a scaled `G` in each language (the native ones
     H19), a finished run's session refused in each language, and the Huber loss's known answer
     on one stereo observation in every backend (`initial_error` 10.0702).
