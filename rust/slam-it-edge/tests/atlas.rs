@@ -3,11 +3,13 @@
 //! one point removed, all carried into the matched map's world and units by a scaled `G`, against
 //! the known answer `rigid_of(T G⁻¹)` (as `tests/edge/test_atlas.py` holds Python's through a
 //! whole merge); the merged map, reset, taking the frames of both maps with it; and the refusals
-//! of a kept map that is not there, and of a map closed or merged with none tracked.
+//! of a kept map that is not there, of one a search still holds, and of a map closed or merged
+//! with none tracked.
 
 mod scene;
 
 use std::f64::consts::PI;
+use std::sync::Arc;
 
 use nalgebra::{Matrix4, Vector3};
 use slam_it_edge::atlas::Atlas;
@@ -152,4 +154,46 @@ fn a_kept_map_that_is_not_there_is_refused_by_its_number() {
     assert!(resumed.as_ref().is_err_and(|e| e.message.contains("map 7")));
     assert!(refused(resumed.map(|_| ())));
     assert!(refused(atlas.merge(7, &to_world()).map(|_| ())));
+}
+
+/// A kept map a search still holds (a [`Atlas::kept`] snapshot) is not taken out, to take up or
+/// merge with: `InvalidInput` naming it, the map still kept and the snapshot reading as before
+/// (B4's review panel, run 2, H20 and A13: it was copied out). Once the snapshot is let go, the
+/// atlas alone holds it, and it is moved out whole: taken up, then merged with.
+#[test]
+fn a_kept_map_a_search_still_holds_is_not_taken_out() {
+    let matched = scene_map();
+    let active = scene_map();
+    let mut atlas = Atlas::new(Options::default());
+    let still_held = |result: Result<(), Error>| {
+        result.is_err_and(|e| {
+            e.kind == ErrorKind::InvalidInput
+                && e.message.contains("map 0 is still held by a search")
+        })
+    };
+    atlas.start();
+    atlas.date(Some(&matched));
+    atlas.close(matched.clone(), None, false, true).unwrap();
+    let held = atlas.kept();
+    assert!(still_held(atlas.resume(0).map(|_| ())));
+    assert_eq!(atlas.map_id(), None);
+    atlas.start();
+    atlas.date(Some(&active));
+    assert!(still_held(atlas.merge(0, &to_world()).map(|_| ())));
+    assert_eq!(atlas.map_id(), Some(1));
+    assert_eq!(held[0].map.kf_id, matched.kf_id);
+    drop(held);
+    let look = atlas.kept();
+    assert_eq!(look.len(), 1);
+    assert_eq!(Arc::strong_count(&look[0]), 2); // the atlas's own, and this look's
+    drop(look);
+    atlas.merge(0, &to_world()).unwrap();
+    assert!(atlas.kept().is_empty());
+    let mut taking_up = Atlas::new(Options::default());
+    taking_up.start();
+    taking_up.date(Some(&matched));
+    taking_up.close(matched.clone(), None, false, true).unwrap();
+    let resumed = taking_up.resume(0).unwrap();
+    assert_eq!((resumed.number, &resumed.map.kf_id), (0, &matched.kf_id));
+    assert_eq!(taking_up.map_id(), Some(0));
 }

@@ -102,8 +102,9 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   `Atlas.point_run_ids`), so a tracked frame's reference keyframe and its keypoints' points are
   reported by the run's ids through a merge.
 - **From B4's review panel:** Rust's loop closing and relocalisation read the kept maps with the
-  atlas's lock let go (shared, `Arc`), so threaded tracking never waits on a search (A2), and
-  `loops::detect_merge` and `merge_candidates` take the maps by reference in C++ and Rust, as
+  atlas's lock let go (shared, `Arc`), so threaded tracking never waits on a search (A2), a kept
+  map a search still holds never taken out but refused, naming it, where it was copied out (H20,
+  A13), and `loops::detect_merge` and `merge_candidates` take the maps by reference in C++ and Rust, as
   relocalisation does; C++ and Rust keep each kept map as one `Kept`, its run ids with it (H2);
   `start_session` refuses a finished run in all three languages (H4); `eval.runs.tracking` gives
   a segment per stretch tracked in one map, and the worker's summary counts the maps a run ends
@@ -154,9 +155,11 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   - **The atlas through a monocular merge** (`tests/edge/test_atlas.py`,
     `cpp/tests/edge/test_atlas.cpp`, `rust/slam-it-edge/tests/atlas.rs`): frames placed through
     the merge, through a culled keyframe too, and the removed points and keyframes, against
-    `rigid_of(T G⁻¹)`; a loop being confirmed carried through the merge and confirmed on the
-    next keyframe (`tests/edge/test_merges.py`), and in Rust the carry itself, a loop of scale
-    1.25 keeping it, against its known answer (`carry_through`, `pipeline.rs`'s own tests).
+    `rigid_of(T G⁻¹)`; a merged map reset, taking both maps' frames (A12); in Rust, a kept map
+    a snapshot still holds refused, and moved out once let go (H20); a loop being confirmed
+    carried through the merge and confirmed on the next keyframe (`tests/edge/test_merges.py`),
+    and in Rust the carry itself, a loop of scale 1.25 keeping it, against its known answer
+    (`carry_through`, `pipeline.rs`'s own tests).
   - `held()` and `TrackingState.merged` with a scaled `G` in each language (the native ones
     H19), a finished run's session refused in each language, and the Huber loss's known answer
     on one stereo observation in every backend (`initial_error` 10.0702).

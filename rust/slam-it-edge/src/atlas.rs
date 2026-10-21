@@ -287,7 +287,8 @@ impl Atlas {
     /// go, so that tracking, which takes the lock on every frame, never waits on a search over
     /// them (threaded loop closing's, relocalisation's). Only tracking's thread changes the maps
     /// kept ([`Atlas::close`], [`Atlas::resume`], [`Atlas::merge`]), with the threads settled or
-    /// drained; a map taken out while a search still holds it is copied out.
+    /// drained, so every search has let them go by then: a map is taken out whole, never copied,
+    /// and taking out one a search still holds is `InvalidInput` naming it.
     ///
     /// # Returns
     ///
@@ -454,19 +455,30 @@ impl Atlas {
     ///
     /// # Returns
     ///
-    /// The kept map.
+    /// The map with its database and number, moved out of its share, and its ids' run ids.
     ///
     /// # Errors
     ///
-    /// `InvalidInput` naming the number if no map kept has it.
-    fn take(&mut self, name: &str, number: i64) -> Result<Kept> {
+    /// `InvalidInput` naming the number if no map kept has it, or if a search still holds it
+    /// ([`Atlas::kept`]); the map stays kept then.
+    fn take(&mut self, name: &str, number: i64) -> Result<(Indexed, Runs)> {
         let Some(at) = self.kept.iter().position(|kept| kept.map.number == number) else {
             return fail(
                 ErrorKind::InvalidInput,
                 format!("{name}: map {number} is not kept"),
             );
         };
-        Ok(self.kept.remove(at))
+        let Kept { map, runs } = self.kept.remove(at);
+        match Arc::try_unwrap(map) {
+            Ok(map) => Ok((map, runs)),
+            Err(map) => {
+                self.kept.insert(at, Kept { map, runs });
+                fail(
+                    ErrorKind::InvalidInput,
+                    format!("{name}: map {number} is still held by a search"),
+                )
+            }
+        }
     }
 
     /// Takes a kept map up again as the current one: relocalisation found the track in it.
@@ -481,12 +493,12 @@ impl Atlas {
     ///
     /// # Errors
     ///
-    /// `InvalidInput` naming the number if no map kept has it.
+    /// `InvalidInput` naming the number if no map kept has it, or if a search still holds it.
     pub fn resume(&mut self, number: i64) -> Result<Indexed> {
-        let kept = self.take("resume", number)?;
+        let (map, runs) = self.take("resume", number)?;
         self.map_id = Some(number);
-        self.runs = kept.runs;
-        Ok(Arc::unwrap_or_clone(kept.map))
+        self.runs = runs;
+        Ok(map)
     }
 
     /// Takes the current map into the kept map it merged with (`loops::merge`): the merged map
@@ -509,15 +521,13 @@ impl Atlas {
     ///
     /// # Errors
     ///
-    /// `InvalidInput` if no map is being tracked, or naming the number if no map kept has it.
+    /// `InvalidInput` if no map is being tracked, or naming the number if no map kept has it or
+    /// a search still holds it.
     pub fn merge(&mut self, matched: i64, to_world: &Matrix4<f64>) -> Result<Database> {
         let Some(current) = self.map_id else {
             return fail(ErrorKind::InvalidInput, "merge: no map is being tracked");
         };
-        let Kept {
-            map: kept,
-            mut runs,
-        } = self.take("merge", matched)?;
+        let (kept, mut runs) = self.take("merge", matched)?;
         let back = sim3::inverse(to_world);
         let scale = scale_of(&back);
         let lives = &mut self.lives;
@@ -549,7 +559,7 @@ impl Atlas {
         self.runs = runs;
         self.merged_into.insert(current, matched);
         self.map_id = Some(matched);
-        Ok(Arc::try_unwrap(kept).map_or_else(|shared| shared.database.clone(), |own| own.database))
+        Ok(kept.database)
     }
 
     /// Keeps a tracked frame's place: its reference keyframe and its pose relative to it.
