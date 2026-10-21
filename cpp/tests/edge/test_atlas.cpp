@@ -67,6 +67,22 @@ bool near(const Matrix& got, const Matrix& expected) {
   return (got - expected).cwiseAbs().maxCoeff() < kTolerance;
 }
 
+/// @brief The merged map as a merge makes it: the matched map's keyframes, then the active map's
+///        first `count`, carried by `G`.
+/// @param matched The matched map.
+/// @param count The active map's keyframes taken in.
+/// @return The map; none if a keyframe could not be inserted.
+std::optional<edge::Map> merged_map(const edge::Map& matched, std::size_t count) {
+  edge::Map merged = matched;
+  const std::vector<std::int64_t> none(scene::kPoints, -1);
+  for (std::size_t k = 0; k < count; ++k) {
+    if (!edge::insert_keyframe(merged, scene::frame(k, false), carried(scene::pose(k)), none)) {
+      return std::nullopt;
+    }
+  }
+  return merged;
+}
+
 /// @brief Check the records a monocular merge carries: two frames tracked in the active map,
 ///        one against keyframe 1, one against keyframe 2, which is then culled, so its frame is
 ///        placed through its parent; and the culled keyframe's and the removed point's last
@@ -99,23 +115,20 @@ void check_merge_carries_the_records(int& failures) {
   }
   atlas.record(&*active);
   expect(atlas.merge(0, to_world()).has_value(), "the merge is made", failures);
-  // The merged map: the matched map's keyframes, then the active map's left, carried.
-  edge::Map merged = *matched;
-  const std::vector<std::int64_t> none(scene::kPoints, -1);
-  for (std::size_t k = 0; k < 2; ++k) {
-    if (!edge::insert_keyframe(merged, scene::frame(k, false), carried(scene::pose(k)), none)) {
-      expect(false, "the merged map is built", failures);
-      return;
-    }
+  // The merged map: the matched map's keyframes, then the active map's two left, carried.
+  const std::optional<edge::Map> merged = merged_map(*matched, 2);
+  if (!merged) {
+    expect(false, "the merged map is built", failures);
+    return;
   }
-  const edge::Trajectory trajectory = atlas.trajectory(&merged);
+  const edge::Trajectory trajectory = atlas.trajectory(&*merged);
   expect(trajectory.poses.size() == 2 && near(trajectory.poses[0], carried(scene::pose(2))) &&
              near(trajectory.poses[1], carried(through_culled)),
          "each frame lands where the merge carries it, through a culled keyframe too", failures);
   expect(trajectory.maps == std::vector<std::int64_t>{0, 0} &&
              trajectory.tracked_maps == std::vector<std::int64_t>{1, 1},
          "the frames end in the matched map, tracked in the active one", failures);
-  const edge::Lifetimes lives = atlas.lifetimes(&merged);
+  const edge::Lifetimes lives = atlas.lifetimes(&*merged);
   const auto keyframe = static_cast<std::size_t>(scene::kKeyframes + 2);
   const auto point = static_cast<std::size_t>(scene::kPoints) + kRemoved;
   const Eigen::Matrix4d g = to_world();
@@ -150,20 +163,17 @@ void check_a_merged_map_reset_drops_both_maps_frames(int& failures) {
   atlas.place_frame(*active, 1.0, 1, scene::pose(2));
   atlas.place_frame(*active, 2.0, 2, scene::pose(2));
   expect(atlas.merge(0, to_world()).has_value(), "the merge is made", failures);
-  // The merged map: the matched map's keyframes, then the active map's, carried.
-  edge::Map merged = *matched;
-  const std::vector<std::int64_t> none(scene::kPoints, -1);
-  for (std::size_t k = 0; k < scene::kKeyframes; ++k) {
-    if (!edge::insert_keyframe(merged, scene::frame(k, false), carried(scene::pose(k)), none)) {
-      expect(false, "the merged map is built", failures);
-      return;
-    }
+  // The merged map: the matched map's keyframes, then all the active map's, carried.
+  const std::optional<edge::Map> merged = merged_map(*matched, scene::kKeyframes);
+  if (!merged) {
+    expect(false, "the merged map is built", failures);
+    return;
   }
-  const edge::Trajectory before = atlas.trajectory(&merged);
+  const edge::Trajectory before = atlas.trajectory(&*merged);
   expect(before.maps == std::vector<std::int64_t>{0, 0, 0} &&
              before.tracked_maps == std::vector<std::int64_t>{0, 1, 1},
          "every frame ends in the merged map", failures);
-  expect(atlas.close(merged, std::nullopt, true, false).has_value(), "the merged map is reset",
+  expect(atlas.close(*merged, std::nullopt, true, false).has_value(), "the merged map is reset",
          failures);
   expect(atlas.trajectory(nullptr).poses.empty(), "neither map's frames stay in the trajectory",
          failures);
