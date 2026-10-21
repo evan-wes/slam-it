@@ -8,9 +8,11 @@ back over the first map's start, which the second map has not seen. At
 design's section 14, item 2): be lost once, on the first black stretch; on the first frame after
 the second, relocalise in the first map, kept, leave the second, kept too (``left`` recorded),
 and go on in the first, tracking every frame to the end there, the maps it tracks in going 0,
-1, 0; keep both maps to the end; and keep each map's final trajectory within
-:data:`REVISIT_ATE` of the truth, map 0 aligned once over both its stretches, so a map taken up
-in the wrong world, or with the wrong run ids, fails. Inline in every language, threaded in each
+1, 0; keep both maps to the end; keep each map's final trajectory within :data:`REVISIT_ATE` of
+the truth, map 0 aligned once over both its stretches, so a map taken up in the wrong world, or
+with the wrong run ids, fails; and keep map 0's frames from the take-up on, aligned with the rest
+of map 0, within :data:`REVISIT_TAKEN_UP_ATE`, so that a take-up a couple of centimetres off,
+which the whole map's bar dilutes, fails too. Inline in every language, threaded in each
 native scheme (:data:`tests.orchestration.test_merge_room_threads.THREADED`), and under
 ThreadSanitizer in both of C++'s (``test_merge_room_tsan.py``).
 """
@@ -47,6 +49,14 @@ threaded in each native scheme; and never above the merge room's bar
 (:data:`tests.orchestration.test_merge_room.MERGE_ATE`), which monocular's then is."""
 
 
+REVISIT_TAKEN_UP_ATE = 0.015
+"""The RMSE (metres) of map 0's final ATE over its frames from the take-up on, map 0 aligned once
+over both its stretches, every mode stays under: two to three times the measured (2026-10-20,
+C++ inline: 0.49 cm RGB-D, 0.73 cm stereo, 0.51 cm monocular). It holds the take-up itself, the
+path this room exists for, at about 2 cm (B4's review panel, run 3, L15): the 20 frames after it
+are a quarter of map 0's, so :data:`REVISIT_ATE` lets a shift of them by 6 to 14 cm through."""
+
+
 def assert_revisited(run: runs.Run, folders: Room, mode: str) -> None:
     """Assert a run of the revisit room took its first map up again, as the module docstring says.
 
@@ -77,6 +87,11 @@ def assert_revisited(run: runs.Run, folders: Room, mode: str) -> None:
     assert [error.map for error in final.maps] == [0, 1]
     for error in final.maps:
         assert error.absolute.rmse < REVISIT_ATE[mode], f"map {error.map}"
+    first = final.maps[0]
+    rows = np.flatnonzero(run.pose_maps == 0)
+    assert first.matched == len(rows)  # every frame has its truth: the errors are by these rows
+    taken_up = first.absolute.errors[since[rows]]
+    assert np.sqrt(np.mean(taken_up**2)) < REVISIT_TAKEN_UP_ATE, "map 0 from the take-up on"
 
 
 def test_the_revisit_room_is_blind_twice_within_the_loss_window_the_second_time() -> None:

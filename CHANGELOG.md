@@ -164,7 +164,8 @@ panel's IDs.
     first map's start; every language, inline, and each native scheme, threaded, takes the
     first map up again by relocalisation (`left` recorded, the maps tracked in going 0, 1, 0),
     each map's final ATE within a per-mode bar, map 0 aligned once over both its stretches (L10),
-    and ThreadSanitizer runs it threaded in both C++ schemes.
+    and map 0's frames from the take-up on within 1.5 cm, so that a take-up some 2 cm off fails
+    too (run 3's L15); ThreadSanitizer runs it threaded in both C++ schemes.
   - **The atlas through a monocular merge** (`tests/edge/test_atlas.py`,
     `cpp/tests/edge/test_atlas.cpp`, `rust/slam-it-edge/tests/atlas.rs`): frames placed through
     the merge, through a culled keyframe too, and the removed points and keyframes, against
