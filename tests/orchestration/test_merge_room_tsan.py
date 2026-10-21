@@ -42,4 +42,4 @@ def test_the_revisit_room_takes_its_first_map_up_under_thread_sanitizer(
 ) -> None:
     """Threaded, RGB-D, the first map is taken up again as the bar asks, with no race reported."""
     run = run_sanitized(revisit_folders.tum, REVISIT_OPTIONS, tmp_path / "run", locks=locks)
-    assert_revisited(run)
+    assert_revisited(run, revisit_folders, "rgbd")
