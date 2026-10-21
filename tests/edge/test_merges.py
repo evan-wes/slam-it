@@ -18,6 +18,7 @@ import pytest
 from slam_it import backends
 from slam_it.edge import covisibility, loops, pipeline
 from slam_it.edge import map as maps
+from slam_it.edge.atlas import Atlas
 from slam_it.edge.database import Indexed
 from slam_it.edge.loops import Merge, MergeDetection, Merging, Outcome, Pending
 from slam_it.edge.map import Map
@@ -549,3 +550,19 @@ def test_every_core_refuses_a_merge_it_cannot_make(backend: str, two_rigid: TwoM
         compiled.merge(**arguments, found=crossing(two_rigid.active.next_kf_id), mode="rgbd")
     with pytest.raises(ValueError, match="mode"):
         compiled.merge(**arguments, found=crossing(loop.current), mode="lidar")
+
+
+def test_a_merge_with_a_map_not_kept_is_refused_by_its_number(two_rigid: TwoMaps) -> None:
+    """The merge's matched map is not kept: InvalidInputError naming it, as the atlas's own.
+
+    No run reaches it, a merge waiting being dropped when the track leaves its map (B4's review
+    panel, run 2, H15: it raised a bare StopIteration).
+    """
+    found = _found(two_rigid)
+    atlas = Atlas(OPTIONS)
+    atlas.start()
+    with pytest.raises(InvalidInputError, match=f"merge: map {found.map} is not kept"):
+        pipeline._merged(
+            pipeline.LoopState(), pipeline.MapOwner(), atlas, found, two_rigid.active,
+            camera=CAMERA, mode=_mode(two_rigid), options=OPTIONS,
+        )  # fmt: skip

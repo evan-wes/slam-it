@@ -32,7 +32,8 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   and culled keyframes' poses relative to their keyframes into its units (the panel's L1). A
   merged map that is reset drops the frames of the maps merged into it with its own, as a reset
   map's frames are not in the trajectory (A12). A kept map that is not there is `InvalidInput`
-  naming its number, in all three languages (H2).
+  naming its number, in all three languages, at the atlas (H2) and at the merge's lookup of the
+  matched map (H15).
 - **Relocalisation in every map** (`relocalization.relocalize_across`, with
   `database.merge_candidates` and `database.Indexed`): each map's database finds its own
   candidates, its words counted within the map (B1's panel, L7), all tried best score first. A

@@ -1921,7 +1921,7 @@ fn carry_through(
 ///
 /// # Errors
 ///
-/// `InvalidInput` for a matched map not kept; the merge's or the database's.
+/// `InvalidInput` naming the matched map if it is not kept; the merge's or the database's.
 fn merge_maps(
     state: &mut LoopState,
     shared: &Shared,
@@ -1939,7 +1939,7 @@ fn merge_maps(
         let Some(matched) = kept.iter().find(|kept| kept.number == found.map) else {
             return fail(
                 ErrorKind::InvalidInput,
-                "merge: the matched map is not kept",
+                format!("merge: map {} is not kept", found.map),
             );
         };
         to_world = loops::merge_transform(m, found)?;

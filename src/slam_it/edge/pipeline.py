@@ -1460,9 +1460,13 @@ def _merged(  # noqa: PLR0913 -- loop closing's state, the maps, the merge, the 
     By :func:`slam_it.edge.loops.merge`. The merged map is tracked on, with the matched map's
     number and the matched map's database brought to its keyframes, published with the
     correction it counts (:meth:`MapOwner.apply_merge`); the loop being confirmed is carried
-    into it.
+    into it. A matched map not kept is :class:`~slam_it.foundations.errors.InvalidInputError`
+    naming its number, as the atlas refuses one (:meth:`Atlas.merge`): no run reaches it, a merge
+    waiting being dropped when the track leaves its map.
     """
-    matched = next(k for k in atlas.kept() if k.number == found.map)
+    matched = next((k for k in atlas.kept() if k.number == found.map), None)
+    if matched is None:
+        raise InvalidInputError(f"merge: map {found.map} is not kept")
     to_world = loops.merge_transform(held, found)
     merged = loops.merge(held, matched.map, camera, found, mode=mode, options=options)
     atlas.merge(found.map, merged, to_world)

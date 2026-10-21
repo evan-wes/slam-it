@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -125,7 +126,8 @@ void carry_through(loops::Pending& pending, const loops::Merged& merged,
 /// @param found The merge.
 /// @param mode The sensor mode.
 /// @param options The settings.
-/// @return The merge made; a stage's error.
+/// @return The merge made; `InvalidInput` naming the matched map if it is not kept; a stage's
+///         error.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the maps' holders, as Python's
 Result<Joined> merge_held(LoopState& state, MapOwner& owner, Atlas& atlas, const Map& m,
                           const Camera& camera, const loops::Merge& found, Mode mode,
@@ -133,7 +135,8 @@ Result<Joined> merge_held(LoopState& state, MapOwner& owner, Atlas& atlas, const
   const std::vector<MapRef> others = atlas.kept();
   const auto matched = std::ranges::find(others, found.map, &MapRef::number);
   if (matched == others.end()) {
-    return fail(ErrorKind::kInvalidInput, "merge: the matched map is not kept");
+    return fail(ErrorKind::kInvalidInput,
+                "merge: map " + std::to_string(found.map) + " is not kept");
   }
   auto to_world = loops::merge_transform(m, found);
   if (!to_world) {
