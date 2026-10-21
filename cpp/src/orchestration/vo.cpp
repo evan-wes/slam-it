@@ -633,18 +633,13 @@ Result<Spread> spread_json(const Eigen::Matrix4d& similarity,
                 .global_ba = std::move(*ba)};
 }
 
-/// @brief A loop's correction as JSON (`slam_it.edge.loops.CorrectionSummary.as_dict`), its
-///        keyframes by the run's ids too, as `slam_it.edge.pipeline.LoopSummary.as_dict` writes
-///        them (`matched_run`, `current_run`).
-/// @param s The summary.
-/// @param run_ids Its matched and current keyframes by the run's ids.
-/// @return Its object; `InvalidInput` without the run's ids.
-Result<eval::runs::JsonValue> correction_json(
-    const edge::loops::CorrectionSummary& s,
-    const std::optional<std::array<std::int64_t, 2>>& run_ids) {
-  if (!run_ids) {
-    return fail(ErrorKind::kInvalidInput, "loop: a correction without its keyframes' run ids");
-  }
+/// @brief A loop's correction as JSON (`slam_it.edge.pipeline.Corrected.as_dict`): the
+///        summary's (`slam_it.edge.loops.CorrectionSummary.as_dict`), its keyframes by the run's
+///        ids too (`matched_run`, `current_run`).
+/// @param corrected The correction.
+/// @return Its object; a graph solve's error.
+Result<eval::runs::JsonValue> correction_json(const edge::Corrected& corrected) {
+  const edge::loops::CorrectionSummary& s = corrected.summary;
   auto spread = spread_json(s.similarity, s.essential, s.global_ba);
   if (!spread) {
     return std::unexpected(std::move(spread.error()));
@@ -660,8 +655,8 @@ Result<eval::runs::JsonValue> correction_json(
                  {"edges", s.edges},
                  {"essential", std::move(spread->essential)},
                  {"global_ba", std::move(spread->global_ba)},
-                 {"matched_run", (*run_ids)[0]},
-                 {"current_run", (*run_ids)[1]}});
+                 {"matched_run", corrected.run_ids[0]},
+                 {"current_run", corrected.run_ids[1]}});
 }
 
 /// @brief A merge's welding BA as JSON (`slam_it.edge.loops.WeldSummary.as_dict`).
@@ -720,9 +715,7 @@ Result<eval::runs::JsonValue> loop_json(const edge::LoopSummary& s) {
   if (!detection) {
     return std::unexpected(std::move(detection.error()));
   }
-  auto correction = or_null(s.correction, [&](const edge::loops::CorrectionSummary& c) {
-    return correction_json(c, s.run_ids);
-  });
+  auto correction = or_null(s.correction, correction_json);
   if (!correction) {
     return std::unexpected(std::move(correction.error()));
   }

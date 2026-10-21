@@ -280,6 +280,40 @@ class LostSummary:
 
 
 @dataclass(frozen=True)
+class Corrected:
+    """A loop's correction as a run records it: how it went, and its keyframes by the run's ids.
+
+    The run's ids live with the correction, so that no correction is without them
+    (B4's review panel, run 3, A15): :mod:`slam_it.edge.loops` sits below the atlas and its
+    :class:`slam_it.edge.loops.CorrectionSummary` cannot know them.
+
+    Attributes
+    ----------
+    summary : slam_it.edge.loops.CorrectionSummary
+        How the correction went, its keyframes by the map's ids, which a later merge renumbers.
+    run_ids : tuple of int
+        Its matched and current keyframes by the run's ids (the ids ``keyframe_loops.npy``
+        holds, :meth:`slam_it.edge.atlas.Atlas.run_ids`), which a later merge does not renumber.
+    """
+
+    summary: CorrectionSummary
+    run_ids: tuple[int, int]
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the correction as JSON values.
+
+        Returns
+        -------
+        dict
+            The summary's (:meth:`slam_it.edge.loops.CorrectionSummary.as_dict`), its keyframes
+            by the run's ids too, ``matched_run`` and ``current_run``, beside its ``matched``
+            and ``current`` by the map's.
+        """
+        matched_run, current_run = self.run_ids
+        return self.summary.as_dict() | {"matched_run": matched_run, "current_run": current_run}
+
+
+@dataclass(frozen=True)
 class LoopSummary:
     """How loop closing went on a keyframe, as a run records it.
 
@@ -289,23 +323,18 @@ class LoopSummary:
     ----------
     detection : slam_it.edge.loops.DetectionSummary
         The search for a loop.
-    correction : slam_it.edge.loops.CorrectionSummary or None
-        The correction, when a loop closed.
+    correction : Corrected or None
+        The correction, with its keyframes by the run's ids, when a loop closed.
     merging : slam_it.edge.loops.DetectionSummary or None
         The search for a merge, when other maps are kept (:func:`slam_it.edge.loops.detect_merge`).
     merge : slam_it.edge.loops.MergeSummary or None
         The merge, when one was found.
-    run_ids : tuple of int or None
-        The correction's matched and current keyframes by the run's ids (the ids
-        ``keyframe_loops.npy`` holds, :meth:`slam_it.edge.atlas.Atlas.run_ids`), which a later
-        merge does not renumber as it does the map's; None without a correction.
     """
 
     detection: DetectionSummary
-    correction: CorrectionSummary | None
+    correction: Corrected | None
     merging: DetectionSummary | None = None
     merge: MergeSummary | None = None
-    run_ids: tuple[int, int] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the summary as JSON values.
@@ -313,18 +342,12 @@ class LoopSummary:
         Returns
         -------
         dict
-            ``detection``, ``correction``, ``merging`` and ``merge``, each but the first an
-            object or None; the correction's keyframes by the run's ids in it too,
-            ``matched_run`` and ``current_run``, beside its ``matched`` and ``current`` by the
-            map's.
+            ``detection``, ``correction`` (:meth:`Corrected.as_dict`), ``merging`` and
+            ``merge``, each but the first an object or None.
         """
-        correction = _record(self.correction)
-        if correction is not None:
-            assert self.run_ids is not None
-            correction |= {"matched_run": self.run_ids[0], "current_run": self.run_ids[1]}
         return {
             "detection": self.detection.as_dict(),
-            "correction": correction,
+            "correction": _record(self.correction),
             "merging": _record(self.merging),
             "merge": _record(self.merge),
         }
@@ -1519,12 +1542,13 @@ def _search(  # noqa: PLR0913 -- loop closing's state, the map and its database,
     return found, merging
 
 
-def _run_ids(atlas: Atlas, correction: CorrectionSummary | None) -> tuple[int, int] | None:
-    """Return a correction's matched and current keyframes by the run's ids; None without one."""
-    if correction is None:
-        return None
+def _corrected(atlas: Atlas, correction: CorrectionSummary) -> Corrected:
+    """Return a correction with its matched and current keyframes by the run's ids.
+
+    The atlas's current map is the corrected one, recorded.
+    """
     matched, current = atlas.run_ids(np.array([correction.matched, correction.current]))
-    return int(matched), int(current)
+    return Corrected(correction, (int(matched), int(current)))
 
 
 @dataclass(frozen=True)
@@ -1580,11 +1604,8 @@ def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settin
         with owner.stopped() as held:
             fixed = loops.correct(held, camera, found.loop, mode=mode, options=options)
             owner.apply_correction(fixed.map)
-        correction = fixed.summary
-    summary = LoopSummary(
-        detection=found.summary, correction=correction, merging=searched,
-        run_ids=_run_ids(atlas, correction),
-    )  # fmt: skip
+        correction = _corrected(atlas, fixed.summary)
+    summary = LoopSummary(detection=found.summary, correction=correction, merging=searched)
     return _LoopStep(summary, corrected=correction is not None)
 
 
@@ -1887,7 +1908,7 @@ class _Threads:
                 seconds = time.perf_counter() - start
                 self.closing.waiting = WaitingMerge(index, merging.merge, summary, seconds)
                 return
-            correction, run_ids = None, None
+            correction = None
             if found.loop is not None:
                 with self.owner.stopped() as held:
                     generation = self.generation.next()
@@ -1897,13 +1918,10 @@ class _Threads:
                     self.owner.apply_correction(fixed.map)
                     self.atlas.record(self.owner.read())
                     self.owner.clear_gone()
-                    correction = fixed.summary
-                    run_ids = _run_ids(self.atlas, correction)
+                    correction = _corrected(self.atlas, fixed.summary)
                     if self.options.loops.global_ba:
                         copy, self._due = self.owner.read(), generation
-        summary = LoopSummary(
-            detection=found.summary, correction=correction, merging=searched, run_ids=run_ids
-        )
+        summary = LoopSummary(detection=found.summary, correction=correction, merging=searched)
         seconds = time.perf_counter() - start
         self._complete(Completion(index, {"loop_seconds": seconds, "loop": summary.as_dict()}))
         if copy is not None:

@@ -161,40 +161,47 @@ pub struct LostSummary {
     pub reset: bool,
 }
 
+/// A loop's correction as a run records it (`slam_it.edge.pipeline.Corrected`): how it went,
+/// and its keyframes by the run's ids, which live with it so that no correction is without them
+/// (B4's review panel, run 3, A15); [`loops`] sits below the atlas, and its
+/// [`CorrectionSummary`] cannot know them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Corrected {
+    /// How the correction went, its keyframes by the map's ids, which a later merge renumbers.
+    pub summary: CorrectionSummary,
+    /// Its matched and current keyframes by the run's ids (the ids `keyframe_loops.npy` holds,
+    /// [`Atlas::run_id`]), which a later merge does not renumber.
+    pub run_ids: [i64; 2],
+}
+
 /// How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`); its time is the
 /// frame's `loop_seconds`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoopSummary {
     /// The search for a loop.
     pub detection: DetectionSummary,
-    /// The correction, when a loop closed.
-    pub correction: Option<CorrectionSummary>,
+    /// The correction, with its keyframes by the run's ids, when a loop closed.
+    pub correction: Option<Corrected>,
     /// The search for a merge, when other maps are kept (`loops::detect_merge`).
     pub merging: Option<DetectionSummary>,
     /// The merge, when one was found.
     pub merge: Option<MergeSummary>,
-    /// The correction's matched and current keyframes by the run's ids (the ids
-    /// `keyframe_loops.npy` holds, [`Atlas::run_id`]), which a later merge does not renumber as
-    /// it does the map's; set with the correction, `None` without one.
-    pub run_ids: Option<[i64; 2]>,
 }
 
-/// A correction's matched and current keyframes by the run's ids
-/// (`slam_it.edge.pipeline._run_ids`).
+/// A correction with its matched and current keyframes by the run's ids
+/// (`slam_it.edge.pipeline._corrected`).
 ///
 /// # Arguments
 ///
-/// * `atlas` - The atlas, its current map the corrected one.
-/// * `correction` - The correction.
+/// * `atlas` - The atlas, its current map the corrected one, recorded.
+/// * `summary` - The correction.
 ///
 /// # Returns
 ///
-/// The two run ids, the matched keyframe's first.
-fn run_ids_of(atlas: &Atlas, correction: &CorrectionSummary) -> [i64; 2] {
-    [
-        atlas.run_id(correction.matched),
-        atlas.run_id(correction.current),
-    ]
+/// The correction, the matched keyframe's run id first.
+fn corrected(atlas: &Atlas, summary: CorrectionSummary) -> Corrected {
+    let run_ids = [atlas.run_id(summary.matched), atlas.run_id(summary.current)];
+    Corrected { summary, run_ids }
 }
 
 /// How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each `None`
@@ -2065,7 +2072,6 @@ fn search(
             correction: None,
             merging: merging.as_ref().map(|m| m.summary.clone()),
             merge: None,
-            run_ids: None,
         },
         closed: found.closed,
         merge: merging.and_then(|m| m.merge),
@@ -2135,12 +2141,9 @@ fn close_loops(
         });
     }
     if let Some(closed) = &closed {
-        summary.correction =
+        let fixed =
             owner.stopped(|m| loops::correct(m, camera, closed, mode, options).map(Some))?;
-        summary.run_ids = summary
-            .correction
-            .as_ref()
-            .map(|c| run_ids_of(&lock(&shared.atlas), c));
+        summary.correction = fixed.map(|fixed| corrected(&lock(&shared.atlas), fixed));
     }
     Ok(Looped {
         corrected: summary.correction.is_some(),
@@ -2510,10 +2513,6 @@ fn search_loops(shared: &Arc<Shared>, steps: &Arc<Steps>, item: &Searched) -> Re
             Some(closed) => correct_loop(shared, steps, closed, &mut started)?,
             None => None,
         };
-        summary.run_ids = summary
-            .correction
-            .as_ref()
-            .map(|c| run_ids_of(&lock(&shared.atlas), c));
         summary
     };
     steps.complete(Completion {
@@ -2555,7 +2554,9 @@ fn launch(shared: &Arc<Shared>, steps: &Arc<Steps>, started: GlobalStart) -> Res
 }
 
 /// Corrects a loop with mapping stopped, without global BA, and takes the copy global BA
-/// solves.
+/// solves. The correction's keyframes are read by the run's ids inside the stop, once the
+/// atlas has recorded the corrected map, as Python reads them (B4's review panel, run 3, A18):
+/// nothing can change the atlas's current map between the two.
 ///
 /// # Arguments
 ///
@@ -2566,7 +2567,7 @@ fn launch(shared: &Arc<Shared>, steps: &Arc<Steps>, started: GlobalStart) -> Res
 ///
 /// # Returns
 ///
-/// The correction.
+/// The correction, with its keyframes by the run's ids.
 ///
 /// # Errors
 ///
@@ -2576,24 +2577,28 @@ fn correct_loop(
     steps: &Steps,
     closed: &Loop,
     started: &mut GlobalStart,
-) -> Result<Option<CorrectionSummary>> {
+) -> Result<Option<Corrected>> {
     shared.owner.stopped(|m| {
         started.generation = steps.generation.next();
         started.superseded = steps.generation.stop();
-        let corrected = loops::correct(
+        let fixed = loops::correct(
             m,
             &steps.camera,
             closed,
             steps.mode,
             &steps.without_global_ba,
         )?;
-        lock(&shared.atlas).record(Some(m));
+        let correction = {
+            let mut atlas = lock(&shared.atlas);
+            atlas.record(Some(m));
+            corrected(&atlas, fixed)
+        };
         map::clear_gone(m);
         if steps.options.loops.global_ba {
             started.copy = Some(m.clone());
             *lock(&steps.due) = Some(started.generation);
         }
-        Ok(Some(corrected))
+        Ok(Some(correction))
     })
 }
 

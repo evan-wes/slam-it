@@ -97,14 +97,15 @@ struct Joined {
   Eigen::Matrix4d to_world{Eigen::Matrix4d::Identity()};
 };
 
-/// @brief A correction's matched and current keyframes by the run's ids
-///        (`slam_it.edge.pipeline._run_ids`).
-/// @param atlas The atlas, its current map the corrected one.
-/// @param correction The correction.
-/// @return The two run ids, the matched keyframe's first.
-std::array<std::int64_t, 2> run_ids_of(const Atlas& atlas,
-                                       const loops::CorrectionSummary& correction) {
-  return {atlas.run_id(correction.matched), atlas.run_id(correction.current)};
+/// @brief A correction with its matched and current keyframes by the run's ids
+///        (`slam_it.edge.pipeline._corrected`).
+/// @param atlas The atlas, its current map the corrected one, recorded.
+/// @param summary The correction.
+/// @return The correction, the matched keyframe's run id first.
+Corrected corrected(const Atlas& atlas, loops::CorrectionSummary summary) {
+  const std::array<std::int64_t, 2> run_ids{atlas.run_id(summary.matched),
+                                            atlas.run_id(summary.current)};
+  return Corrected{.summary = std::move(summary), .run_ids = run_ids};
 }
 
 /// @brief Merge `m`, the map being tracked, held with mapping stopped, into the kept map a
@@ -584,9 +585,6 @@ class PipelineThreads {
       }
       summary.correction = std::move(*fixed);
     }
-    if (summary.correction) {
-      summary.run_ids = run_ids_of(atlas_, *summary.correction);
-    }
     Completion done;
     done.frame = item.index;
     done.loop_seconds = Seconds(Clock::now() - start).count();
@@ -623,33 +621,36 @@ class PipelineThreads {
   }
 
   /// @brief Correct a loop with mapping stopped, without global BA, and take the copy global BA
-  ///        solves.
+  ///        solves. The correction's keyframes are read by the run's ids inside the stop, once
+  ///        the atlas has recorded the corrected map, as Python reads them (B4's review panel,
+  ///        run 3, A18): nothing can change the atlas's current map between the two.
   /// @param loop The loop.
   /// @param started The global BA it starts, set.
-  /// @return The correction, or none if one of the loop's keyframes went since it was found
-  ///         (the baseline, its search and its correction apart); a step's error.
-  Result<std::optional<loops::CorrectionSummary>> correct_loop(const loops::Loop& loop,
-                                                               Started& started) {
-    return owner_.stopped([&](Map& m) -> Result<std::optional<loops::CorrectionSummary>> {
+  /// @return The correction, with its keyframes by the run's ids, or none if one of the loop's
+  ///         keyframes went since it was found (the baseline, its search and its correction
+  ///         apart); a step's error.
+  Result<std::optional<Corrected>> correct_loop(const loops::Loop& loop, Started& started) {
+    return owner_.stopped([&](Map& m) -> Result<std::optional<Corrected>> {
       if (keyframe_row(m, loop.current) < 0 || keyframe_row(m, loop.matched) < 0) {
         return std::nullopt;
       }
       started.generation = generation_.next();
       started.superseded = generation_.stop();
-      auto corrected = loops::correct(m, camera_, loop, name(mode_), without_global_ba_);
-      if (!corrected) {
-        return std::unexpected(std::move(corrected.error()));
+      auto fixed = loops::correct(m, camera_, loop, name(mode_), without_global_ba_);
+      if (!fixed) {
+        return std::unexpected(std::move(fixed.error()));
       }
       if (auto ok = owner_.corrected(); !ok) {
         return std::unexpected(std::move(ok.error()));
       }
       atlas_.record(&m);
+      Corrected correction = corrected(atlas_, std::move(*fixed));
       owner_.clear_gone();
       if (options_.loops.global_ba) {
         started.copy = m;
         due_ = started.generation;
       }
-      return std::optional<loops::CorrectionSummary>(std::move(*corrected));
+      return std::optional<Corrected>(std::move(correction));
     });
   }
 
@@ -1228,8 +1229,7 @@ Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, cons
   LoopSummary summary{.detection = std::move(found.summary),
                       .correction = std::nullopt,
                       .merging = merging ? std::optional(merging->summary) : std::nullopt,
-                      .merge = std::nullopt,
-                      .run_ids = std::nullopt};
+                      .merge = std::nullopt};
   if (merging && merging->merge) {
     auto made = merge_maps(state, owner, atlas, camera, *merging->merge, mode, options);
     if (!made) {
@@ -1246,12 +1246,10 @@ Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, cons
     if (!fixed) {
       return std::unexpected(std::move(fixed.error()));
     }
-    summary.correction = std::move(*fixed);
-    summary.run_ids = run_ids_of(atlas, *summary.correction);
+    summary.correction = corrected(atlas, std::move(*fixed));
   }
-  const bool corrected = summary.correction.has_value();
-  return Looped{
-      .summary = std::move(summary), .corrected = corrected, .point_offset = std::nullopt};
+  const bool closed = summary.correction.has_value();
+  return Looped{.summary = std::move(summary), .corrected = closed, .point_offset = std::nullopt};
 }
 
 }  // namespace

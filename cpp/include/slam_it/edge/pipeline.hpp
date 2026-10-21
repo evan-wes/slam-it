@@ -122,21 +122,30 @@ struct LostSummary {
   bool reset{false};
 };
 
+/// @brief A loop's correction as a run records it (`slam_it.edge.pipeline.Corrected`): how it
+///        went, and its keyframes by the run's ids, which live with it so that no correction is
+///        without them (B4's review panel, run 3, A15); `loops` sits below the atlas, and its
+///        `loops::CorrectionSummary` cannot know them.
+struct Corrected {
+  /// @brief How the correction went, its keyframes by the map's ids, which a later merge
+  ///        renumbers.
+  loops::CorrectionSummary summary;
+  /// @brief Its matched and current keyframes by the run's ids (the ids `keyframe_loops.npy`
+  ///        holds, `Atlas::run_id`), which a later merge does not renumber.
+  std::array<std::int64_t, 2> run_ids{};
+};
+
 /// @brief How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`); its time
 ///        is the frame's `loop_seconds`.
 struct LoopSummary {
   /// @brief The search for a loop.
   loops::DetectionSummary detection;
-  /// @brief The correction, when a loop closed.
-  std::optional<loops::CorrectionSummary> correction;
+  /// @brief The correction, with its keyframes by the run's ids, when a loop closed.
+  std::optional<Corrected> correction;
   /// @brief The search for a merge, when other maps are kept (`loops::detect_merge`).
   std::optional<loops::DetectionSummary> merging;
   /// @brief The merge, when one was found.
   std::optional<loops::MergeSummary> merge;
-  /// @brief The correction's matched and current keyframes by the run's ids (the ids
-  ///        `keyframe_loops.npy` holds, `Atlas::run_id`), which a later merge does not renumber
-  ///        as it does the map's; empty without a correction.
-  std::optional<std::array<std::int64_t, 2>> run_ids;
 };
 
 /// @brief How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each

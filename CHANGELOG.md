@@ -73,7 +73,9 @@ panel's IDs.
 - **The run format, version 9:** `tracked_maps.npy` and `keyframe_merges.npy`; a run's maps no
   longer need to rise; the diagnostics' `loop` gains `merging` and `merge`, and a loop's
   `correction` names its two keyframes by the run's ids too (`matched_run`, `current_run`), which
-  no merge renumbers; a frame gains `left` and, on a session's first, `session`.
+  no merge renumbers, held with the correction itself (`Corrected`, in each language), so none
+  can be written without them (run 3's A15); a frame gains `left` and, on a session's first,
+  `session`.
 - **The bundle, version 5:** each run's merges (`keyframe_merges.npy`), which the viewer draws
   with the covisibility graph in a colour of their own (`--graph-merge`). The map at a frame is
   the map it ends in: the records' `map` is written through each merge's destination, read from
@@ -114,7 +116,9 @@ panel's IDs.
   counts the maps a run ends with apart (`maps`, which the status page's "maps" row shows, where
   it showed the segments), and the frames relocalisation found in a map kept from earlier
   (`taken_up`, which the status page says apart from those found again in their map) (A11);
-  `Crossing` is `slam_it.backends`' alone (H10); each weld setting's doc stands alone (H7); and
+  threaded, C++ and Rust read a loop correction's run ids inside its stop, once the atlas has
+  recorded the corrected map, as Python does (run 3's A18); `Crossing` is `slam_it.backends`'
+  alone (H10); each weld setting's doc stands alone (H7); and
   why a map closes is named (`_Closing`), in place of a keyframe count with `+ 1` (H8).
 
 ### Tests
