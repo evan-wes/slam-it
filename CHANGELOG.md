@@ -29,8 +29,10 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   (`Kept`), or reset if it is too small; each map keeps its ids' run ids, which a merge joins.
   Every point, keyframe and final pose records the map it ends in, and each frame the map it was
   tracked in. A merge carries the active map's records into the matched map's world, its frames'
-  and culled keyframes' poses relative to their keyframes into its units (the panel's L1). A kept
-  map that is not there is `InvalidInput` naming its number, in all three languages (H2).
+  and culled keyframes' poses relative to their keyframes into its units (the panel's L1). A
+  merged map that is reset drops the frames of the maps merged into it with its own, as a reset
+  map's frames are not in the trajectory (A12). A kept map that is not there is `InvalidInput`
+  naming its number, in all three languages (H2).
 - **Relocalisation in every map** (`relocalization.relocalize_across`, with
   `database.merge_candidates` and `database.Indexed`): each map's database finds its own
   candidates, its words counted within the map (B1's panel, L7), all tried best score first. A

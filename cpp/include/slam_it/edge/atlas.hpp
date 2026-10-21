@@ -138,7 +138,7 @@ class Atlas {
 
   /// @brief Close the current map on this frame: keep it whole with its database, or reset it
   ///        (its lives end as `Removal::kReset`, its strong links and loops kept, its frames'
-  ///        places dropped).
+  ///        places dropped, with those of the maps merged into it).
   /// @param m The map the track left.
   /// @param database Its keyframe database, if the run relocalises.
   /// @param reset Whether it is reset rather than kept.

@@ -2,8 +2,8 @@
 //! scene's map: frames tracked against the active map's keyframes, one keyframe then culled and
 //! one point removed, all carried into the matched map's world and units by a scaled `G`, against
 //! the known answer `rigid_of(T G⁻¹)` (as `tests/edge/test_atlas.py` holds Python's through a
-//! whole merge); and the refusals of a kept map that is not there, and of a map closed or
-//! merged with none tracked.
+//! whole merge); the merged map, reset, taking the frames of both maps with it; and the refusals
+//! of a kept map that is not there, and of a map closed or merged with none tracked.
 
 mod scene;
 
@@ -97,6 +97,43 @@ fn a_monocular_merge_carries_the_records_into_the_matched_maps_units() {
         (lives.keyframe_maps[keyframe], lives.point_maps[point]),
         (0, 0)
     );
+}
+
+/// A merged map reset: the frames tracked in it and in the map merged into it all go, as each
+/// ends in it and a reset map's frames are not in the trajectory (B4's review panel, run 2, A12:
+/// the reset dropped only those tracked in the map by its number).
+#[test]
+fn a_merged_map_reset_drops_its_frames_and_those_merged_into_it() {
+    let matched = scene_map();
+    let active = scene_map();
+    let mut atlas = Atlas::new(Options::default());
+    atlas.start();
+    atlas.date(Some(&matched));
+    atlas.place_frame(&matched, 0.0, 1, &pose(2)).unwrap();
+    atlas.close(matched.clone(), None, false, true).unwrap();
+    atlas.start();
+    atlas.date(Some(&active));
+    atlas.place_frame(&active, 1.0, 1, &pose(2)).unwrap();
+    atlas.place_frame(&active, 2.0, 2, &pose(2)).unwrap();
+    atlas.merge(0, &to_world()).unwrap();
+    // The merged map: the matched map's keyframes, then the active map's, carried.
+    let mut merged: Map = matched;
+    for k in 0..KEYFRAMES {
+        map::insert_keyframe(
+            &mut merged,
+            &frame(k, false),
+            &carried(&pose(k)),
+            &[-1; POINTS],
+        )
+        .unwrap();
+    }
+    let before = atlas.trajectory(Some(&merged));
+    assert_eq!(
+        (before.maps, before.tracked_maps),
+        (vec![0, 0, 0], vec![0, 1, 1])
+    );
+    atlas.close(merged, None, true, false).unwrap();
+    assert_eq!(atlas.trajectory(None).maps, Vec::<i64>::new());
 }
 
 /// A kept map that is not there is refused by its number, to take up or merge with; so is a map

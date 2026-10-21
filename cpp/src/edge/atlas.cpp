@@ -199,7 +199,9 @@ Result<void> Atlas::close(Map m, std::optional<Database> database, bool reset, b
   for (const auto& [older, newer] : m.loop_edges) {
     past_loops_.push_back(pair_of(runs_.keyframes, older, newer));
   }
-  std::erase_if(placements_, [number](const FramePlace& p) { return p.map == number; });
+  // The frames tracked in the map, or in a map merged into it before.
+  std::erase_if(placements_,
+                [this, number](const FramePlace& p) { return ends_in(p.map) == number; });
   runs_ = {};
   return {};
 }

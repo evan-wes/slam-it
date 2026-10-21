@@ -379,7 +379,7 @@ impl Atlas {
 
     /// Closes the current map on this frame: keeps it whole with its database, or resets it
     /// (its lives end as `Removal::Reset`, its strong links and loops kept, its frames' places
-    /// dropped).
+    /// dropped, with those of the maps merged into it).
     ///
     /// # Arguments
     ///
@@ -436,7 +436,12 @@ impl Atlas {
                 .iter()
                 .map(|&edge| pair_of(&runs.keyframes, edge)),
         );
-        self.placements.retain(|p| p.map != number);
+        // The frames tracked in the map, or in a map merged into it before.
+        let placements = std::mem::take(&mut self.placements);
+        self.placements = placements
+            .into_iter()
+            .filter(|p| self.ends_in(p.map) != number)
+            .collect();
         Ok(())
     }
 

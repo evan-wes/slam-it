@@ -3,8 +3,9 @@
 ///        exact scene's map: frames tracked against the active map's keyframes, one keyframe
 ///        then culled and one point removed, all carried into the matched map's world and units
 ///        by a scaled `G`, against the known answer `rigid_of(T G^-1)` (as
-///        `tests/edge/test_atlas.py` holds Python's through a whole merge); and the refusals of
-///        a kept map that is not there, and of a map closed or merged with none tracked.
+///        `tests/edge/test_atlas.py` holds Python's through a whole merge); the merged map,
+///        reset, taking the frames of both maps with it; and the refusals of a kept map that is
+///        not there, and of a map closed or merged with none tracked.
 #include <Eigen/Core>
 #include <cstdint>
 #include <numbers>
@@ -127,6 +128,47 @@ void check_merge_carries_the_records(int& failures) {
          "the removed point's last place is carried by G", failures);
 }
 
+/// @brief Check a merged map reset: the frames tracked in it and in the map merged into it all
+///        go, as each ends in it and a reset map's frames are not in the trajectory (B4's review
+///        panel, run 2, A12: the reset dropped only those tracked in the map by its number).
+/// @param failures Running failure count.
+void check_a_merged_map_reset_drops_both_maps_frames(int& failures) {
+  auto matched = scene::map();
+  auto active = scene::map();
+  if (!matched || !active) {
+    expect(false, "the scene's maps are built", failures);
+    return;
+  }
+  edge::Atlas atlas(edge::Options{});
+  atlas.start();
+  atlas.date(&*matched);
+  atlas.place_frame(*matched, 0.0, 1, scene::pose(2));
+  expect(atlas.close(*matched, std::nullopt, false, true).has_value(), "the first map is kept",
+         failures);
+  atlas.start();
+  atlas.date(&*active);
+  atlas.place_frame(*active, 1.0, 1, scene::pose(2));
+  atlas.place_frame(*active, 2.0, 2, scene::pose(2));
+  expect(atlas.merge(0, to_world()).has_value(), "the merge is made", failures);
+  // The merged map: the matched map's keyframes, then the active map's, carried.
+  edge::Map merged = *matched;
+  const std::vector<std::int64_t> none(scene::kPoints, -1);
+  for (std::size_t k = 0; k < scene::kKeyframes; ++k) {
+    if (!edge::insert_keyframe(merged, scene::frame(k, false), carried(scene::pose(k)), none)) {
+      expect(false, "the merged map is built", failures);
+      return;
+    }
+  }
+  const edge::Trajectory before = atlas.trajectory(&merged);
+  expect(before.maps == std::vector<std::int64_t>{0, 0, 0} &&
+             before.tracked_maps == std::vector<std::int64_t>{0, 1, 1},
+         "every frame ends in the merged map", failures);
+  expect(atlas.close(merged, std::nullopt, true, false).has_value(), "the merged map is reset",
+         failures);
+  expect(atlas.trajectory(nullptr).poses.empty(), "neither map's frames stay in the trajectory",
+         failures);
+}
+
 /// @brief Check the refusals: a kept map that is not there, by its number, to take up or merge
 ///        with; a map to close or merge with none tracked.
 /// @param failures Running failure count.
@@ -153,6 +195,7 @@ void check_refusals(int& failures) {
 int run() {
   int failures = 0;
   check_merge_carries_the_records(failures);
+  check_a_merged_map_reset_drops_both_maps_frames(failures);
   check_refusals(failures);
   return slam_it::testing::finish("edge/atlas", failures);
 }

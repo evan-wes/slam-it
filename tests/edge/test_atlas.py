@@ -7,7 +7,8 @@ child given its parent (as :func:`slam_it.edge.covisibility.cull` does), so the 
 a merge carries: points and a keyframe removed, the culled keyframe's pose relative to its
 parent, and frames tracked against the active map's keyframes. The active map's world is the
 truth's scaled by :data:`tests.edge.conftest.MERGE_SCALE`: a record left in its units is out of
-place by nearly half its offset from its keyframe (``1 / 0.7 - 1``).
+place by nearly half its offset from its keyframe (``1 / 0.7 - 1``). The merged map, reset, takes
+the frames of both maps with it.
 """
 
 from __future__ import annotations
@@ -59,23 +60,27 @@ class _Merged:
     trajectory: Trajectory
 
 
-@pytest.fixture(scope="module")
-def merged(two_scaled: TwoMaps) -> _Merged:
-    """Track frames in the active map, cull a keyframe, and merge it into the matched map."""
-    parents = two_scaled.active.kf_parent.copy()
+def _merge(two: TwoMaps, *, in_matched: bool = False) -> _Merged:
+    """Track frames in the active map, cull a keyframe, and merge it into the matched map.
+
+    With `in_matched`, a frame is tracked in the matched map first, against its first keyframe.
+    """
+    parents = two.active.kf_parent.copy()
     parents[CULLED + 1] = parents[CULLED]
-    active = replace(two_scaled.active, kf_parent=parents)
+    active = replace(two.active, kf_parent=parents)
     culled = maps.erase_keyframe(active, CULLED)
-    others = [Indexed(0, two_scaled.matched, two_scaled.matched_database)]
+    others = [Indexed(0, two.matched, two.matched_database)]
     found = loops.detect_merge(
-        culled, two_scaled.active_database, CAMERA, int(culled.kf_id[FOUND_AT]), others=others,
+        culled, two.active_database, CAMERA, int(culled.kf_id[FOUND_AT]), others=others,
         pending=None, mode="monocular", options=OPTIONS_NO_GLOBAL_BA,
     ).merge  # fmt: skip
     assert found is not None
     atlas = Atlas(OPTIONS_NO_GLOBAL_BA)
     atlas.start()
-    atlas.date(two_scaled.matched)
-    atlas.close(two_scaled.matched, two_scaled.matched_database, reset=False, dated=True)
+    atlas.date(two.matched)
+    if in_matched:
+        atlas.place_frame(two.matched, -1.0, int(two.matched.kf_id[0]), two.matched.kf_pose[1])
+    atlas.close(two.matched, two.matched_database, reset=False, dated=True)
     atlas.start()
     atlas.date(active)
     for seconds, (reference, at) in enumerate(PLACED):
@@ -83,10 +88,16 @@ def merged(two_scaled: TwoMaps) -> _Merged:
     atlas.record(culled)
     to_world = loops.merge_transform(culled, found)
     merged = loops.merge(
-        culled, two_scaled.matched, CAMERA, found, mode="monocular", options=OPTIONS_NO_GLOBAL_BA
+        culled, two.matched, CAMERA, found, mode="monocular", options=OPTIONS_NO_GLOBAL_BA
     )
     atlas.merge(0, merged, to_world)
     return _Merged(atlas, active, culled, merged, to_world, atlas.trajectory(merged.map))
+
+
+@pytest.fixture(scope="module")
+def merged(two_scaled: TwoMaps) -> _Merged:
+    """Merge as :func:`_merge` does, no frame tracked in the matched map."""
+    return _merge(two_scaled)
 
 
 def test_a_frame_of_the_merged_away_map_is_placed_in_the_matched_maps_units(
@@ -123,3 +134,17 @@ def test_a_kept_map_that_is_not_there_is_refused_by_its_number(merged: _Merged) 
         atlas.resume(7)
     with pytest.raises(InvalidInputError, match="merge: map 7 is not kept"):
         atlas.merge(7, merged.merged, merged.to_world)
+
+
+def test_a_merged_map_reset_drops_its_frames_and_those_merged_into_it(two_scaled: TwoMaps) -> None:
+    """A merged map reset: the frames tracked in it and in the map merged into it all go.
+
+    Each of them ends in the merged map, and a reset map's frames are not in the trajectory (the
+    run format). B4's review panel, run 2, A12: the reset dropped only the frames tracked in the
+    map by its number, and kept the merged-away map's.
+    """
+    merged = _merge(two_scaled, in_matched=True)
+    assert merged.trajectory.maps.tolist() == [0, 0, 0]
+    assert merged.trajectory.tracked_maps.tolist() == [0, 1, 1]
+    merged.atlas.close(merged.merged.map, None, reset=True, dated=False)
+    assert len(merged.atlas.trajectory(None).timestamps) == 0

@@ -337,7 +337,7 @@ class Atlas:
 
         A reset map's points and keyframes go where they last were, their lives ending on this
         frame (:attr:`slam_it.edge.map.Removal.RESET`), with its strong links and loops then;
-        its frames' places are dropped.
+        its frames' places are dropped, with those of the maps merged into it.
 
         Parameters
         ----------
@@ -375,7 +375,8 @@ class Atlas:
             self._keyframe_lives[run_id][1:] = [frame, int(Removal.RESET)]
         self._past_links.append(self._strong_links(m, self._kf_runs))
         self._past_loops.append(_runs_of(m.loop_edges, self._kf_runs).reshape(-1, 2))
-        self._placements = [p for p in self._placements if p.map != number]
+        # The frames tracked in the map, or in a map merged into it before.
+        self._placements = [p for p in self._placements if self._ends_in(p.map) != number]
 
     def resume(self, number: int) -> Kept:
         """Take a kept map up again as the current one: relocalisation found the track in it.
