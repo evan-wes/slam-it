@@ -5,12 +5,13 @@
 //! fallback cannot reach is relocalised; the final trajectory follows the keyframes, and a reset
 //! map's frames leave it. Tracking on the view a writer would publish decides as on the map, and
 //! threaded, the views published are a part of the map, their sizes kept; after a correction the
-//! next frame follows its keyframe, and a keyframe queued across it is placed by its reference.
+//! next frame follows its keyframe, and a keyframe queued across it is placed by its reference. A
+//! merge carries tracking's last frame into the merged map's ids and units.
 
 mod scene;
 
 use nalgebra::{Matrix4, Vector3};
-use slam_it_edge::frames::Frame;
+use slam_it_edge::frames::{Frame, Tracked};
 use slam_it_edge::loops::{self, DetectionSummary, Loop, Merge, Merging, Pending};
 use slam_it_edge::map::{Map, Removal};
 use slam_it_edge::options::{
@@ -18,9 +19,10 @@ use slam_it_edge::options::{
 };
 use slam_it_edge::pipeline::{
     Fate, FrameResult, LoopState, LoopSummary, LostSummary, Pipeline, Placement, State, Threading,
-    WaitingMerge,
+    TrackingState, WaitingMerge,
 };
 use slam_it_foundations::error::ErrorKind;
+use slam_it_foundations::so3;
 
 use scene::{camera, empty_frame, frame_at, one_word};
 
@@ -753,4 +755,59 @@ fn culling_spares_what_a_loop_or_merge_being_confirmed_holds() {
     for (state, held) in cases {
         assert_eq!(state.held(), held);
     }
+}
+
+/// A merge's carry of tracking's last frame (`TrackingState::merged`, as
+/// `tests/edge/test_pipeline.py` holds Python's), with a `G` of scale 1/0.7: its points' and
+/// anchor keyframe's ids moved on by the offsets, -1 kept; the velocity's and the pose relative
+/// to the anchor's translations times `G`'s scale, their rotations unchanged; and no motion stays
+/// none.
+#[test]
+fn a_merge_carries_tracking_into_the_merged_maps_ids_and_units() {
+    const SHRINK: f64 = 0.7; // G's scale is 1 / SHRINK
+    let mut to_world = Matrix4::identity();
+    to_world
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(&(so3::exp(&Vector3::new(0.0, 0.5, 0.0)) / SHRINK));
+    to_world
+        .fixed_view_mut::<3, 1>(0, 3)
+        .copy_from(&Vector3::new(0.4, -0.1, 0.25));
+    let mut motion = Matrix4::identity();
+    motion
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(&so3::exp(&Vector3::new(0.1, 0.0, 0.2)));
+    motion
+        .fixed_view_mut::<3, 1>(0, 3)
+        .copy_from(&Vector3::new(0.07, -0.02, 0.14));
+    let mut state = TrackingState {
+        last_tracked: Some(Tracked {
+            pose: Matrix4::identity(),
+            points: vec![3, -1, 8],
+        }),
+        velocity: Some(motion),
+        anchor: Some(4),
+        anchor_relative: Some(motion),
+        ..TrackingState::default()
+    };
+    state.merged(10, 100, &to_world);
+    assert_eq!(
+        state.last_tracked.map(|last| last.points),
+        Some(vec![103, -1, 108])
+    );
+    assert_eq!(state.anchor, Some(14));
+    let scaled = motion.fixed_view::<3, 1>(0, 3) / SHRINK;
+    for moved in [state.velocity, state.anchor_relative] {
+        let moved = moved.unwrap();
+        assert_eq!(
+            moved.fixed_view::<3, 3>(0, 0),
+            motion.fixed_view::<3, 3>(0, 0)
+        );
+        assert!((moved.fixed_view::<3, 1>(0, 3) - scaled).amax() < 1e-12);
+    }
+    let mut still = TrackingState::default();
+    still.merged(10, 100, &to_world);
+    assert_eq!(
+        (still.velocity, still.anchor, still.anchor_relative),
+        (None, None, None)
+    );
 }

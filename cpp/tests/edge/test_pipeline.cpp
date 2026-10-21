@@ -7,7 +7,7 @@
 ///        Tracking on the view a writer would publish decides as on the map, and threaded, the
 ///        views published are a part of the map, their sizes kept; after a correction the next
 ///        frame follows its keyframe, and a keyframe queued across it is placed by its
-///        reference.
+///        reference. A merge carries tracking's last frame into the merged map's ids and units.
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
@@ -23,7 +23,9 @@
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
+#include "slam_it/edge/frames.hpp"
 #include "slam_it/edge/pipeline.hpp"
+#include "slam_it/foundations/so3.hpp"
 
 namespace {
 
@@ -791,6 +793,44 @@ void check_held(int& failures) {
   }
 }
 
+/// @brief Check a merge's carry of tracking's last frame (`edge::merged`, as
+///        `tests/edge/test_pipeline.py` holds Python's), with a `G` of scale 1/0.7: its points'
+///        and anchor keyframe's ids moved on by the offsets, -1 kept; the velocity's and the pose
+///        relative to the anchor's translations times `G`'s scale, their rotations unchanged;
+///        and no motion stays none.
+/// @param failures Running failure count.
+void check_merged(int& failures) {
+  namespace so3 = slam_it::foundations::so3;
+  constexpr double kShrink = 0.7;  // G's scale is 1 / kShrink
+  constexpr double kTolerance = 1e-12;
+  Eigen::Matrix4d to_world = Eigen::Matrix4d::Identity();
+  to_world.topLeftCorner<3, 3>() = so3::exp(Eigen::Vector3d(0.0, 0.5, 0.0)) / kShrink;
+  to_world.topRightCorner<3, 1>() = Eigen::Vector3d(0.4, -0.1, 0.25);
+  Eigen::Matrix4d motion = Eigen::Matrix4d::Identity();
+  motion.topLeftCorner<3, 3>() = so3::exp(Eigen::Vector3d(0.1, 0.0, 0.2));
+  motion.topRightCorner<3, 1>() = Eigen::Vector3d(0.07, -0.02, 0.14);
+  edge::TrackingState state;
+  state.last_tracked = edge::Tracked{.pose = Eigen::Matrix4d::Identity(), .points = {3, -1, 8}};
+  state.velocity = motion;
+  state.anchor = 4;
+  state.anchor_relative = motion;
+  edge::merged(state, 10, 100, to_world);
+  expect(
+      state.last_tracked && state.last_tracked->points == std::vector<std::int64_t>{103, -1, 108},
+      "the last frame's points take their ids moved on, -1 kept", failures);
+  expect(state.anchor == 14, "the anchor keyframe takes its id moved on", failures);
+  const Eigen::Vector3d scaled = motion.topRightCorner<3, 1>() / kShrink;
+  for (const auto& moved : {state.velocity, state.anchor_relative}) {
+    expect(moved && moved->topLeftCorner<3, 3>() == motion.topLeftCorner<3, 3>() &&
+               (moved->topRightCorner<3, 1>() - scaled).cwiseAbs().maxCoeff() < kTolerance,
+           "a motion's translation takes G's scale, its rotation as it was", failures);
+  }
+  edge::TrackingState still;
+  edge::merged(still, 10, 100, to_world);
+  expect(!still.velocity && !still.anchor && !still.anchor_relative, "no motion stays none",
+         failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run_tests() {
@@ -800,6 +840,7 @@ int run_tests() {
   check_lost(failures);
   check_sessions(failures);
   check_held(failures);
+  check_merged(failures);
   check_lost_relocalizing(failures);
   check_closing_loops_alone(failures);
   check_relocalized(failures);

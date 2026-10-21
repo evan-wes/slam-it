@@ -157,9 +157,9 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
     `rigid_of(T G⁻¹)`; a loop being confirmed carried through the merge and confirmed on the
     next keyframe (`tests/edge/test_merges.py`), and in Rust the carry itself, a loop of scale
     1.25 keeping it, against its known answer (`carry_through`, `pipeline.rs`'s own tests).
-  - `held()` in each language, `TrackingState.merged` with a scaled `G`, a finished run's
-    session refused in each language, and the Huber loss's known answer on one stereo
-    observation in every backend (`initial_error` 10.0702).
+  - `held()` and `TrackingState.merged` with a scaled `G` in each language (the native ones
+    H19), a finished run's session refused in each language, and the Huber loss's known answer
+    on one stereo observation in every backend (`initial_error` 10.0702).
   - **Two golden bundles** (`merge_bundle/`, `revisit_bundle/`), on which the viewer's tests
     choose the map shown (`viewer/tests/maps.test.js`). They leave out their frames' JPEG
     chunks, which no test reads, keeping the images' spans the page's loader reads; the layout
