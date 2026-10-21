@@ -489,6 +489,7 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     first: int = 0,
     count: int | None = None,
     budget: budgets.Budget | None = None,
+    cpus: Sequence[int] | None = None,
     record_features: bool = False,
     vocabulary: str | Path | None = None,
     threaded: bool = False,
@@ -520,6 +521,12 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         A compute budget to run within: the backend's program (Python's too, rather than the
         in-process run) pinned to the budget's cores and its memory capped
         (:func:`slam_it.eval.budgets.command`).
+    cpus : sequence of int, optional
+        CPUs to run the backend's program on alone, uncapped (:func:`slam_it.eval.budgets.pin`):
+        the threaded room tests' native programs run on the performance cores
+        (:func:`slam_it.eval.budgets.performance_cores`). Not with a budget, which pins its
+        program itself, nor for Python's in-process run, which shares its process with
+        whatever called it.
     record_features : bool, optional
         Whether to record each frame's keypoints, with their fates
         (:func:`slam_it.eval.runs.read_features` reads them; default: no).
@@ -551,7 +558,8 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         a Rust program older than a file it is built from).
     slam_it.foundations.errors.SlamItError
         The request's check (:func:`check`), or a reader's, the pipeline's or the writer's
-        error, of the same kind whichever backend ran.
+        error, of the same kind whichever backend ran; ``InvalidInputError`` for `cpus` with a
+        budget, for Python's in-process run, or empty.
     FileNotFoundError
         From the Python backend in-process, if a file of the sequence is missing (the
         programs raise :class:`~slam_it.foundations.errors.InvalidInputError`, their only
@@ -580,11 +588,16 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
     check(request)
     if request.locks and backend != "cpp":
         raise InvalidInputError("--locks: ORB-SLAM's locking is C++'s baseline alone")
+    here = backend == "python" and budget is None
+    if cpus is not None and (budget is not None or here):
+        raise InvalidInputError(
+            "cpus: pin a program run without a budget, not Python's in-process run"
+        )
     words = _read_vocabulary(request)  # its versions and checksums, before any program runs
-    if backend == "python" and budget is None:
+    if here:
         runs.write_run(request.out, _run_here(request, words))
     else:
-        _run_program(backend, request, budget)
+        _run_program(backend, request, budget, cpus)
     return runs.read_run(request.out)
 
 
@@ -1030,12 +1043,19 @@ def _merge(line: dict[str, object], entries: dict[str, Any]) -> None:
             line[key] = value
 
 
-def _run_program(backend: str, request: Request, budget: budgets.Budget | None) -> None:
-    """Run the request with a backend's program (:func:`command`), within a budget if given."""
+def _run_program(
+    backend: str, request: Request, budget: budgets.Budget | None, cpus: Sequence[int] | None
+) -> None:
+    """Run the request with a backend's program (:func:`command`), within a budget if given.
+
+    Pinned to `cpus` instead, if given (:func:`slam_it.eval.budgets.pin`).
+    """
     program = command(backend)
     argv = [*program, *request.arguments()]
     if budget is not None:
         argv = budgets.command(budget, budgets.cpus(budget), argv)
+    elif cpus is not None:
+        argv = budgets.pin(cpus, argv)
     done = subprocess.run(argv, capture_output=True, text=True, check=False)
     if done.returncode == 0:
         return

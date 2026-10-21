@@ -206,6 +206,28 @@ def test_cpus_refuses_a_budget_the_machine_cannot_hold(
         budgets.cpus(LAPTOP, performance=listed, topology=tmp_path / "none")
 
 
+def test_performance_cores_are_the_listed_cpus_this_process_may_run_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hybrid CPU's performance cores, those offered; none listed, one kind of core: None."""
+    monkeypatch.setattr(os, "sched_getaffinity", lambda pid: {2, 3, 4, 9, 10})
+    listed = tmp_path / "cpus"
+    listed.write_text("0-7\n")
+    assert budgets.performance_cores(listed) == [2, 3, 4]
+    listed.write_text("8\n")
+    assert budgets.performance_cores(listed) == []
+    assert budgets.performance_cores(tmp_path / "none") is None
+
+
+def test_pin_runs_a_program_on_its_cpus_alone() -> None:
+    """``taskset`` pins the program; no CPU is no pinning, refused."""
+    assert budgets.pin([0, 1, 5], ["slam_it_vo", "--threaded"]) == [
+        *("taskset", "--cpu-list", "0,1,5", "slam_it_vo", "--threaded"),
+    ]
+    with pytest.raises(InvalidInputError, match="at least one CPU"):
+        budgets.pin([], ["slam_it_vo"])
+
+
 def test_command_caps_memory_without_swap_and_pins_the_cores() -> None:
     """The scope's memory cap kills rather than swaps; taskset pins; the program runs last."""
     assert budgets.command(LAPTOP, [4, 5, 6, 7], ["slam_it_vo", "--mode", "rgbd"]) == [

@@ -15,7 +15,8 @@ walls 7.3, 7.1 and 3.9 to 4.3 cm; 276 of the 280 frames tracked in monocular, ev
 otherwise.
 
 The compiled backends hold the same bar threaded (:data:`THREADED`), their frames fed at the
-room's rate (the online-SLAM design's section 12); Python's threaded run is measured, not tested.
+room's rate (the online-SLAM design's section 12), their programs on the performance cores
+(:func:`tests.orchestration.conftest.fast_cores`); Python's threaded run is measured, not tested.
 Their writers publish views of a part of the map, each recorded with its size.
 """
 

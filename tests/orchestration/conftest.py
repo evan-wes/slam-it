@@ -19,7 +19,7 @@ import pytest
 
 from slam_it import backends
 from slam_it.edge.options import Options
-from slam_it.eval import runs
+from slam_it.eval import budgets, runs
 from slam_it.orchestration import vo
 from tests.conftest import REQUIRED_BACKENDS, require_backend
 from tests.edge import room
@@ -42,6 +42,30 @@ from tests.orchestration.datasets import (
     window_frames,
     write_room,
 )
+
+
+def fast_cores() -> list[int] | None:
+    """Return the CPUs the threaded room tests run their native programs on: the fast ones.
+
+    These tests measure correctness: each threaded run is held to a bar of results, and so
+    must not turn on where the scheduler puts its threads. On a hybrid CPU an efficiency core
+    maps a keyframe about half again as slowly (B4's review panel, run 3, L14: C++'s
+    revisit-room runs pinned to them averaged 29.9 to 30.5 ms a keyframe, against 20.4 to
+    20.5 on the performance cores), so that ORB-SLAM3's keyframe rule, which gives a monocular
+    frame no keyframe while mapping is busy, drops keyframes a fast core would have taken, and
+    a run's map, and whether it clears its bar, depends on the cores it was given. The slow
+    cores' timing is the budget runs' to judge (:mod:`slam_it.eval.budgets`,
+    ``pytest -m budget``). Python's threaded runs in process are not pinned: pinning them would
+    pin the whole test session.
+
+    Returns
+    -------
+    list of int or None
+        The performance cores this process may run on
+        (:func:`slam_it.eval.budgets.performance_cores`); None, and no pinning, on a CPU with
+        one kind of core, or where this process may run on none of them.
+    """
+    return budgets.performance_cores() or None
 
 
 def require_program(name: str) -> str:
@@ -156,7 +180,8 @@ class RoomRun:
     out : pathlib.Path
         Where the runs' folders go.
     threaded : bool, optional
-        Whether the steps run in threads of their own (default: in order).
+        Whether the steps run in threads of their own (default: in order); the native
+        programs then run on the fast cores (:func:`fast_cores`).
     """
 
     def __init__(
@@ -197,6 +222,7 @@ class RoomRun:
                 dataset, self.sequence(dataset), mode, self._folder(key, views=views),
                 backend=backend, options=self._options, record_features=True,
                 threaded=self._threaded, views=views,
+                cpus=fast_cores() if self._threaded and backend != "python" else None,
             )  # fmt: skip
         return self._done[(*key, views)]
 

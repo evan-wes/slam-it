@@ -7,7 +7,8 @@ ORB-SLAM's locking, so that the paths where two writers meet run under the check
 stop inside its hold and its correction, a global BA in a thread of its own and its result carried
 onto the map, and tracking following each correction. The native tests under the sanitizer never
 close a loop: their scene has none. The sanitizer halts the program at the first race it reports
-(:data:`TSAN_OPTIONS`), which fails the run.
+(:data:`TSAN_OPTIONS`), which fails the run. The program runs on the performance cores, as the
+threaded room tests run theirs (:func:`tests.orchestration.conftest.fast_cores`).
 """
 
 from __future__ import annotations
@@ -19,9 +20,10 @@ from pathlib import Path
 import pytest
 
 from slam_it.edge.options import Options
-from slam_it.eval import runs, vocabularies
+from slam_it.eval import budgets, runs, vocabularies
 from slam_it.orchestration import vo
 from tests.edge.support import OPTIONS
+from tests.orchestration.conftest import fast_cores
 from tests.orchestration.datasets import Room
 
 pytestmark = pytest.mark.tsan
@@ -64,8 +66,10 @@ def run_sanitized(folder: Path, options: Options, out: Path, *, locks: bool) -> 
         threaded=True, locks=locks,
     )  # fmt: skip
     vo.check(request)
+    argv = [program, *request.arguments()]
+    cores = fast_cores()
     done = subprocess.run(
-        [program, *request.arguments()],
+        argv if cores is None else budgets.pin(cores, argv),
         capture_output=True,
         text=True,
         check=False,

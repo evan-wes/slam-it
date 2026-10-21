@@ -13,7 +13,8 @@ the truth, map 0 aligned once over both its stretches, so a map taken up in the 
 with the wrong run ids, fails; and keep map 0's frames from the take-up on, aligned with the rest
 of map 0, within :data:`REVISIT_TAKEN_UP_ATE`, so that a take-up a couple of centimetres off,
 which the whole map's bar dilutes, fails too. Inline in every language, threaded in each
-native scheme (:data:`tests.orchestration.test_merge_room_threads.THREADED`), and under
+native scheme (:data:`tests.orchestration.test_merge_room_threads.THREADED`), its programs on
+the performance cores (:func:`tests.orchestration.conftest.fast_cores`), and under
 ThreadSanitizer in both of C++'s (``test_merge_room_tsan.py``).
 """
 
@@ -29,7 +30,7 @@ from slam_it.edge import pipeline
 from slam_it.eval import runs
 from slam_it.orchestration import vo
 from tests.edge import room
-from tests.orchestration.conftest import RoomRun, require_program
+from tests.orchestration.conftest import RoomRun, fast_cores, require_program
 from tests.orchestration.datasets import (
     LOOP_CASES,
     MERGE_BLANKS,
@@ -126,7 +127,7 @@ def test_a_native_threaded_run_takes_the_first_map_up_again(  # noqa: PLR0917 --
     folder = revisit_folders.tum if dataset == "tum" else revisit_folders.euroc
     run = vo.run(
         dataset, folder, mode, tmp_path / "run", backend=require_program(backend),
-        options=REVISIT_OPTIONS, threaded=True, locks=locks,
+        options=REVISIT_OPTIONS, threaded=True, locks=locks, cpus=fast_cores(),
     )  # fmt: skip
     assert (run.threaded, run.locks) == (True, locks)
     assert_revisited(run, revisit_folders, mode)

@@ -1192,6 +1192,31 @@ shared with the owner's other projects.
       merge; the queue is drained by mapping each keyframe whole, where ORB-SLAM3's `EmptyQueue`
       only inserts them; every merge copies whole maps; and relocalisation in another map can
       drop a merge waiting.
+  - **Why one deferred keyframe starves a monocular map (run 3's L14; decided by evan-wes on
+    2026-10-21).** Threaded, a monocular frame that wants a keyframe while local mapping is still
+    mapping the last one gets none (`NeedNewKeyFrame`: mapping not accepting keyframes, too few
+    frames since the last), as ORB-SLAM3 decides. In the revisit room one such deferral, frame 184's
+    keyframe taken at frame 186, starved map 1: over frames 197 to 210 its keyframes made 7 to 49
+    new points each, where a passing run's made 50 to 111, its tracked points fell from about 250 to
+    52, and it was lost at frame 213, where the room run in turn keeps it to the end. This machine's
+    efficiency cores map a keyframe about half again as slowly as its performance cores, so such
+    deferrals failed the threaded room tests at random: B4's run 3 measured the revisit room's
+    monocular case in C++'s own scheme failing 4 of 77 runs over three sessions, the loop room's 2
+    of 20 in C++ and 1 of 20 in Rust. The threaded room tests now run their native programs on the
+    performance cores (`tests/orchestration/conftest.py`'s `fast_cores`), which closes the two flaky
+    cases B3b and B4 recorded, passing 30 of 30 and 25 of 25 runs pinned: the loop room's (B3b's
+    review panel, H10 and L3) and the merge room's (its first frame after the merge relocalised).
+    The revisit room's case still failed 2 of 60 runs pinned, the same way: on the performance cores
+    C++'s own scheme maps frame 183's keyframe in 29.2 to 29.9 ms (14 of 15 runs measured), close to
+    frame 184's decision, its two views costing about 3.5 ms a keyframe (an exact 0.3 ms speedup of
+    them was left out of B4). The question left is whether a monocular map should survive a deferred
+    keyframe: we use ORB-SLAM2's 20 neighbours for monocular triangulation and fusion
+    (`mapping.mono_triangulation_neighbours`, `mapping.mono_fuse_neighbours`), where ORB-SLAM3 uses
+    30, and keyframe culling (90% of a keyframe's points seen by 3 others) ran on keyframes made
+    nearly every frame in the failing runs. Measured on the test set, after B4: threaded on the
+    efficiency cores against the performance cores, and with 30 neighbours. In the loop room's worst
+    miss B3b's panel examined (15.22 cm), a global BA shrank the map (scale 0.276), a lead that
+    stays with B3's damping item (the 2B design's section 11).
   - **Python's run-id tables rebuilt per call (H9).** `Atlas._runs_of` builds an array from a
     map's run-id list on every call, up to about five a frame (the reviewer measured 2.3 ms for
     100,000 entries, 3.5 ms for 300,000): grow the tables as arrays, or cache one until
@@ -1204,22 +1229,6 @@ shared with the owner's other projects.
     sequences and the test set against B3's runs in order, and our design against ORB-SLAM's
     scheme in C++. The scripts take them: `scripts/measure_testset.py`'s `--threaded`, `--locks`
     and `--budget`, and `scripts/measure_sharded.py`'s `--cores`.
-  - **A flaky threaded run of the loop room.** Its bar threaded in C++, the TUM monocular case
-    (`test_every_backend_closes_the_loop_room`), missed its 2 cm final-ATE bound in one of four
-    runs (8.99 cm; 1.54 to 1.62 cm in the others), on a busy machine. Run it about 20 times on a
-    quiet machine before and after B3b's commit that publishes a view of what tracking reads,
-    and decide from the failure rates: a flaky bar would fail layer 1 and offline CI at random.
-  - **A flaky threaded run of the merge room** (seen in B4's layer 1, not yet decided). Its TUM
-    monocular case in C++'s own scheme
-    (`test_a_native_threaded_run_merges_the_merge_room[tum-monocular-cpp]`) failed in one of the
-    three full layer-1 runs on B4's review panel's fixes, the run in which the loop room's case
-    above failed too: its first frame after the merge was placed by relocalisation, not the
-    motion model. It passed in the other two, and in three runs of it alone. The likely cause is
-    thread timing: loop closing finds the merge on a keyframe and tracking makes it before its
-    next frame (C++'s `merge_then_track`), so, the frames fed at the room's rate, how many
-    frames are tracked in the old map between the two, and what mapping has taken in when the
-    merge is made, vary from run to run. Not reproduced, so not confirmed; its bound is
-    unchanged. Run it about 20 times with the loop room's case, and decide from the failure rate.
   - **A failed loop correction (the 2B design's section 12, item 14; B3's review panel, H17).**
     Still open, with no decision yet: whether a GTSAM failure inside a loop's correction should
     be recorded and the loop skipped.
@@ -1230,9 +1239,6 @@ shared with the owner's other projects.
     BA and `follow` after a correction run in no test (the threaded tests' room has no loop):
     one that closes a loop threaded, applies a global BA and leaves no thread, once H11 and A10
     are understood.
-  - **The flaky threaded case of the loop room (H10, L3).** "A flaky threaded run of the loop
-    room", above; the panel's pointer, a global BA that shrank the map (scale 0.276), is in
-    the 2B design's section 12, "Deferred for this PR".
   - **Python's threaded loop room (H11, A10).** Through `vo.run`, Python's threaded RGB-D run
     ended at 7.38 cm final ATE against 4.67 cm in order (one run each), above the 7 cm bound
     the natives are held to; in memory with the tests' settings, its threaded runs closed no

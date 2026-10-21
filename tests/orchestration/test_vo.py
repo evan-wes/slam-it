@@ -34,7 +34,7 @@ from tests.edge.support import (
     assert_records_match,
 )
 from tests.fixtures.edge.generate_room_runs import record, summaries
-from tests.orchestration.conftest import RoomRun, require_program
+from tests.orchestration.conftest import RoomRun, fast_cores, require_program
 from tests.orchestration.datasets import (
     BLANK_AT,
     CASES,
@@ -630,11 +630,15 @@ def test_the_cpp_program_runs_threaded_and_says_how(
 ) -> None:
     """Threaded by our design or ORB-SLAM's locks, the room's frames tracked; the run says so.
 
-    Fed at the room's rate, a keyframe mapped says how its steps were scheduled.
+    Fed at the room's rate, a keyframe mapped says how its steps were scheduled. Pinned to the
+    performance cores, as the threaded room tests run their programs, where the CPU has them:
+    the run records the CPUs its program could run on.
     """
     require_program("cpp")
+    cores = fast_cores()
     run = vo.run("tum", room_folders.tum, "rgbd", tmp_path, backend="cpp", options=OPTIONS,
-                 count=30, threaded=True, locks=locks)  # fmt: skip
+                 count=30, threaded=True, locks=locks, cpus=cores)  # fmt: skip
+    assert run.cpus == (cores or sorted(os.sched_getaffinity(0)))
     assert (run.threaded, run.locks) == (True, locks)
     assert len(run.timestamps) == len(run.diagnostics) == 30
     assert any(d["schedule"] is not None for d in run.diagnostics)
@@ -883,6 +887,15 @@ def test_locks_need_threads_and_the_cpp_program(tmp_path: Path) -> None:
         with pytest.raises(InvalidInputError, match="C\\+\\+'s baseline alone"):
             vo.run("tum", tmp_path, "rgbd", tmp_path / "out", backend=backend, threaded=True,
                    locks=True)  # fmt: skip
+
+
+def test_cpus_pin_a_program_alone(tmp_path: Path) -> None:
+    """Pinning is for a program run without a budget: refused with one, and in process."""
+    for backend, budget in (("python", None), ("cpp", budgets.BUDGETS["laptop-cpu"])):
+        with pytest.raises(InvalidInputError, match="cpus: pin a program run without a budget"):
+            vo.run("tum", tmp_path, "rgbd", tmp_path / "out", backend=backend, budget=budget,
+                   cpus=[0])  # fmt: skip
+    assert not (tmp_path / "out").exists()
 
 
 def _fails_the_run(backend: str, request: vo.Request, message: str) -> None:

@@ -7,7 +7,9 @@ the merge's offsets (:meth:`slam_it.edge.pipeline._Threads.merge_waiting`). Pyth
 process, so its state can be read across the merge; each frame waits for its threads, which
 Python's interpreter lock runs slower than the frames come (the loop room's threaded Python run
 is measured, not tested), so that the merge comes where it does in order. The native programs'
-runs, fed at the room's rate, say how their first frame after the merge was placed, and end
+runs, fed at the room's rate on the performance cores
+(:func:`tests.orchestration.conftest.fast_cores`), say how their first frame after the merge
+was placed, and end
 with their threads joined, held to the merge room's bar in order (``test_merge_room.py``): one
 map at the end, merged at no wrong place, its final trajectory near the truth.
 """
@@ -30,7 +32,7 @@ from slam_it.orchestration import vo
 from tests.conftest import require_backend
 from tests.edge import room
 from tests.edge.support import CAMERA, words_for
-from tests.orchestration.conftest import require_program
+from tests.orchestration.conftest import fast_cores, require_program
 from tests.orchestration.datasets import LOOP_CASES, MERGE_OPTIONS, Room, merge_frames
 from tests.orchestration.test_merge_room import assert_merged
 
@@ -168,7 +170,7 @@ def test_a_native_threaded_run_merges_the_merge_room(  # noqa: PLR0917 -- the ca
     folder = merge_folders.tum if dataset == "tum" else merge_folders.euroc
     run = vo.run(
         dataset, folder, mode, tmp_path / "run", backend=require_program(backend),
-        options=MERGE_OPTIONS, threaded=True, locks=locks,
+        options=MERGE_OPTIONS, threaded=True, locks=locks, cpus=fast_cores(),
     )  # fmt: skip
     assert (run.threaded, run.locks) == (True, locks)
     after = _after_merge(run)

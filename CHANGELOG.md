@@ -141,9 +141,9 @@ panel's IDs.
   for its threads, keeps tracking's last frame naming the same keyframe and points through the
   merge, and leaves no thread. ThreadSanitizer runs it threaded in both C++ schemes
   (`tests/orchestration/test_merge_room_tsan.py`, in `scripts/check.sh`'s ThreadSanitizer step).
-  Known flaky: its TUM monocular case in C++'s own scheme failed in one of three full layer-1
-  runs, its first frame after the merge placed by relocalisation, and passed in three runs
-  alone; it is in the ladder's open items, beside the loop room's flaky threaded case.
+  Its TUM monocular case in C++'s own scheme, which failed in one of three full layer-1 runs
+  (its first frame after the merge placed by relocalisation), is no longer flaky: the threaded
+  room tests run on the performance cores (below, run 3's L14).
 - **Sessions** (`tests/orchestration/test_sessions.py`): the room run twice in turn through every
   backend, the offsets, the shared camera and the refusals; `start_session` in each language's
   pipeline tests; a loss window of 0 in each language's loss rules.
@@ -184,6 +184,22 @@ panel's IDs.
     choose the map shown (`viewer/tests/maps.test.js`). They leave out their frames' JPEG
     chunks, which no test reads, keeping the images' spans the page's loader reads; the layout
     test compares them without the chunks.
+  - **The threaded room tests run their native programs on the performance cores** (run 3's
+    L14): the loop, merge and revisit rooms threaded, under ThreadSanitizer too, and the room's
+    threaded program test (`tests/orchestration/conftest.py`'s `fast_cores`; nothing pinned on a
+    CPU with one kind of core, nor Python's threaded runs in process, which would pin the whole
+    session). These tests hold each run to a bar of results; on this machine's efficiency cores
+    mapping a keyframe takes about half again as long, so that ORB-SLAM3's keyframe rule, which
+    gives a monocular frame no keyframe while mapping is busy, dropped keyframes and failed
+    their monocular cases at random (the revisit room's in C++'s own scheme 4 of 77 runs over
+    three sessions, the loop room's 2 of 20 in C++ and 1 of 20 in Rust). Pinned, the loop
+    room's case passed 30 of 30 runs and the merge room's 25 of 25, which closes their flaky
+    threaded cases in the ladder's open items; the revisit room's failed 2 of 60, the same way,
+    its keyframe at frame 183 still mapped close to the next frame's decision in C++'s own
+    scheme. The ladder's open items hold the question left: why one deferred keyframe starves a
+    monocular map. No bar changed. `vo.run` takes `cpus`, pinning a program without a
+    budget (`slam_it.eval.budgets.pin`, which a budget's command line shares), and
+    `budgets.performance_cores` reads the performance cores, as a budget's CPUs do.
   - **A loop's keyframes by the run's ids:** each loop room run, in every language and threaded,
     names each loop it corrects by the run's ids, the `keyframe_loops.npy` row
     (`tests/orchestration/test_loop_room.py`); the viewer finds a loop closed in a map later
