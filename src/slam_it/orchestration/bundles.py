@@ -30,8 +30,9 @@ frames are several sequences', each on its own clock, and a bundle's are one's:
   - ``records.json``: the run's diagnostics as columns, one value per frame it ran, with
     ``frame``, the bundle's frame of each; its ``map`` column, each frame's map or null, is
     what the page shows a map by: **the map at a frame is the map the frame ends in**, the
-    map it was tracked in or the one that map was merged into (:func:`_ends_in`), as every
-    array below holds the maps (the run's diagnostics name the map tracked in);
+    map it was tracked in or the one that map was merged into, by the run's merge records
+    (:func:`_ends_in`), as every array below holds the maps (the run's diagnostics name the
+    map tracked in);
   - ``poses.npy``: each tracked frame's final ``T_world_cam`` (the run format's
     ``trajectory.txt``), its top three rows, ``(T, 3, 4)``
     float32; ``pose_frames.npy``: their frames, ascending, and ``pose_maps.npy``: their maps,
@@ -261,24 +262,61 @@ def _score_info(error: runs.MapError) -> dict[str, Any]:
     }
 
 
+def _merged_into(baked: _Baked) -> dict[int, int]:
+    """Return the map each map merged into another was merged into, by the run's merge records.
+
+    A merge is recorded on the frame of the keyframe it was found on (the diagnostics' ``loop``,
+    its ``merge``), a frame tracked in the map merged away (its ``map``); the record's own
+    ``map`` is the map merged into.
+    """
+    out: dict[int, int] = {}
+    for entry in baked.run.diagnostics:
+        merge = (entry.get("loop") or {}).get("merge")
+        if merge is not None:
+            out[int(entry["map"])] = int(merge["map"])
+    return out
+
+
 def _ends_in(baked: _Baked) -> dict[int, int]:
     """Return the map each map a run tracked in ends in: itself, or the one it merged into.
 
-    Read from the run's trajectory: each tracked frame's map as tracked (``tracked_maps.npy``)
-    and the map its final pose is in (``pose_maps.npy``), which a merge moves on to the map it
-    made. A map with no frame in the trajectory (one reset) ends in itself.
+    Read from the run's merge records (:func:`_merged_into`), each followed on to the map its
+    destination merged into in turn, as the atlas follows them, so that a map merged into one
+    later reset, whose frames the trajectory no longer holds, still ends there; then checked
+    against the trajectory, each tracked frame's final pose being in the map its map ends in
+    (``pose_maps.npy``), and against the records, each naming a map the run ends with
+    (:meth:`slam_it.eval.runs.Run.maps`, the header's) once followed.
 
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If one map's frames end in two maps.
+        If one map's frames end in two maps, by its merges and by the trajectory; or a record
+        names a map the run neither ends with nor merged into one it ends with.
     """
     run = baked.run
-    out: dict[int, int] = {}
+    merged = _merged_into(baked)
+
+    def follow(number: int) -> int:
+        seen = {number}
+        while number in merged and merged[number] not in seen:
+            number = merged[number]
+            seen.add(number)
+        return number
+
+    named = {int(e["map"]) for e in run.diagnostics if e.get("map") is not None}
+    out = {m: follow(m) for m in sorted(named | set(run.tracked_maps.tolist()) | merged.keys())}
     for tracked, final in zip(run.tracked_maps.tolist(), run.pose_maps.tolist(), strict=True):
-        if out.setdefault(tracked, final) != final:
+        if out[tracked] != final:
             raise InvalidInputError(
-                f"{baked.folder}: map {tracked}'s frames end in maps {out[tracked]} and {final}"
+                f"{baked.folder}: map {tracked}'s frames end in maps {out[tracked]} and {final}: "
+                f"{out[tracked]} by the run's merges, {final} by its trajectory"
+            )
+    kept = set(run.maps().tolist())
+    for number in sorted(named):
+        if out[number] not in kept:
+            raise InvalidInputError(
+                f"{baked.folder}: a record names map {number}, which the run neither ends with "
+                f"({sorted(kept)}) nor merged into one it ends with"
             )
     return out
 
@@ -380,7 +418,7 @@ def _write_backend(out: Path, baked: _Baked, times: NDArray[np.float64]) -> dict
         columns[key] = [d.get(key) for d in run.diagnostics]
     ends = _ends_in(baked)
     tracked_in = [d.get("map") for d in run.diagnostics]
-    named = [None if m is None else ends.get(m, m) for m in tracked_in]
+    named = [None if m is None else ends[m] for m in tracked_in]
     if "map" in columns:
         columns["map"] = named
     folder.mkdir(parents=True)
@@ -506,8 +544,10 @@ def bake(run_folders: Sequence[str | Path], sequence: str | Path, out: str | Pat
     slam_it.foundations.errors.InvalidInputError
         If there are no runs, one is of several sequences in turn (sessions), they are not of
         one sequence and mode, two are of one backend, the sequence's folder is not theirs, a
-        run's frame is not one of the sequence's, or `out` is not empty; or a reader's error.
-        A run its ATE alignment cannot place is not an error: it stays in its own frame.
+        run's frame is not one of the sequence's, or `out` is not empty; a run's maps disagree
+        (one map's frames end in two maps, by its merges and by its trajectory, or a record
+        names a map the run neither ends with nor merged); or a reader's error. A run its ATE
+        alignment cannot place is not an error: it stays in its own frame.
     """
     baked = _read(run_folders)
     first = baked[0].run

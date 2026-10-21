@@ -523,6 +523,107 @@ def test_a_map_taken_up_again_is_baked_in_its_stretches(
     assert second["frames"][0][1] <= first["frames"][1][0]
 
 
+def _merged(run: runs.Run, at: int) -> runs.Run:
+    """Return the run as map 1, from frame `at` on, merged into map 0, the merge recorded.
+
+    Every pose, keyframe and point ends in map 0, in the run's own world; the frames from `at`
+    on were tracked in map 1, and the merge is recorded on frame `at` as a run records one: its
+    ``loop``'s ``merge``, naming the map merged into, on a frame tracked in the map merged away.
+    """
+    split = _split(run, at, np.eye(4))
+    merge = {"map": 0}
+    diagnostics = [
+        {**d, "loop": {**(d.get("loop") or {}), "merge": merge}} if k == at else d
+        for k, d in enumerate(split.diagnostics)
+    ]
+    return replace(
+        split, diagnostics=diagnostics, pose_maps=np.zeros_like(split.pose_maps),
+        keyframe_maps=np.zeros_like(split.keyframe_maps),
+        point_maps=np.zeros_like(split.point_maps), keyframe_parents=run.keyframe_parents,
+        keyframe_links=run.keyframe_links,
+    )  # fmt: skip
+
+
+def test_a_merge_is_read_from_the_runs_merge_record(room_runs: RoomRun, tmp_path: Path) -> None:
+    """Map 1 merged into map 0: every record names map 0, by the merge recorded.
+
+    The header lists map 0 alone, over every frame. Without its record the run's maps disagree,
+    map 1's frames ending in map 1 by its merges and in map 0 by its trajectory, and the bake
+    refuses it naming both; so it does a run whose map 1 has one frame's final pose in map 0
+    (B4's review panel, run 2, H21).
+    """
+    run = room_runs("tum", "rgbd", "python")
+    half = FRAMES // 2
+    merged = _merged(run, half)
+    assert [d["map"] for d in merged.diagnostics] == [0] * half + [1] * (FRAMES - half)
+    runs.write_run(tmp_path / "merged", merged)
+    out = tmp_path / "bundle"
+    bundles.bake([tmp_path / "merged"], room_runs.sequence("tum"), out)
+    assert json.loads((out / "python" / "records.json").read_text())["map"] == [0] * FRAMES
+    (only,) = json.loads((out / "bundle.json").read_text())["backends"]["python"]["maps"]
+    assert (only["id"], only["frames"]) == (0, [[0, FRAMES]])
+    split = _split(run, half, np.eye(4))
+    one_frame = split.pose_maps.copy()
+    one_frame[-1] = 0
+    for name, bad in (
+        ("unrecorded", replace(merged, diagnostics=split.diagnostics)),
+        ("one-frame", replace(split, pose_maps=one_frame)),
+    ):
+        runs.write_run(tmp_path / name, bad)
+        with pytest.raises(
+            InvalidInputError,
+            match=r"map 1's frames end in maps 1 and 0: 1 by the run's merges, 0 by its trajectory",
+        ):
+            bundles.bake([tmp_path / name], room_runs.sequence("tum"), tmp_path / f"{name}_out")
+
+
+def test_a_merge_into_a_map_later_reset_is_read_from_its_record(
+    room_runs: RoomRun, tmp_path: Path
+) -> None:
+    """Map 1 merged into map 0, then map 0 reset: map 1's records still name map 0.
+
+    A reset map's frames are not in the trajectory, so it holds none of either map's; the merge
+    is read from its record, not inferred from the trajectory, which would leave map 1's records
+    naming a map the header does not list (B4's review panel, run 2, A12).
+    """
+    run = room_runs("tum", "rgbd", "python")
+    merged = _merged(run, FRAMES // 2)
+    ended = [FRAMES - 1, runs.REMOVALS.index("reset")]
+    keyframe_lives, point_lives = merged.keyframe_lives.copy(), merged.point_lives.copy()
+    keyframe_lives[keyframe_lives[:, 1] < 0, 1:] = ended
+    point_lives[point_lives[:, 1] < 0, 1:] = ended
+    reset = replace(
+        merged, timestamps=np.zeros(0), poses=np.zeros((0, 4, 4)),
+        tracked_poses=np.zeros((0, 4, 4)), pose_maps=np.zeros(0, dtype=np.int64),
+        tracked_maps=np.zeros(0, dtype=np.int64), keyframe_lives=keyframe_lives,
+        point_lives=point_lives,
+    )  # fmt: skip
+    runs.write_run(tmp_path / "reset", reset)
+    out = tmp_path / "bundle"
+    bundles.bake([tmp_path / "reset"], room_runs.sequence("tum"), out)
+    assert json.loads((out / "python" / "records.json").read_text())["map"] == [0] * FRAMES
+    (only,) = json.loads((out / "bundle.json").read_text())["backends"]["python"]["maps"]
+    assert (only["id"], only["reset"], only["tracked"]) == (0, True, 0)
+
+
+def test_a_record_naming_a_map_the_run_does_not_end_with_is_refused(
+    room_runs: RoomRun, tmp_path: Path
+) -> None:
+    """A record names map 7, which no keyframe ends in and no merge took into a map that one does.
+
+    The bake refuses the run, naming the map, rather than let the page show a map it cannot draw
+    (B4's review panel, run 2, A12).
+    """
+    run = room_runs("tum", "rgbd", "python")
+    diagnostics = [{**d, "map": 7} if k == 3 else d for k, d in enumerate(run.diagnostics)]
+    runs.write_run(tmp_path / "seven", replace(run, diagnostics=diagnostics, record_features=False))
+    with pytest.raises(
+        InvalidInputError,
+        match=r"a record names map 7, which the run neither ends with \(\[0\]\) nor merged",
+    ):
+        bundles.bake([tmp_path / "seven"], room_runs.sequence("tum"), tmp_path / "bundle")
+
+
 @pytest.mark.parametrize(
     ("fixture", "options"), [(MERGE, MERGE_OPTIONS), (REVISIT, REVISIT_OPTIONS)],
     ids=["merge", "revisit"],

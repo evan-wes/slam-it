@@ -72,8 +72,11 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   and, on a session's first, `session`.
 - **The bundle, version 5:** each run's merges (`keyframe_merges.npy`), which the viewer draws
   with the covisibility graph in a colour of their own (`--graph-merge`). The map at a frame is
-  the map it ends in: the records' `map` is written through each merge's destination, the
-  header lists the maps a run ends with, each map's `frames` as stretches, and the viewer draws
+  the map it ends in: the records' `map` is written through each merge's destination, read from
+  the run's merge records, and a run whose maps disagree (one map's frames ending in two maps,
+  by its merges and by its trajectory) or a record naming a map the run neither ends with nor
+  merged is refused (A12, H21); the header lists the maps a run ends with, each map's `frames`
+  as stretches, and the viewer draws
   a map through the runs of rows its poses come in, and finds a loop's keyframes in a map taken
   up again by the k-th of the map's run ids, not the first's offset (the panel's A1). A run of
   several sequences in turn is refused by name (H13).
