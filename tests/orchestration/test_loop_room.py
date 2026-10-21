@@ -90,6 +90,26 @@ def test_every_backend_closes_the_loop_room(  # noqa: PLR0917 -- the case, the f
     assert final.ate_rmse < tracked.ate_rmse
 
 
+@pytest.mark.parametrize(("backend", "threaded"), RUNS)
+@pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
+def test_each_correction_names_its_loop_by_the_runs_ids(
+    request: pytest.FixtureRequest, dataset: str, mode: str, backend: str, threaded: bool
+) -> None:
+    """Each loop's correction names its two keyframes by the run's ids, as the loop closed.
+
+    In the order the loops closed, a correction's ``matched_run`` and ``current_run`` are the
+    ``keyframe_loops.npy`` row the run viewer finds the loop by, beside its ``matched`` and
+    ``current`` by the map's ids, which a merge renumbers.
+    """
+    run = _run(request, dataset, mode, backend, threaded)
+    corrections = [
+        d["loop"]["correction"] for d in run.diagnostics
+        if d.get("loop") is not None and d["loop"]["correction"] is not None
+    ]  # fmt: skip
+    named = [sorted((c["matched_run"], c["current_run"])) for c in corrections]
+    assert named == run.keyframe_loops.tolist()
+
+
 @pytest.mark.parametrize("backend", THREADED)
 @pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
 def test_threaded_the_views_published_are_parts_of_the_map(

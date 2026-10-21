@@ -76,7 +76,10 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   seconds (:data:`STEPS`), which the budget harness judges
   (:func:`slam_it.eval.budgets.judge`), and say how their stages went
   (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it did
-  not run. And they say how the threads' handshakes went (:data:`HANDSHAKES`), which the budget
+  not run. A loop's ``correction`` (in its keyframe's ``loop``) names its two keyframes by their
+  ids in the map tracked in then, ``matched`` and ``current``, which a later merge renumbers,
+  and by the run's, ``matched_run`` and ``current_run``, as ``keyframe_loops.npy`` holds them.
+  And they say how the threads' handshakes went (:data:`HANDSHAKES`), which the budget
   harness judges too: ``wait_seconds``, the part of ``track_seconds`` tracking waited for the
   map; ``asked``, whether the frame wanted a keyframe, ``refused``, whether mapping could not
   take it, and ``queue``, the keyframes waiting for mapping then; ``schedule``, on a keyframe
@@ -130,7 +133,8 @@ removal ``reset``; 5 the ``vocabulary`` a relocalising run used; 6 the settings 
 keyframe's parent and the strong links; 7 the final trajectory, the poses as tracked beside it,
 the loops closed, and loop closing's time; 8 ``threaded`` and ``locks``, and the threads'
 handshakes on each frame; 9 the map each point, keyframe and final pose ends in, the map each
-frame was tracked in, and the merges made)."""
+frame was tracked in, the merges made, and each loop's correction's keyframes by the run's
+ids)."""
 
 REMOVALS = ("culled", "fused", "weak", "reset")
 """Why a point or keyframe was removed, a life's code being the index: culled (a recent point

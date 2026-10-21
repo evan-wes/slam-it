@@ -117,7 +117,11 @@ def _summary(k: int) -> dict[str, Any]:
 
 
 def _loop() -> dict[str, Any]:
-    """Return a keyframe's loop summary, nested as the edge pipeline writes it: closed at once."""
+    """Return a keyframe's loop summary, nested as the edge pipeline writes it: closed at once.
+
+    Its correction names its keyframes by map 1's ids, 1 and 0, and by the run's, 2 and 1: the
+    loop ``keyframe_loops`` holds.
+    """
     candidate = {
         "keyframe": 0,
         "score": 0.125,
@@ -158,6 +162,8 @@ def _loop() -> dict[str, Any]:
             "edges": 2,
             "essential": solve,
             "global_ba": {**solve, "iterations": 10, "termination": "max_iterations"},
+            "matched_run": 1,
+            "current_run": 2,
         },
     }  # fmt: skip
 

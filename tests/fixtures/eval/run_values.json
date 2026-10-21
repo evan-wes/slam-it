@@ -805,7 +805,9 @@
       "final_error": 0.0625,
       "iterations": 10,
       "termination": "max_iterations"
-     }
+     },
+     "matched_run": 1,
+     "current_run": 2
     }
    },
    "lost": null,

@@ -295,12 +295,17 @@ class LoopSummary:
         The search for a merge, when other maps are kept (:func:`slam_it.edge.loops.detect_merge`).
     merge : slam_it.edge.loops.MergeSummary or None
         The merge, when one was found.
+    run_ids : tuple of int or None
+        The correction's matched and current keyframes by the run's ids (the ids
+        ``keyframe_loops.npy`` holds, :meth:`slam_it.edge.atlas.Atlas.run_ids`), which a later
+        merge does not renumber as it does the map's; None without a correction.
     """
 
     detection: DetectionSummary
     correction: CorrectionSummary | None
     merging: DetectionSummary | None = None
     merge: MergeSummary | None = None
+    run_ids: tuple[int, int] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return the summary as JSON values.
@@ -309,11 +314,17 @@ class LoopSummary:
         -------
         dict
             ``detection``, ``correction``, ``merging`` and ``merge``, each but the first an
-            object or None.
+            object or None; the correction's keyframes by the run's ids in it too,
+            ``matched_run`` and ``current_run``, beside its ``matched`` and ``current`` by the
+            map's.
         """
+        correction = _record(self.correction)
+        if correction is not None:
+            assert self.run_ids is not None
+            correction |= {"matched_run": self.run_ids[0], "current_run": self.run_ids[1]}
         return {
             "detection": self.detection.as_dict(),
-            "correction": _record(self.correction),
+            "correction": correction,
             "merging": _record(self.merging),
             "merge": _record(self.merge),
         }
@@ -1508,6 +1519,14 @@ def _search(  # noqa: PLR0913 -- loop closing's state, the map and its database,
     return found, merging
 
 
+def _run_ids(atlas: Atlas, correction: CorrectionSummary | None) -> tuple[int, int] | None:
+    """Return a correction's matched and current keyframes by the run's ids; None without one."""
+    if correction is None:
+        return None
+    matched, current = atlas.run_ids(np.array([correction.matched, correction.current]))
+    return int(matched), int(current)
+
+
 @dataclass(frozen=True)
 class _LoopStep:
     """Loop closing's step on a keyframe (:func:`_close_loops`): how it went, and what it made.
@@ -1562,7 +1581,10 @@ def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settin
             fixed = loops.correct(held, camera, found.loop, mode=mode, options=options)
             owner.apply_correction(fixed.map)
         correction = fixed.summary
-    summary = LoopSummary(detection=found.summary, correction=correction, merging=searched)
+    summary = LoopSummary(
+        detection=found.summary, correction=correction, merging=searched,
+        run_ids=_run_ids(atlas, correction),
+    )  # fmt: skip
     return _LoopStep(summary, corrected=correction is not None)
 
 
@@ -1865,7 +1887,7 @@ class _Threads:
                 seconds = time.perf_counter() - start
                 self.closing.waiting = WaitingMerge(index, merging.merge, summary, seconds)
                 return
-            correction = None
+            correction, run_ids = None, None
             if found.loop is not None:
                 with self.owner.stopped() as held:
                     generation = self.generation.next()
@@ -1876,9 +1898,12 @@ class _Threads:
                     self.atlas.record(self.owner.read())
                     self.owner.clear_gone()
                     correction = fixed.summary
+                    run_ids = _run_ids(self.atlas, correction)
                     if self.options.loops.global_ba:
                         copy, self._due = self.owner.read(), generation
-        summary = LoopSummary(detection=found.summary, correction=correction, merging=searched)
+        summary = LoopSummary(
+            detection=found.summary, correction=correction, merging=searched, run_ids=run_ids
+        )
         seconds = time.perf_counter() - start
         self._complete(Completion(index, {"loop_seconds": seconds, "loop": summary.as_dict()}))
         if copy is not None:

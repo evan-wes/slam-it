@@ -21,8 +21,8 @@ pub const FORMAT: &str = "slam-it-run";
 /// `vocabulary` a relocalising run used; 6 the settings grouped, each keyframe's parent and the
 /// strong links; 7 the final trajectory, the poses as tracked beside it, the loops closed, and
 /// loop closing's time; 8 `threaded` and `locks`, and the threads' handshakes on each frame; 9
-/// the map each point, keyframe and final pose ends in, the map each frame was tracked in, and
-/// the merges made).
+/// the map each point, keyframe and final pose ends in, the map each frame was tracked in, the
+/// merges made, and each loop's correction's keyframes by the run's ids).
 pub const VERSION: i64 = 9;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).

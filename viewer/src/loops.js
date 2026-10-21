@@ -31,7 +31,8 @@ export const EFFECT_FADE = 1;
  * @property {number} map The map it closed in.
  * @property {number} older The keyframe it matched, by id (the order the run made them).
  * @property {number} newer The keyframe that closed it, by id.
- * @property {number} matched The keyframe it matched as the record names it: counted in its map.
+ * @property {number} matched The keyframe it matched as the record names it: by its id in the map
+ *     it was tracked in then, as the Solver panel names it.
  * @property {number} current The keyframe that closed it, as the record names it.
  * @property {number} olderMade The frame that made the matched keyframe.
  * @property {number} newerMade The frame that made the closing keyframe.
@@ -50,33 +51,18 @@ export const EFFECT_FADE = 1;
  * The loops a run closed: each frame whose record shows a loop's correction, its keyframes
  * checked against the loops the run's map holds.
  *
- * A record names a keyframe by its id in its map, which counts the map's keyframes from 0 in
- * the order the map made them; the run's ids count every map's, in the order the run made
- * them. So a map's keyframe k is the k-th of the run ids whose map is the map's: a map taken up
- * again after another holds its keyframes' run ids in several runs, the other map's between.
- * That holds for a map no other was merged into. A merge numbers the merged-away map's keyframes
- * after the matched map's (`loops.merge`), and the bundle names each keyframe and record by the
- * map it ends in, so a loop closed in a map before it was merged away, or in a merged map whose
- * matched map's keyframes do not all come before the other's, is not found: this throws.
+ * A correction names its two keyframes by the run's ids (`matched_run`, `current_run`), the ids
+ * the bundle's keyframes have, which no merge renumbers; its `matched` and `current` are their
+ * ids in the map tracked in then, which a merge renumbers, the merged-away map's keyframes moved
+ * on after the matched map's (`loops.merge`).
  * @param {{records: Record<string, unknown[]> & {frame: number[]}, keyframeMaps: Int32Array,
  *     keyframeLives: Int32Array, keyframeLoops: Int32Array}} run The run: its records, and its
  *     keyframes' maps, lives and loops (`Backend`).
  * @returns {Loop[]} The loops, in the order the frames closed them.
- * @throws {Error} If a correction names keyframes that are not a loop of `keyframeLoops` in its
- *     frame's map, made before it.
+ * @throws {Error} If a correction does not name, by the run's ids, keyframes that are a loop of
+ *     `keyframeLoops` in its frame's map, made before it.
  */
 export function loopsOf({ records, keyframeMaps, keyframeLives, keyframeLoops }) {
-  // Each map's keyframes' run ids, ascending: the k-th is the map's keyframe k.
-  /** @type {Map<number, number[]>} */
-  const runIds = new Map();
-  keyframeMaps.forEach((map, id) => {
-    const ids = runIds.get(map);
-    if (ids === undefined) {
-      runIds.set(map, [id]);
-    } else {
-      ids.push(id);
-    }
-  });
   const pairs = new Set();
   for (let e = 0; e < keyframeLoops.length; e += 2) {
     pairs.add(`${keyframeLoops[e]} ${keyframeLoops[e + 1]}`);
@@ -93,12 +79,13 @@ export function loopsOf({ records, keyframeMaps, keyframeLives, keyframeLoops })
     }
     const { matched, current } = correction;
     const map = records.map?.[k];
-    const ids = typeof map === "number" ? runIds.get(map) : undefined;
-    const [older, newer] = [ids?.[matched] ?? -1, ids?.[current] ?? -1];
+    const [older, newer] = [correction.matched_run, correction.current_run];
+    const known = (/** @type {number} */ id) =>
+      Number.isInteger(id) && id >= 0 && id < keyframeMaps.length;
     const [olderMade, newerMade] = [keyframeLives[older * 3], keyframeLives[newer * 3]];
     const closed =
-      older >= 0 &&
-      newer >= 0 &&
+      known(older) &&
+      known(newer) &&
       pairs.has(`${Math.min(older, newer)} ${Math.max(older, newer)}`) &&
       keyframeMaps[older] === map &&
       keyframeMaps[newer] === map &&

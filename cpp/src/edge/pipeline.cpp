@@ -3,6 +3,7 @@
 #include "slam_it/edge/pipeline.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -111,6 +112,16 @@ void carry_through(loops::Pending& pending, const loops::Merged& merged,
   pending.similarity.topRows<3>() /= loops::scale_of(back);
   offset_ids(pending.points, merged.point_offset);
   offset_ids(pending.matched_points, merged.point_offset);
+}
+
+/// @brief A correction's matched and current keyframes by the run's ids
+///        (`slam_it.edge.pipeline._run_ids`).
+/// @param atlas The atlas, its current map the corrected one.
+/// @param correction The correction.
+/// @return The two run ids, the matched keyframe's first.
+std::array<std::int64_t, 2> run_ids_of(const Atlas& atlas,
+                                       const loops::CorrectionSummary& correction) {
+  return {atlas.run_id(correction.matched), atlas.run_id(correction.current)};
 }
 
 /// @brief Merge `m`, the map being tracked, held with mapping stopped, into the kept map a
@@ -589,6 +600,9 @@ class PipelineThreads {
         return std::unexpected(std::move(fixed.error()));
       }
       summary.correction = std::move(*fixed);
+    }
+    if (summary.correction) {
+      summary.run_ids = run_ids_of(atlas_, *summary.correction);
     }
     Completion done;
     done.frame = item.index;
@@ -1231,7 +1245,8 @@ Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, cons
   LoopSummary summary{.detection = std::move(found.summary),
                       .correction = std::nullopt,
                       .merging = merging ? std::optional(merging->summary) : std::nullopt,
-                      .merge = std::nullopt};
+                      .merge = std::nullopt,
+                      .run_ids = std::nullopt};
   if (merging && merging->merge) {
     auto made = merge_maps(state, owner, atlas, camera, *merging->merge, mode, options);
     if (!made) {
@@ -1249,6 +1264,7 @@ Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, cons
       return std::unexpected(std::move(fixed.error()));
     }
     summary.correction = std::move(*fixed);
+    summary.run_ids = run_ids_of(atlas, *summary.correction);
   }
   const bool corrected = summary.correction.has_value();
   return Looped{

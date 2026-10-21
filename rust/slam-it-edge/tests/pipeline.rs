@@ -725,6 +725,7 @@ fn culling_spares_what_a_loop_or_merge_being_confirmed_holds() {
             correction: None,
             merging: None,
             merge: None,
+            run_ids: None,
         },
         seconds: 0.1,
     };

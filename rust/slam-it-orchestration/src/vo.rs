@@ -704,9 +704,15 @@ fn mapping_json(s: &MappingSummary) -> JsonValue {
 ///
 /// # Returns
 ///
-/// Its fields, in order.
+/// Its fields, in order, the correction's keyframes by the run's ids in it too (`matched_run`,
+/// `current_run`).
 fn loop_json(s: &LoopSummary) -> JsonValue {
     let correction = s.correction.as_ref().map_or(JsonValue::Null, |c| {
+        // Set with the correction ([`LoopSummary::run_ids`]); a reader refuses nulls.
+        let [matched_run, current_run] =
+            s.run_ids.map_or([JsonValue::Null, JsonValue::Null], |ids| {
+                ids.map(JsonValue::Integer)
+            });
         object([
             ("current", JsonValue::Integer(c.current)),
             ("matched", JsonValue::Integer(c.matched)),
@@ -719,6 +725,8 @@ fn loop_json(s: &LoopSummary) -> JsonValue {
             ("edges", count(c.edges)),
             ("essential", graph_solve_json(&c.essential)),
             ("global_ba", solve_or_null(c.global_ba.as_ref())),
+            ("matched_run", matched_run),
+            ("current_run", current_run),
         ])
     });
     let merge = s.merge.as_ref().map_or(JsonValue::Null, |m| {

@@ -173,6 +173,28 @@ pub struct LoopSummary {
     pub merging: Option<DetectionSummary>,
     /// The merge, when one was found.
     pub merge: Option<MergeSummary>,
+    /// The correction's matched and current keyframes by the run's ids (the ids
+    /// `keyframe_loops.npy` holds, [`Atlas::run_id`]), which a later merge does not renumber as
+    /// it does the map's; set with the correction, `None` without one.
+    pub run_ids: Option<[i64; 2]>,
+}
+
+/// A correction's matched and current keyframes by the run's ids
+/// (`slam_it.edge.pipeline._run_ids`).
+///
+/// # Arguments
+///
+/// * `atlas` - The atlas, its current map the corrected one.
+/// * `correction` - The correction.
+///
+/// # Returns
+///
+/// The two run ids, the matched keyframe's first.
+fn run_ids_of(atlas: &Atlas, correction: &CorrectionSummary) -> [i64; 2] {
+    [
+        atlas.run_id(correction.matched),
+        atlas.run_id(correction.current),
+    ]
 }
 
 /// How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each `None`
@@ -2043,6 +2065,7 @@ fn search(
             correction: None,
             merging: merging.as_ref().map(|m| m.summary.clone()),
             merge: None,
+            run_ids: None,
         },
         closed: found.closed,
         merge: merging.and_then(|m| m.merge),
@@ -2114,6 +2137,10 @@ fn close_loops(
     if let Some(closed) = &closed {
         summary.correction =
             owner.stopped(|m| loops::correct(m, camera, closed, mode, options).map(Some))?;
+        summary.run_ids = summary
+            .correction
+            .as_ref()
+            .map(|c| run_ids_of(&lock(&shared.atlas), c));
     }
     Ok(Looped {
         corrected: summary.correction.is_some(),
@@ -2483,6 +2510,10 @@ fn search_loops(shared: &Arc<Shared>, steps: &Arc<Steps>, item: &Searched) -> Re
             Some(closed) => correct_loop(shared, steps, closed, &mut started)?,
             None => None,
         };
+        summary.run_ids = summary
+            .correction
+            .as_ref()
+            .map(|c| run_ids_of(&lock(&shared.atlas), c));
         summary
     };
     steps.complete(Completion {

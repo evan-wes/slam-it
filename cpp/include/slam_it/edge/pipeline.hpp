@@ -133,6 +133,10 @@ struct LoopSummary {
   std::optional<loops::DetectionSummary> merging;
   /// @brief The merge, when one was found.
   std::optional<loops::MergeSummary> merge;
+  /// @brief The correction's matched and current keyframes by the run's ids (the ids
+  ///        `keyframe_loops.npy` holds, `Atlas::run_id`), which a later merge does not renumber
+  ///        as it does the map's; empty without a correction.
+  std::optional<std::array<std::int64_t, 2>> run_ids;
 };
 
 /// @brief How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each

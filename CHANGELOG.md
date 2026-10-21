@@ -70,18 +70,18 @@ fixed in the PR, or recorded where they are tracked
 - **A loss window of 0** (`loss.relocalize_seconds` may be 0): a map above `loss.reset_keyframes`
   is lost on its first failed frame, and the next frame starts a new map.
 - **The run format, version 9:** `tracked_maps.npy` and `keyframe_merges.npy`; a run's maps no
-  longer need to rise; the diagnostics' `loop` gains `merging` and `merge`, and a frame `left`
-  and, on a session's first, `session`.
+  longer need to rise; the diagnostics' `loop` gains `merging` and `merge`, and a loop's
+  `correction` names its two keyframes by the run's ids too (`matched_run`, `current_run`), which
+  no merge renumbers; a frame gains `left` and, on a session's first, `session`.
 - **The bundle, version 5:** each run's merges (`keyframe_merges.npy`), which the viewer draws
   with the covisibility graph in a colour of their own (`--graph-merge`). The map at a frame is
   the map it ends in: the records' `map` is written through each merge's destination, read from
   the run's merge records, and a run whose maps disagree (one map's frames ending in two maps,
   by its merges and by its trajectory) or a record naming a map the run neither ends with nor
   merged is refused (A12, H21); the header lists the maps a run ends with, each map's `frames`
-  as stretches, and the viewer draws
-  a map through the runs of rows its poses come in, and finds a loop's keyframes in a map taken
-  up again by the k-th of the map's run ids, not the first's offset (A1). A run of
-  several sequences in turn is refused by name (H13).
+  as stretches, and the viewer draws a map through the runs of rows its poses come in, and
+  finds a loop's keyframes by the run's ids its correction names, in a map taken up again or
+  merged away since too (A1). A run of several sequences in turn is refused by name (H13).
 - **A 7-Scenes importer** (`slam_it.eval.sevenscenes`, `python -m slam_it.eval.sevenscenes SCENE
   OUT`): a scene's sequences to TUM format, monocular, for section 15.
 - **The test-set measure takes sessions** (`scripts/measure_testset.py`): a sequence's `folders`
@@ -106,15 +106,15 @@ fixed in the PR, or recorded where they are tracked
 - **From B4's review panel:** Rust's loop closing and relocalisation read the kept maps with the
   atlas's lock let go (shared, `Arc`), so threaded tracking never waits on a search (A2), a kept
   map a search still holds never taken out but refused, naming it, where it was copied out (H20,
-  A13), and `loops::detect_merge` and `merge_candidates` take the maps by reference in C++ and Rust, as
-  relocalisation does; C++ and Rust keep each kept map as one `Kept`, its run ids with it (H2);
-  `start_session` refuses a finished run in all three languages (H4); `eval.runs.tracking` gives
-  a segment per stretch tracked in one map, and the worker's summary counts the maps a run ends
-  with apart (`maps`, which the status page's "maps" row shows, where it showed the segments),
-  and the frames relocalisation found in a map kept from earlier (`taken_up`, which the status
-  page says apart from those found again in their map) (A11); `Crossing` is `slam_it.backends`'
-  alone (H10); each weld setting's doc stands alone (H7); and why a map closes is named
-  (`_Closing`), in place of a keyframe count with `+ 1` (H8).
+  A13), and `loops::detect_merge` and `merge_candidates` take the maps by reference in C++ and
+  Rust, as relocalisation does; C++ and Rust keep each kept map as one `Kept`, its run ids with
+  it (H2); `start_session` refuses a finished run in all three languages (H4);
+  `eval.runs.tracking` gives a segment per stretch tracked in one map, and the worker's summary
+  counts the maps a run ends with apart (`maps`, which the status page's "maps" row shows, where
+  it showed the segments), and the frames relocalisation found in a map kept from earlier
+  (`taken_up`, which the status page says apart from those found again in their map) (A11);
+  `Crossing` is `slam_it.backends`' alone (H10); each weld setting's doc stands alone (H7); and
+  why a map closes is named (`_Closing`), in place of a keyframe count with `+ 1` (H8).
 
 ### Tests
 
@@ -138,10 +138,11 @@ fixed in the PR, or recorded where they are tracked
 - **Sessions** (`tests/orchestration/test_sessions.py`): the room run twice in turn through every
   backend, the offsets, the shared camera and the refusals; `start_session` in each language's
   pipeline tests; a loss window of 0 in each language's loss rules.
-- **The rooms' golden records are regenerated, one per language:** 25 of each record's 27 cases
+- **The rooms' golden records are regenerated, one per language:** 22 of each record's 27 cases
   are unchanged; window/tum/monocular and window/euroc/monocular change in their fates and stage
   summaries alone (merge detection from frame 22, relocalisation searching the kept map on
-  frames 23 to 25), their states, maps and poses unchanged.
+  frames 23 to 25), and the loop room's three cases in their corrections alone, which name
+  their keyframes by the run's ids too; their states, maps and poses unchanged.
 - The golden bundles are rebaked at version 5 with all three programs; the run fixture is at
   format 9.
 - `slam_it.eval.loops` judges merges as it judges loops (`tests/eval/test_loops.py`).
@@ -170,6 +171,10 @@ fixed in the PR, or recorded where they are tracked
     choose the map shown (`viewer/tests/maps.test.js`). They leave out their frames' JPEG
     chunks, which no test reads, keeping the images' spans the page's loader reads; the layout
     test compares them without the chunks.
+  - **A loop's keyframes by the run's ids:** each loop room run, in every language and threaded,
+    names each loop it corrects by the run's ids, the `keyframe_loops.npy` row
+    (`tests/orchestration/test_loop_room.py`); the viewer finds a loop closed in a map later
+    merged away by them, which the k-th of the map's run ids did not (`viewer/tests/loops.test.js`).
 
 ## [0.3.16.2] - 2026-10-19
 

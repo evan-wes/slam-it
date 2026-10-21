@@ -30,7 +30,8 @@ inline constexpr const char* kFormat = "slam-it-run";
 ///        the strong links; 7 the final trajectory, the poses as tracked beside it, the loops
 ///        closed, and loop closing's time; 8 `threaded` and `locks`, and the threads' handshakes
 ///        on each frame; 9 the map each point, keyframe and final pose ends in, the map each
-///        frame was tracked in, and the merges made).
+///        frame was tracked in, the merges made, and each loop's correction's keyframes by the
+///        run's ids).
 inline constexpr std::int64_t kVersion = 9;
 
 /// @brief The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).

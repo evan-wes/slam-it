@@ -871,11 +871,12 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
    merge made (`merge`), null where none ran.
 4. **The merge** (`MergeLocal`, its correction the paper's):
    - mapping is stopped and global BA aborted (B3b's handshake);
-   - the matched map, the older, survives with its frame, scale and number. The active map's
-     keyframes and points move into it by the merge's Sim(3), each keyframe by its pose relative
-     to the new one and each point with its reference keyframe, keeping their run ids. The
-     merged map becomes the active one. ORB-SLAM3 hands the survivor the active map's number
-     (`ChangeId`, marked "TODO for debug"); not here;
+   - the matched map survives with its frame, scale and number (it need not be the older: the
+     active map can be an older map taken up again). The active map's keyframes and points move
+     into it by the merge's Sim(3), each keyframe by its pose relative to the new one and each
+     point with its reference keyframe, keeping their run ids. The merged map becomes the active
+     one. ORB-SLAM3 hands the survivor the active map's number (`ChangeId`, marked "TODO for
+     debug"); not here;
    - the active map's spanning tree is re-rooted at the new keyframe and hung under the matched
      one. Its first keyframe becomes an ordinary one, so no root is renumbered and
      `covisibility.cull`'s rule stands (A15);

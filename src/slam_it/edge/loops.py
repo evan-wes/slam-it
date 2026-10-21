@@ -3423,10 +3423,11 @@ def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
 
     The online-SLAM design's section 14, item 4:
 
-    - the matched map, the older, survives with its world, scale and ids; the active map is
-      carried into its world by the merge's similarity (each keyframe as the current one sees
-      it, each point with it) and taken in after it, every id of its, live or archived, moved
-      on by the matched map's next id (:class:`Merged`);
+    - the matched map survives with its world, scale and ids (it need not be the older: the
+      active map can be an older map taken up again); the active map is carried into its world
+      by the merge's similarity (each keyframe as the current one sees it, each point with it)
+      and taken in after it, every id of its, live or archived, moved on by the matched map's
+      next id (:class:`Merged`);
     - the active side's spanning tree is re-rooted at the current keyframe and hung under the
       matched one, so the merged map's root is the matched map's;
     - the welding windows: each of the two keyframes and its best links
