@@ -23,6 +23,7 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
+#include "edge/carry.hpp"
 #include "scene.hpp"
 #include "slam_it/edge/frames.hpp"
 #include "slam_it/edge/loops.hpp"

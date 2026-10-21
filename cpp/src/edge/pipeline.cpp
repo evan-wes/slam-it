@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "carry.hpp"
 #include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/mapping.hpp"

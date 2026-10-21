@@ -19,9 +19,10 @@ two frames, pausing for the whole merge (option B, decided by evan-wes on 2026-1
 does not block tracking is the later design. Section 15's measurements (multi-session EuRoC, the
 kidnap, 7-Scenes, the loss window, and the test set and the loop sequences) are not run for this
 release (decided by evan-wes on 2026-10-18). B4's review panel's findings, cited below by their
-IDs in parentheses, were decided by evan-wes on 2026-10-19 (run 1) and 2026-10-20 (run 2) and
-fixed in the PR, or recorded where they are tracked
-(`docs/reviews/2026-10-19-feature-2b-b4-merging-maps.md`).
+IDs in parentheses, were decided by evan-wes on 2026-10-19 (run 1), 2026-10-20 (run 2) and
+2026-10-21 (run 3) and fixed in the PR, or recorded where they are tracked
+(`docs/reviews/2026-10-19-feature-2b-b4-merging-maps.md`); run 3's are named so, apart from B3's
+panel's IDs.
 
 ### Added
 
@@ -163,8 +164,10 @@ fixed in the PR, or recorded where they are tracked
     a snapshot still holds refused, and moved out once let go (H20); a loop being confirmed
     carried through the merge, a loop of scale 1.25 keeping it (L9), and confirmed on the next
     keyframe (`tests/edge/test_merges.py`), and in C++ and Rust the carry itself, a loop of scale
-    1.25 keeping it, against its known answer (`carry_through`: C++'s in `edge::detail`, tested
-    in `cpp/tests/edge/test_pipeline.cpp`; Rust's in `pipeline.rs`'s own tests).
+    1.25 keeping it, against its known answer (`carry_through`: C++'s in `edge::detail`,
+    declared for its test in an internal header, `cpp/src/edge/carry.hpp`, out of the edge
+    rung's interface (run 3's A16), and tested in `cpp/tests/edge/test_pipeline.cpp`; Rust's in
+    `pipeline.rs`'s own tests).
   - `held()` and `TrackingState.merged` with a scaled `G` in each language (the native ones
     H19), a finished run's session refused in each language, and the Huber loss's known answer
     on one stereo observation in every backend (`initial_error` 10.0702).
