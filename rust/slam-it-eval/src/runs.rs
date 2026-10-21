@@ -816,9 +816,9 @@ fn vocabulary_text(header: &Header) -> String {
 /// ascending, poses that are not rigid or not one per time, a point that is not finite, lives
 /// or maps that are not one per row or not valid (as `check_lives` and `check_maps` hold
 /// them), a diagnostic without a `timestamp`, diagnostics whose `map`s are not null or map
-/// numbers never descending, or name no frame of a map with keyframes, a number JSON cannot
-/// hold, CPUs that are empty or not ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be
-/// written.
+/// numbers, or name no frame of a map with keyframes, a number JSON cannot hold, CPUs that are
+/// empty or not ascending, or a memory cap of 0 (nothing is written then); or a file that
+/// cannot be written.
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
     let trajectory = trajectory_text(&run.timestamps, &run.poses, &run.pose_maps)?;
