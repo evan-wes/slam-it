@@ -1007,4 +1007,19 @@ class Pipeline {
   std::unique_ptr<PipelineThreads> threads_;
 };
 
+/// @brief Implementation details of the pipeline, declared for its tests.
+namespace detail {
+
+/// @brief A loop being confirmed in the active map, as it stands in the merged map
+///        (`slam_it.edge.pipeline._carried`): its ids moved on by the merge's offsets, -1 kept,
+///        its similarity carried into the matched map's world and units,
+///        `diag(1/s, 1/s, 1/s, 1) S G^-1` with `s = scale_of(G^-1)`, so it keeps its own scale.
+/// @param pending The loop, changed in place.
+/// @param merged The merge: its offsets.
+/// @param to_world `G`.
+void carry_through(loops::Pending& pending, const loops::Merged& merged,
+                   const Eigen::Matrix4d& to_world);
+
+}  // namespace detail
+
 }  // namespace slam_it::edge

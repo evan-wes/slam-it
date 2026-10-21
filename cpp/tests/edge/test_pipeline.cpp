@@ -7,7 +7,8 @@
 ///        Tracking on the view a writer would publish decides as on the map, and threaded, the
 ///        views published are a part of the map, their sizes kept; after a correction the next
 ///        frame follows its keyframe, and a keyframe queued across it is placed by its
-///        reference. A merge carries tracking's last frame into the merged map's ids and units.
+///        reference. A merge carries tracking's last frame into the merged map's ids and units,
+///        and a loop being confirmed keeps its own scale through it.
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
@@ -24,6 +25,7 @@
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
 #include "slam_it/edge/frames.hpp"
+#include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/pipeline.hpp"
 #include "slam_it/foundations/so3.hpp"
 
@@ -831,6 +833,57 @@ void check_merged(int& failures) {
          failures);
 }
 
+/// @brief Check the carry of a loop being confirmed through a merge (`edge::detail::carry_through`,
+///        as Rust's in-module test holds its own): a loop of its own scale 1.25, carried through
+///        a `G` of scale 1/0.7, keeps it, `diag(1.25, 1.25, 1.25, 1) rigid_of(T G^-1)` for its
+///        keyframe's pose `T`, written out by hand: for `G = [g R, t]`, rotation `1.25 R_T R^T`
+///        and translation `1.25 (g t_T - R_T R^T t)`. Carried as `S G^-1` its scale would be
+///        `1.25 / g`; as `rigid_of(S G^-1)`, 1. Its ids move on by the offsets, -1 kept.
+/// @param failures Running failure count.
+void check_carry_through(int& failures) {
+  namespace so3 = slam_it::foundations::so3;
+  constexpr double kSigma = 1.25;
+  constexpr double kG = 1.0 / 0.7;
+  constexpr double kTolerance = 1e-12;
+  const auto pose = [](const Eigen::Vector3d& rotation, const Eigen::Vector3d& translation) {
+    Eigen::Matrix4d out = Eigen::Matrix4d::Identity();
+    out.topLeftCorner<3, 3>() = so3::exp(rotation);
+    out.topRightCorner<3, 1>() = translation;
+    return out;
+  };
+  const Eigen::Matrix4d keyframe =
+      pose(Eigen::Vector3d(0.11, -0.21, 0.06), Eigen::Vector3d(0.31, -0.12, 1.21));
+  const Eigen::Matrix4d turn =
+      pose(Eigen::Vector3d(0.3, 0.1, -0.2), Eigen::Vector3d(0.4, 0.2, -0.3));
+  const Eigen::Matrix4d to_world = Eigen::Vector4d(kG, kG, kG, 1.0).asDiagonal() * turn;
+  edge::loops::Pending pending;
+  pending.matched = 3;
+  pending.last = 5;
+  pending.similarity = Eigen::Vector4d(kSigma, kSigma, kSigma, 1.0).asDiagonal() * keyframe;
+  pending.confirmations = 1;
+  pending.points = {0, -1, 2};
+  pending.matched_points = {-1, 1, -1};
+  edge::loops::Merged merged;
+  merged.keyframe_offset = 10;
+  merged.point_offset = 100;
+  edge::detail::carry_through(pending, merged, to_world);
+  const Eigen::Matrix3d r_t = keyframe.topLeftCorner<3, 3>();
+  const Eigen::Vector3d t_t = keyframe.topRightCorner<3, 1>();
+  const Eigen::Matrix3d r_g = turn.topLeftCorner<3, 3>();
+  const Eigen::Vector3d t_g = to_world.topRightCorner<3, 1>();
+  Eigen::Matrix4d expected = Eigen::Matrix4d::Identity();
+  expected.topLeftCorner<3, 3>() = kSigma * r_t * r_g.transpose();
+  expected.topRightCorner<3, 1>() = kSigma * ((kG * t_t) - (r_t * r_g.transpose() * t_g));
+  expect((pending.similarity - expected).cwiseAbs().maxCoeff() < kTolerance,
+         "a loop of scale 1.25 is carried to diag(1.25, 1.25, 1.25, 1) rigid_of(T G^-1)", failures);
+  expect(std::abs(edge::loops::scale_of(pending.similarity) - kSigma) < kTolerance,
+         "it keeps its own scale", failures);
+  expect(pending.matched == 13 && pending.last == 15, "its keyframes' ids move on", failures);
+  expect(pending.points == std::vector<std::int64_t>{100, -1, 102} &&
+             pending.matched_points == std::vector<std::int64_t>{-1, 101, -1},
+         "its points' ids move on, -1 kept", failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run_tests() {
@@ -841,6 +894,7 @@ int run_tests() {
   check_sessions(failures);
   check_held(failures);
   check_merged(failures);
+  check_carry_through(failures);
   check_lost_relocalizing(failures);
   check_closing_loops_alone(failures);
   check_relocalized(failures);

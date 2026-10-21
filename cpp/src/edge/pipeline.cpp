@@ -96,24 +96,6 @@ struct Joined {
   Eigen::Matrix4d to_world{Eigen::Matrix4d::Identity()};
 };
 
-/// @brief A loop being confirmed in the active map, as it stands in the merged map
-///        (`slam_it.edge.pipeline._carried`): its ids moved on by the merge's offsets, its
-///        similarity carried into the matched map's world and units,
-///        `diag(1/s, 1/s, 1/s, 1) S G^-1` with `s = scale_of(G^-1)`, so it keeps its own scale.
-/// @param pending The loop, changed in place.
-/// @param merged The merge.
-/// @param to_world `G`.
-void carry_through(loops::Pending& pending, const loops::Merged& merged,
-                   const Eigen::Matrix4d& to_world) {
-  pending.matched += merged.keyframe_offset;
-  pending.last += merged.keyframe_offset;
-  const Eigen::Matrix4d back = foundations::sim3::inverse(to_world);
-  pending.similarity = pending.similarity * back;
-  pending.similarity.topRows<3>() /= loops::scale_of(back);
-  offset_ids(pending.points, merged.point_offset);
-  offset_ids(pending.matched_points, merged.point_offset);
-}
-
 /// @brief A correction's matched and current keyframes by the run's ids
 ///        (`slam_it.edge.pipeline._run_ids`).
 /// @param atlas The atlas, its current map the corrected one.
@@ -167,7 +149,7 @@ Result<Joined> merge_held(LoopState& state, MapOwner& owner, Atlas& atlas, const
     return std::unexpected(std::move(ok.error()));
   }
   if (state.pending) {
-    carry_through(*state.pending, *merged, *to_world);
+    detail::carry_through(*state.pending, *merged, *to_world);
   }
   return Joined{.summary = std::move(merged->summary),
                 .keyframe_offset = merged->keyframe_offset,
@@ -1272,6 +1254,21 @@ Result<Looped> close_loops(LoopState& state, MapOwner& owner, Atlas& atlas, cons
 }
 
 }  // namespace
+
+namespace detail {
+
+void carry_through(loops::Pending& pending, const loops::Merged& merged,
+                   const Eigen::Matrix4d& to_world) {
+  pending.matched += merged.keyframe_offset;
+  pending.last += merged.keyframe_offset;
+  const Eigen::Matrix4d back = foundations::sim3::inverse(to_world);
+  pending.similarity = pending.similarity * back;
+  pending.similarity.topRows<3>() /= loops::scale_of(back);
+  offset_ids(pending.points, merged.point_offset);
+  offset_ids(pending.matched_points, merged.point_offset);
+}
+
+}  // namespace detail
 
 const char* name(State state) {
   switch (state) {
