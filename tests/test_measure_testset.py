@@ -122,6 +122,7 @@ def test_a_sequence_is_run_measured_and_tabled(
     assert (result["share"], result["tracked_from"], result["losses"]) == (1.0, 0.0, 0)
     assert [(s["map"], s["tracked"]) for s in result["segments"]] == [(0, FRAMES)]
     assert (result["resets"], result["relocalizations"]) == (0, 0)
+    assert (result["taken_up"], result["kept_maps"]) == (0, 1)  # read as the worker reads them
     assert [m["map"] for m in result["map_ate"]] == [0]
     for key in ("ate", "ate_tracked", "ate_keyframes"):  # final, as tracked, the keyframes'
         assert result[key] < ATE_BOUND["rgbd"]

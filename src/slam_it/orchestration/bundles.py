@@ -262,27 +262,13 @@ def _score_info(error: runs.MapError) -> dict[str, Any]:
     }
 
 
-def _merged_into(baked: _Baked) -> dict[int, int]:
-    """Return the map each map merged into another was merged into, by the run's merge records.
-
-    A merge is recorded on the frame of the keyframe it was found on (the diagnostics' ``loop``,
-    its ``merge``), a frame tracked in the map merged away (its ``map``); the record's own
-    ``map`` is the map merged into.
-    """
-    out: dict[int, int] = {}
-    for entry in baked.run.diagnostics:
-        merge = (entry.get("loop") or {}).get("merge")
-        if merge is not None:
-            out[int(entry["map"])] = int(merge["map"])
-    return out
-
-
 def _ends_in(baked: _Baked) -> dict[int, int]:
     """Return the map each map a run tracked in ends in: itself, or the one it merged into.
 
-    Read from the run's merge records (:func:`_merged_into`), each followed on to the map its
-    destination merged into in turn, as the atlas follows them, so that a map merged into one
-    later reset, whose frames the trajectory no longer holds, still ends there; then checked
+    Read from the run's merge records (:meth:`slam_it.eval.runs.Run.merged_into`, as the run
+    format declares them), each followed on to the map its destination merged into in turn, as
+    the atlas follows them, so that a map merged into one later reset, whose frames the
+    trajectory no longer holds, still ends there; then checked
     against the trajectory, each tracked frame's final pose being in the map its map ends in
     (``pose_maps.npy``), and against the records, each naming a map the run ends with
     (:meth:`slam_it.eval.runs.Run.maps`, the header's) once followed.
@@ -294,7 +280,7 @@ def _ends_in(baked: _Baked) -> dict[int, int]:
         names a map the run neither ends with nor merged into one it ends with.
     """
     run = baked.run
-    merged = _merged_into(baked)
+    merged = run.merged_into()
 
     def follow(number: int) -> int:
         seen = {number}

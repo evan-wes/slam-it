@@ -483,10 +483,11 @@ def summarize(
 ) -> dict[str, Any]:
     """Return a job's summary: what its run made, and what of the clip it ran and tracked.
 
-    What of the clip it ran and tracked is :func:`slam_it.eval.runs.tracking`'s: a segment per
-    stretch tracked in one map, a lost track starting the next, a map taken up again starting
-    one of its own. The maps are counted apart, as the run ends with them: a map merged into
-    another is not one, nor is a map reset. The status page says why the tracked parts can be
+    What of the clip it ran and tracked is :func:`slam_it.eval.runs.tracking`'s, as the test
+    set's measure reads it (``scripts/measure_testset.py``): a segment per stretch tracked in
+    one map, a lost track starting the next, a map taken up again starting one of its own. The
+    maps are counted apart, as the run ends with them: a map merged into another is not one,
+    nor is a map reset. The status page says why the tracked parts can be
     fewer than the clip's (``viewer/src/jobs.js``), so that a short result is not taken for a
     cropped video, and warns when the frames arrived smaller than the import's short side.
 
@@ -521,7 +522,6 @@ def summarize(
     """
     span = runs.tracking(run, times)
     segments = [[s.tracked_from, s.tracked_to] for s in span.segments[:SEGMENTS]]
-    kept = np.setdiff1d(run.maps(), run.reset_maps())
     return {
         "frames": span.frames,
         "tracked": span.tracked,
@@ -536,11 +536,11 @@ def summarize(
         "segments": segments,
         "segment_count": len(span.segments),
         "ran_to": span.ran_to,
-        "maps": len(kept),
+        "maps": span.maps,
         "losses": span.losses,
         "resets": span.resets,
         "relocalizations": span.relocalizations,
-        "taken_up": sum(entry.get("left") is not None for entry in run.diagnostics),
+        "taken_up": span.taken_up,
     }
 
 

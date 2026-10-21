@@ -44,10 +44,12 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
 - ``segments``: each stretch of frames tracked in one map, ``map``, ``tracked`` and its first
   and last tracked frames' times, ``tracked_from`` and ``tracked_to``
   (:func:`slam_it.eval.runs.tracking`); ``losses``, the frames the track was lost on,
-  ``resets``, the maps lost too soon to keep, and ``relocalizations``, the frames that tracking
-  failed and relocalisation found, in their map or in a kept one; and ``tracked_from``,
-  ``tracked_to`` and ``ran_to`` for the whole run: every time since the sequence's first frame
-  (:func:`slam_it.eval.runs.tracking`);
+  ``resets``, the maps lost too soon to keep, ``relocalizations``, the frames that tracking
+  failed and relocalisation found, in their map or in a kept one, ``taken_up``, those of them
+  found in a kept one, which tracking went on in, and ``kept_maps``, the maps the run ends
+  with, those reset left out (a map taken up again is one, however many segments it has); and
+  ``tracked_from``, ``tracked_to`` and ``ran_to`` for the whole run: every time since the
+  sequence's first frame (:func:`slam_it.eval.runs.tracking`, as the demo's worker reads it);
 - ``ate``: the RMSE in metres over the tracked frames matched to the reference, each map aligned
   on its own, Sim(3) for monocular and SE(3) otherwise, with ``matched`` and the ``reference``
   named; each map's own in ``map_ate`` (``map``, ``matched``, ``ate``), and in
@@ -567,6 +569,8 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "losses": span.losses,
         "resets": span.resets,
         "relocalizations": span.relocalizations,
+        "taken_up": span.taken_up,
+        "kept_maps": span.maps,
         "tracked_from": span.tracked_from,
         "tracked_to": span.tracked_to,
         "ran_to": span.ran_to,
@@ -652,7 +656,7 @@ def row(result: dict[str, Any]) -> str:
         if result["p95"] is None
         else f"{1000 * result['p95']:.0f} of {1000 * result['deadline']:.0f} ms"
     )
-    maps = f"{len(result['segments'])} ({result['resets']} reset)"
+    maps = f"{result['kept_maps']} ({result['resets']} reset)"
     return (
         f"| {result['name']} | {result['mode']} | {width}x{height} | {result['features']} | "
         f"{result['tracked']}/{result['frames']} ({100 * result['share']:.0f}%) | {span} | "
@@ -661,7 +665,7 @@ def row(result: dict[str, Any]) -> str:
 
 
 HEADER = (
-    "| sequence | mode | size | features | tracked | tracked from-to | maps tracked | losses | "
+    "| sequence | mode | size | features | tracked | tracked from-to | maps kept | losses | "
     "relocalised | ATE (matched) | p95 latency of the frame period |\n"
     "|---|---|---|---|---|---|---|---|---|---|---|"
 )

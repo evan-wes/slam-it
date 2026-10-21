@@ -965,14 +965,23 @@ of its source (`Atlas.cc`, `LoopClosing.cc`'s `MergeLocal`, `KeyFrameDatabase.cc
 
    *As built:* the map each frame was tracked in is `tracked_maps.npy`. The diagnostics' `loop`
    gains `merging` and `merge` (item 3), and a frame gains `left` (item 2) and, on a session's
-   first frame, `session` (item 5), each null where absent. The bundle, version 5, holds each
-   run's merges (`keyframe_merges.npy`), which the viewer draws with the graph as it draws the
-   loops, in a colour of their own. In the bundle, the map at a frame is the map it ends in (B4's
-   review panel, A1): the bake writes the records' `map` through each merge's destination, its
-   header lists the maps a run ends with (a map merged away is not listed), each with its frames
-   as stretches; the viewer draws a map through the runs of rows its poses come in, so a merged
-   map's frames show the merged map and a map taken up again is drawn without joining its runs.
-   `eval.runs.tracking` gives a segment per stretch tracked in one map. Two golden bundles hold
+   first frame, `session` (item 5), each null where absent. A loop's `correction` names its two
+   keyframes by the run's ids too, `matched_run` and `current_run`, as `keyframe_loops.npy` holds
+   them, beside its `matched` and `current` by the map's, which a later merge renumbers, so the
+   viewer finds a loop closed in a map later merged away (B4's review panel, run 2); the run ids
+   are held with the correction itself, which cannot be recorded without them (run 3's A15). A
+   merge's record is read across a run's maps, as `map`, `state`, `lost`, `left` and `placed_by`
+   are: recorded on a frame tracked in the map merged away, its own `map` is the map merged into
+   (`eval.runs.Run.merged_into`, which the bake follows; run 3's A17). The bundle, version 5,
+   holds each run's merges (`keyframe_merges.npy`), which the viewer draws with the graph as it
+   draws the loops, in a colour of their own. In the bundle, the map at a frame is the map it
+   ends in (B4's review panel, A1): the bake writes the records' `map` through each merge's
+   destination, its header lists the maps a run ends with (a map merged away is not listed), each
+   with its frames as stretches; the viewer draws a map through the runs of rows its poses come
+   in, so a merged map's frames show the merged map and a map taken up again is drawn without
+   joining its runs. `eval.runs.tracking` gives a segment per stretch tracked in one map, and
+   counts apart the maps a run ends with and the frames found in a kept map (`taken_up`), which
+   the demo's worker and the test set's measure both read (run 3's A17). Two golden bundles hold
    the cases: the merge room's and the revisit room's (item 8).
 8. **Tests:**
    - the merge room: the loop room's circle with black frames partway, longer than the loss

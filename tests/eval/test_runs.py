@@ -200,6 +200,51 @@ def test_tracking_gives_a_segment_per_stretch_tracked_in_one_map() -> None:
         assert runs.tracking(run, times).segments == expected
 
 
+def test_tracking_counts_the_maps_a_run_ends_with_and_the_frames_taken_up() -> None:
+    """A map taken up again is one map, however many segments; a merged or reset map is none.
+
+    Six frames tracked in maps 0, 0, 1, 1, 0, 0: map 0 taken up again on the fifth frame, which
+    records the map it ``left``, so two maps and one frame taken up; then map 1 merged into map
+    0 instead (its keyframes ending in map 0), one map; then map 1 reset, one map too.
+    """
+    times = np.asarray(0.1 * np.arange(6), dtype=np.float64)
+    diagnostics: list[dict[str, Any]] = [{"timestamp": float(t)} for t in times]
+    diagnostics[4] |= {"placed_by": "relocalization", "left": {"keyframes": 2, "reset": False}}
+    tracked_in = np.array([0, 0, 1, 1, 0, 0], dtype=np.int64)
+    taken = runs.Run(
+        "tum", "s", "rgbd", "python", times, _poses(6), _poses(6), diagnostics=diagnostics,
+        keyframe_lives=np.array([[0, -1, -1], [2, -1, -1]], dtype=np.int64),
+        pose_maps=tracked_in, keyframe_maps=np.array([0, 1], dtype=np.int64),
+        tracked_maps=tracked_in,
+    )  # fmt: skip
+    span = runs.tracking(taken, times)
+    assert (len(span.segments), span.maps, span.taken_up, span.relocalizations) == (3, 2, 1, 1)
+    merged = replace(
+        taken, diagnostics=[{"timestamp": float(t)} for t in times],
+        pose_maps=np.zeros(6, dtype=np.int64), keyframe_maps=np.zeros(2, dtype=np.int64),
+    )  # fmt: skip
+    assert (runs.tracking(merged, times).maps, runs.tracking(merged, times).taken_up) == (1, 0)
+    reset = np.array([[0, -1, -1], [2, 3, Removal.RESET]], dtype=np.int64)
+    assert runs.tracking(replace(taken, keyframe_lives=reset), times).maps == 1
+
+
+def test_a_run_s_merges_are_read_from_its_merge_records() -> None:
+    """Each merge record, on a frame tracked in the map merged away, names the map merged into.
+
+    Map 2 merged into map 1 on the third frame, then map 1 into map 0 on the fifth: one step
+    each, the chain for a reader to follow; a frame's loop without a merge names none.
+    """
+    diagnostics: list[dict[str, Any]] = [
+        {"timestamp": 0.1 * k, "map": m, "loop": None} for k, m in enumerate([0, 1, 2, 1, 1])
+    ]
+    diagnostics[1]["loop"] = {"merge": None, "correction": None}
+    diagnostics[2]["loop"] = {"merge": {"map": 1}}
+    diagnostics[4]["loop"] = {"merge": {"map": 0}}
+    run = replace(_run(), diagnostics=diagnostics)
+    assert run.merged_into() == {2: 1, 1: 0}
+    assert replace(run, diagnostics=diagnostics[:2]).merged_into() == {}
+
+
 def _record_features(folder: Path) -> None:
     """Record three frames of keypoints: every fate, and a frame with none."""
     none = np.zeros(0, dtype=np.int64)

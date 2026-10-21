@@ -116,6 +116,10 @@ panel's IDs.
   counts the maps a run ends with apart (`maps`, which the status page's "maps" row shows, where
   it showed the segments), and the frames relocalisation found in a map kept from earlier
   (`taken_up`, which the status page says apart from those found again in their map) (A11);
+  both counts are `eval.runs.Tracking`'s, which the worker and the test-set measure read alike
+  (the measure's `taken_up` and `kept_maps`, its table's maps column counting maps kept, not
+  stretches), and the run format lists a merge's record among the keys read across a run's
+  maps, which `Run.merged_into` reads for the bake (run 3's A17);
   threaded, C++ and Rust read a loop correction's run ids inside its stop, once the atlas has
   recorded the corrected map, as Python does (run 3's A18); `Crossing` is `slam_it.backends`'
   alone (H10); each weld setting's doc stands alone (H7); and

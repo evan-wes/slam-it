@@ -66,13 +66,16 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   :class:`slam_it.edge.pipeline.Fates` gives them. Streamed as the run goes
   (:class:`FeatureWriter`), and read mapped from disk (:func:`read_features`).
 - ``diagnostics.jsonl``: one JSON object per line, per frame, each with its ``timestamp``;
-  otherwise what the pipeline wants to report (tracked points, state). Four keys are read across
+  otherwise what the pipeline wants to report (tracked points, state). Five keys are read across
   a run's maps: ``map``, the map the frame was tracked in, or null if it was in none (a run with
   maps names each one a keyframe ends in on a frame); ``state``, ``"lost"`` on a frame that lost
   the track (:func:`tracking` counts them); ``lost``, that frame's account of the map it closed;
-  and ``placed_by``, ``"relocalization"`` on a frame that tracking failed and relocalisation
-  found, in its map or in a map kept from earlier, its ``left`` then the account of the map it
-  left (:func:`tracking` counts them too). The edge pipeline's frames also time their steps, in
+  ``placed_by``, ``"relocalization"`` on a frame that tracking failed and relocalisation found,
+  in its map or in a map kept from earlier, its ``left`` then the account of the map it left
+  (:func:`tracking` counts both); and ``loop``'s ``merge``, a merge made, recorded on a frame
+  tracked in the map merged away (the frame's ``map``), its own ``map`` the map merged into
+  (:meth:`Run.merged_into` reads them, and the bundle's bake follows them,
+  :mod:`slam_it.orchestration.bundles`). The edge pipeline's frames also time their steps, in
   seconds (:data:`STEPS`), which the budget harness judges
   (:func:`slam_it.eval.budgets.judge`), and say how their stages went
   (:meth:`slam_it.edge.pipeline.FrameSummary.as_dict`): an object per stage, null where it did
@@ -371,6 +374,26 @@ class Run:
         """
         reset = self.keyframe_lives[:, 2] == REMOVALS.index("reset")
         return np.unique(self.keyframe_maps[reset])
+
+    def merged_into(self) -> dict[int, int]:
+        """Return the map each map merged into another was merged into, by its merge records.
+
+        A merge is recorded in its keyframe's frame's ``loop``, its ``merge``, a frame tracked in
+        the map merged away (the frame's ``map``); the record's own ``map`` is the map merged
+        into (the module docstring). Each is one step: a map merged into one that was merged in
+        turn ends in the last of the chain.
+
+        Returns
+        -------
+        dict of int to int
+            Each map merged away, and the map it was merged into.
+        """
+        out: dict[int, int] = {}
+        for entry in self.diagnostics:
+            merge = (entry.get("loop") or {}).get("merge")
+            if merge is not None:
+                out[int(entry["map"])] = int(merge["map"])
+        return out
 
 
 def _check_process(peak_memory: object, cpus: object, memory_cap: object, prefix: str) -> None:
@@ -1194,6 +1217,13 @@ class Tracking:
         map or in a kept one. A count of frames, not of times the track was dropped:
         relocalisation runs on the frame tracking failed, so one can follow a tracked frame with
         none untracked between.
+    taken_up : int
+        Those of them found in a map kept from earlier, which tracking went on in: each records
+        the map it ``left``.
+    maps : int
+        The maps the run ends with, those reset left out (:meth:`Run.maps` less
+        :meth:`Run.reset_maps`): a map merged into another is not one, and a map taken up again
+        is one however many segments it has.
     """
 
     frames: int
@@ -1204,6 +1234,8 @@ class Tracking:
     losses: int
     resets: int
     relocalizations: int
+    taken_up: int
+    maps: int
 
     @property
     def tracked_from(self) -> float | None:
@@ -1230,7 +1262,8 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
     Returns
     -------
     Tracking
-        The segments, and what the run lost, reset and relocalised.
+        The segments, what the run lost, reset, relocalised and took up again, and the maps it
+        ends with.
     """
     stamps = np.asarray(times, dtype=np.float64)
     start = float(stamps[0]) if len(stamps) else 0.0
@@ -1256,6 +1289,8 @@ def tracking(run: Run, times: ArrayLike) -> Tracking:
         losses=sum(entry.get("state") == LOST for entry in run.diagnostics),  # optional
         resets=len(run.reset_maps()),
         relocalizations=sum(entry.get("placed_by") == RELOCALIZED for entry in run.diagnostics),
+        taken_up=sum(entry.get("left") is not None for entry in run.diagnostics),
+        maps=len(np.setdiff1d(run.maps(), run.reset_maps())),
     )
 
 
