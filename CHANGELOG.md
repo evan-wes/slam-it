@@ -86,8 +86,9 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
 - **The test-set measure takes sessions** (`scripts/measure_testset.py`): a sequence's `folders`
   run in turn and scored against their ground truths in turn; each result's `sessions`, `maps`
   and `merges`, each merge judged as a loop is (`slam_it.eval.loops.judge_pairs`). A config
-  gives `folders` alone, a list of one for a single sequence: `folder` is refused (A10); the
-  measure and `compare_testsets.py` share the sessions' offsets (`offsets_of`, H12).
+  gives `folders` alone, a list of one for a single sequence: `folder` is refused (A10), the
+  refusal naming the keys missing and unknown (H22); the measure and `compare_testsets.py`
+  share the sessions' offsets (`offsets_of`, H12).
 
 ### Changed
 

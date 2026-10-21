@@ -142,14 +142,13 @@ from slam_it.eval import budgets, lenses, loops, runs, tum
 from slam_it.foundations.errors import DegenerateError, InvalidInputError, SlamItError
 from slam_it.orchestration import vo
 
-KEYS = ("name", "mode", "reference")
-"""Each sequence's keys in the config, every one a string, beside its :data:`FOLDERS`."""
+REQUIRED = frozenset({"name", "folders", "mode", "reference"})
+"""The keys every sequence in the config has: ``folders``, where it is (a list of folders, one
+for a single sequence, several run in turn), and the others strings."""
 
-FOLDERS = "folders"
-"""Where a sequence is: a list of folders, one for a single sequence, several run in turn."""
-
-OPTIONAL_KEYS = ("dataset",)
-"""The keys a sequence may also have: its ``dataset``, ``"tum"`` unless given."""
+ALLOWED = REQUIRED | {"dataset"}
+"""The keys a sequence may have: :data:`REQUIRED`, and its ``dataset``, a string, ``"tum"``
+unless given."""
 
 SETTINGS = frozenset(Options().settings())
 """The settings an ``--option`` may replace, each named by its group and field."""
@@ -316,9 +315,9 @@ def read_config(path: Path) -> list[Entry]:
     FileNotFoundError
         If the file does not exist.
     slam_it.foundations.errors.InvalidInputError
-        If it is not TOML, lists no sequence, a sequence lacks a key or has another, a value is
-        not a string, its folders not a list of them, a mode or dataset is unknown, or two
-        sequences share a name.
+        If it is not TOML, lists no sequence, a sequence lacks a key or has another (the message
+        names them), a value is not a string, its folders not a list of them, a mode or dataset
+        is unknown, or two sequences share a name.
     """
     try:
         data = tomllib.loads(path.read_text())
@@ -329,17 +328,15 @@ def read_config(path: Path) -> list[Entry]:
         raise InvalidInputError(f"{path}: no [[sequence]]")
     entries: list[Entry] = []
     for number, item in enumerate(listed, start=1):
-        if not isinstance(item, dict) or not {*KEYS, FOLDERS} <= set(item) <= {
-            *KEYS,
-            FOLDERS,
-            *OPTIONAL_KEYS,
-        }:
+        keys = set(item) if isinstance(item, dict) else set()
+        missing, unknown = sorted(REQUIRED - keys), sorted(keys - ALLOWED)
+        if not isinstance(item, dict) or missing or unknown:
             raise InvalidInputError(
-                f"{path}: sequence {number}: expected the keys {(*KEYS, FOLDERS)}, and maybe "
-                f"{OPTIONAL_KEYS}"
+                f"{path}: sequence {number}: expected the keys {sorted(REQUIRED)}, and maybe "
+                f"{sorted(ALLOWED - REQUIRED)}; missing {missing}, unknown {unknown}"
             )
-        folders = item[FOLDERS]
-        if not all(isinstance(item[key], str) for key in item if key != FOLDERS) or not (
+        folders = item["folders"]
+        if not all(isinstance(item[key], str) for key in item if key != "folders") or not (
             isinstance(folders, list) and folders and all(isinstance(f, str) for f in folders)
         ):
             raise InvalidInputError(

@@ -192,14 +192,22 @@ KEYS = 'name = "a"\nfolders = ["/a"]\nmode = "rgbd"\nreference = "r"\n'
     [
         ("[[sequence]\n", "not TOML"),
         ('title = "nothing"\n', r"no \[\[sequence\]\]"),
-        ("[[sequence]]\n" + KEYS.replace('mode = "rgbd"\n', ""), "expected the keys"),
-        ("[[sequence]]\n" + KEYS + "extra = 1\n", "expected the keys"),
+        (
+            "[[sequence]]\n" + KEYS.replace('mode = "rgbd"\n', ""),
+            r"missing \['mode'\], unknown \[\]",
+        ),
+        ("[[sequence]]\n" + KEYS + "extra = 1\n", r"missing \[\], unknown \['extra'\]"),
         ("[[sequence]]\n" + KEYS.replace('"r"', "1"), "expected strings"),
         ("[[sequence]]\n" + KEYS.replace("rgbd", "lidar"), "unknown mode 'lidar'"),
         ("[[sequence]]\n" + KEYS + 'dataset = "kitti"\n', "unknown dataset 'kitti'"),
         ("[[sequence]]\n" + KEYS + "[[sequence]]\n" + KEYS, "share a name"),
-        ("[[sequence]]\n" + KEYS + 'folder = "/b"\n', "expected the keys"),
-        ("[[sequence]]\n" + KEYS.replace('folders = ["/a"]\n', ""), "expected the keys"),
+        ("[[sequence]]\n" + KEYS + 'folder = "/b"\n', r"unknown \['folder'\]"),
+        ("[[sequence]]\n" + KEYS.replace('folders = ["/a"]\n', ""), r"missing \['folders'\]"),
+        (
+            "[[sequence]]\n" + KEYS.replace('folders = ["/a"]', 'folder = "/a"'),
+            r"expected the keys \['folders', 'mode', 'name', 'reference'\], and maybe "
+            r"\['dataset'\]; missing \['folders'\], unknown \['folder'\]",
+        ),
         ("[[sequence]]\n" + KEYS.replace('["/a"]', "[]"), "a list of them"),
         ("[[sequence]]\n" + KEYS.replace('["/a"]', '["/a", 1]'), "list of them"),
         ("[[sequence]]\n" + KEYS.replace('["/a"]', '"/a"'), "a list of them"),
@@ -208,9 +216,10 @@ KEYS = 'name = "a"\nfolders = ["/a"]\nmode = "rgbd"\nreference = "r"\n'
 def test_a_malformed_config_is_refused(text: str, message: str, tmp_path: Path) -> None:
     """Each refusal of a config.
 
-    Not TOML, no sequence, a key missing or extra (``folder`` among them: ``folders`` alone
-    says where a sequence is), a number for a string, a mode unknown, two sequences of one name;
-    no folders, or folders not a list of paths.
+    Not TOML, no sequence, a key missing or extra, each named (``folder`` among them:
+    ``folders`` alone says where a sequence is, so a config giving ``folder`` in its place is
+    told both), a number for a string, a mode unknown, two sequences of one name; no folders, or
+    folders not a list of paths.
     """
     path = tmp_path / "testset.toml"
     path.write_text(text)
