@@ -1,12 +1,12 @@
 // The 3D panel: one map of the run at a time, the map of the frame shown (the map the frame ends
-// in): its final trajectory, drawn through the runs of rows its poses come in,
-// the other backends' beside it, the truth if the map is placed on it (over the frames its
-// trajectory is drawn over, or whole), its keyframes and points alive at the frame, the
-// covisibility graph if asked (each keyframe's line to its parent, the strong links, the loops
-// closed and the merges made, each in its own colour), and the camera. Every point and keyframe
-// sits in one buffer with the frames of its life and its map; a shader hides each outside them,
-// so scrubbing changes two numbers and rebuilds nothing. A loop closed can be drawn over it all,
-// bright and thick, for the loop effect (`highlightLoop`).
+// in): its final trajectory, drawn through the runs of rows its poses come in, the other
+// backends' beside it, the truth if the map is placed on it (over the frames its trajectory is
+// drawn over, or whole), its keyframes and points alive at the frame, the covisibility graph if
+// asked (each keyframe's line to its parent, the strong links, the loops closed and the merges
+// made, each in its own colour), and the camera. Every point and keyframe sits in one buffer
+// with the frames of its life and its map; a shader hides each outside them, so scrubbing
+// changes two numbers and rebuilds nothing. A loop closed can be drawn over it all, bright and
+// thick, for the loop effect (`highlightLoop`).
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -509,9 +509,9 @@ export class SceneView {
   /**
    * Draw a loop over the map until `clearLoop`, bright and thick in the loops' colour: its cycle
    * (the trajectory from the frame that made its matched keyframe to the loop's frame, in the
-   * runs of rows the map's poses come in, `cycleRuns`), the edge
-   * between its two keyframes, and their frustums. It is drawn from the next frame shown (`show`),
-   * which the caller draws: a render here would only be drawn over.
+   * runs of rows the map's poses come in, `cycleRuns`), the edge between its two keyframes, and
+   * their frustums. It is drawn from the next frame shown (`show`), which the caller draws: a
+   * render here would only be drawn over.
    * @param {import("./loops.js").Loop} loop The loop, of the run shown.
    */
   highlightLoop(loop) {

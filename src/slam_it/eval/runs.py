@@ -26,10 +26,10 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   of the map it ends in (``pose_maps.npy``, below), a ``# map <n>`` line before each run of
   one map's poses. A map's poses may come in several runs, with another map's between (a kept
   map taken up again): an outside tool must align one map at a time, gathering each map's runs
-  by those lines or by ``pose_maps.npy``. The final
-  pose is ORB-SLAM's (``SaveTrajectoryTUM``): the frame's pose relative to its reference
-  keyframe, carried by that keyframe's last pose, so it follows what loop closing and bundle
-  adjustment did after the frame was tracked (:meth:`slam_it.edge.pipeline.Pipeline.trajectory`).
+  by those lines or by ``pose_maps.npy``. The final pose is ORB-SLAM's
+  (``SaveTrajectoryTUM``): the frame's pose relative to its reference keyframe, carried by that
+  keyframe's last pose, so it follows what loop closing and bundle adjustment did after the
+  frame was tracked (:meth:`slam_it.edge.pipeline.Pipeline.trajectory`).
 - ``trajectory_tracked.txt``: the same frames' ``T_world_cam`` as tracked, in the same format and
   times, each in the map it was tracked in (``tracked_maps.npy``), a ``# map <n>`` line before
   each run of one map's poses.

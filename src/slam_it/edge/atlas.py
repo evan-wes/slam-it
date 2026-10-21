@@ -337,7 +337,8 @@ class Atlas:
 
         A reset map's points and keyframes go where they last were, their lives ending on this
         frame (:attr:`slam_it.edge.map.Removal.RESET`), with its strong links and loops then;
-        its frames' places are dropped, with those of the maps merged into it.
+        its frames' places are dropped, with those of the maps merged into it. A map must be
+        tracked: with none, an assertion fails (C++ and Rust refuse it as ``InvalidInput``).
 
         Parameters
         ----------
@@ -405,12 +406,14 @@ class Atlas:
     def merge(self, matched: int, merged: loops.Merged, to_world: Array) -> Kept:
         """Take the current map into the kept map it merged with (:func:`slam_it.edge.loops.merge`).
 
-        The merged map is the current one after, with the matched map's number; its run ids are
-        the matched map's, then the current map's, as the merge's offsets moved its ids. What
-        the current map removed before, and its frames' places, are carried into the matched
-        map's world by `to_world`: the frames' and the culled keyframes' poses relative to their
-        keyframes take its units (their translations divided by ``scale_of(G⁻¹)``, 1 but in
-        monocular), as the keyframes' own poses do (:func:`slam_it.edge.loops.rigid_of`).
+        A map must be tracked: with none, an assertion fails (C++ and Rust refuse it as
+        ``InvalidInput``). The merged map is the current one after, with the matched map's
+        number; its run ids are the matched map's, then the current map's, as the merge's
+        offsets moved its ids. What the current map removed before, and its frames' places, are
+        carried into the matched map's world by `to_world`: the frames' and the culled
+        keyframes' poses relative to their keyframes take its units (their translations divided
+        by ``scale_of(G⁻¹)``, 1 but in monocular), as the keyframes' own poses do
+        (:func:`slam_it.edge.loops.rigid_of`).
 
         Parameters
         ----------

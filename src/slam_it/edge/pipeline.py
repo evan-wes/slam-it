@@ -1508,6 +1508,26 @@ def _search(  # noqa: PLR0913 -- loop closing's state, the map and its database,
     return found, merging
 
 
+@dataclass(frozen=True)
+class _LoopStep:
+    """Loop closing's step on a keyframe (:func:`_close_loops`): how it went, and what it made.
+
+    Attributes
+    ----------
+    summary : LoopSummary or None
+        How it went; None when loop closing is off, there is no database, or the keyframe is
+        the map's first.
+    corrected : bool
+        Whether a loop was corrected.
+    joined : _Joined or None
+        The merge made, if one was.
+    """
+
+    summary: LoopSummary | None = None
+    corrected: bool = False
+    joined: _Joined | None = None
+
+
 def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settings
     state: LoopState,
     owner: MapOwner,
@@ -1516,17 +1536,16 @@ def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settin
     *,
     mode: str,
     options: Options,
-) -> tuple[LoopSummary | None, bool, _Joined | None]:
+) -> _LoopStep:
     """Loop closing's step: search the newest keyframe for a loop and for a merge, and make one.
 
-    The search is :func:`_search`'s. Return how it went (None when loop closing is off, there is
-    no database, or the keyframe is the map's first), whether a loop was corrected, and the
+    The search is :func:`_search`'s. Return how it went, whether a loop was corrected, and the
     merge made, if one was.
     """
     m, db = owner.read(), owner.database
     keyframe = int(m.kf_id[-1])
     if db is None or not options.loops.enabled or keyframe == 0:
-        return None, False, None
+        return _LoopStep()
     found, merging = _search(
         state, m, db, atlas, keyframe, camera=camera, mode=mode, options=options
     )
@@ -1535,7 +1554,8 @@ def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settin
         made, joined = _merge_maps(
             state, owner, atlas, camera, merging.merge, mode=mode, options=options
         )
-        return LoopSummary(found.summary, None, merging=searched, merge=made), False, joined
+        made_summary = LoopSummary(found.summary, None, merging=searched, merge=made)
+        return _LoopStep(made_summary, joined=joined)
     correction = None
     if found.loop is not None:
         with owner.stopped() as held:
@@ -1543,7 +1563,7 @@ def _close_loops(  # noqa: PLR0913 -- loop closing's state, the maps, the settin
             owner.apply_correction(fixed.map)
         correction = fixed.summary
     summary = LoopSummary(detection=found.summary, correction=correction, merging=searched)
-    return summary, correction is not None, None
+    return _LoopStep(summary, corrected=correction is not None)
 
 
 @dataclass(frozen=True)
@@ -2281,12 +2301,13 @@ class Pipeline:
             self.atlas.place_keyframe(self.owner.read(), frame.timestamp, tracked.pose)
             searching = time.perf_counter()
             before = self.atlas.map_id
-            looped, corrected, joined = _close_loops(
+            closed = _close_loops(
                 self.closing, self.owner, self.atlas, self.camera, mode=self.mode,
                 options=self.options,
             )  # fmt: skip
-            if looped is not None:
-                summary = replace(summary, loop=looped)
+            corrected, joined = closed.corrected, closed.joined
+            if closed.summary is not None:
+                summary = replace(summary, loop=closed.summary)
                 loop_seconds = time.perf_counter() - searching
             if joined is not None:  # the frame's ids are the merged map's now
                 merged_from = before

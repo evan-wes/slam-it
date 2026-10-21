@@ -425,7 +425,9 @@ def offsets_of(entry: Entry) -> list[float]:
     """Return each of a sequence's sessions' clock offsets, as its run moved its times on.
 
     :func:`slam_it.orchestration.vo.session_offsets` of its folders' frames' times; ``[0.0]``
-    for one folder, which keeps its own clock, without reading it.
+    for one folder, which keeps its own clock, without reading it. ``compare_testsets.py`` uses
+    it, holding no sources of its own; :func:`measure` takes the offsets from the sources it
+    opened, so it reads each folder once.
 
     Parameters
     ----------
@@ -532,7 +534,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         entry.dataset, folders, entry.mode, out / "run", backend=backend, options=options,
         threaded=threaded, locks=locks, budget=budget,
     )  # fmt: skip
-    offsets = offsets_of(entry)
+    offsets = vo.session_offsets([s.times for s in sources])
     times = np.concatenate([s.times + offset for s, offset in zip(sources, offsets, strict=True)])
     span = runs.tracking(run, times)
     result: dict[str, Any] = {

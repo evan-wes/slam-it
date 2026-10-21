@@ -625,18 +625,20 @@ def test_a_record_naming_a_map_the_run_does_not_end_with_is_refused(
 
 
 @pytest.mark.parametrize(
-    ("fixture", "options"), [(MERGE, MERGE_OPTIONS), (REVISIT, REVISIT_OPTIONS)],
+    ("fixture", "rooms", "options"),
+    [(MERGE, "merge_folders", MERGE_OPTIONS), (REVISIT, "revisit_folders", REVISIT_OPTIONS)],
     ids=["merge", "revisit"],
 )  # fmt: skip
 def test_the_bake_keeps_the_merge_and_revisit_bundles_layouts(
-    fixture: Path, options: Options, merge_folders: Room, revisit_folders: Room, tmp_path: Path
+    fixture: Path, rooms: str, options: Options, request: pytest.FixtureRequest, tmp_path: Path
 ) -> None:
     """The merge and revisit bundles' files, as the bake writes them (B4's review panel, A1).
 
     So the page's tests of the map shown read what the bake writes. The fixtures leave out the
     frames' JPEG chunks (``generate_bundle.py``), so the bake's are left out of the comparison.
+    Each case asks for its own room's folders (`rooms`) alone.
     """
-    folders = merge_folders if fixture == MERGE else revisit_folders
+    folders: Room = request.getfixturevalue(rooms)
     require_program("cpp")
     run = loop_room_run(folders.tum, tmp_path / "runs", options)
     bundles.bake([run], folders.tum, tmp_path / "bundle")

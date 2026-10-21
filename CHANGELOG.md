@@ -18,8 +18,9 @@ release serves this viewer. Threaded, loop closing finds a merge and tracking ma
 two frames, pausing for the whole merge (option B, decided by evan-wes on 2026-10-18); a merge that
 does not block tracking is the later design. Section 15's measurements (multi-session EuRoC, the
 kidnap, 7-Scenes, the loss window, and the test set and the loop sequences) are not run for this
-release (decided by evan-wes on 2026-10-18). B4's review panel's findings were decided by
-evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
+release (decided by evan-wes on 2026-10-18). B4's review panel's findings, cited below by their
+IDs in parentheses, were decided by evan-wes on 2026-10-19 (run 1) and 2026-10-20 (run 2) and
+fixed in the PR, or recorded where they are tracked
 (`docs/reviews/2026-10-19-feature-2b-b4-merging-maps.md`).
 
 ### Added
@@ -29,7 +30,7 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   (`Kept`), or reset if it is too small; each map keeps its ids' run ids, which a merge joins.
   Every point, keyframe and final pose records the map it ends in, and each frame the map it was
   tracked in. A merge carries the active map's records into the matched map's world, its frames'
-  and culled keyframes' poses relative to their keyframes into its units (the panel's L1). A
+  and culled keyframes' poses relative to their keyframes into its units (L1). A
   merged map that is reset drops the frames of the maps merged into it with its own, as a reset
   map's frames are not in the trajectory (A12). A kept map that is not there is `InvalidInput`
   naming its number, in all three languages, at the atlas (H2) and at the merge's lookup of the
@@ -52,7 +53,7 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   (`graphs.bundle_adjust`'s `huber`, in the three languages); the essential graph over the whole
   merged map, both windows held; global BA after, under `loops.global_ba`; and a merge edge
   (`map.add_merge_edge`), apart from the loop edges. A loop being confirmed is carried into the
-  merged map, in its units: `diag(1/s, 1/s, 1/s, 1) S G⁻¹` (the panel's L2).
+  merged map, in its units: `diag(1/s, 1/s, 1/s, 1) S G⁻¹` (L2).
 - **Sessions** (`Pipeline.start_session`, `--sequence` repeated, `vo.session_offsets`): a run over
   several sequences of one camera in turn, each starting a new map, the map before reset with
   fewer than `loss.session_keyframes` (12) keyframes and kept otherwise, as ORB-SLAM3's
@@ -79,7 +80,7 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   merged is refused (A12, H21); the header lists the maps a run ends with, each map's `frames`
   as stretches, and the viewer draws
   a map through the runs of rows its poses come in, and finds a loop's keyframes in a map taken
-  up again by the k-th of the map's run ids, not the first's offset (the panel's A1). A run of
+  up again by the k-th of the map's run ids, not the first's offset (A1). A run of
   several sequences in turn is refused by name (H13).
 - **A 7-Scenes importer** (`slam_it.eval.sevenscenes`, `python -m slam_it.eval.sevenscenes SCENE
   OUT`): a scene's sequences to TUM format, monocular, for section 15.
@@ -148,7 +149,7 @@ evan-wes on 2026-10-19 and fixed in the PR, or recorded where they are tracked
   (`tests/conftest.py`): pytest lost a sub-directory's conftest fixtures otherwise
   (pytest-dev/pytest#14635, in 9.1.1; `tests/test_collection_order.py`).
 - **From B4's review panel:**
-  - **The revisit room** (`tests/orchestration/test_revisit_room.py`, the panel's A3): the merge
+  - **The revisit room** (`tests/orchestration/test_revisit_room.py`, A3): the merge
     room with loop closing off, blinded again for 1 s before the camera comes back over the
     first map's start; every language, inline, and each native scheme, threaded, takes the
     first map up again by relocalisation (`left` recorded, the maps tracked in going 0, 1, 0),
