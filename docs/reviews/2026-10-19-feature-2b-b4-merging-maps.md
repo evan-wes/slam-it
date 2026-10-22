@@ -953,14 +953,15 @@ coordinator, which it marked as not part of the saved review, is left out.
 | A16 | should-fix | architecture | `cpp/include/slam_it/edge/pipeline.hpp:1010` | C++ `carry_through` is declared in the public header for its test, where the build's convention is an internal header | fix: an internal header, `cpp/src/edge/carry.hpp` | fixed (6a98ce3e) -- decided by evan-wes on 2026-10-21 |
 | A17 | should-fix | architecture | `src/slam_it/eval/runs.py:69`, `src/slam_it/orchestration/bundles.py:265`, `src/slam_it/orchestration/worker.py:524`, `docs/design/2026-10-14-online-slam.md:966` | The run format does not declare the merge record the bake now refuses runs by | fix: the format lists `loop.merge`; `Run.merged_into()`; `taken_up` and the maps kept in `Tracking`, read by the worker and the measure; section 14 item 7's list | fixed (b64ee04d) -- decided by evan-wes on 2026-10-21 |
 | A18 | note | architecture | `cpp/src/edge/pipeline.cpp:586`, `rust/slam-it-edge/src/pipeline.rs:2513` | (follow-up: merge design) C++ and Rust read the correction's run ids after the owner's hold; Python reads them inside it | fix: read them inside the hold, right after the atlas records the corrected map | fixed (0a94d593) -- decided by evan-wes on 2026-10-21 |
-| L14 | should-fix | algorithm | `tests/orchestration/test_revisit_room.py:107` | The revisit room's threaded C++ monocular case is flaky (3 of 17 runs, C++'s own scheme) and unrecorded | the reviewer: record it as known flaky; the owner: investigate and fix before the merge; after the investigation, pin the threaded room tests to the performance cores, with a follow-up | fixed (28bb2e2f); the follow-up deferred (the ladder's open item "Why one deferred keyframe starves a monocular map", from B4's review panel) -- decided by evan-wes on 2026-10-21 |
+| L14 | should-fix | algorithm | `tests/orchestration/test_revisit_room.py:107` | The revisit room's threaded C++ monocular case is flaky (3 of 17 runs, C++'s own scheme) and unrecorded | the reviewer: record it as known flaky; the owner: investigate and fix before the merge; after the investigation, pin the threaded room tests to the performance cores, with a follow-up; then, the revisit case still failing 2 of 60 runs pinned, accept that residual and follow up | partly fixed (28bb2e2f): the loop and merge rooms' cases; the revisit case's residual (2 of 60 runs pinned) accepted for the merge and deferred, with the follow-up, to the ladder's open item "Why one deferred keyframe starves a monocular map", from B4's review panel -- decided by evan-wes on 2026-10-21 |
 | L15 | note | algorithm | `tests/orchestration/test_revisit_room.py:42` | L10's bar catches gross take-up failures but lets a moderate misplacement through | fix: map 0's frames from the take-up on under about 1.5 cm | fixed (707d7257) -- decided by evan-wes on 2026-10-21 |
 
 Resolution values: `fixed (<commit>)`, `deferred (<where tracked>)`, `waived: <reason>`,
 `disputed: <reason>`, each followed by `-- decided by <user>, <date>`.
 
 **Run 3 decisions** (evan-wes, 2026-10-21): A15 to A18 and L15 "as recommended"; L14
-"investigate before merge", then, once the investigation had found its cause, "pin + follow-up".
+"investigate before merge", then, once the investigation had found its cause, "pin + follow-up",
+then, the pinned revisit case still failing 2 of 60 runs, "accept, follow up".
 A15 and A18 hold a correction's run ids with it, in a `Corrected`, read inside the stop in every
 scheme (0a94d593); A16 moves `carry_through`'s declaration into an internal header (6a98ce3e);
 A17 declares the merge record in the run format and reads the run one way in the worker and the
@@ -1018,7 +1019,9 @@ runs measured), still close to frame 184's decision, so pinning removes the slow
 not this near-miss. The question left, whether a monocular map should survive a deferred
 keyframe (we use ORB-SLAM2's 20 neighbours for monocular triangulation and fusion, ORB-SLAM3 30,
 and keyframe culling ran on keyframes made nearly every frame), is the ladder's open item,
-measured on the test set after B4, which records the revisit case's residual too.
+measured on the test set after B4, which records the revisit case's residual too. The owner
+accepted that residual for the merge (2026-10-21): until the follow-up, about one layer-1 or
+offline CI run in 30 may fail on this case and need running again.
 
 ### Architecture review
 

@@ -1209,7 +1209,8 @@ shared with the owner's other projects.
     The revisit room's case still failed 2 of 60 runs pinned, the same way: on the performance cores
     C++'s own scheme maps frame 183's keyframe in 29.2 to 29.9 ms (14 of 15 runs measured), close to
     frame 184's decision, its two views costing about 3.5 ms a keyframe (an exact 0.3 ms speedup of
-    them was left out of B4). The question left is whether a monocular map should survive a deferred
+    them was left out of B4). The owner accepted this residual for B4's merge (2026-10-21): until
+    this item is done, about one layer-1 or offline CI run in 30 may fail on it. The question left is whether a monocular map should survive a deferred
     keyframe: we use ORB-SLAM2's 20 neighbours for monocular triangulation and fusion
     (`mapping.mono_triangulation_neighbours`, `mapping.mono_fuse_neighbours`), where ORB-SLAM3 uses
     30, and keyframe culling (90% of a keyframe's points seen by 3 others) ran on keyframes made
