@@ -274,6 +274,25 @@ def _scene(seed: int) -> tuple[Array, Array]:
     return poses, points
 
 
+def _observed(
+    name: str, intrinsics: Array, poses: Array, points: Array, *, stereo: bool
+) -> tuple[list[int], list[int], Array, Array]:
+    """Return every camera's view of every point: cameras, points, pixels and right columns.
+
+    With `stereo`, every second point has its right column; NaN otherwise.
+    """
+    cameras, ids, pixels, right = [], [], [], []
+    for c, pose in enumerate(poses):
+        local = (points - pose[:3, 3]) @ pose[:3, :3]
+        seen = camera.project(name, intrinsics, local)
+        for p in range(points.shape[0]):
+            cameras.append(c)
+            ids.append(p)
+            pixels.append(seen[p])
+            right.append(seen[p, 0] - BF / local[p, 2] if stereo and p % 2 else np.nan)
+    return cameras, ids, np.array(pixels), np.array(right)
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("lens", [RADTAN, PINHOLE], ids=["radtan", "pinhole"])
 def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str, Array]) -> None:
@@ -284,15 +303,7 @@ def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     name, intrinsics = lens
     poses, points = _scene(5)
-    cameras, ids, pixels, right = [], [], [], []
-    for c, pose in enumerate(poses):
-        local = (points - pose[:3, 3]) @ pose[:3, :3]
-        seen = camera.project(name, intrinsics, local)
-        for p in range(points.shape[0]):
-            cameras.append(c)
-            ids.append(p)
-            pixels.append(seen[p])
-            right.append(seen[p, 0] - BF / local[p, 2] if p % 2 else np.nan)
+    cameras, ids, pixels, right = _observed(name, intrinsics, poses, points, stereo=True)
     rng = np.random.default_rng(6)
     start_poses = np.stack(
         [poses[0]] + [pose @ se3.exp(rng.normal(scale=0.02, size=6)) for pose in poses[1:]]
@@ -332,6 +343,58 @@ def test_bundle_adjustment_charges_a_point_behind_its_camera(
     assert result.summary.initial_error == pytest.approx(cost, rel=1e-12)
     assert result.summary.final_error == pytest.approx(cost, rel=1e-12)
     np.testing.assert_array_equal(result.points, [[0.1, 0.2, -1.0]])
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_huber_loss_holds_bundle_adjustment_against_an_outlier(backend: str) -> None:
+    """One observation 40 px off: with Huber's loss the cameras move a tenth as far.
+
+    Each compiled backend's solve matches Python's to the solves' convergence.
+    """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    name, intrinsics = PINHOLE
+    poses, points = _scene(7)
+    cameras, ids, pixels, right = _observed(name, intrinsics, poses, points, stereo=False)
+    pixels[2 * points.shape[0]] += 40.0  # camera 2's view of point 0
+
+    def solve(huber: Array | None, which: str) -> graphs.Adjustment:
+        return graphs.bundle_adjust(
+            poses, points, cameras, ids, pixels, right, np.ones(len(cameras)), model=name,
+            intrinsics=intrinsics, bf=BF, fixed=[0, 1], huber=huber,
+            options=graphs.Options(max_iterations=20), backend=which,
+        )  # fmt: skip
+
+    robust = np.full(len(cameras), np.sqrt(5.991))
+    plain, held = solve(None, chosen), solve(robust, chosen)
+    assert np.abs(held.poses - poses).max() < np.abs(plain.poses - poses).max() / 10
+    reference = solve(robust, "python")
+    np.testing.assert_allclose(held.poses, reference.poses, rtol=0, atol=1e-7)
+    np.testing.assert_allclose(held.points, reference.points, rtol=0, atol=1e-7)
+    assert held.summary.iterations == reference.summary.iterations
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_the_huber_loss_acts_on_a_stereo_observation_s_whitened_norm(backend: str) -> None:
+    """A known answer: one stereo observation, its whitened error (3, 4, 0), k = √7.815.
+
+    The loss acts on the error's norm, as g2o's on chi² (GTSAM's ``Block`` reweighting):
+    ``k·5 - k²/2`` = 10.0702, where acting on each component would give 11.7537 and no loss
+    12.5. The camera, at the origin, is held; the point, 2 m ahead, is seen 3 px right and 4 px
+    down of where it projects, its right column where it projects.
+    """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    k = np.sqrt(7.815)
+    fx, fy, cx, cy = 500.0, 500.0, 320.0, 240.0
+    bf = 50.0
+    point = np.array([[0.0, 0.0, 2.0]])
+    right = cx - bf / point[0, 2]  # where the point projects in the right image
+    result = graphs.bundle_adjust(
+        np.eye(4)[None], point, [0], [0], np.array([[cx + 3.0, cy + 4.0]]), np.array([right]),
+        np.ones(1), model="pinhole", intrinsics=np.array([fx, fy, cx, cy]), bf=bf, fixed=[0],
+        huber=np.array([k]), options=graphs.Options(max_iterations=1), backend=chosen,
+    )  # fmt: skip
+    assert result.summary.initial_error == pytest.approx(k * 5.0 - k * k / 2.0, rel=1e-12)
+    assert result.summary.initial_error == pytest.approx(10.0702, abs=5e-5)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

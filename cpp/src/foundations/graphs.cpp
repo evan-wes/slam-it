@@ -696,6 +696,14 @@ Result<void> check_bundle(std::span<const Eigen::Matrix4d> poses,
     return fail(ErrorKind::kInvalidInput,
                 "observations: expected cameras, point_ids, pixels, right alike");
   }
+  if (!observations.huber.empty()) {
+    if (observations.huber.size() != count) {
+      return fail(ErrorKind::kInvalidInput, "huber: expected one value per observation");
+    }
+    if (auto checked = check_positive(observations.huber, "huber"); !checked) {
+      return checked;
+    }
+  }
   if (!observations.pixels.allFinite()) {
     return fail(ErrorKind::kInvalidInput, "pixels: expected finite values");
   }
@@ -807,10 +815,16 @@ Result<Adjustment> bundle_adjust(std::span<const Eigen::Matrix4d> poses,
     if (has_right) {
       measured(2) = observations.right[m];
     }
+    gtsam::SharedNoiseModel noise =
+        gtsam::noiseModel::Isotropic::Precision(measured.size(), observations.information[m]);
+    if (!observations.huber.empty()) {
+      noise = gtsam::noiseModel::Robust::Create(
+          gtsam::noiseModel::mEstimator::Huber::Create(observations.huber[m]), noise);
+    }
     graph.emplace_shared<ProjectionFactor>(
         static_cast<gtsam::Key>(observations.cameras[m]),
         first_point + static_cast<std::size_t>(observations.point_ids[m]), measured, model, camera,
-        bf, gtsam::noiseModel::Isotropic::Precision(measured.size(), observations.information[m]));
+        bf, noise);
   }
   auto solved = solve(graph, values, options);
   if (!solved) {

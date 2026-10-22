@@ -148,6 +148,13 @@
   1,
   1
  ],
+ "tracked_maps": [
+  0,
+  0,
+  1,
+  1,
+  1
+ ],
  "keyframe_timestamps": [
   1305031102.175304,
   1305031102.275204,
@@ -329,6 +336,12 @@
   ]
  ],
  "keyframe_loops": [
+  [
+   1,
+   2
+  ]
+ ],
+ "keyframe_merges": [
   [
    1,
    2
@@ -792,7 +805,9 @@
       "final_error": 0.0625,
       "iterations": 10,
       "termination": "max_iterations"
-     }
+     },
+     "matched_run": 1,
+     "current_run": 2
     }
    },
    "lost": null,

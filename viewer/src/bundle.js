@@ -48,10 +48,13 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 /**
- * One of a run's maps (bundle.json's `maps`, each backend's): a lost track starts the next.
+ * One of a run's maps (bundle.json's `maps`, each backend's): a lost track starts the next. The
+ * maps the run ends with: a map merged into another is not one, its frames the other's.
  * @typedef {object} MapInfo
  * @property {number} id The map's number, from 0 in the order the maps started.
- * @property {[number, number]} frames The bundle's frames whose records name it, `[first, end)`.
+ * @property {[number, number][]} frames The bundle's frames whose records name it (the frames
+ *     that end in it), as stretches of consecutive frames, each `[first, end)`, in order: a map
+ *     taken up again has several.
  * @property {number} tracked Its frames tracked: none for a map reset.
  * @property {boolean} reset Whether it was reset, lost while too small to keep: its keyframes
  *     and points removed when the track was lost, its frames' poses dropped.
@@ -88,7 +91,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  * bundle.json.
  * @typedef {object} BundleInfo
  * @property {string} format "slam-it-bundle".
- * @property {number} version 4.
+ * @property {number} version 5.
  * @property {string} dataset The dataset.
  * @property {string} sequence The sequence.
  * @property {string} mode "monocular", "stereo" or "rgbd".
@@ -104,7 +107,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 /**
- * A backend's per-frame records: one column per diagnostics key, plus `frame`.
+ * A backend's per-frame records: one column per diagnostics key, plus `frame`; `map` is the map
+ * each frame ends in (the map it was tracked in, or the one that map was merged into).
  * @typedef {Record<string, unknown[]> & {frame: number[]}} Records
  */
 
@@ -117,7 +121,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Float32Array} poses Each tracked frame's final `T_world_cam` (the run format's
  *     final trajectory), its top three rows, (T, 3, 4).
  * @property {Int32Array} poseFrames Their frames, (T,).
- * @property {Int32Array} poseMaps Their maps, (T,), never descending.
+ * @property {Int32Array} poseMaps Their maps, (T,): the map each ends in. A map's poses may
+ *     come in several runs of rows, another map's between (a kept map taken up again).
  */
 
 /**
@@ -129,7 +134,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Float32Array} poses Each tracked frame's final `T_world_cam` (the run format's
  *     final trajectory), its top three rows, (T, 3, 4).
  * @property {Int32Array} poseFrames Their frames, (T,).
- * @property {Int32Array} poseMaps Their maps, (T,), never descending.
+ * @property {Int32Array} poseMaps Their maps, (T,): the map each ends in. A map's poses may
+ *     come in several runs of rows, another map's between (a kept map taken up again).
  * @property {Float32Array} keyframePoses Every keyframe's last pose, (K, 3, 4).
  * @property {Int32Array} keyframeLives Their lives, (K, 3): made, removed (-1 if never), why.
  * @property {Int32Array} keyframeMaps Their maps, (K,).
@@ -138,6 +144,8 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Int32Array} keyframeLinks The strong links: two ids of one map and the points
  *     they share, (L, 3).
  * @property {Int32Array} keyframeLoops The loops closed: two ids of one map, (E, 2).
+ * @property {Int32Array} keyframeMerges The merges made: two ids of the map they were merged
+ *     into, (G, 2).
  * @property {Float32Array} points Every point's last position, (N, 3).
  * @property {Int32Array} pointLives Their lives, (N, 3).
  * @property {Int32Array} pointMaps Their maps, (N,).
@@ -156,7 +164,7 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 export const FORMAT = "slam-it-bundle";
-export const VERSION = 4;
+export const VERSION = 5;
 
 /** The backends a bundle may hold, in the order the page offers them. */
 export const BACKENDS = ["cpp", "rust", "python"];
@@ -210,8 +218,8 @@ function expectShape(name, shape, trailing, rows) {
  * @param {string} name The array's file, for the message.
  * @param {Int32Array} values Its values.
  * @param {number} keyframes The run's keyframes.
- * @param {number} stride Values a row: 1 for parents (-1 for none), 2 for loops (two ids), 3 for
- *     links (two ids, then the points shared, not an id).
+ * @param {number} stride Values a row: 1 for parents (-1 for none), 2 for loops and merges (two
+ *     ids), 3 for links (two ids, then the points shared, not an id).
  * @returns {Int32Array} The values.
  * @throws {Error} If one names no keyframe.
  */
@@ -374,6 +382,12 @@ export async function loadBackend(fetch, track) {
     keyframeLoops: keyframeIds(
       "keyframe_loops.npy",
       await int32("keyframe_loops.npy", [2]),
+      keyframes,
+      2,
+    ),
+    keyframeMerges: keyframeIds(
+      "keyframe_merges.npy",
+      await int32("keyframe_merges.npy", [2]),
       keyframes,
       2,
     ),

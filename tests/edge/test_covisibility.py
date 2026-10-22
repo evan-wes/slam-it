@@ -151,8 +151,10 @@ def test_a_culled_keyframe_leaves_after_its_children(case: dict[str, Any], backe
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("case", CASES, ids=NAMES)
-def test_a_keyframe_with_a_loop_edge_or_held_is_spared(case: dict[str, Any], backend: str) -> None:
-    """``cull`` leaves the map as it was for a keyframe with a loop edge, or one held."""
+def test_a_keyframe_with_a_loop_or_merge_edge_or_held_is_spared(
+    case: dict[str, Any], backend: str
+) -> None:
+    """``cull`` leaves the map as it was for a keyframe with a loop or merge edge, or one held."""
     chosen = require_function(backend, covisibility.__name__, "cull")
     m, options = fixture_map(case), fixture_options(case)
     for k in range(m.keyframes):
@@ -167,6 +169,10 @@ def test_a_keyframe_with_a_loop_edge_or_held_is_spared(case: dict[str, Any], bac
         spared = covisibility.cull(looped, k, options, backend=chosen)
         assert spared.kf_id.tolist() == m.kf_id.tolist(), f"keyframe row {k} looped"
         assert spared.loop_edges.tolist() == looped.loop_edges.tolist()
+        merged = maps.add_merge_edge(m, kf_id, other)
+        spared = covisibility.cull(merged, k, options, backend=chosen)
+        assert spared.kf_id.tolist() == m.kf_id.tolist(), f"keyframe row {k} merged"
+        assert spared.merge_edges.tolist() == merged.merge_edges.tolist()
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)

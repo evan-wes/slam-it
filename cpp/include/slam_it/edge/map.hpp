@@ -12,7 +12,8 @@
 /// however many keyframes the map holds; Python's reference scans `kp_point` instead.
 ///
 /// What was removed is kept aside, in the `gone_*` columns, until the pipeline takes it
-/// (`clear_gone`), as in Python; the loops closed are the map's loop edges.
+/// (`clear_gone`), as in Python; the loops closed are the map's loop edges, and the merges that
+/// made it its merge edges, kept apart.
 #pragma once
 
 #include <Eigen/Core>
@@ -120,6 +121,9 @@ struct Map {
   /// @brief The loops closed in the map, each the two keyframes' ids, the older first, in the
   ///        order they were closed.
   std::vector<std::array<std::int64_t, 2>> loop_edges;
+  /// @brief The merges that made the map, each the two keyframes' ids, the older (the matched
+  ///        map's) first, in the order they were made.
+  std::vector<std::array<std::int64_t, 2>> merge_edges;
   /// @brief Each point's observing keypoint rows, ascending: the index of `kp_point` the
   ///        operations here keep. It does not cross to Python; `index_observations` builds it
   ///        for a map assembled column by column.
@@ -153,8 +157,8 @@ struct Map {
 /// @return Nothing, or `InvalidInput` for arrays of the wrong length, offsets that do not run
 ///         from 0 to the keypoint count, id columns that are not strictly ascending from 0 or
 ///         reach their next id, a keypoint observing a point not in the map, observation lists
-///         that are not `kp_point`'s, or a loop edge not joining two of its keyframes, the older
-///         first.
+///         that are not `kp_point`'s, or a loop or merge edge not joining two of its keyframes,
+///         the older first.
 [[nodiscard]] foundations::Result<void> check_map(const Map& m);
 
 /// @brief Build `pt_observations` from `kp_point`, for a map assembled column by column.
@@ -332,12 +336,12 @@ void clear_gone(Map& m);
 /// A keyframe that is still another's parent is refused, so every parent stays a keyframe of the
 /// map: covisibility's `cull` gives its children new parents first. It guards the parents, not
 /// the root: a childless first keyframe is erased; callers above the map go through `cull`, which
-/// refuses it. A keyframe with a loop edge is refused too (`cull` spares it). Its pose relative
-/// to its parent is archived, for the final trajectory.
+/// refuses it. A keyframe with a loop or merge edge is refused too (`cull` spares it). Its pose
+/// relative to its parent is archived, for the final trajectory.
 /// @param m The map.
 /// @param k The keyframe's row.
 /// @return Nothing, or `InvalidInput` for a row out of range or a keyframe that is still a
-///         parent or has a loop edge.
+///         parent or has a loop or merge edge.
 [[nodiscard]] foundations::Result<void> erase_keyframe(Map& m, std::int64_t k);
 
 /// @brief Whether a keyframe has a loop edge (`slam_it.edge.map.has_loop`).
@@ -354,6 +358,21 @@ void clear_gone(Map& m);
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the edge's two ends, in either order
 [[nodiscard]] foundations::Result<void> add_loop_edge(Map& m, std::int64_t first,
                                                       std::int64_t second);
+
+/// @brief Whether a keyframe has a merge edge (`slam_it.edge.map.has_merge`).
+/// @param m The map.
+/// @param k The keyframe's row, in range.
+/// @return Whether a merge made in the map joins it.
+[[nodiscard]] bool has_merge(const Map& m, std::size_t k);
+
+/// @brief Add a merge edge joining two of the map's keyframes (`AddMergeEdge`, both ways).
+/// @param m The map.
+/// @param first One keyframe's id.
+/// @param second The other's.
+/// @return Nothing, or `InvalidInput` if either is not the map's, or they are the same.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the edge's two ends, in either order
+[[nodiscard]] foundations::Result<void> add_merge_edge(Map& m, std::int64_t first,
+                                                       std::int64_t second);
 
 /// @brief Replace one point by another (`slam_it.edge.map.replace_point`,
 ///        `MapPoint::Replace`): the lost point's observations pass to the kept one, but in

@@ -1,20 +1,24 @@
-//! The run's records across its maps, each frame's place and every point's and keyframe's life:
-//! the Rust core's mirror of `slam_it.edge.atlas`, whose docstring states them. It only reads a
-//! map.
+//! The run's maps and records: every map kept whole, each frame's place, every point's and
+//! keyframe's life: the Rust core's mirror of `slam_it.edge.atlas`, whose docstring states them.
+//! It only reads the map being tracked.
 //!
 //! With the steps in threads of their own (milestone 2B's B3b), the threads that change the map
 //! record what they made and removed as they change it ([`Atlas::record`]), dated by the frame
 //! being tracked then, and tracking counts the frames ([`Atlas::tick`]); a frame that became a
 //! keyframe is placed before local mapping makes its keyframe ([`Atlas::place_pending`]), its
-//! reference set once it has ([`Atlas::resolve`]). The pipeline shares the atlas behind a lock.
+//! reference set once it has ([`Atlas::resolve`]). The pipeline shares the atlas behind a lock;
+//! the kept maps are shared on ([`Atlas::kept`]), so a search reads them with the lock let go.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use nalgebra::{Matrix4, Vector3};
-use slam_it_foundations::error::Result;
-use slam_it_foundations::se3;
+use slam_it_foundations::error::{ErrorKind, Result, fail};
+use slam_it_foundations::{se3, sim3};
 
 use crate::covisibility;
+use crate::database::{Database, Indexed};
+use crate::loops::{rigid_of, scale_of};
 use crate::map::{self, Map, Removal};
 use crate::options::Options;
 
@@ -35,7 +39,7 @@ fn to_index(id: i64) -> usize {
 ///
 /// # Arguments
 ///
-/// * `count` - The points or keyframes made so far.
+/// * `count` - The count.
 ///
 /// # Returns
 ///
@@ -45,14 +49,14 @@ fn to_id(count: usize) -> i64 {
 }
 
 /// A life: the frame that made a point or keyframe, the frame that removed it or -1, and why
-/// (a [`Removal::code`]) or -1.
+/// (a `Removal` code) or -1.
 pub type Life = [i64; 3];
 
 /// Every point and keyframe a run made, by the run's id (continuing across maps), where each
-/// last was, its life and its map (`slam_it.edge.atlas.Lifetimes`).
+/// last was, its life and the map it ends in (`slam_it.edge.atlas.Lifetimes`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Lifetimes {
-    /// Every point, its last position in the world frame.
+    /// Every point, its last position in its map's world frame.
     pub points: Vec<Vector3<f64>>,
     /// Their lives.
     pub point_lives: Vec<Life>,
@@ -64,19 +68,21 @@ pub struct Lifetimes {
     pub keyframe_lives: Vec<Life>,
     /// Each one's last parent in its map's spanning tree, by the run's id, or -1.
     pub keyframe_parents: Vec<i64>,
-    /// Each map's strong links when it closed, and the current map's now, by the run's ids,
-    /// ascending.
+    /// Each kept map's strong links at the end, and each reset map's when it was reset, by the
+    /// run's ids, the rows ascending.
     pub keyframe_links: Vec<[i64; 3]>,
-    /// Each map's loop edges, the older keyframe first, by the run's ids, in the order closed.
+    /// Each map's loop edges, by the run's ids, the lower first, in the order closed.
     pub keyframe_loops: Vec<[i64; 2]>,
-    /// The map each point was made in.
+    /// Each map's merge edges, by the run's ids, the lower first, in the order made.
+    pub keyframe_merges: Vec<[i64; 2]>,
+    /// The map each point ends in.
     pub point_maps: Vec<i64>,
-    /// The map each keyframe was made in.
+    /// The map each keyframe ends in.
     pub keyframe_maps: Vec<i64>,
 }
 
 /// The run's trajectory: each tracked frame's final pose, and its pose as tracked
-/// (`slam_it.edge.atlas.Trajectory`). A reset map's frames are left out.
+/// (`slam_it.edge.atlas.Trajectory`); a reset map's frames are left out.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Trajectory {
     /// Each tracked frame's time, in the order tracked.
@@ -86,8 +92,11 @@ pub struct Trajectory {
     pub poses: Vec<Matrix4<f64>>,
     /// Its `T_cam_world` as tracked.
     pub tracked: Vec<Matrix4<f64>>,
-    /// The map it was tracked in.
+    /// The map its final pose is in: the map it was tracked in, or the one that map was merged
+    /// into.
     pub maps: Vec<i64>,
+    /// The map it was tracked in.
+    pub tracked_maps: Vec<i64>,
 }
 
 /// A tracked frame's place, for the final trajectory (`slam_it.edge.atlas._Placement`).
@@ -99,15 +108,78 @@ struct FramePlace {
     map: i64,
     /// The run's id of its reference keyframe.
     reference: i64,
-    /// Its pose relative to it, `T_cam_ref`.
+    /// Its pose relative to the reference, `T_cam_ref`.
     relative: Matrix4<f64>,
     /// Its `T_cam_world` as tracked.
     tracked: Matrix4<f64>,
 }
 
-/// The run's records across its maps (`slam_it.edge.atlas.Atlas`): the maps' numbers and the
-/// run's id bases, every point's and keyframe's life, the closed maps' last places, and each
-/// tracked frame's place for the final trajectory.
+/// A map's ids' run ids, by its ids.
+#[derive(Debug, Clone, Default)]
+struct Runs {
+    /// Each keyframe id's.
+    keyframes: Vec<i64>,
+    /// Each point id's.
+    points: Vec<i64>,
+}
+
+/// A map kept whole, not being tracked (`slam_it.edge.atlas.Kept`): the map with its database
+/// and number, shared so that a search reads it with the atlas's lock let go ([`Atlas::kept`]),
+/// and its ids' run ids.
+#[derive(Debug, Clone)]
+struct Kept {
+    /// The map, its database and its number.
+    map: Arc<Indexed>,
+    /// Its ids' run ids.
+    runs: Runs,
+}
+
+/// An id of a map as the run's, by its table of run ids; -1 kept.
+///
+/// # Arguments
+///
+/// * `runs` - The map's ids' run ids.
+/// * `id` - The id, or -1.
+///
+/// # Returns
+///
+/// The run's id, or -1.
+fn run_of(runs: &[i64], id: i64) -> i64 {
+    if id >= 0 { runs[to_index(id)] } else { -1 }
+}
+
+/// Two keyframes' run ids, the lower first.
+///
+/// # Arguments
+///
+/// * `runs` - The map's keyframe ids' run ids.
+/// * `edge` - The two keyframes' ids in the map.
+///
+/// # Returns
+///
+/// The run ids, ascending.
+fn pair_of(runs: &[i64], [first, second]: [i64; 2]) -> [i64; 2] {
+    let (a, b) = (run_of(runs, first), run_of(runs, second));
+    [a.min(b), a.max(b)]
+}
+
+/// Takes a pose relative to a keyframe into a merged map's units (`slam_it.edge.atlas._in_units`):
+/// a merge carries the active map's keyframes by `rigid_of(T G⁻¹)`, whose translations are the
+/// active map's divided by `scale_of(G⁻¹)`, and a pose relative to one shrinks alike.
+///
+/// # Arguments
+///
+/// * `relative` - The pose, its translation divided in place.
+/// * `scale` - `scale_of(G⁻¹)`.
+fn in_units(relative: &mut Matrix4<f64>, scale: f64) {
+    for r in 0..3 {
+        relative[(r, 3)] /= scale;
+    }
+}
+
+/// The run's maps and records (`slam_it.edge.atlas.Atlas`): every map kept whole with its
+/// database, the maps' numbers and each one's ids' run ids, every point's and keyframe's life,
+/// and each tracked frame's place for the final trajectory.
 #[derive(Debug, Clone)]
 pub struct Atlas {
     /// The settings: the strong links' threshold.
@@ -118,17 +190,18 @@ pub struct Atlas {
     map_id: Option<i64>,
     /// The maps started so far: the next one's number.
     maps: i64,
-    /// The run's id of the current map's keyframe 0.
-    kf_base: i64,
-    /// The run's id of the current map's point 0.
-    pt_base: i64,
-    /// Every point and keyframe made so far, by the run's id: those no longer in the current
-    /// map (removed, or in a closed map) where they last were; the others' entries are
-    /// placeholders, filled from the map by [`Atlas::lifetimes`].
+    /// The current map's ids' run ids.
+    runs: Runs,
+    /// The maps kept, by number, each with its database and its ids' run ids.
+    kept: Vec<Kept>,
+    /// Each merged map's number to the number of the map it was merged into.
+    merged_into: BTreeMap<i64, i64>,
+    /// Lives, the map each point and keyframe was made in, and the removed ones' last places
+    /// (the others' unset), by the run's id; the reset maps' strong links and loops.
     lives: Lifetimes,
-    /// Each tracked frame's place, for the final trajectory ([`Atlas::trajectory`]).
+    /// Each tracked frame's place, for the final trajectory.
     placements: Vec<FramePlace>,
-    /// Each culled keyframe's parent and pose relative to it, by the run's ids.
+    /// Each culled keyframe's parent and its pose relative to it, by the run's ids.
     culled: BTreeMap<i64, (i64, Matrix4<f64>)>,
     /// Each frame placed before its keyframe was made: its place's index, by the frame.
     pending: BTreeMap<i64, usize>,
@@ -153,8 +226,9 @@ impl Atlas {
             frames: 0,
             map_id: None,
             maps: 0,
-            kf_base: 0,
-            pt_base: 0,
+            runs: Runs::default(),
+            kept: Vec::new(),
+            merged_into: BTreeMap::new(),
             lives: Lifetimes::default(),
             placements: Vec::new(),
             culled: BTreeMap::new(),
@@ -208,36 +282,58 @@ impl Atlas {
         self.map_id
     }
 
-    /// The run's id of the current map's keyframe 0 (the next map's, between maps).
+    /// The maps kept, not being tracked, by number, each with its database (empty when the run
+    /// does not relocalise), shared: taken with the atlas's lock held, they are read with it let
+    /// go, so that tracking, which takes the lock on every frame, never waits on a search over
+    /// them (threaded loop closing's, relocalisation's). Only tracking's thread changes the maps
+    /// kept ([`Atlas::close`], [`Atlas::resume`], [`Atlas::merge`]), with the threads settled or
+    /// drained, so every search has let them go by then: a map is taken out whole, never copied,
+    /// and taking out one a search still holds is `InvalidInput` naming it.
     ///
     /// # Returns
     ///
-    /// The id.
+    /// The maps.
     #[must_use]
-    pub const fn keyframe_base(&self) -> i64 {
-        self.kf_base
+    pub fn kept(&self) -> Vec<Arc<Indexed>> {
+        self.kept.iter().map(|kept| Arc::clone(&kept.map)).collect()
     }
 
-    /// The run's id of the current map's point 0 (the next map's, between maps).
-    ///
-    /// # Returns
-    ///
-    /// The id.
-    #[must_use]
-    pub const fn point_base(&self) -> i64 {
-        self.pt_base
-    }
-
-    /// Gives the map starting on this frame its number, and its ids past every map before it.
+    /// Gives the map starting on this frame its number; its ids are the run's next.
     pub fn start(&mut self) {
         self.map_id = Some(self.maps);
         self.maps += 1;
-        self.kf_base = to_id(self.lives.keyframe_lives.len());
-        self.pt_base = to_id(self.lives.point_lives.len());
+        self.runs = Runs::default();
     }
 
-    /// Dates what this frame made in the current map and what it removed from it, read from its
-    /// archive of removals, which the map's owner then empties. Every frame is dated, one a
+    /// Gives each of the current map's ids without one a run id, its life starting on this
+    /// frame: threaded, tracking reads a view that may hold points and keyframes the threads
+    /// have not recorded yet, and gives them their run ids before it reads them by the run's
+    /// ids.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The current map, or a view of it ([`map::sub_map`] keeps its next ids).
+    pub fn extend(&mut self, m: &Map) {
+        let (frame, number) = (self.frame(), self.map_id.unwrap_or(0));
+        let lives = &mut self.lives;
+        while to_id(self.runs.points.len()) < m.next_pt_id {
+            self.runs.points.push(to_id(lives.point_lives.len()));
+            lives.point_lives.push([frame, -1, -1]);
+            lives.point_maps.push(number);
+            lives.points.push(Vector3::zeros());
+        }
+        while to_id(self.runs.keyframes.len()) < m.next_kf_id {
+            self.runs.keyframes.push(to_id(lives.keyframe_lives.len()));
+            lives.keyframe_lives.push([frame, -1, -1]);
+            lives.keyframe_maps.push(number);
+            lives.keyframe_times.push(0.0);
+            lives.keyframe_poses.push(Matrix4::identity());
+            lives.keyframe_parents.push(-1);
+        }
+    }
+
+    /// Dates what this frame made in the current map and what it removed from it, read from
+    /// its archive of removals, which the map's owner then empties. Every frame is dated, one a
     /// frame, whether or not a map is being tracked: [`Atlas::record`], then [`Atlas::tick`].
     ///
     /// # Arguments
@@ -257,88 +353,213 @@ impl Atlas {
     /// * `m` - The current map, if there is one.
     pub fn record(&mut self, m: Option<&Map>) {
         let frame = self.frame();
-        let (Some(m), Some(map_id)) = (m, self.map_id) else {
-            return;
-        };
-        let lives = &mut self.lives;
-        let points = to_index(self.pt_base + m.next_pt_id);
-        lives.point_lives.resize(points, [frame, -1, -1]);
-        lives.point_maps.resize(points, map_id);
-        lives.points.resize(points, Vector3::zeros());
-        let keyframes = to_index(self.kf_base + m.next_kf_id);
-        lives.keyframe_lives.resize(keyframes, [frame, -1, -1]);
-        lives.keyframe_maps.resize(keyframes, map_id);
-        lives.keyframe_times.resize(keyframes, 0.0);
-        lives.keyframe_poses.resize(keyframes, Matrix4::identity());
-        lives.keyframe_parents.resize(keyframes, -1);
-        for ((&id, xyz), &how) in m.gone_pt_id.iter().zip(&m.gone_pt_xyz).zip(&m.gone_pt_how) {
-            let id = to_index(self.pt_base + id);
-            lives.point_lives[id] = [lives.point_lives[id][0], frame, how];
-            lives.points[id] = *xyz;
-        }
-        for (g, &id) in m.gone_kf_id.iter().enumerate() {
-            let id = to_index(self.kf_base + id);
-            lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, Removal::Culled.code()];
-            lives.keyframe_times[id] = m.gone_kf_time[g];
-            lives.keyframe_poses[id] = m.gone_kf_pose[g];
-            let parent = m.gone_kf_parent[g];
-            lives.keyframe_parents[id] = if parent >= 0 {
-                self.kf_base + parent
-            } else {
-                -1
-            };
-            if parent >= 0 {
-                self.culled.insert(
-                    self.kf_base + m.gone_kf_id[g],
-                    (self.kf_base + parent, m.gone_kf_relative[g]),
-                );
+        if let (Some(m), Some(_)) = (m, self.map_id) {
+            self.extend(m);
+            for ((&id, xyz), &how) in m.gone_pt_id.iter().zip(&m.gone_pt_xyz).zip(&m.gone_pt_how) {
+                let id = to_index(run_of(&self.runs.points, id));
+                let lives = &mut self.lives;
+                lives.point_lives[id] = [lives.point_lives[id][0], frame, how];
+                lives.points[id] = *xyz;
+            }
+            for (g, &id) in m.gone_kf_id.iter().enumerate() {
+                let run = run_of(&self.runs.keyframes, id);
+                let parent = run_of(&self.runs.keyframes, m.gone_kf_parent[g]);
+                let lives = &mut self.lives;
+                let row = to_index(run);
+                lives.keyframe_lives[row] =
+                    [lives.keyframe_lives[row][0], frame, Removal::Culled.code()];
+                lives.keyframe_times[row] = m.gone_kf_time[g];
+                lives.keyframe_poses[row] = m.gone_kf_pose[g];
+                lives.keyframe_parents[row] = parent;
+                if parent >= 0 {
+                    self.culled.insert(run, (parent, m.gone_kf_relative[g]));
+                }
             }
         }
     }
 
-    /// Closes the current map on the frame just dated: keeps its record, or resets it (its
-    /// lives end, as [`Removal::Reset`], and its frames' places are dropped). A stand-in until
-    /// milestone 2B's B4: the map's strong links are counted here, for the run's record, inside
-    /// the frame's timed step (58 to 360 ms in the C++ program on the test set's largest maps);
-    /// B4's atlas keeps maps whole, and the record moves with it (the online-SLAM design,
-    /// section 4).
+    /// Closes the current map on this frame: keeps it whole with its database, or resets it
+    /// (its lives end as `Removal::Reset`, its strong links and loops kept, its frames' places
+    /// dropped, with those of the maps merged into it).
     ///
     /// # Arguments
     ///
-    /// * `m` - The map the track was lost in.
+    /// * `m` - The map the track left.
+    /// * `database` - Its keyframe database, if the run relocalises.
     /// * `reset` - Whether it is reset rather than kept.
-    pub fn close(&mut self, m: &Map, reset: bool) {
-        let frame = self.frames - 1; // dated already
+    /// * `dated` - Whether this frame is dated already: a map lost on a frame is closed after it,
+    ///   one left for another kept map while tracking it.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` if no map is being tracked.
+    pub fn close(
+        &mut self,
+        m: Map,
+        database: Option<Database>,
+        reset: bool,
+        dated: bool,
+    ) -> Result<()> {
+        let Some(number) = self.map_id.take() else {
+            return fail(ErrorKind::InvalidInput, "close: no map is being tracked");
+        };
+        self.pending.clear();
+        let runs = std::mem::take(&mut self.runs);
+        if !reset {
+            let at = self.kept.partition_point(|kept| kept.map.number < number);
+            let map = Arc::new(Indexed {
+                number,
+                map: m,
+                database: database.unwrap_or_default(),
+            });
+            self.kept.insert(at, Kept { map, runs });
+            return Ok(());
+        }
+        let frame = if dated { self.frames - 1 } else { self.frames };
         let code = Removal::Reset.code();
-        let parents: Vec<i64> = m.kf_parent.iter().map(|&p| self.run_id(p)).collect();
-        let links = self.run_links(m);
-        let loop_edges = self.run_loops(m);
+        let links = self.run_links(&m, &runs);
         let lives = &mut self.lives;
         for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
-            let id = to_index(self.pt_base + id);
-            lives.points[id] = *xyz;
-            if reset {
-                lives.point_lives[id] = [lives.point_lives[id][0], frame, code];
-            }
+            let row = to_index(run_of(&runs.points, id));
+            lives.points[row] = *xyz;
+            lives.point_lives[row] = [lives.point_lives[row][0], frame, code];
         }
         for (k, &id) in m.kf_id.iter().enumerate() {
-            let id = to_index(self.kf_base + id);
-            lives.keyframe_times[id] = m.kf_time[k];
-            lives.keyframe_poses[id] = m.kf_pose[k];
-            lives.keyframe_parents[id] = parents[k];
-            if reset {
-                lives.keyframe_lives[id] = [lives.keyframe_lives[id][0], frame, code];
-            }
+            let row = to_index(run_of(&runs.keyframes, id));
+            lives.keyframe_times[row] = m.kf_time[k];
+            lives.keyframe_poses[row] = m.kf_pose[k];
+            lives.keyframe_parents[row] = run_of(&runs.keyframes, m.kf_parent[k]);
+            lives.keyframe_lives[row] = [lives.keyframe_lives[row][0], frame, code];
         }
         lives.keyframe_links.extend(links);
-        lives.keyframe_loops.extend(loop_edges);
-        if reset {
-            // Its frames' poses go with it.
-            let closing = self.map_id;
-            self.placements.retain(|p| Some(p.map) != closing);
+        lives.keyframe_loops.extend(
+            m.loop_edges
+                .iter()
+                .map(|&edge| pair_of(&runs.keyframes, edge)),
+        );
+        // The frames tracked in the map, or in a map merged into it before.
+        let placements = std::mem::take(&mut self.placements);
+        self.placements = placements
+            .into_iter()
+            .filter(|p| self.ends_in(p.map) != number)
+            .collect();
+        Ok(())
+    }
+
+    /// Takes a kept map out of the kept maps.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The caller's name, for the message.
+    /// * `number` - The kept map's number.
+    ///
+    /// # Returns
+    ///
+    /// The map with its database and number, moved out of its share, and its ids' run ids.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` naming the number if no map kept has it, or if a search still holds it
+    /// ([`Atlas::kept`]); the map stays kept then.
+    fn take(&mut self, name: &str, number: i64) -> Result<(Indexed, Runs)> {
+        let Some(at) = self.kept.iter().position(|kept| kept.map.number == number) else {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("{name}: map {number} is not kept"),
+            );
+        };
+        let Kept { map, runs } = self.kept.remove(at);
+        match Arc::try_unwrap(map) {
+            Ok(map) => Ok((map, runs)),
+            Err(map) => {
+                self.kept.insert(at, Kept { map, runs });
+                fail(
+                    ErrorKind::InvalidInput,
+                    format!("{name}: map {number} is still held by a search"),
+                )
+            }
         }
-        self.map_id = None;
-        self.pending.clear();
+    }
+
+    /// Takes a kept map up again as the current one: relocalisation found the track in it.
+    ///
+    /// # Arguments
+    ///
+    /// * `number` - The kept map's number.
+    ///
+    /// # Returns
+    ///
+    /// The map and its database, for the map's owner.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` naming the number if no map kept has it, or if a search still holds it.
+    pub fn resume(&mut self, number: i64) -> Result<Indexed> {
+        let (map, runs) = self.take("resume", number)?;
+        self.map_id = Some(number);
+        self.runs = runs;
+        Ok(map)
+    }
+
+    /// Takes the current map into the kept map it merged with (`loops::merge`): the merged map
+    /// is the current one after, with the matched map's number, its run ids the matched map's
+    /// then the current map's, as the merge's offsets (the matched map's next ids) moved them;
+    /// what the current map removed before, and its frames' places, are carried into the matched
+    /// map's world by `G`, the frames' and the culled keyframes' poses relative to their
+    /// keyframes into its units (their translations divided by `scale_of(G⁻¹)`, 1 but in
+    /// monocular).
+    ///
+    /// # Arguments
+    ///
+    /// * `matched` - The kept map's number.
+    /// * `to_world` - `G`, the similarity carrying the current map's world into the matched
+    ///   map's (`loops::merge_transform`).
+    ///
+    /// # Returns
+    ///
+    /// The matched map's database, which becomes the merged map's.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidInput` if no map is being tracked, or naming the number if no map kept has it or
+    /// a search still holds it.
+    pub fn merge(&mut self, matched: i64, to_world: &Matrix4<f64>) -> Result<Database> {
+        let Some(current) = self.map_id else {
+            return fail(ErrorKind::InvalidInput, "merge: no map is being tracked");
+        };
+        let (kept, mut runs) = self.take("merge", matched)?;
+        let back = sim3::inverse(to_world);
+        let scale = scale_of(&back);
+        let lives = &mut self.lives;
+        for &id in &self.runs.points {
+            let row = to_index(id);
+            if lives.point_lives[row][1] >= 0 {
+                let p = lives.points[row];
+                lives.points[row] =
+                    to_world.fixed_view::<3, 3>(0, 0) * p + to_world.fixed_view::<3, 1>(0, 3);
+            }
+        }
+        for &id in &self.runs.keyframes {
+            let row = to_index(id);
+            if lives.keyframe_lives[row][1] >= 0 {
+                lives.keyframe_poses[row] = rigid_of(&(lives.keyframe_poses[row] * back));
+            }
+            if let Some((_, relative)) = self.culled.get_mut(&id) {
+                in_units(relative, scale);
+            }
+        }
+        // The frames tracked in the current map, or in a map merged into it before.
+        for at in 0..self.placements.len() {
+            if self.ends_in(self.placements[at].map) == current {
+                in_units(&mut self.placements[at].relative, scale);
+            }
+        }
+        runs.keyframes.append(&mut self.runs.keyframes);
+        runs.points.append(&mut self.runs.points);
+        self.runs = runs;
+        self.merged_into.insert(current, matched);
+        self.map_id = Some(matched);
+        Ok(kept.database)
     }
 
     /// Keeps a tracked frame's place: its reference keyframe and its pose relative to it.
@@ -352,7 +573,7 @@ impl Atlas {
     ///
     /// # Errors
     ///
-    /// `InvalidInput` for a keyframe the map does not hold.
+    /// `InvalidInput` for a reference the map does not hold; the inversion's.
     pub fn place_frame(
         &mut self,
         m: &Map,
@@ -360,16 +581,36 @@ impl Atlas {
         reference: i64,
         pose: &Matrix4<f64>,
     ) -> Result<()> {
+        self.extend(m);
         let k = map::keyframe_row(m, reference)?;
         let relative = pose * se3::inverse(&m.kf_pose[k])?;
         self.placements.push(FramePlace {
             timestamp,
             map: self.map_id.unwrap_or(0),
-            reference: self.kf_base + reference,
+            reference: self.run_id(reference),
             relative,
             tracked: *pose,
         });
         Ok(())
+    }
+
+    /// Keeps the place of a frame that became the map's newest keyframe: its own, where it was.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The current map, the frame's keyframe its last.
+    /// * `timestamp` - The frame's time.
+    /// * `pose` - Its `T_cam_world` as tracked.
+    pub fn place_keyframe(&mut self, m: &Map, timestamp: f64, pose: &Matrix4<f64>) {
+        self.extend(m);
+        let reference = self.run_id(m.kf_id[m.keyframes() - 1]);
+        self.placements.push(FramePlace {
+            timestamp,
+            map: self.map_id.unwrap_or(0),
+            reference,
+            relative: Matrix4::identity(),
+            tracked: *pose,
+        });
     }
 
     /// Places a frame that will be the current map's next keyframe, once local mapping makes it:
@@ -400,25 +641,30 @@ impl Atlas {
     /// * `m` - The current map, the frame's keyframe its last.
     pub fn resolve(&mut self, frame: i64, m: &Map) {
         if let Some(at) = self.pending.remove(&frame) {
-            self.placements[at].reference = self.kf_base + m.kf_id[m.keyframes() - 1];
+            self.extend(m);
+            self.placements[at].reference = self.run_id(m.kf_id[m.keyframes() - 1]);
         }
     }
 
-    /// Keeps the place of a frame that became the map's newest keyframe: its own, where it was.
+    /// Every map held whole, the kept ones and the current one, each with its ids' run ids.
     ///
     /// # Arguments
     ///
-    /// * `m` - The current map, the frame's keyframe its last.
-    /// * `timestamp` - The frame's time.
-    /// * `pose` - Its `T_cam_world` as tracked.
-    pub fn place_keyframe(&mut self, m: &Map, timestamp: f64, pose: &Matrix4<f64>) {
-        self.placements.push(FramePlace {
-            timestamp,
-            map: self.map_id.unwrap_or(0),
-            reference: self.kf_base + m.kf_id[m.keyframes() - 1],
-            relative: Matrix4::identity(),
-            tracked: *pose,
-        });
+    /// * `m` - The current map, if there is one.
+    ///
+    /// # Returns
+    ///
+    /// The maps.
+    fn whole<'a>(&'a self, m: Option<&'a Map>) -> Vec<(&'a Map, &'a Runs)> {
+        let mut out: Vec<(&Map, &Runs)> = self
+            .kept
+            .iter()
+            .map(|kept| (&kept.map.map, &kept.runs))
+            .collect();
+        if let (Some(m), Some(_)) = (m, self.map_id) {
+            out.push((m, &self.runs));
+        }
+        out
     }
 
     /// Every point and keyframe the run has made, with their lives and maps.
@@ -429,28 +675,45 @@ impl Atlas {
     ///
     /// # Returns
     ///
-    /// The points and keyframes by the run's id: those in the current map where it has them,
-    /// the others where they last were.
+    /// The points and keyframes by the run's id: those in a map where it has them, the others
+    /// where they last were.
     #[must_use]
     pub fn lifetimes(&self, m: Option<&Map>) -> Lifetimes {
         let mut out = self.lives.clone();
-        if let Some(m) = m {
-            for (&id, xyz) in m.pt_id.iter().zip(&m.pt_xyz) {
-                out.points[to_index(self.pt_base + id)] = *xyz;
+        for (whole, runs) in self.whole(m) {
+            for (&id, xyz) in whole.pt_id.iter().zip(&whole.pt_xyz) {
+                out.points[to_index(run_of(&runs.points, id))] = *xyz;
             }
-            for (k, &id) in m.kf_id.iter().enumerate() {
-                let row = to_index(self.kf_base + id);
-                out.keyframe_times[row] = m.kf_time[k];
-                out.keyframe_poses[row] = m.kf_pose[k];
-                out.keyframe_parents[row] = self.run_id(m.kf_parent[k]);
+            for (k, &id) in whole.kf_id.iter().enumerate() {
+                let row = to_index(run_of(&runs.keyframes, id));
+                out.keyframe_times[row] = whole.kf_time[k];
+                out.keyframe_poses[row] = whole.kf_pose[k];
+                out.keyframe_parents[row] = run_of(&runs.keyframes, whole.kf_parent[k]);
             }
-            out.keyframe_links.extend(self.run_links(m));
-            out.keyframe_loops.extend(self.run_loops(m));
+            out.keyframe_links.extend(self.run_links(whole, runs));
+            out.keyframe_loops.extend(
+                whole
+                    .loop_edges
+                    .iter()
+                    .map(|&edge| pair_of(&runs.keyframes, edge)),
+            );
+            out.keyframe_merges.extend(
+                whole
+                    .merge_edges
+                    .iter()
+                    .map(|&edge| pair_of(&runs.keyframes, edge)),
+            );
+        }
+        out.keyframe_links.sort_unstable();
+        for map in out.point_maps.iter_mut().chain(&mut out.keyframe_maps) {
+            *map = self.ends_in(*map);
         }
         out
     }
 
-    /// The run's trajectory so far: each tracked frame's final pose, and as tracked.
+    /// The run's trajectory so far: each tracked frame placed by its reference keyframe's last
+    /// pose, through the keyframe's culled ancestors where it was culled; a frame whose chain
+    /// ends at none keeps its pose as tracked.
     ///
     /// # Arguments
     ///
@@ -458,20 +721,31 @@ impl Atlas {
     ///
     /// # Returns
     ///
-    /// The frames tracked, but a reset map's, each placed by its reference keyframe's last
-    /// pose, through the keyframe's culled ancestors where it was culled.
+    /// The frames tracked, but a reset map's.
     #[must_use]
     pub fn trajectory(&self, m: Option<&Map>) -> Trajectory {
-        let last = self.lifetimes(m).keyframe_poses;
+        let mut last: BTreeMap<i64, Matrix4<f64>> = BTreeMap::new();
+        for (row, life) in self.lives.keyframe_lives.iter().enumerate() {
+            if life[1] >= 0 {
+                last.insert(to_id(row), self.lives.keyframe_poses[row]);
+            }
+        }
+        for (whole, runs) in self.whole(m) {
+            for (k, &id) in whole.kf_id.iter().enumerate() {
+                last.insert(run_of(&runs.keyframes, id), whole.kf_pose[k]);
+            }
+        }
         let mut out = Trajectory::default();
         for placed in &self.placements {
             let (keyframe, pose) = self.through_culled(placed.reference, placed.relative);
-            let anchor = usize::try_from(keyframe).ok().and_then(|k| last.get(k));
             out.timestamps.push(placed.timestamp);
-            out.poses
-                .push(anchor.map_or(placed.tracked, |anchor| pose * anchor));
+            out.poses.push(
+                last.get(&keyframe)
+                    .map_or(placed.tracked, |anchor| pose * anchor),
+            );
             out.tracked.push(placed.tracked);
-            out.maps.push(placed.map);
+            out.maps.push(self.ends_in(placed.map));
+            out.tracked_maps.push(placed.map);
         }
         out
     }
@@ -491,11 +765,20 @@ impl Atlas {
     /// # Returns
     ///
     /// The pose's `T_cam_world` in the map now; `None` if the keyframe's chain of culled
-    /// ancestors ends at no keyframe of the map.
+    /// ancestors ends at no keyframe of the map. The map's ids without a run id are given one
+    /// first ([`Atlas::extend`]).
     #[must_use]
-    pub fn pose_by(&self, m: &Map, keyframe: i64, relative: &Matrix4<f64>) -> Option<Matrix4<f64>> {
-        let (found, pose) = self.through_culled(self.kf_base + keyframe, *relative);
-        m.keyframe_row(found - self.kf_base)
+    pub fn pose_by(
+        &mut self,
+        m: &Map,
+        keyframe: i64,
+        relative: &Matrix4<f64>,
+    ) -> Option<Matrix4<f64>> {
+        self.extend(m);
+        let (found, pose) = self.through_culled(run_of(&self.runs.keyframes, keyframe), *relative);
+        m.kf_id
+            .iter()
+            .position(|&id| run_of(&self.runs.keyframes, id) == found)
             .map(|row| pose * m.kf_pose[row])
     }
 
@@ -517,33 +800,71 @@ impl Atlas {
         (keyframe, relative)
     }
 
-    /// A keyframe of the current map, by the run's id: -1 kept.
+    /// A keyframe of the current map, by the run's id.
     ///
     /// # Arguments
     ///
-    /// * `id` - Its id in the map, or -1.
+    /// * `id` - Its id in the map, given a run id, or -1.
     ///
     /// # Returns
     ///
     /// The run's id, or -1.
     #[must_use]
-    pub const fn run_id(&self, id: i64) -> i64 {
-        if id >= 0 { self.kf_base + id } else { -1 }
+    pub fn run_id(&self, id: i64) -> i64 {
+        run_of(&self.runs.keyframes, id)
     }
 
-    /// A map's loop edges, by the run's ids.
-    fn run_loops(&self, m: &Map) -> Vec<[i64; 2]> {
-        m.loop_edges
-            .iter()
-            .map(|&[a, b]| [self.kf_base + a, self.kf_base + b])
-            .collect()
+    /// A point of the current map, by the run's id.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - Its id in the map, given a run id, or -1.
+    ///
+    /// # Returns
+    ///
+    /// The run's id, or -1.
+    #[must_use]
+    pub fn point_run_id(&self, id: i64) -> i64 {
+        run_of(&self.runs.points, id)
     }
 
-    /// A map's strong links, by the run's ids.
-    fn run_links(&self, m: &Map) -> Vec<[i64; 3]> {
+    /// The map a map's points and keyframes end in: itself, or the one it merged into.
+    ///
+    /// # Arguments
+    ///
+    /// * `number` - The map's number.
+    ///
+    /// # Returns
+    ///
+    /// The number.
+    fn ends_in(&self, mut number: i64) -> i64 {
+        let mut seen = BTreeSet::new();
+        while let Some(&into) = self.merged_into.get(&number) {
+            if !seen.insert(number) {
+                break;
+            }
+            number = into;
+        }
+        number
+    }
+
+    /// A map's strong links, by the run's ids, each the lower first.
+    ///
+    /// # Arguments
+    ///
+    /// * `m` - The map.
+    /// * `runs` - Its ids' run ids.
+    ///
+    /// # Returns
+    ///
+    /// The links.
+    fn run_links(&self, m: &Map, runs: &Runs) -> Vec<[i64; 3]> {
         covisibility::strong_links(m, &self.options)
             .into_iter()
-            .map(|[a, b, weight]| [self.kf_base + a, self.kf_base + b, weight])
+            .map(|[a, b, weight]| {
+                let [first, second] = pair_of(&runs.keyframes, [a, b]);
+                [first, second, weight]
+            })
             .collect()
     }
 }

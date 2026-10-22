@@ -20,8 +20,10 @@ pub const FORMAT: &str = "slam-it-run";
 /// keyframe the run made, with their lives; 4 the maps, and the removal `reset`; 5 the
 /// `vocabulary` a relocalising run used; 6 the settings grouped, each keyframe's parent and the
 /// strong links; 7 the final trajectory, the poses as tracked beside it, the loops closed, and
-/// loop closing's time; 8 `threaded` and `locks`, and the threads' handshakes on each frame).
-pub const VERSION: i64 = 8;
+/// loop closing's time; 8 `threaded` and `locks`, and the threads' handshakes on each frame; 9
+/// the map each point, keyframe and final pose ends in, the map each frame was tracked in, the
+/// merges made, and each loop's correction's keyframes by the run's ids).
+pub const VERSION: i64 = 9;
 
 /// The number of removal codes a life may hold (`slam_it.eval.runs.REMOVALS`).
 pub const REMOVALS: i64 = 4;
@@ -135,12 +137,17 @@ pub struct Run {
     pub threaded: bool,
     /// Whether those threads shared the map by ORB-SLAM's locks (C++'s baseline).
     pub locks: bool,
-    /// The map each tracked frame's pose is in, never descending.
+    /// The map each tracked frame's final pose is in.
     pub pose_maps: Vec<i64>,
-    /// The map each keyframe is in, by id, never descending.
+    /// The map each keyframe ends in, by id.
     pub keyframe_maps: Vec<i64>,
-    /// The map each point is in, by id, never descending.
+    /// The map each point ends in, by id.
     pub point_maps: Vec<i64>,
+    /// The map each tracked frame was tracked in, its pose as tracked in that map's world.
+    pub tracked_maps: Vec<i64>,
+    /// The merges made: the two keyframes each joined, of the same map, the lower id first, in
+    /// the order made.
+    pub keyframe_merges: Vec<[i64; 2]>,
 }
 
 /// A finite number as JSON, shortest round-trip (`.0` kept on a whole number, as Python
@@ -458,44 +465,46 @@ fn check_links(links: &[[i64; 3]], maps: &[i64]) -> Result<()> {
 ///
 /// # Arguments
 ///
-/// * `loops` - The loop edges.
+/// * `edges` - The edges.
 /// * `maps` - Each keyframe's map, checked.
+/// * `name` - Their name, for messages.
+/// * `what` - An edge's name, for messages.
 ///
 /// # Errors
 ///
 /// `InvalidInput` otherwise.
-fn check_loops(loops: &[[i64; 2]], maps: &[i64]) -> Result<()> {
+fn check_edges(edges: &[[i64; 2]], maps: &[i64], name: &str, what: &str) -> Result<()> {
     let row = |id: i64| usize::try_from(id).ok().filter(|&r| r < maps.len());
-    for (i, &[first, second]) in loops.iter().enumerate() {
+    for (i, &[first, second]) in edges.iter().enumerate() {
         let (Some(a), Some(b)) = (row(first), row(second)) else {
             return fail(
                 ErrorKind::InvalidInput,
-                "keyframe_loops: a loop must join two keyframes, the lower first",
+                format!("{name}: a {what} must join two keyframes, the lower first"),
             );
         };
         if a >= b {
             return fail(
                 ErrorKind::InvalidInput,
-                "keyframe_loops: a loop must join two keyframes, the lower first",
+                format!("{name}: a {what} must join two keyframes, the lower first"),
             );
         }
         if maps[a] != maps[b] {
             return fail(
                 ErrorKind::InvalidInput,
-                "keyframe_loops: a loop's keyframes must be in one map",
+                format!("{name}: a {what}'s keyframes must be in one map"),
             );
         }
-        if loops[..i].contains(&[first, second]) {
+        if edges[..i].contains(&[first, second]) {
             return fail(
                 ErrorKind::InvalidInput,
-                "keyframe_loops: a loop must close once",
+                format!("{name}: a {what} must be made once"),
             );
         }
     }
     Ok(())
 }
 
-/// Checks maps: one per row, numbers from 0, never descending.
+/// Checks maps: one per row, numbers from 0.
 ///
 /// # Arguments
 ///
@@ -516,17 +525,11 @@ fn check_maps(maps: &[i64], rows: usize, name: &str) -> Result<()> {
             ),
         );
     }
-    let bad = (0..maps.len()).find(|&row| maps[row] < 0 || (row > 0 && maps[row] < maps[row - 1]));
-    if let Some(row) = bad {
-        let after = if row > 0 {
-            format!(", after {}", maps[row - 1])
-        } else {
-            String::new()
-        };
+    if let Some(row) = (0..maps.len()).find(|&row| maps[row] < 0) {
         return fail(
             ErrorKind::InvalidInput,
             format!(
-                "{name}: maps must be numbers from 0, never descending; row {row} is {}{after}",
+                "{name}: maps must be numbers from 0; row {row} is {}",
                 maps[row]
             ),
         );
@@ -610,9 +613,21 @@ fn check(run: &Run) -> Result<()> {
         "keyframe_maps",
     )?;
     check_maps(&run.point_maps, run.points.len(), "point_maps")?;
+    check_maps(&run.tracked_maps, run.timestamps.len(), "tracked_maps")?;
     check_parents(&run.keyframe_parents, &run.keyframe_maps)?;
     check_links(&run.keyframe_links, &run.keyframe_maps)?;
-    check_loops(&run.keyframe_loops, &run.keyframe_maps)?;
+    check_edges(
+        &run.keyframe_loops,
+        &run.keyframe_maps,
+        "keyframe_loops",
+        "loop",
+    )?;
+    check_edges(
+        &run.keyframe_merges,
+        &run.keyframe_maps,
+        "keyframe_merges",
+        "merge",
+    )?;
     if !finite(&run.settings) {
         return fail(
             ErrorKind::InvalidInput,
@@ -646,9 +661,9 @@ fn check(run: &Run) -> Result<()> {
     check_frame_maps(run)
 }
 
-/// Check the diagnostics' `map` keys against the run's maps (those of its keyframes): each null
-/// or a map number, never descending, and every map named on a frame, so that its frames can be
-/// found (Python's `_check_frame_maps`).
+/// Check the diagnostics' `map` keys against the run's maps (those its keyframes end in): each
+/// null or a map number, and every map a keyframe ends in named on a frame, so that its frames
+/// can be found (Python's `_check_frame_maps`).
 ///
 /// # Arguments
 ///
@@ -670,17 +685,9 @@ fn check_frame_maps(run: &Run) -> Result<()> {
                 );
             }
         };
-        if let Some(&last) = named.last()
-            && value < last
-        {
-            return fail(
-                ErrorKind::InvalidInput,
-                format!("diagnostics[{k}]: map {value} after map {last}: maps never descend"),
-            );
-        }
         named.push(value);
     }
-    // The keyframes' maps ascend, as checked.
+    named.sort_unstable();
     if let Some(map) = run
         .keyframe_maps
         .iter()
@@ -700,7 +707,8 @@ fn check_frame_maps(run: &Run) -> Result<()> {
 ///
 /// * `times` - The times.
 /// * `poses` - The poses.
-/// * `maps` - Their maps: a `# map <n>` line comes before each map's first pose.
+/// * `maps` - Their maps: a `# map <n>` line comes before each run of one map's poses (a
+///   map's may come in several runs).
 ///
 /// # Returns
 ///
@@ -808,13 +816,13 @@ fn vocabulary_text(header: &Header) -> String {
 /// ascending, poses that are not rigid or not one per time, a point that is not finite, lives
 /// or maps that are not one per row or not valid (as `check_lives` and `check_maps` hold
 /// them), a diagnostic without a `timestamp`, diagnostics whose `map`s are not null or map
-/// numbers never descending, or name no frame of a map with keyframes, a number JSON cannot
-/// hold, CPUs that are empty or not ascending, or a memory cap of 0 (nothing is written then); or a file that cannot be
-/// written.
+/// numbers, or name no frame of a map with keyframes, a number JSON cannot hold, CPUs that are
+/// empty or not ascending, or a memory cap of 0 (nothing is written then); or a file that
+/// cannot be written.
 pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     check(run)?;
     let trajectory = trajectory_text(&run.timestamps, &run.poses, &run.pose_maps)?;
-    let tracked = trajectory_text(&run.timestamps, &run.tracked_poses, &run.pose_maps)?;
+    let tracked = trajectory_text(&run.timestamps, &run.tracked_poses, &run.tracked_maps)?;
     let info_text = info_text(run);
     let diagnostics: String = run
         .diagnostics
@@ -835,7 +843,8 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
     })?;
     let lives = |lives: &[Life]| -> Vec<i64> { lives.iter().flatten().copied().collect() };
     let loops: Vec<i64> = run.keyframe_loops.iter().flatten().copied().collect();
-    let files: [(&str, Vec<u8>); 15] = [
+    let merges: Vec<i64> = run.keyframe_merges.iter().flatten().copied().collect();
+    let files: [(&str, Vec<u8>); 17] = [
         ("run.json", info_text.into_bytes()),
         ("trajectory.txt", trajectory.into_bytes()),
         ("trajectory_tracked.txt", tracked.into_bytes()),
@@ -863,6 +872,10 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
             "keyframe_loops.npy",
             npy_int64(&[run.keyframe_loops.len(), 2], &loops),
         ),
+        (
+            "keyframe_merges.npy",
+            npy_int64(&[run.keyframe_merges.len(), 2], &merges),
+        ),
         ("points.npy", npy(&[run.points.len(), 3], &points)),
         (
             "point_lives.npy",
@@ -879,6 +892,10 @@ pub fn write_run(folder: &Path, run: &Run) -> Result<()> {
         (
             "point_maps.npy",
             npy_int64(&[run.point_maps.len()], &run.point_maps),
+        ),
+        (
+            "tracked_maps.npy",
+            npy_int64(&[run.tracked_maps.len()], &run.tracked_maps),
         ),
         ("diagnostics.jsonl", diagnostics.into_bytes()),
     ];
@@ -1238,19 +1255,26 @@ mod tests {
             keyframe_lives: lives(&values["keyframe_lives"]),
             keyframe_parents: integers(&values["keyframe_parents"]),
             keyframe_links: lives(&values["keyframe_links"]),
-            keyframe_loops: values["keyframe_loops"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|edge| [edge[0].as_i64().unwrap(), edge[1].as_i64().unwrap()])
-                .collect(),
+            keyframe_loops: edges(&values["keyframe_loops"]),
             record_features: values["record_features"].as_bool().unwrap(),
             threaded: values["threaded"].as_bool().unwrap(),
             locks: values["locks"].as_bool().unwrap(),
             pose_maps: integers(&values["pose_maps"]),
             keyframe_maps: integers(&values["keyframe_maps"]),
             point_maps: integers(&values["point_maps"]),
+            tracked_maps: integers(&values["tracked_maps"]),
+            keyframe_merges: edges(&values["keyframe_merges"]),
         }
+    }
+
+    /// Edges from JSON rows of two integers.
+    fn edges(values: &Value) -> Vec<[i64; 2]> {
+        values
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|edge| [edge[0].as_i64().unwrap(), edge[1].as_i64().unwrap()])
+            .collect()
     }
 
     /// Lives from JSON rows of three integers.
@@ -1339,6 +1363,8 @@ mod tests {
             "pose_maps.npy",
             "keyframe_maps.npy",
             "point_maps.npy",
+            "tracked_maps.npy",
+            "keyframe_merges.npy",
         ] {
             assert_eq!(
                 std::fs::read(out.join(name)).unwrap(),
@@ -1534,8 +1560,11 @@ mod tests {
         unknown.keyframe_lives[0] = [0, 2, 4];
         let mut fewer = golden_run();
         fewer.pose_maps.pop();
-        let mut descending = golden_run();
-        descending.point_maps = vec![0, 1, 0, 1, 1];
+        let mut tracked_fewer = golden_run();
+        tracked_fewer.tracked_maps.pop();
+        // The golden keyframes' maps are 0, 1, 1: a merge of 0 and 1 is across maps.
+        let mut across = golden_run();
+        across.keyframe_merges = vec![[0, 1]];
         let mut negative = golden_run();
         negative.keyframe_maps[0] = -1;
         // The diagnostics' maps, golden 0, 0, 0, 1, 1, 1 (map 1 has keyframes).
@@ -1552,7 +1581,6 @@ mod tests {
         };
         let frame_negative = with_map(&[3], &JsonValue::Integer(-1));
         let frame_bool = with_map(&[3], &JsonValue::Bool(true));
-        let frame_descending = with_map(&[4], &JsonValue::Integer(0));
         let unnamed = with_map(&[3, 4, 5], &JsonValue::Null);
         for run in [
             short,
@@ -1560,11 +1588,11 @@ mod tests {
             alive,
             unknown,
             fewer,
-            descending,
+            tracked_fewer,
+            across,
             negative,
             frame_negative,
             frame_bool,
-            frame_descending,
             unnamed,
         ] {
             assert_eq!(
@@ -1577,6 +1605,28 @@ mod tests {
             (json_number(1.0), json_number(0.1)),
             ("1.0".into(), "0.1".into())
         );
+    }
+
+    #[test]
+    fn maps_that_descend_are_written() {
+        // Merges and relocalisation in every map leave a run's maps so.
+        let out = std::env::temp_dir().join(format!(
+            "slam_it_rust_test_runs_descending_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&out);
+        let _guard = Scratch(out.clone());
+        let mut descending = golden_run();
+        descending.point_maps = vec![0, 1, 0, 1, 1];
+        let mut frame_descending = golden_run();
+        for (key, value) in &mut frame_descending.diagnostics[4] {
+            if key == "map" {
+                *value = JsonValue::Integer(0);
+            }
+        }
+        for run in [descending, frame_descending] {
+            write_run(&out, &run).unwrap();
+        }
     }
 
     #[test]

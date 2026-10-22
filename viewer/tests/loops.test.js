@@ -11,7 +11,7 @@ import {
   EFFECT_HOLD,
   INSET_AFTER,
   INSET_BEFORE,
-  cycleRows,
+  cycleRuns,
   effectChange,
   effectFrame,
   effectOpacity,
@@ -37,7 +37,8 @@ function rows(columns) {
 
 /**
  * A golden record's case, as the fixture holds it: columns a frame, a keyframe or a loop.
- * @typedef {{summaries: {loop?: {correction?: {matched: number, current: number} | null} | null}[],
+ * @typedef {{summaries: {loop?: {correction?: {matched: number, current: number,
+ *     matched_run: number, current_run: number} | null} | null}[],
  *     maps: (number | null)[], keyframe_maps: number[], keyframe_lives: number[][],
  *     keyframe_loops: number[][], poses: number[][], pose_maps: number[], timestamps: number[]}}
  *     Case
@@ -80,8 +81,9 @@ async function rooms() {
 
 /**
  * The loops a case's record says its run closed, from its own columns: each frame whose summary
- * holds a correction, the record's keyframes counted from its map's first, which must be the
- * `keyframe_loops` row of the same order.
+ * holds a correction, its keyframes by the run's ids, which must be the `keyframe_loops` row of
+ * the same order; the rooms' maps take no kept map up and merge none, so a map's keyframe k is
+ * also its k-th run id.
  * @param {Case} c The case.
  * @returns {import("../src/loops.js").Loop[]} The loops.
  */
@@ -93,8 +95,9 @@ function recordedLoops(c) {
   assert.equal(corrections.length, c.keyframe_loops[0].length, "a correction for each loop");
   return corrections.map(({ frame, correction }, e) => {
     const map = /** @type {number} */ (c.maps[frame]);
-    const first = c.keyframe_maps.indexOf(map);
-    const [older, newer] = [first + correction.matched, first + correction.current];
+    const ids = c.keyframe_maps.flatMap((m, id) => (m === map ? [id] : []));
+    const [older, newer] = [correction.matched_run, correction.current_run];
+    assert.deepEqual([older, newer], [ids[correction.matched], ids[correction.current]]);
     assert.deepEqual(
       [Math.min(older, newer), Math.max(older, newer)],
       [c.keyframe_loops[0][e], c.keyframe_loops[1][e]],
@@ -149,7 +152,7 @@ test("a run without a loop column closed none", () => {
  */
 function twoMaps(loops) {
   const made = [0, 2, 4, 10, 12, 14, 16, 18];
-  const correction = { matched: 1, current: 4 };
+  const correction = { matched: 1, current: 4, matched_run: 4, current_run: 7 };
   return {
     records: {
       frame: [19, 20, 21],
@@ -162,7 +165,7 @@ function twoMaps(loops) {
   };
 }
 
-test("a record's keyframes count from its map's first: the run's ids are found from it", () => {
+test("a record names its keyframes by the run's ids too: the loop is found by them", () => {
   assert.deepEqual(loopsOf(twoMaps([4, 7])), [
     {
       frame: 20,
@@ -178,6 +181,92 @@ test("a record's keyframes count from its map's first: the run's ids are found f
   // Keyframes that are no loop the run holds: the bundle does not say what it shows.
   assert.throws(() => loopsOf(twoMaps([3, 7])), /frame 20: .* not a loop the run closed/);
   assert.throws(() => loopsOf(twoMaps([])), /not a loop the run closed/);
+});
+
+/**
+ * A made-up run whose map 0 is taken up again after map 1: map 0 makes its keyframes 0 to 2 at
+ * frames 0, 2 and 4 (the run's 0 to 2), map 1 its keyframes 0 and 1 at frames 10 and 12 (the
+ * run's 3 and 4), and map 0, taken up again, its keyframes 3 to 5 at frames 20, 22 and 24 (the
+ * run's 5 to 7). Map 0 closes a loop at frame 26 in its later stretch, between its keyframes 1
+ * and 5: the run's 1 and 7.
+ * @param {number[]} loops The run's loops, two ids a loop.
+ */
+function takenUpAgain(loops) {
+  const made = [0, 2, 4, 10, 12, 20, 22, 24];
+  const correction = { matched: 1, current: 5, matched_run: 1, current_run: 7 };
+  return {
+    records: {
+      frame: [25, 26],
+      map: [0, 0],
+      loop: [null, { detection: null, correction }],
+    },
+    keyframeMaps: Int32Array.from([0, 0, 0, 1, 1, 0, 0, 0]),
+    keyframeLives: Int32Array.from(made.flatMap((frame) => [frame, -1, -1])),
+    keyframeLoops: Int32Array.from(loops),
+  };
+}
+
+test("a map taken up again after another has its loop found over both its stretches", () => {
+  // Counted on from the map's first run id, its keyframe 5 would be the run's 5, which is its
+  // keyframe 3; the record names the run's 7, the map's sixth.
+  assert.deepEqual(loopsOf(takenUpAgain([1, 7])), [
+    {
+      frame: 26,
+      map: 0,
+      older: 1,
+      newer: 7,
+      matched: 1,
+      current: 5,
+      olderMade: 2,
+      newerMade: 24,
+    },
+  ]);
+  assert.throws(() => loopsOf(takenUpAgain([1, 5])), /frame 26: .* not a loop the run closed/);
+});
+
+/**
+ * A made-up run whose map 1 closes a loop and is then merged into map 0, as a bundle holds it:
+ * map 0 makes its keyframes 0 to 2 at frames 0, 2 and 4 (the run's 0 to 2), map 1 its keyframes
+ * 0 to 4 at frames 10 to 18 (the run's 3 to 7) and closes a loop at frame 20 between its
+ * keyframes 1 and 4 (the run's 4 and 7), then merges into map 0 at frame 22. The bundle names
+ * every keyframe and record by the map it ends in, map 0, and the merge numbered map 1's
+ * keyframes after map 0's, so the record's 1 and 4, counted in map 0, would be the run's 1 and 4.
+ * @param {number[]} loops The run's loops, two ids a loop.
+ * @param {Record<string, number>} runIds The correction's keyframes by the run's ids.
+ */
+function mergedAway(loops, runIds = { matched_run: 4, current_run: 7 }) {
+  const made = [0, 2, 4, 10, 12, 14, 16, 18];
+  const correction = { matched: 1, current: 4, ...runIds };
+  return {
+    records: {
+      frame: [19, 20, 21, 22],
+      map: [0, 0, 0, 0],
+      loop: [null, { detection: null, correction }, null, null],
+    },
+    keyframeMaps: Int32Array.from([0, 0, 0, 0, 0, 0, 0, 0]),
+    keyframeLives: Int32Array.from(made.flatMap((frame) => [frame, -1, -1])),
+    keyframeLoops: Int32Array.from(loops),
+  };
+}
+
+test("a loop closed in a map later merged away is found by the run's ids", () => {
+  // The k-th of map 0's run ids, the rule before the record named the run's ids, gives the
+  // run's 1 and 4: no loop of the run's.
+  assert.deepEqual(loopsOf(mergedAway([4, 7])), [
+    {
+      frame: 20,
+      map: 0,
+      older: 4,
+      newer: 7,
+      matched: 1,
+      current: 4,
+      olderMade: 12,
+      newerMade: 18,
+    },
+  ]);
+  assert.throws(() => loopsOf(mergedAway([1, 4])), /frame 20: .* not a loop the run closed/);
+  // A correction that does not name its keyframes by the run's ids names no loop.
+  assert.throws(() => loopsOf(mergedAway([4, 7], {})), /not a loop the run closed/);
 });
 
 test("the loop beside a frame is the nearest before it or after it, if there is one", () => {
@@ -276,12 +365,19 @@ test("a loop's cycle is its map's trajectory from its matched keyframe's making 
   ]);
   const poseMaps = Int32Array.from(poseFrames, (frame) => (frame < 10 ? 0 : 1));
   const loop = { ...loopsOf(twoMaps([4, 7]))[0], frame: 17, map: 1, olderMade: 13 };
-  assert.deepEqual(cycleRows(loop, poseFrames, poseMaps), [11, 16]); // frames 13 to 17
+  assert.deepEqual(cycleRuns(loop, poseFrames, poseMaps), [[11, 16]]); // frames 13 to 17
   // Made before the map began: its cycle starts with the map.
-  assert.deepEqual(cycleRows({ ...loop, olderMade: 8 }, poseFrames, poseMaps), [10, 16]);
+  assert.deepEqual(cycleRuns({ ...loop, olderMade: 8 }, poseFrames, poseMaps), [[10, 16]]);
   // In the map before: its cycle stops where that map does.
-  assert.deepEqual(cycleRows({ ...loop, map: 0, olderMade: 3 }, poseFrames, poseMaps), [3, 10]);
-  assert.deepEqual(cycleRows({ ...loop, map: 2 }, poseFrames, poseMaps), [16, 16]);
+  assert.deepEqual(cycleRuns({ ...loop, map: 0, olderMade: 3 }, poseFrames, poseMaps), [[3, 10]]);
+  assert.deepEqual(cycleRuns({ ...loop, map: 2 }, poseFrames, poseMaps), []);
+  // Map 0 taken up again from frame 16: its loop's cycle leaves map 1's frames out.
+  const revisited = Int32Array.from(poseFrames, (frame) => (frame < 10 || frame >= 16 ? 0 : 1));
+  const again = { ...loop, map: 0, olderMade: 3, frame: 18 };
+  assert.deepEqual(cycleRuns(again, poseFrames, revisited), [
+    [3, 10],
+    [14, 17],
+  ]);
 });
 
 test("the loop effect holds, then fades, on its own clock", () => {

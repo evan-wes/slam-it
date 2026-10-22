@@ -1,10 +1,11 @@
-"""The loops a run closed, judged against a reference: at a wrong place, or with a poor pose.
+"""The loops and merges a run made, judged against a reference: at a wrong place, or poor.
 
 The online-SLAM design's section 10 holds a loop to one bar on the synthetic rooms and on real
-data, so the judgement lives here, once, and the loop room's test and the test-set measure
-(``scripts/measure_testset.py``) both call it (B3's review panel, A7). Each loop closed,
+data, so the judgement lives here, once, and the loop and merge rooms' tests and the test-set
+measure (``scripts/measure_testset.py``) all call it (B3's review panel, A7). Each loop closed,
 :attr:`slam_it.eval.runs.Run.keyframe_loops` (the older keyframe first), is judged by
-:func:`judge_loops`:
+:func:`judge_loops`, and each merge made, :attr:`slam_it.eval.runs.Run.keyframe_merges`, the same
+way (:func:`judge_pairs`, milestone 2B's B4):
 
 - **At a wrong place:** its two keyframes by the reference more than :data:`WRONG_DISTANCE`
   apart, or their viewing directions (their z axes) more than :data:`WRONG_ANGLE` apart: they
@@ -56,10 +57,39 @@ def _looking_apart(a: NDArray[np.float64], b: NDArray[np.float64]) -> float:
 def judge_loops(
     run: runs.Run, truth: runs.Truth | None, scored: runs.Evaluation | None
 ) -> list[dict[str, Any]]:
-    """Return each loop the run closed, judged against the reference.
+    """Return each loop the run closed, judged against the reference (:func:`judge_pairs`).
 
     Parameters
     ----------
+    run : slam_it.eval.runs.Run
+        The run.
+    truth : slam_it.eval.runs.Truth or None
+        The reference's times and ``T_world_cam``; None where there is none.
+    scored : slam_it.eval.runs.Evaluation or None
+        The run scored against `truth`; None where there is no truth or no map could be
+        aligned to it.
+
+    Returns
+    -------
+    list of dict
+        Per loop, in the run's order, as :func:`judge_pairs` gives it.
+    """
+    return judge_pairs(run.keyframe_loops, run, truth, scored)
+
+
+def judge_pairs(
+    pairs: NDArray[np.int64],
+    run: runs.Run,
+    truth: runs.Truth | None,
+    scored: runs.Evaluation | None,
+) -> list[dict[str, Any]]:
+    """Return each pair of keyframes a loop or a merge joined, judged against the reference.
+
+    Parameters
+    ----------
+    pairs : ndarray of int64, shape (E, 2)
+        The pairs, by the run's keyframe ids, the older first: its ``keyframe_loops`` or its
+        ``keyframe_merges``.
     run : slam_it.eval.runs.Run
         The run.
     truth : slam_it.eval.runs.Truth or None
@@ -72,14 +102,14 @@ def judge_loops(
     Returns
     -------
     list of dict
-        Per loop, in the run's order: ``keyframes`` (the older first); ``distance``, in metres,
+        Per pair, in the given order: ``keyframes`` (the older first); ``distance``, in metres,
         and ``angle``, in degrees, between the two keyframes by the reference, and
         ``wrong_place``; ``translation_error``, in metres, and ``rotation_error``, in degrees,
         of their relative pose, and ``poor_pose`` (the module docstring).
     """
     aligned = {} if scored is None else {e.map: e.absolute for e in scored.maps}
     out: list[dict[str, Any]] = []
-    for older, newer in run.keyframe_loops.tolist():
+    for older, newer in np.asarray(pairs, dtype=np.int64).reshape(-1, 2).tolist():
         judged: dict[str, Any] = {
             "keyframes": [older, newer],
             "distance": None,

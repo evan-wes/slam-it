@@ -2,9 +2,11 @@
 
 The room is rendered once per session and written whole, with its gap, lost (frames blanked
 to lose the track), found (blanked, then back at the start) and the window room (found, then
-lost by the time); the loop room is rendered apart (:func:`loop_folders`). :func:`room_runs`,
-:func:`gap_runs`, :func:`lost_runs`, :func:`kept_runs`, :func:`found_runs`, :func:`window_runs`
-and :func:`loop_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
+lost by the time); the loop room is rendered apart, once, and written whole and blinded as the
+merge room and the revisit room (:func:`loop_folders`, :func:`merge_folders`,
+:func:`revisit_folders`). :func:`room_runs`, :func:`gap_runs`, :func:`lost_runs`,
+:func:`kept_runs`, :func:`found_runs`, :func:`window_runs`, :func:`loop_runs`, :func:`merge_runs`
+and :func:`revisit_runs` run them through :func:`slam_it.orchestration.vo.run`, each case once,
 recording their features, and each again on views when asked (:meth:`RoomRun.viewed`);
 :func:`loop_threaded_runs` runs the loop room threaded.
 """
@@ -17,7 +19,7 @@ import pytest
 
 from slam_it import backends
 from slam_it.edge.options import Options
-from slam_it.eval import runs
+from slam_it.eval import budgets, runs
 from slam_it.orchestration import vo
 from tests.conftest import REQUIRED_BACKENDS, require_backend
 from tests.edge import room
@@ -26,16 +28,44 @@ from tests.orchestration.datasets import (
     FOUND_OPTIONS,
     GAP_OPTIONS,
     KEPT_OPTIONS,
+    MERGE_OPTIONS,
     MOVED_OPTIONS,
+    REVISIT_OPTIONS,
     WINDOW_OPTIONS,
     Room,
     found_frames,
     gap_frames,
     loop_frames,
     lost_frames,
+    merge_frames,
+    revisit_frames,
     window_frames,
     write_room,
 )
+
+
+def fast_cores() -> list[int] | None:
+    """Return the CPUs the threaded room tests run their native programs on: the fast ones.
+
+    These tests measure correctness: each threaded run is held to a bar of results, and so
+    must not turn on where the scheduler puts its threads. On a hybrid CPU an efficiency core
+    maps a keyframe about half again as slowly (B4's review panel, run 3, L14: C++'s
+    revisit-room runs pinned to them averaged 29.9 to 30.5 ms a keyframe, against 20.4 to
+    20.5 on the performance cores), so that ORB-SLAM3's keyframe rule, which gives a monocular
+    frame no keyframe while mapping is busy, drops keyframes a fast core would have taken, and
+    a run's map, and whether it clears its bar, depends on the cores it was given. The slow
+    cores' timing is the budget runs' to judge (:mod:`slam_it.eval.budgets`,
+    ``pytest -m budget``). Python's threaded runs in process are not pinned: pinning them would
+    pin the whole test session.
+
+    Returns
+    -------
+    list of int or None
+        The performance cores this process may run on
+        (:func:`slam_it.eval.budgets.performance_cores`); None, and no pinning, on a CPU with
+        one kind of core, or where this process may run on none of them.
+    """
+    return budgets.performance_cores() or None
 
 
 def require_program(name: str) -> str:
@@ -109,9 +139,31 @@ def window_folders(
 
 
 @pytest.fixture(scope="session")
-def loop_folders(tmp_path_factory: pytest.TempPathFactory) -> Room:
-    """Render the loop room with its right views, once per session, and write its folders."""
-    return write_room(tmp_path_factory.mktemp("loop"), loop_frames())
+def rendered_loop() -> list[room.Frame]:
+    """Render the loop room with its right views, once per session."""
+    return loop_frames()
+
+
+@pytest.fixture(scope="session")
+def loop_folders(rendered_loop: list[room.Frame], tmp_path_factory: pytest.TempPathFactory) -> Room:
+    """Write the loop room as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("loop"), rendered_loop)
+
+
+@pytest.fixture(scope="session")
+def merge_folders(
+    rendered_loop: list[room.Frame], tmp_path_factory: pytest.TempPathFactory
+) -> Room:
+    """Write the merge room (:func:`merge_frames`) as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("merge"), merge_frames(rendered_loop))
+
+
+@pytest.fixture(scope="session")
+def revisit_folders(
+    rendered_loop: list[room.Frame], tmp_path_factory: pytest.TempPathFactory
+) -> Room:
+    """Write the revisit room (:func:`revisit_frames`) as both datasets' folders."""
+    return write_room(tmp_path_factory.mktemp("revisit"), revisit_frames(rendered_loop))
 
 
 class RoomRun:
@@ -128,7 +180,8 @@ class RoomRun:
     out : pathlib.Path
         Where the runs' folders go.
     threaded : bool, optional
-        Whether the steps run in threads of their own (default: in order).
+        Whether the steps run in threads of their own (default: in order); the native
+        programs then run on the fast cores (:func:`fast_cores`).
     """
 
     def __init__(
@@ -169,6 +222,7 @@ class RoomRun:
                 dataset, self.sequence(dataset), mode, self._folder(key, views=views),
                 backend=backend, options=self._options, record_features=True,
                 threaded=self._threaded, views=views,
+                cpus=fast_cores() if self._threaded and backend != "python" else None,
             )  # fmt: skip
         return self._done[(*key, views)]
 
@@ -239,3 +293,15 @@ def loop_threaded_runs(loop_folders: Room, tmp_path_factory: pytest.TempPathFact
     """Run the loop room threaded, its frames fed at their rate by the native programs."""
     out = tmp_path_factory.mktemp("loop_threaded_runs")
     return RoomRun(loop_folders, OPTIONS, out, threaded=True)
+
+
+@pytest.fixture(scope="session")
+def merge_runs(merge_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the merge room with :data:`MERGE_OPTIONS`: its two maps merge."""
+    return RoomRun(merge_folders, MERGE_OPTIONS, tmp_path_factory.mktemp("merge_runs"))
+
+
+@pytest.fixture(scope="session")
+def revisit_runs(revisit_folders: Room, tmp_path_factory: pytest.TempPathFactory) -> RoomRun:
+    """Run the revisit room with :data:`REVISIT_OPTIONS`: tracking takes its first map up again."""
+    return RoomRun(revisit_folders, REVISIT_OPTIONS, tmp_path_factory.mktemp("revisit_runs"))

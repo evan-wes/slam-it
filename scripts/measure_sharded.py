@@ -202,7 +202,8 @@ def main(arguments: list[str]) -> int:
     except InvalidInputError as error:
         parser.error(str(error))
     entries, replaced = measure_testset.chosen(args, parser)
-    jobs = schedule(entries, args.seeds, {e.name: frames_of(e.folder) for e in entries})
+    frames = {e.name: sum(frames_of(folder) for folder in e.folders) for e in entries}
+    jobs = schedule(entries, args.seeds, frames)
     try:
         vo.command(args.backend)  # found once here, before the workers are forked
     except ImportError as error:  # not built, or (Rust) older than its sources

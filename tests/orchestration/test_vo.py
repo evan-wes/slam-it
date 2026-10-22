@@ -34,7 +34,7 @@ from tests.edge.support import (
     assert_records_match,
 )
 from tests.fixtures.edge.generate_room_runs import record, summaries
-from tests.orchestration.conftest import RoomRun, require_program
+from tests.orchestration.conftest import RoomRun, fast_cores, require_program
 from tests.orchestration.datasets import (
     BLANK_AT,
     CASES,
@@ -459,7 +459,7 @@ def test_a_request_crosses_as_a_command_line() -> None:
         {"covisibility.local_neighbours": 7, "stereo.close_depth": 0.1 + 0.2}
     )
     request = vo.Request(
-        "tum", Path("seq"), "rgbd", Path("out"), 2, 5, options=options, record_features=True
+        "tum", (Path("seq"),), "rgbd", Path("out"), 2, 5, options=options, record_features=True
     )
     assert request.arguments() == [
         *("--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"),
@@ -490,7 +490,7 @@ def test_parse_reads_a_command_line() -> None:
     expected = Options().with_settings(
         {"covisibility.local_neighbours": 7, "stereo.close_depth": 35.5}
     )
-    assert request == vo.Request("tum", Path("seq"), "rgbd", Path("out"), 3, 10, expected, True)
+    assert request == vo.Request("tum", (Path("seq"),), "rgbd", Path("out"), 3, 10, expected, True)
     plain = vo.parse(["--dataset", "tum", "--sequence", "s", "--mode", "rgbd", "--out", "o"])
     assert (plain.first, plain.count, plain.options) == (0, None, Options())
     assert not plain.record_features
@@ -603,7 +603,12 @@ def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
 def test_every_program_records_its_process(backend: str, tmp_path: Path) -> None:
     """Each backend's program writes its run with its own peak memory and CPUs, and says so."""
     request = vo.Request(
-        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path, count=0, vocabulary=vocabularies.DEFAULT
+        "tum",
+        (SEQUENCES / "tum_camera",),
+        "rgbd",
+        tmp_path,
+        count=0,
+        vocabulary=vocabularies.DEFAULT,
     )
     done = subprocess.run(
         [*vo.command(require_program(backend)), *request.arguments()],
@@ -625,11 +630,15 @@ def test_the_cpp_program_runs_threaded_and_says_how(
 ) -> None:
     """Threaded by our design or ORB-SLAM's locks, the room's frames tracked; the run says so.
 
-    Fed at the room's rate, a keyframe mapped says how its steps were scheduled.
+    Fed at the room's rate, a keyframe mapped says how its steps were scheduled. Pinned to the
+    performance cores, as the threaded room tests run their programs, where the CPU has them:
+    the run records the CPUs its program could run on.
     """
     require_program("cpp")
+    cores = fast_cores()
     run = vo.run("tum", room_folders.tum, "rgbd", tmp_path, backend="cpp", options=OPTIONS,
-                 count=30, threaded=True, locks=locks)  # fmt: skip
+                 count=30, threaded=True, locks=locks, cpus=cores)  # fmt: skip
+    assert run.cpus == (cores or sorted(os.sched_getaffinity(0)))
     assert (run.threaded, run.locks) == (True, locks)
     assert len(run.timestamps) == len(run.diagnostics) == 30
     assert any(d["schedule"] is not None for d in run.diagnostics)
@@ -736,7 +745,12 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
     """
     command = vo.command(require_program(backend))
     missing = vo.Request(
-        "euroc", SEQUENCES / "euroc", "stereo", tmp_path, count=1, vocabulary=vocabularies.DEFAULT
+        "euroc",
+        (SEQUENCES / "euroc",),
+        "stereo",
+        tmp_path,
+        count=1,
+        vocabulary=vocabularies.DEFAULT,
     )
     done = subprocess.run(
         [*command, *missing.arguments()], capture_output=True, text=True, check=False
@@ -747,7 +761,7 @@ def test_a_program_fails_a_file_it_cannot_read_or_write_alike(backend: str, tmp_
     blocked.write_text("")
     unwritable = vo.Request(
         "tum",
-        SEQUENCES / "tum_camera",
+        (SEQUENCES / "tum_camera",),
         "rgbd",
         blocked / "run",
         count=0,
@@ -864,7 +878,7 @@ def test_a_program_refuses_a_bad_command_line(backend: str) -> None:
 def test_locks_need_threads_and_the_cpp_program(tmp_path: Path) -> None:
     """ORB-SLAM's locking is C++'s threaded baseline: refused unthreaded, and by the others."""
     request = vo.Request(
-        "tum", tmp_path, "rgbd", tmp_path / "out", locks=True, vocabulary=vocabularies.DEFAULT
+        "tum", (tmp_path,), "rgbd", tmp_path / "out", locks=True, vocabulary=vocabularies.DEFAULT
     )
     with pytest.raises(InvalidInputError, match="--locks: needs --threaded"):
         vo.check(request)
@@ -873,6 +887,15 @@ def test_locks_need_threads_and_the_cpp_program(tmp_path: Path) -> None:
         with pytest.raises(InvalidInputError, match="C\\+\\+'s baseline alone"):
             vo.run("tum", tmp_path, "rgbd", tmp_path / "out", backend=backend, threaded=True,
                    locks=True)  # fmt: skip
+
+
+def test_cpus_pin_a_program_alone(tmp_path: Path) -> None:
+    """Pinning is for a program run without a budget: refused with one, and in process."""
+    for backend, budget in (("python", None), ("cpp", budgets.BUDGETS["laptop-cpu"])):
+        with pytest.raises(InvalidInputError, match="cpus: pin a program run without a budget"):
+            vo.run("tum", tmp_path, "rgbd", tmp_path / "out", backend=backend, budget=budget,
+                   cpus=[0])  # fmt: skip
+    assert not (tmp_path / "out").exists()
 
 
 def _fails_the_run(backend: str, request: vo.Request, message: str) -> None:
@@ -891,7 +914,7 @@ def test_views_track_in_turn(backend: str, tmp_path: Path) -> None:
 
     Each fails the run and writes none; Python's check refuses it before any program runs.
     """
-    request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "run", count=0,
+    request = vo.Request("tum", (SEQUENCES / "tum_camera",), "rgbd", tmp_path / "run", count=0,
                          vocabulary=vocabularies.DEFAULT, threaded=True, views=True)  # fmt: skip
     message = "--views: tracks in turn, not with --threaded"
     with pytest.raises(InvalidInputError, match=message):
@@ -929,7 +952,7 @@ def test_check_refuses_a_vocabulary_missing_or_unasked_for(
     """Relocalising or closing loops needs a vocabulary; one given doing neither is refused."""
     settings = {"relocalization.enabled": relocalize, "loops.enabled": close_loops}
     request = vo.Request(
-        "tum", SEQUENCES / "tum_camera", "rgbd", Path("out"),
+        "tum", (SEQUENCES / "tum_camera",), "rgbd", Path("out"),
         options=Options().with_settings(settings), vocabulary=vocabulary,
     )  # fmt: skip
     with pytest.raises(InvalidInputError, match=re.escape(message)):
@@ -1009,7 +1032,7 @@ def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
     0).
     """
     out = tmp_path / "run"
-    request = vo.Request("tum", SEQUENCES / "tum_camera", "rgbd", out, count=0)
+    request = vo.Request("tum", (SEQUENCES / "tum_camera",), "rgbd", out, count=0)
     message = "--vocabulary: relocalization.enabled or loops.enabled needs one"
     if refused == "unasked":
         request = replace(

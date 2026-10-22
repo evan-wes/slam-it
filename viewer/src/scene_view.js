@@ -1,10 +1,12 @@
-// The 3D panel: one map of the run at a time, the map of the frame shown: its final trajectory,
-// the other backends' beside it, the truth if the map is placed on it (over the frames its
-// trajectory is drawn over, or whole), its keyframes and points alive at the frame, the
-// covisibility graph if asked (each keyframe's line to its parent, the strong links, and the
-// loops closed), and the camera. Every point and keyframe sits in one buffer with the frames of its life and its map;
-// a shader hides each outside them, so scrubbing changes two numbers and rebuilds nothing. A loop
-// closed can be drawn over it all, bright and thick, for the loop effect (`highlightLoop`).
+// The 3D panel: one map of the run at a time, the map of the frame shown (the map the frame ends
+// in): its final trajectory, drawn through the runs of rows its poses come in, the other
+// backends' beside it, the truth if the map is placed on it (over the frames its trajectory is
+// drawn over, or whole), its keyframes and points alive at the frame, the covisibility graph if
+// asked (each keyframe's line to its parent, the strong links, the loops closed and the merges
+// made, each in its own colour), and the camera. Every point and keyframe sits in one buffer
+// with the frames of its life and its map; a shader hides each outside them, so scrubbing
+// changes two numbers and rebuilds nothing. A loop closed can be drawn over it all, bright and
+// thick, for the loop effect (`highlightLoop`).
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -17,7 +19,6 @@ import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js
 import {
   cameraAt,
   mapAt,
-  mapRows,
   mapsShown,
   placed,
   posesUpTo,
@@ -29,15 +30,19 @@ import {
   centres,
   frustums,
   keyframeSegments,
+  lastRow,
   lifeAttributes,
   linkPairs,
   mapAttribute,
   mapDepths,
   mapFrustums,
+  runSegments,
+  runSegmentsBefore,
+  runsOf,
   treePairs,
   truthSegments,
 } from "./geometry.js";
-import { cycleRows } from "./loops.js";
+import { cycleRuns } from "./loops.js";
 
 const VERTEX = `
 attribute float made;
@@ -175,7 +180,7 @@ export class SceneView {
     this.follow = true;
     /** Whether the truth is drawn whole, rather than over the frames the trajectory is. */
     this.wholeTruth = false;
-    /** Whether the covisibility graph is drawn: the spanning tree, the strong links, the loops. */
+    /** Whether the covisibility graph is drawn: the tree, the strong links, the loops, merges. */
     this.graph = false;
     /** @type {THREE.Object3D[]} The graph's lines, shown with `graph`. */
     this.graphObjects = [];
@@ -208,7 +213,13 @@ export class SceneView {
       this.truthEnds = ends;
       this.scene.add(this.truth);
     }
-    this.trajectory = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial());
+    // The map's trajectory: segments between consecutive rows of each run of its poses' rows,
+    // indexed (`runSegments`), so a map whose poses come in several runs is drawn without
+    // joining them across another map's.
+    this.trajectory = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial(),
+    );
     this.current = new THREE.LineSegments(
       new THREE.BufferGeometry(),
       new THREE.LineBasicMaterial({ color: colour("--camera") }),
@@ -219,15 +230,20 @@ export class SceneView {
     this.scene.add(this.trajectory, this.current);
     /** @type {import("./bundle.js").Backend | null} */
     this.run = null;
-    /** @type {{track: import("./bundle.js").Track, line: THREE.Line, shown: Int32Array}[]} */
+    /**
+     * The other backends' trajectories: each one's track, line, maps shown, and the map its line
+     * is indexed for, with the runs of that map's poses' rows.
+     * @type {{track: import("./bundle.js").Track, line: THREE.LineSegments, shown: Int32Array,
+     *     map: number | null, runs: [number, number][]}[]}
+     */
     this.others = [];
     this.depth = DEFAULT_DEPTH;
     /** @type {Int32Array} The run's map shown at each of its records (`mapsShown`). */
     this.shown = new Int32Array(0);
     /** @type {number | null | undefined} The map shown; undefined until the first is set. */
     this.shownMap = undefined;
-    /** @type {[number, number]} The rows of the map's poses. */
-    this.rows = [0, 0];
+    /** @type {[number, number][]} The runs of the map's poses' rows (`runsOf`). */
+    this.runs = [];
     /** Whether the map shown is placed on the truth. */
     this.aligned = false;
     /** @type {Float32Array} The run's tracked frames' centres, (T, 3). */
@@ -272,7 +288,8 @@ export class SceneView {
     const tree = livingMaterial("--graph-tree", 1);
     const links = livingMaterial("--graph-link", 1);
     const loops = livingMaterial("--graph-loop", 1);
-    this.living = [keyframes, points, tree, links, loops];
+    const merges = livingMaterial("--graph-merge", 1);
+    this.living = [keyframes, points, tree, links, loops, merges];
     this.pointMaterial = points;
     this.setPointOpacity(this.pointOpacity);
     this.keyframeGeometry = livingGeometry(
@@ -289,6 +306,7 @@ export class SceneView {
       graphLine(run, treePairs(run.keyframeParents), tree, this.graph),
       graphLine(run, linkPairs(run.keyframeLinks), links, this.graph),
       graphLine(run, run.keyframeLoops, loops, this.graph),
+      graphLine(run, run.keyframeMerges, merges, this.graph),
     ];
     this.runObjects.push(...this.graphObjects);
     this.scene.add(...this.runObjects);
@@ -349,8 +367,8 @@ export class SceneView {
   }
 
   /**
-   * Draw the covisibility graph, or not: the spanning tree, the strong links and the loops closed
-   * of the map shown.
+   * Draw the covisibility graph, or not: the spanning tree, the strong links, the loops closed and
+   * the merges made of the map shown.
    * @param {boolean} shown Whether to draw it.
    */
   showGraph(shown) {
@@ -373,7 +391,8 @@ export class SceneView {
     for (const material of this.living) {
       material.uniforms.shownMap.value = map ?? -1;
     }
-    this.rows = map === null ? [0, 0] : mapRows(run.poseMaps, map);
+    this.runs = map === null ? [] : runsOf(run.poseMaps, map);
+    this.trajectory.geometry.setIndex(new THREE.BufferAttribute(runSegments(this.runs), 1));
     this.aligned = placed(run.info, map);
     if (this.truth !== null) {
       this.truth.visible = this.aligned;
@@ -404,10 +423,12 @@ export class SceneView {
         transparent: true,
         opacity: 0.6,
       });
-      const line = new THREE.Line(geometry, material);
+      const line = new THREE.LineSegments(geometry, material);
       line.frustumCulled = false; // its draw range changes with the frame
       this.scene.add(line);
-      return { track, line, shown: mapsShown(track.records) };
+      /** @type {[number, number][]} */
+      const runs = [];
+      return { track, line, shown: mapsShown(track.records), map: null, runs };
     });
   }
 
@@ -421,12 +442,11 @@ export class SceneView {
     return controls;
   }
 
-  /** Frame the map's trajectory and the truth, if shown. */
+  /** Frame the map's trajectory, every run of it, and the truth, if shown. */
   fit() {
-    const [start, end] = this.rows;
     const bounds = new THREE.Box3();
-    if (end > start) {
-      bounds.setFromArray(this.path.subarray(start * 3, end * 3));
+    for (const [start, end] of this.runs) {
+      bounds.union(new THREE.Box3().setFromArray(this.path.subarray(start * 3, end * 3)));
     }
     if (this.truth !== null && this.truth.visible) {
       bounds.expandByObject(this.truth);
@@ -461,11 +481,10 @@ export class SceneView {
       if (map !== this.shownMap) {
         this.showMap(this.run, map);
       }
-      const [start, end] = this.rows;
-      const upTo = Math.min(posesUpTo(this.run.poseFrames, frame), end);
-      this.trajectory.geometry.setDrawRange(start, Math.max(upTo - start, 0));
-      this.showTruth(this.run.poseFrames, start, upTo);
-      const at = cameraAt(this.run.poses, this.run.poseFrames, frame, this.rows);
+      const upTo = posesUpTo(this.run.poseFrames, frame);
+      this.trajectory.geometry.setDrawRange(0, 2 * runSegmentsBefore(this.runs, upTo));
+      this.showTruth(this.run.poseFrames, this.runs, upTo);
+      const at = cameraAt(this.run.poses, this.run.poseFrames, frame, this.runs);
       this.current.visible = at !== null;
       if (at !== null) {
         const depth = this.depth * 1.5 * this.size;
@@ -489,9 +508,10 @@ export class SceneView {
 
   /**
    * Draw a loop over the map until `clearLoop`, bright and thick in the loops' colour: its cycle
-   * (the trajectory from the frame that made its matched keyframe to the loop's frame), the edge
-   * between its two keyframes, and their frustums. It is drawn from the next frame shown (`show`),
-   * which the caller draws: a render here would only be drawn over.
+   * (the trajectory from the frame that made its matched keyframe to the loop's frame, in the
+   * runs of rows the map's poses come in, `cycleRuns`), the edge between its two keyframes, and
+   * their frustums. It is drawn from the next frame shown (`show`), which the caller draws: a
+   * render here would only be drawn over.
    * @param {import("./loops.js").Loop} loop The loop, of the run shown.
    */
   highlightLoop(loop) {
@@ -500,11 +520,12 @@ export class SceneView {
     if (run === null) {
       return;
     }
-    const [start, end] = cycleRows(loop, run.poseFrames, run.poseMaps);
-    if (end - start >= 2) {
-      const cycle = new LineGeometry();
-      cycle.setPositions(this.path.subarray(start * 3, end * 3));
-      this.loopLines.push(new Line2(cycle, thickMaterial("--graph-loop", CYCLE_WIDTH)));
+    for (const [start, end] of cycleRuns(loop, run.poseFrames, run.poseMaps)) {
+      if (end - start >= 2) {
+        const cycle = new LineGeometry();
+        cycle.setPositions(this.path.subarray(start * 3, end * 3));
+        this.loopLines.push(new Line2(cycle, thickMaterial("--graph-loop", CYCLE_WIDTH)));
+      }
     }
     const poses = new Float32Array(24);
     poses.set(run.keyframePoses.subarray(loop.older * 12, loop.older * 12 + 12));
@@ -552,19 +573,21 @@ export class SceneView {
 
   /**
    * Draw the truth whole, or over the frames the map's trajectory is drawn over: from its first
-   * tracked frame to its last so far, growing with it.
+   * tracked frame to its last so far, growing with it (across another map's frames between its
+   * runs too: the truth is one).
    * @param {Int32Array} poseFrames The run's tracked frames.
-   * @param {number} start The map's first pose's row.
-   * @param {number} upTo The row after its last pose so far.
+   * @param {[number, number][]} runs The runs of the map's poses' rows.
+   * @param {number} upTo The row after the last pose of the frames so far.
    */
-  showTruth(poseFrames, start, upTo) {
+  showTruth(poseFrames, runs, upTo) {
     if (this.truth === null) {
       return;
     }
+    const last = lastRow(runs, upTo);
     if (this.wholeTruth) {
       this.truth.geometry.setDrawRange(0, Infinity);
-    } else if (upTo > start) {
-      const [first, count] = truthRange(this.truthEnds, poseFrames[start], poseFrames[upTo - 1]);
+    } else if (last >= 0) {
+      const [first, count] = truthRange(this.truthEnds, poseFrames[runs[0][0]], poseFrames[last]);
       this.truth.geometry.setDrawRange(first, count);
     } else {
       this.truth.geometry.setDrawRange(0, 0);
@@ -578,13 +601,18 @@ export class SceneView {
    */
   showOthers(frame) {
     const mine = this.shownMap ?? null;
-    for (const { track, line, shown } of this.others) {
+    for (const other of this.others) {
+      const { track, line, shown } = other;
       const theirs = mapAt(shown, track.records, frame);
       line.visible = sharesFrame(mine, theirs, placed(track.info, theirs), this.aligned);
       if (line.visible && theirs !== null) {
-        const [start, end] = mapRows(track.poseMaps, theirs);
-        const upTo = Math.min(posesUpTo(track.poseFrames, frame), end);
-        line.geometry.setDrawRange(start, Math.max(upTo - start, 0));
+        if (theirs !== other.map) {
+          other.map = theirs;
+          other.runs = runsOf(track.poseMaps, theirs);
+          line.geometry.setIndex(new THREE.BufferAttribute(runSegments(other.runs), 1));
+        }
+        const upTo = posesUpTo(track.poseFrames, frame);
+        line.geometry.setDrawRange(0, 2 * runSegmentsBefore(other.runs, upTo));
       }
     }
   }

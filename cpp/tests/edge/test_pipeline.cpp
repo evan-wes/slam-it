@@ -2,11 +2,13 @@
 /// @brief Native tests for the pipeline (slam_it/edge/pipeline.hpp) on the exact scene seen
 ///        along a sideways path: RGB-D and stereo track every frame exactly, monocular starts
 ///        its map and keeps the path's direction, and empty frames lose the track, the next
-///        frame starting a new map; relocalising, a kept map is lost in time and a small one in
-///        frames, and a frame the fallback cannot reach is relocalised. Tracking on the view a
-///        writer would publish decides as on the map, and threaded, the views published are a
-///        part of the map, their sizes kept; after a correction the next frame follows its
-///        keyframe, and a keyframe queued across it is placed by its reference.
+///        frame starting a new map, as a new session does; relocalising, a kept map is lost in
+///        time and a small one in frames, and a frame the fallback cannot reach is relocalised.
+///        Tracking on the view a writer would publish decides as on the map, and threaded, the
+///        views published are a part of the map, their sizes kept; after a correction the next
+///        frame follows its keyframe, and a keyframe queued across it is placed by its
+///        reference. A merge carries tracking's last frame into the merged map's ids and units,
+///        and a loop being confirmed keeps its own scale through it.
 #include <Eigen/Geometry>
 #include <algorithm>
 #include <cmath>
@@ -21,8 +23,12 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
+#include "edge/carry.hpp"
 #include "scene.hpp"
+#include "slam_it/edge/frames.hpp"
+#include "slam_it/edge/loops.hpp"
 #include "slam_it/edge/pipeline.hpp"
+#include "slam_it/foundations/so3.hpp"
 
 namespace {
 
@@ -214,6 +220,21 @@ bool lived(const edge::Lifetimes& lives, std::int64_t first, bool reset, std::in
   return true;
 }
 
+/// @brief An RGB-D pipeline at some settings, its map started on the path's first frame.
+/// @param options The settings.
+/// @param failures Running failure count, one more if the pipeline did not start map 0.
+/// @return The pipeline and its first frame's result; none if it did not start map 0.
+std::optional<std::pair<edge::Pipeline, edge::FrameResult>> started_rgbd(
+    const edge::Options& options, int& failures) {
+  auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt);
+  const auto started = start(pipeline);
+  if (!started || started->map != 0) {
+    expect(false, "the pipeline starts map 0", failures);
+    return std::nullopt;
+  }
+  return std::pair{*std::move(pipeline), *started};
+}
+
 /// @brief Check losing the track: the map of one keyframe is reset with `loss.reset_keyframes` 1,
 ///        the rule's boundary, or kept with 0, and the next frame starts map 1, its ids following
 ///        map 0's.
@@ -222,38 +243,71 @@ void check_lost(int& failures) {
   for (const std::int64_t reset_keyframes : {std::int64_t{1}, std::int64_t{0}}) {
     edge::Options options = small_scene();
     options.loss.reset_keyframes = reset_keyframes;
-    auto pipeline =
-        edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt);
-    const auto started = start(pipeline);
-    if (!started || started->map != 0) {
-      expect(false, "the pipeline starts map 0", failures);
+    auto run = started_rgbd(options, failures);
+    if (!run) {
       return;
     }
+    auto& [pipeline, started] = *run;
     std::optional<edge::FrameResult> lost;
     for (std::int64_t i = 0; i < options.loss.lost_frames; ++i) {
-      lost = pipeline->track(empty_frame()).value();
+      lost = pipeline.track(empty_frame()).value();
     }
     const bool reset = reset_keyframes > 0;
     expect(lost && lost->state == edge::State::kLost && !lost->pose && lost->map == 0 &&
                lost->summary.lost && lost->summary.lost->reset == reset &&
                lost->summary.lost->keyframes == 1 &&
-               pipeline->state() == edge::State::kNotInitialized && !pipeline->map(),
+               pipeline.state() == edge::State::kNotInitialized && !pipeline.map(),
            "loss.lost_frames frames in a row untracked lose the track and close the map", failures);
-    const auto restarted = pipeline->track(scene::frame_at(along(1), true));
+    const auto restarted = pipeline.track(scene::frame_at(along(1), true));
     bool made_after = restarted.has_value() && restarted->map == 1 && restarted->keyframe;
     for (std::size_t j = 0; made_after && j < restarted->fates.point.size(); ++j) {
       made_after = restarted->fates.fate[j] != edge::Fate::kMade ||
-                   restarted->fates.point[j] >= started->tracked;
+                   restarted->fates.point[j] >= started.tracked;
     }
-    expect(made_after &&
-               lived(pipeline->lifetimes(), started->tracked, reset, options.loss.lost_frames),
-           "the next frame starts map 1, the run's ids following map 0's", failures);
+    expect(
+        made_after && lived(pipeline.lifetimes(), started.tracked, reset, options.loss.lost_frames),
+        "the next frame starts map 1, the run's ids following map 0's", failures);
   }
   edge::Camera monocular = scene::camera();
   monocular.baseline = 0.0;
   expect(is_invalid_input(
              edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{}, std::nullopt)),
          "RGB-D without a baseline is refused", failures);
+}
+
+/// @brief Check starting a session: the map of one keyframe is reset with
+///        `loss.session_keyframes` 2 (fewer than 2) or kept with 1, nothing is closed with no
+///        map tracked, and the session's first frame starts map 1, a reset map's lives ending
+///        on it and its frames leaving the trajectory; once the run is finished, no session
+///        starts.
+/// @param failures Running failure count.
+void check_sessions(int& failures) {
+  for (const std::int64_t session_keyframes : {std::int64_t{2}, std::int64_t{1}}) {
+    edge::Options options = small_scene();
+    options.loss.session_keyframes = session_keyframes;
+    auto run = started_rgbd(options, failures);
+    if (!run) {
+      return;
+    }
+    auto& [pipeline, started] = *run;
+    const bool reset = session_keyframes > 1;
+    const auto closed = pipeline.start_session();
+    const auto again = pipeline.start_session();
+    expect(closed && *closed && (*closed)->keyframes == 1 && (*closed)->points == started.tracked &&
+               (*closed)->reset == reset && pipeline.state() == edge::State::kNotInitialized &&
+               !pipeline.map() && again && !*again,
+           "a session started closes the map tracked, and nothing with none", failures);
+    const auto restarted = pipeline.track(scene::frame_at(along(1), true));
+    const std::vector<std::int64_t> maps =
+        reset ? std::vector<std::int64_t>{1} : std::vector<std::int64_t>{0, 1};
+    expect(restarted && restarted->map == 1 && restarted->keyframe &&
+               pipeline.trajectory().maps == maps &&
+               lived(pipeline.lifetimes(), started.tracked, reset, 1),
+           "the session's first frame starts map 1", failures);
+    expect(pipeline.finish().has_value() && is_invalid_input(pipeline.start_session()) &&
+               pipeline.map(),
+           "a finished run starts no session, its map left as it was", failures);
+  }
 }
 
 /// @brief The settings relocalising, a map above `loss.reset_keyframes` kept: the scene's, with
@@ -277,34 +331,55 @@ edge::Frame empty_at(double timestamp) {
   return out;
 }
 
+/// @brief Start the scene's map with a vocabulary of one word, then track empty frames until
+///        the track is lost (Python's `_failures`): each frame before the last keeps it, the
+///        last loses it, and each tried relocalisation or not as asked.
+/// @param options The settings.
+/// @param step The empty frames' interval, in seconds.
+/// @param lost_on The failure the track is lost on.
+/// @param relocalizes Whether each failed frame tries relocalisation.
+/// @return Whether every frame went so.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (step, lost_on), Python's order
+bool loses_the_track(const edge::Options& options, double step, std::int64_t lost_on,
+                     bool relocalizes) {
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, scene::one_word());
+  const auto started = start(pipeline);
+  bool ok = started && started->keyframe;
+  for (std::int64_t k = 0; ok && k < lost_on; ++k) {
+    const auto failed = pipeline->track(empty_at(step * static_cast<double>(k + 1)));
+    const edge::State expected = k + 1 < lost_on ? edge::State::kTracking : edge::State::kLost;
+    ok = failed && failed->state == expected &&
+         failed->summary.relocalization.has_value() == relocalizes;
+  }
+  return ok;
+}
+
 /// @brief Check the loss rules relocalising (Python's
 ///        `test_a_large_map_is_lost_in_time_and_a_small_one_in_frames`): a map above
 ///        `loss.reset_keyframes` is lost once more than `loss.relocalize_seconds` have passed since
 ///        the first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the
 ///        thirteenth's 3 s is not more), one of `loss.reset_keyframes` or fewer on the
-///        `loss.lost_frames`-th failure, whatever the time; each failed frame tried relocalisation.
+///        `loss.lost_frames`-th failure, whatever the time; with `loss.relocalize_seconds` 0, a
+///        map above it on its first failed frame; each failed frame tried relocalisation.
 /// @param failures Running failure count.
 void check_lost_relocalizing(int& failures) {
   struct Case {
     std::int64_t reset_keyframes;
     double step;
     std::int64_t lost_on;
+    double seconds;
   };
-  for (const Case c : {Case{.reset_keyframes = 0, .step = 0.25, .lost_on = 14},
-                       Case{.reset_keyframes = 1, .step = 0.25, .lost_on = 5},
-                       Case{.reset_keyframes = 1, .step = 0.001, .lost_on = 5}}) {
-    auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(),
-                                           relocalizing(c.reset_keyframes), scene::one_word());
-    const auto started = start(pipeline);
-    bool ok = started && started->keyframe;
-    for (std::int64_t k = 0; ok && k < c.lost_on; ++k) {
-      const auto failed = pipeline->track(empty_at(c.step * static_cast<double>(k + 1)));
-      const edge::State expected = k + 1 < c.lost_on ? edge::State::kTracking : edge::State::kLost;
-      ok = failed && failed->state == expected && failed->summary.relocalization;
-    }
-    expect(ok,
+  for (const Case c : {Case{.reset_keyframes = 0, .step = 0.25, .lost_on = 14, .seconds = 3.0},
+                       Case{.reset_keyframes = 1, .step = 0.25, .lost_on = 5, .seconds = 3.0},
+                       Case{.reset_keyframes = 1, .step = 0.001, .lost_on = 5, .seconds = 3.0},
+                       Case{.reset_keyframes = 0, .step = 0.25, .lost_on = 1, .seconds = 0.0}}) {
+    edge::Options options = relocalizing(c.reset_keyframes);
+    options.loss.relocalize_seconds = c.seconds;
+    expect(loses_the_track(options, c.step, c.lost_on, true),
            c.reset_keyframes == 0
-               ? "a kept map is lost past loss.relocalize_seconds from the first failed frame"
+               ? "a kept map is lost past loss.relocalize_seconds from the first failed frame, "
+                 "or on it with 0"
                : "a small map is lost on the loss.lost_frames-th failure, whatever the time",
            failures);
   }
@@ -319,17 +394,8 @@ void check_lost_relocalizing(int& failures) {
 void check_closing_loops_alone(int& failures) {
   edge::Options options = relocalizing(0);
   options.relocalization.enabled = false;
-  auto pipeline =
-      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, scene::one_word());
-  const auto started = start(pipeline);
-  bool ok = started && started->keyframe;
-  const std::int64_t lost_on = options.loss.lost_frames;
-  for (std::int64_t k = 0; ok && k < lost_on; ++k) {
-    const auto failed = pipeline->track(empty_at(0.001 * static_cast<double>(k + 1)));
-    const edge::State expected = k + 1 < lost_on ? edge::State::kTracking : edge::State::kLost;
-    ok = failed && failed->state == expected && !failed->summary.relocalization;
-  }
-  expect(ok, "closing loops alone, no failed frame relocalises", failures);
+  expect(loses_the_track(options, 0.001, options.loss.lost_frames, false),
+         "closing loops alone, no failed frame relocalises", failures);
 }
 
 /// @brief Check that a frame the local fallback cannot reach is placed by relocalisation in
@@ -688,6 +754,137 @@ void check_lost_threaded(int& failures) {
          "threaded, a lost map closes as inline, and the next frame starts map 1", failures);
 }
 
+/// @brief Check the keyframes culling spares (`edge::held`): a loop being confirmed's two, a
+///        merge being confirmed's last (its matched one is the other map's), a merge waiting's
+///        current, alone or together, each once.
+/// @param failures Running failure count.
+void check_held(int& failures) {
+  const auto pending = [](std::int64_t matched, std::int64_t last) {
+    edge::loops::Pending out;
+    out.matched = matched;
+    out.last = last;
+    return out;
+  };
+  edge::loops::Merging merging;
+  merging.pending = pending(1, 7);
+  edge::WaitingMerge waiting;
+  waiting.index = 12;
+  waiting.merge.loop.current = 9;
+  waiting.merge.loop.matched = 1;
+  const auto state = [](std::optional<edge::loops::Pending> loop,
+                        std::optional<edge::loops::Merging> merge,
+                        std::optional<edge::WaitingMerge> made) {
+    edge::LoopState out;
+    out.pending = std::move(loop);
+    out.merging = std::move(merge);
+    out.waiting = std::move(made);
+    return out;
+  };
+  const std::vector<std::pair<edge::LoopState, std::vector<std::int64_t>>> cases = {
+      {state(std::nullopt, std::nullopt, std::nullopt), {}},
+      {state(pending(2, 5), std::nullopt, std::nullopt), {2, 5}},
+      {state(std::nullopt, merging, std::nullopt), {7}},
+      {state(std::nullopt, std::nullopt, waiting), {9}},
+      {state(pending(2, 5), merging, std::nullopt), {2, 5, 7}},
+      {state(std::nullopt, merging, waiting), {7, 9}},
+      {state(pending(2, 5), merging, waiting), {2, 5, 7, 9}},
+      {state(pending(2, 7), merging, std::nullopt), {2, 7}},
+  };
+  for (const auto& [loop_state, held] : cases) {
+    expect(edge::held(loop_state) == held, "culling spares what each loop and merge holds",
+           failures);
+  }
+}
+
+/// @brief Check a merge's carry of tracking's last frame (`edge::merged`, as
+///        `tests/edge/test_pipeline.py` holds Python's), with a `G` of scale 1/0.7: its points'
+///        and anchor keyframe's ids moved on by the offsets, -1 kept; the velocity's and the pose
+///        relative to the anchor's translations times `G`'s scale, their rotations unchanged;
+///        and no motion stays none.
+/// @param failures Running failure count.
+void check_merged(int& failures) {
+  namespace so3 = slam_it::foundations::so3;
+  constexpr double kShrink = 0.7;  // G's scale is 1 / kShrink
+  constexpr double kTolerance = 1e-12;
+  Eigen::Matrix4d to_world = Eigen::Matrix4d::Identity();
+  to_world.topLeftCorner<3, 3>() = so3::exp(Eigen::Vector3d(0.0, 0.5, 0.0)) / kShrink;
+  to_world.topRightCorner<3, 1>() = Eigen::Vector3d(0.4, -0.1, 0.25);
+  Eigen::Matrix4d motion = Eigen::Matrix4d::Identity();
+  motion.topLeftCorner<3, 3>() = so3::exp(Eigen::Vector3d(0.1, 0.0, 0.2));
+  motion.topRightCorner<3, 1>() = Eigen::Vector3d(0.07, -0.02, 0.14);
+  edge::TrackingState state;
+  state.last_tracked = edge::Tracked{.pose = Eigen::Matrix4d::Identity(), .points = {3, -1, 8}};
+  state.velocity = motion;
+  state.anchor = 4;
+  state.anchor_relative = motion;
+  edge::merged(state, 10, 100, to_world);
+  expect(
+      state.last_tracked && state.last_tracked->points == std::vector<std::int64_t>{103, -1, 108},
+      "the last frame's points take their ids moved on, -1 kept", failures);
+  expect(state.anchor == 14, "the anchor keyframe takes its id moved on", failures);
+  const Eigen::Vector3d scaled = motion.topRightCorner<3, 1>() / kShrink;
+  for (const auto& moved : {state.velocity, state.anchor_relative}) {
+    expect(moved && moved->topLeftCorner<3, 3>() == motion.topLeftCorner<3, 3>() &&
+               (moved->topRightCorner<3, 1>() - scaled).cwiseAbs().maxCoeff() < kTolerance,
+           "a motion's translation takes G's scale, its rotation as it was", failures);
+  }
+  edge::TrackingState still;
+  edge::merged(still, 10, 100, to_world);
+  expect(!still.velocity && !still.anchor && !still.anchor_relative, "no motion stays none",
+         failures);
+}
+
+/// @brief Check the carry of a loop being confirmed through a merge (`edge::detail::carry_through`,
+///        as Rust's in-module test holds its own): a loop of its own scale 1.25, carried through
+///        a `G` of scale 1/0.7, keeps it, `diag(1.25, 1.25, 1.25, 1) rigid_of(T G^-1)` for its
+///        keyframe's pose `T`, written out by hand: for `G = [g R, t]`, rotation `1.25 R_T R^T`
+///        and translation `1.25 (g t_T - R_T R^T t)`. Carried as `S G^-1` its scale would be
+///        `1.25 / g`; as `rigid_of(S G^-1)`, 1. Its ids move on by the offsets, -1 kept.
+/// @param failures Running failure count.
+void check_carry_through(int& failures) {
+  namespace so3 = slam_it::foundations::so3;
+  constexpr double kSigma = 1.25;
+  constexpr double kG = 1.0 / 0.7;
+  constexpr double kTolerance = 1e-12;
+  const auto pose = [](const Eigen::Vector3d& rotation, const Eigen::Vector3d& translation) {
+    Eigen::Matrix4d out = Eigen::Matrix4d::Identity();
+    out.topLeftCorner<3, 3>() = so3::exp(rotation);
+    out.topRightCorner<3, 1>() = translation;
+    return out;
+  };
+  const Eigen::Matrix4d keyframe =
+      pose(Eigen::Vector3d(0.11, -0.21, 0.06), Eigen::Vector3d(0.31, -0.12, 1.21));
+  const Eigen::Matrix4d turn =
+      pose(Eigen::Vector3d(0.3, 0.1, -0.2), Eigen::Vector3d(0.4, 0.2, -0.3));
+  const Eigen::Matrix4d to_world = Eigen::Vector4d(kG, kG, kG, 1.0).asDiagonal() * turn;
+  edge::loops::Pending pending;
+  pending.matched = 3;
+  pending.last = 5;
+  pending.similarity = Eigen::Vector4d(kSigma, kSigma, kSigma, 1.0).asDiagonal() * keyframe;
+  pending.confirmations = 1;
+  pending.points = {0, -1, 2};
+  pending.matched_points = {-1, 1, -1};
+  edge::loops::Merged merged;
+  merged.keyframe_offset = 10;
+  merged.point_offset = 100;
+  edge::detail::carry_through(pending, merged, to_world);
+  const Eigen::Matrix3d r_t = keyframe.topLeftCorner<3, 3>();
+  const Eigen::Vector3d t_t = keyframe.topRightCorner<3, 1>();
+  const Eigen::Matrix3d r_g = turn.topLeftCorner<3, 3>();
+  const Eigen::Vector3d t_g = to_world.topRightCorner<3, 1>();
+  Eigen::Matrix4d expected = Eigen::Matrix4d::Identity();
+  expected.topLeftCorner<3, 3>() = kSigma * r_t * r_g.transpose();
+  expected.topRightCorner<3, 1>() = kSigma * ((kG * t_t) - (r_t * r_g.transpose() * t_g));
+  expect((pending.similarity - expected).cwiseAbs().maxCoeff() < kTolerance,
+         "a loop of scale 1.25 is carried to diag(1.25, 1.25, 1.25, 1) rigid_of(T G^-1)", failures);
+  expect(std::abs(edge::loops::scale_of(pending.similarity) - kSigma) < kTolerance,
+         "it keeps its own scale", failures);
+  expect(pending.matched == 13 && pending.last == 15, "its keyframes' ids move on", failures);
+  expect(pending.points == std::vector<std::int64_t>{100, -1, 102} &&
+             pending.matched_points == std::vector<std::int64_t>{-1, 101, -1},
+         "its points' ids move on, -1 kept", failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run_tests() {
@@ -695,6 +892,10 @@ int run_tests() {
   check_depth_modes(failures);
   check_monocular(failures);
   check_lost(failures);
+  check_sessions(failures);
+  check_held(failures);
+  check_merged(failures);
+  check_carry_through(failures);
   check_lost_relocalizing(failures);
   check_closing_loops_alone(failures);
   check_relocalized(failures);

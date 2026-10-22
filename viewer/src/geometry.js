@@ -47,9 +47,9 @@ export function frustums(poses, camera, depth) {
 }
 
 /**
- * The vertices of frustums, each pose's as deep as its map's (`frustums`, map by map).
+ * The vertices of frustums, each pose's as deep as its map's (`frustums`, run by run).
  * @param {Float32Array} poses `T_world_cam` top rows, (K, 3, 4).
- * @param {Int32Array} maps Each pose's map, (K,): a map's poses are consecutive.
+ * @param {Int32Array} maps Each pose's map, (K,).
  * @param {{width: number, height: number, intrinsics: number[]}} camera The camera.
  * @param {Map<number, number>} depths Each map's frustum depth (`mapDepths`).
  * @param {number} fallback The depth of a map without one.
@@ -77,11 +77,12 @@ export const SPACING_SHARE = 2;
 export const MIN_DEPTH = 0.02;
 
 /**
- * The runs of consecutive equal maps.
+ * The runs of consecutive equal maps. A map's items need not be one run: a kept map taken up
+ * again holds its poses in several, with another map's between (B4's review panel, A1).
  * @param {ArrayLike<number>} maps Each item's map.
  * @returns {[number, number][]} Each run's rows `[start, end)`, in order.
  */
-function mapRuns(maps) {
+export function mapRuns(maps) {
   /** @type {[number, number][]} */
   const out = [];
   for (let start = 0; start < maps.length;) {
@@ -91,6 +92,64 @@ function mapRuns(maps) {
     }
     out.push([start, end]);
     start = end;
+  }
+  return out;
+}
+
+/**
+ * The runs of one map's rows (`mapRuns`): the rows of its items, where the bundle's arrays hold
+ * one map's items in several runs.
+ * @param {ArrayLike<number>} maps Each item's map.
+ * @param {number} map The map.
+ * @returns {[number, number][]} Its runs' rows `[start, end)`, in order; none if it has none.
+ */
+export function runsOf(maps, map) {
+  return mapRuns(maps).filter(([start]) => maps[start] === map);
+}
+
+/**
+ * The line segments joining each run's consecutive rows, as a line drawn through runs of rows
+ * takes them: a run's last row is not joined to the next run's first.
+ * @param {[number, number][]} runs The runs' rows `[start, end)`, in order.
+ * @returns {Uint32Array} Each segment's two rows, in order: an index for a geometry's vertices.
+ */
+export function runSegments(runs) {
+  /** @type {number[]} */
+  const out = [];
+  for (const [start, end] of runs) {
+    for (let row = start + 1; row < end; row++) {
+      out.push(row - 1, row);
+    }
+  }
+  return Uint32Array.from(out);
+}
+
+/**
+ * How many of `runSegments`' segments join rows before a row: a trajectory drawn so far.
+ * @param {[number, number][]} runs The runs' rows `[start, end)`, in order.
+ * @param {number} upTo The row before which they end.
+ * @returns {number} The segments both of whose rows are before `upTo`.
+ */
+export function runSegmentsBefore(runs, upTo) {
+  let count = 0;
+  for (const [start, end] of runs) {
+    count += Math.max(Math.min(end, upTo) - start - 1, 0);
+  }
+  return count;
+}
+
+/**
+ * The last of runs' rows before a row.
+ * @param {[number, number][]} runs The runs' rows `[start, end)`, in order.
+ * @param {number} upTo The row.
+ * @returns {number} The last row of the runs before `upTo`; -1 if none is.
+ */
+export function lastRow(runs, upTo) {
+  let out = -1;
+  for (const [start, end] of runs) {
+    if (start < upTo) {
+      out = Math.min(end, upTo) - 1;
+    }
   }
   return out;
 }
@@ -131,30 +190,36 @@ function keyframeSpacings(keyframes, maps) {
  * Each map's frustum depth: a share of the extent of its trajectory, whose scale is its own,
  * capped at `SPACING_SHARE` times the median distance between its consecutive keyframes (where
  * it has two and that distance is not 0), so that dense keyframes along a long run do not
- * overlap.
+ * overlap. A map's trajectory is all its frames', in however many runs of rows they come.
  * @param {Float32Array} path The tracked frames' centres, (T, 3).
- * @param {Int32Array} maps Their maps, (T,): a map's are consecutive.
+ * @param {Int32Array} maps Their maps, (T,).
  * @param {Float32Array} keyframes The keyframes' centres, by id, (K, 3).
  * @param {Int32Array} keyframeMaps Their maps, (K,).
- * @returns {Map<number, number>} Each map's depth, at least `MIN_DEPTH`.
+ * @returns {Map<number, number>} Each map's depth, at least `MIN_DEPTH`, in the order the maps
+ *     first come.
  */
 export function mapDepths(path, maps, keyframes, keyframeMaps) {
   const spacings = keyframeSpacings(keyframes, keyframeMaps);
+  /** @type {Map<number, {low: number[], high: number[]}>} */
+  const bounds = new Map();
+  maps.forEach((map, i) => {
+    const box = bounds.get(map) ?? {
+      low: [Infinity, Infinity, Infinity],
+      high: [-Infinity, -Infinity, -Infinity],
+    };
+    for (let axis = 0; axis < 3; axis++) {
+      box.low[axis] = Math.min(box.low[axis], path[i * 3 + axis]);
+      box.high[axis] = Math.max(box.high[axis], path[i * 3 + axis]);
+    }
+    bounds.set(map, box);
+  });
   /** @type {Map<number, number>} */
   const out = new Map();
-  for (const [start, end] of mapRuns(maps)) {
-    const low = [Infinity, Infinity, Infinity];
-    const high = [-Infinity, -Infinity, -Infinity];
-    for (let i = start; i < end; i++) {
-      for (let axis = 0; axis < 3; axis++) {
-        low[axis] = Math.min(low[axis], path[i * 3 + axis]);
-        high[axis] = Math.max(high[axis], path[i * 3 + axis]);
-      }
-    }
+  for (const [map, { low, high }] of bounds) {
     const extent = Math.hypot(...high.map((h, axis) => h - low[axis]));
-    const spacing = spacings.get(maps[start]) ?? 0;
+    const spacing = spacings.get(map) ?? 0;
     const cap = spacing > 0 ? SPACING_SHARE * spacing : Infinity;
-    out.set(maps[start], Math.max(Math.min(extent * DEPTH_SHARE, cap), MIN_DEPTH));
+    out.set(map, Math.max(Math.min(extent * DEPTH_SHARE, cap), MIN_DEPTH));
   }
   return out;
 }

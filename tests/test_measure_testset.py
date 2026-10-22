@@ -16,6 +16,7 @@ import pytest
 from slam_it.edge.options import Options
 from slam_it.eval import lenses, runs, tum
 from slam_it.foundations.errors import InvalidInputError
+from slam_it.orchestration import vo
 from tests.edge import room
 from tests.edge.support import ATE_BOUND, FRAMES
 from tests.eval.synthetic_runs import line_run
@@ -61,7 +62,7 @@ def cpp() -> None:
 def _config(path: Path, sequence: Path, name: str = "room") -> Path:
     """Write a config of one sequence, the room in RGB-D."""
     path.write_text(
-        f'[[sequence]]\nname = "{name}"\nfolder = "{sequence}"\nmode = "rgbd"\n'
+        f'[[sequence]]\nname = "{name}"\nfolders = ["{sequence}"]\nmode = "rgbd"\n'
         'reference = "the room\'s own poses"\n'
     )
     return path
@@ -121,6 +122,7 @@ def test_a_sequence_is_run_measured_and_tabled(
     assert (result["share"], result["tracked_from"], result["losses"]) == (1.0, 0.0, 0)
     assert [(s["map"], s["tracked"]) for s in result["segments"]] == [(0, FRAMES)]
     assert (result["resets"], result["relocalizations"]) == (0, 0)
+    assert (result["taken_up"], result["kept_maps"]) == (0, 1)  # read as the worker reads them
     assert [m["map"] for m in result["map_ate"]] == [0]
     for key in ("ate", "ate_tracked", "ate_keyframes"):  # final, as tracked, the keyframes'
         assert result[key] < ATE_BOUND["rgbd"]
@@ -182,7 +184,7 @@ def test_a_sequence_that_fails_is_recorded_and_the_rest_measured(tmp_path: Path)
     assert "camera.txt" in result["failed"]
 
 
-KEYS = 'name = "a"\nfolder = "/a"\nmode = "rgbd"\nreference = "r"\n'
+KEYS = 'name = "a"\nfolders = ["/a"]\nmode = "rgbd"\nreference = "r"\n'
 """A sequence's keys, all given."""
 
 
@@ -191,24 +193,95 @@ KEYS = 'name = "a"\nfolder = "/a"\nmode = "rgbd"\nreference = "r"\n'
     [
         ("[[sequence]\n", "not TOML"),
         ('title = "nothing"\n', r"no \[\[sequence\]\]"),
-        ("[[sequence]]\n" + KEYS.replace('mode = "rgbd"\n', ""), "expected the keys"),
-        ("[[sequence]]\n" + KEYS + "extra = 1\n", "expected the keys"),
-        ("[[sequence]]\n" + KEYS.replace('"/a"', "1"), "expected strings"),
+        (
+            "[[sequence]]\n" + KEYS.replace('mode = "rgbd"\n', ""),
+            r"missing \['mode'\], unknown \[\]",
+        ),
+        ("[[sequence]]\n" + KEYS + "extra = 1\n", r"missing \[\], unknown \['extra'\]"),
+        ("[[sequence]]\n" + KEYS.replace('"r"', "1"), "expected strings"),
         ("[[sequence]]\n" + KEYS.replace("rgbd", "lidar"), "unknown mode 'lidar'"),
         ("[[sequence]]\n" + KEYS + 'dataset = "kitti"\n', "unknown dataset 'kitti'"),
         ("[[sequence]]\n" + KEYS + "[[sequence]]\n" + KEYS, "share a name"),
+        ("[[sequence]]\n" + KEYS + 'folder = "/b"\n', r"unknown \['folder'\]"),
+        ("[[sequence]]\n" + KEYS.replace('folders = ["/a"]\n', ""), r"missing \['folders'\]"),
+        (
+            "[[sequence]]\n" + KEYS.replace('folders = ["/a"]', 'folder = "/a"'),
+            r"expected the keys \['folders', 'mode', 'name', 'reference'\], and maybe "
+            r"\['dataset'\]; missing \['folders'\], unknown \['folder'\]",
+        ),
+        ("[[sequence]]\n" + KEYS.replace('["/a"]', "[]"), "a list of them"),
+        ("[[sequence]]\n" + KEYS.replace('["/a"]', '["/a", 1]'), "list of them"),
+        ("[[sequence]]\n" + KEYS.replace('["/a"]', '"/a"'), "a list of them"),
     ],
 )
 def test_a_malformed_config_is_refused(text: str, message: str, tmp_path: Path) -> None:
     """Each refusal of a config.
 
-    Not TOML, no sequence, a key missing or extra, a number for a path, a mode unknown, two
-    sequences of one name.
+    Not TOML, no sequence, a key missing or extra, each named (``folder`` among them:
+    ``folders`` alone says where a sequence is, so a config giving ``folder`` in its place is
+    told both), a number for a string, a mode unknown, two sequences of one name; no folders, or
+    folders not a list of paths.
     """
     path = tmp_path / "testset.toml"
     path.write_text(text)
     with pytest.raises(InvalidInputError, match=message):
         _script().read_config(path)
+
+
+@pytest.mark.usefixtures("cpp")
+def test_sequences_in_turn_are_measured_as_one_run(sequence: Path, tmp_path: Path) -> None:
+    """The room twice, as two sessions: each its frames and map, scored on the truths in turn.
+
+    Every map kept (``loss.session_keyframes`` 0), each session's frames end in its own map; the
+    second session's truth, moved on with its frames, matches every frame of it.
+    """
+    config = tmp_path / "testset.toml"
+    config.write_text(
+        f'[[sequence]]\nname = "twice"\nfolders = ["{sequence}", "{sequence}"]\n'
+        'mode = "rgbd"\nreference = "the room\'s own poses"\n'
+    )
+    out = tmp_path / "out"
+    assert _script().main([str(config), str(out), "--option", "loss.session_keyframes=0"]) == 0
+    result = json.loads((out / "results.jsonl").read_text())
+    assert (result["frames"], result["tracked"], result["matched"]) == (2 * FRAMES,) * 3
+    assert result["maps"] == [0, 1]
+    first, second = result["sessions"]
+    times = vo.open_source("tum", sequence, "rgbd").times
+    assert second["offset"] == pytest.approx(times[-1] + np.median(np.diff(times)) - times[0])
+    assert (first["offset"], first["closed"]) == (0.0, None)
+    for k, session in enumerate((first, second)):
+        assert (session["sequence"], session["frames"], session["tracked"]) == (
+            "room", FRAMES, FRAMES,
+        )  # fmt: skip
+        assert session["maps"] == [k]
+    assert second["closed"]["reset"] is False
+    assert second["closed"]["keyframes"] > 0
+    assert result["ate"] < ATE_BOUND["rgbd"]
+    assert (result["loops"], result["merges"]) == ([], [])
+
+
+def test_a_sequence_s_sessions_offsets_are_its_run_s(sequence: Path) -> None:
+    """One folder keeps its own clock; the second of two is moved on past the first's end."""
+    script = _script()
+    once, twice = (script.Entry("room", (sequence,) * k, "rgbd", "r") for k in (1, 2))
+    times = vo.open_source("tum", sequence, "rgbd").times
+    assert script.offsets_of(once) == [0.0]
+    assert script.offsets_of(twice) == vo.session_offsets([times, times])
+    assert script.offsets_of(twice)[1] > times[-1] - times[0]
+
+
+def test_the_truths_in_turn_ascend(sequence: Path) -> None:
+    """Each session's truth is moved on by its offset; times not after those before are dropped."""
+    times, poses = runs.ground_truth("tum", sequence) or pytest.fail("the room has its truth")
+    moved = _script().truth_of("tum", [sequence, sequence], [0.0, 10.0])
+    assert moved is not None
+    np.testing.assert_array_equal(moved[0], np.concatenate([times, times + 10.0]))
+    np.testing.assert_array_equal(moved[1], np.concatenate([poses, poses]))
+    same = _script().truth_of("tum", [sequence, sequence], [0.0, 0.0])
+    assert same is not None
+    np.testing.assert_array_equal(same[0], times)  # the second's times, none after, all dropped
+    untrue = REPO / "tests" / "fixtures" / "eval" / "sequences" / "tum_camera"  # no truth file
+    assert _script().truth_of("tum", [untrue], [0.0]) is None
 
 
 def test_a_euroc_sequence_is_measured_from_its_own_folder(tmp_path: Path) -> None:
@@ -220,7 +293,7 @@ def test_a_euroc_sequence_is_measured_from_its_own_folder(tmp_path: Path) -> Non
     write_euroc(folder, room.sequence(FRAMES, stereo=True))
     config = tmp_path / "testset.toml"
     config.write_text(
-        f'[[sequence]]\nname = "room"\nfolder = "{folder}"\nmode = "stereo"\n'
+        f'[[sequence]]\nname = "room"\nfolders = ["{folder}"]\nmode = "stereo"\n'
         'reference = "the room\'s own poses"\ndataset = "euroc"\n'
     )
     assert _script().main([str(config), str(tmp_path / "out")]) == 0

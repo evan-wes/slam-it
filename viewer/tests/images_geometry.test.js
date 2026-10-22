@@ -13,11 +13,16 @@ import {
   centres,
   frustums,
   keyframeSegments,
+  lastRow,
   lifeAttributes,
   linkPairs,
   mapAttribute,
   mapDepths,
   mapFrustums,
+  mapRuns,
+  runSegments,
+  runSegmentsBefore,
+  runsOf,
   treePairs,
   truthSegments,
 } from "../src/geometry.js";
@@ -153,6 +158,51 @@ test("each map's frustums are as deep as a share of its own trajectory's extent"
     const alone = frustums(poses.subarray(k * 12, k * 12 + 12), camera, depth);
     assert.deepEqual(Array.from(lines.subarray(k * each, (k + 1) * each)), Array.from(alone));
   }
+});
+
+test("a map's rows come in runs, another map's between when it is taken up again", () => {
+  // Map 0, then map 2, then map 0 again (map 1 reset: no rows).
+  const maps = new Int32Array([0, 0, 0, 2, 2, 0]);
+  assert.deepEqual(mapRuns(maps), [
+    [0, 3],
+    [3, 5],
+    [5, 6],
+  ]);
+  const zero = runsOf(maps, 0);
+  assert.deepEqual(zero, [
+    [0, 3],
+    [5, 6],
+  ]);
+  assert.deepEqual(runsOf(maps, 1), []);
+  // The trajectory through map 0's runs: rows 0-1 and 1-2, never 2-5 across map 2's.
+  assert.deepEqual(Array.from(runSegments(zero)), [0, 1, 1, 2]);
+  assert.deepEqual(
+    [0, 1, 2, 3, 6].map((upTo) => runSegmentsBefore(zero, upTo)),
+    [0, 0, 1, 2, 2],
+  );
+  // The last of its rows before a row: none before the first, then each run's.
+  assert.deepEqual(
+    [0, 1, 3, 5, 6].map((upTo) => lastRow(zero, upTo)),
+    [-1, 0, 2, 2, 5],
+  );
+});
+
+test("a map taken up again is as deep as the extent of all its runs", () => {
+  // Map 0 spans 2 m before map 1 and 2 m more after it: its depth is its 4 m's share.
+  const path = new Float32Array([0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 1.001, 0, 2, 0, 0, 4, 0, 0]);
+  const depths = mapDepths(
+    path,
+    new Int32Array([0, 0, 1, 1, 0, 0]),
+    new Float32Array(0),
+    new Int32Array(0),
+  );
+  assert.deepEqual(
+    [...depths],
+    [
+      [0, 4 * DEPTH_SHARE],
+      [1, MIN_DEPTH],
+    ],
+  );
 });
 
 /**

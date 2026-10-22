@@ -1,9 +1,11 @@
 """The run viewer's bundles: one sequence's runs, baked with its images for the page.
 
 A bundle is a folder any plain file server can serve; the page (``viewer/``) reads nothing else.
-It holds one sequence's runs in one mode, at most one per backend, and the frames they ran:
+It holds one sequence's runs in one mode, at most one per backend, and the frames they ran. A
+run of several sequences in turn (sessions, :mod:`slam_it.orchestration.vo`) is refused: its
+frames are several sequences', each on its own clock, and a bundle's are one's:
 
-- ``bundle.json``: ``{"format": "slam-it-bundle", "version": 4, "dataset", "sequence",
+- ``bundle.json``: ``{"format": "slam-it-bundle", "version": 5, "dataset", "sequence",
   "mode", "camera", "frames", "first_time", "extent", "images", "truth", "fates", "steps",
   "backends"}``. ``camera`` is the pipeline's (a stereo pair's rectified left camera):
   ``model``, ``width``, ``height``, ``intrinsics`` and ``baseline``. ``frames`` counts the
@@ -27,17 +29,22 @@ It holds one sequence's runs in one mode, at most one per backend, and the frame
 
   - ``records.json``: the run's diagnostics as columns, one value per frame it ran, with
     ``frame``, the bundle's frame of each; its ``map`` column, each frame's map or null, is
-    what the page shows a map by;
+    what the page shows a map by: **the map at a frame is the map the frame ends in**, the
+    map it was tracked in or the one that map was merged into, by the run's merge records
+    (:func:`_ends_in`), as every array below holds the maps (the run's diagnostics name the
+    map tracked in);
   - ``poses.npy``: each tracked frame's final ``T_world_cam`` (the run format's
     ``trajectory.txt``), its top three rows, ``(T, 3, 4)``
-    float32; ``pose_frames.npy``: their frames, and ``pose_maps.npy``: their maps, each
-    ``(T,)`` int32;
+    float32; ``pose_frames.npy``: their frames, ascending, and ``pose_maps.npy``: their maps,
+    each ``(T,)`` int32. A map's poses need not be consecutive rows, nor the maps rise: a kept
+    map taken up again holds its poses in several runs of rows, with another map's between;
   - ``keyframe_poses.npy``, ``(K, 3, 4)`` float32, ``keyframe_lives.npy``, ``(K, 3)`` int32,
     and ``keyframe_maps.npy``, ``(K,)`` int32; ``keyframe_parents.npy``, ``(K,)`` int32, and
     ``keyframe_links.npy``, ``(L, 3)`` int32, the spanning tree and the strong links as each
     map ended (each keyframe's last parent; a map's links when it closed or the run ended), and
-    ``keyframe_loops.npy``, ``(E, 2)`` int32, the loops closed, which the page draws through the
-    run while both their keyframes live;
+    ``keyframe_loops.npy``, ``(E, 2)`` int32, the loops closed, and ``keyframe_merges.npy``,
+    ``(G, 2)`` int32, the merges made (each two keyframes of the map they were merged into),
+    which the page draws through the run while both their keyframes live;
     ``points.npy``, ``(N, 3)`` float32,
     ``point_lives.npy``, ``(N, 3)`` int32, and ``point_maps.npy``, ``(N,)`` int32: every
     keyframe and point the run made, as the run format holds them (:mod:`slam_it.eval.runs`);
@@ -46,21 +53,22 @@ It holds one sequence's runs in one mode, at most one per backend, and the frame
 
   Every frame number in them is the bundle's (an index into ``times.npy``), not the run's.
 
-**Frames.** The bundle's frames are every frame a run ran, matched by time, in the sequence's
-order; each backend covers a contiguous range of them. **Alignment.** With ground truth, each
-of a run's maps (its trajectory, keyframes and points) is moved into the truth's frame by its
-own ATE alignment (:func:`slam_it.eval.runs.evaluate`: Sim(3) for monocular, SE(3)
+**Maps.** The header lists a run's maps as they end (:func:`_maps_info`): a map merged into
+another is not listed, its frames, keyframes and points being the other's; a map reset is, with
+none tracked. **Frames.** The bundle's frames are every frame a run ran, matched by time, in the
+sequence's order; each backend covers a contiguous range of them. **Alignment.** With ground
+truth, each of a run's maps (its trajectory, keyframes and points) is moved into the truth's
+frame by its own ATE alignment (:func:`slam_it.eval.runs.evaluate`: Sim(3) for monocular, SE(3)
 otherwise), so the maps and the backends overlay, and the run's header names the alignment
-(``"sim3"`` or ``"se3"``). A map that alignment cannot place (fewer than three frames matched
-to the truth, as a monocular run that never initialised, or its centres on a line) stays in its
-own frame, unscored, as every map does without ground truth; a run none of whose maps is placed
-has a null alignment. **Images** are the frames as the pipeline saw
-them (:attr:`slam_it.orchestration.vo.Source.view`: a stereo pair's left image
-rectified), in colour where the sequence has colour, as JPEG
-(:func:`slam_it.eval.images.encode_jpeg`). Every array is little-endian, so the page reads
-each ``.npy`` file's data straight into a typed array after its header. **Writing.** The bundle
-is written into a hidden folder beside ``out`` and moved onto it once whole, so a bake that
-fails leaves nothing behind.
+(``"sim3"`` or ``"se3"``). A map that alignment cannot place (fewer than three frames matched to
+the truth, as a monocular run that never initialised, or its centres on a line) stays in its own
+frame, unscored, as every map does without ground truth; a run none of whose maps is placed has
+a null alignment. **Images** are the frames as the pipeline saw them
+(:attr:`slam_it.orchestration.vo.Source.view`: a stereo pair's left image rectified), in colour
+where the sequence has colour, as JPEG (:func:`slam_it.eval.images.encode_jpeg`). Every array is
+little-endian, so the page reads each ``.npy`` file's data straight into a typed array after its
+header. **Writing.** The bundle is written into a hidden folder beside ``out`` and moved onto it
+once whole, so a bake that fails leaves nothing behind.
 
 Run as a program::
 
@@ -90,9 +98,10 @@ from slam_it.orchestration import vo
 FORMAT = "slam-it-bundle"
 """``bundle.json``'s ``format``."""
 
-VERSION = 4
+VERSION = 5
 """``bundle.json``'s ``version``: this module's layout (2 added the maps; 3 the spanning tree and
-the strong links; 4 the loops closed, and the trajectory the run format's final one).
+the strong links; 4 the loops closed, and the trajectory the run format's final one; 5 the
+merges made).
 
 A new version means baking the upload server's showcase runs again and uploading them again
 (``showcase/<name>/`` in its storage): the viewer reads only its own version."""
@@ -143,12 +152,20 @@ def _score(run: runs.Run, truth: runs.Truth | None) -> runs.Evaluation | None:
 
 
 def _read(folders: Sequence[str | Path]) -> list[_Baked]:
-    """Read the runs, refusing any that are not of one sequence and mode, one per backend."""
+    """Read the runs, refusing any that are not of one sequence and mode, one per backend.
+
+    A run of several sequences in turn is refused by name (the module docstring).
+    """
     if not folders:
         raise InvalidInputError("runs: expected at least one run folder")
     baked = []
     for folder in map(Path, folders):
         run = runs.read_run(folder)
+        if any("session" in entry for entry in run.diagnostics):
+            raise InvalidInputError(
+                f"{folder}: a run of several sequences in turn ({run.sequence}), each a session: "
+                "a bundle holds one sequence's frames"
+            )
         features = runs.read_features(folder, run) if run.record_features else None
         baked.append(_Baked(folder, run, features))
     first = baked[0].run
@@ -245,20 +262,76 @@ def _score_info(error: runs.MapError) -> dict[str, Any]:
     }
 
 
-def _maps_info(baked: _Baked, frames: NDArray[np.int32]) -> list[dict[str, Any]]:
-    """Return each of a run's maps as the page shows it, in order (see :func:`_backend_info`)."""
+def _ends_in(baked: _Baked) -> dict[int, int]:
+    """Return the map each map a run tracked in ends in: itself, or the one it merged into.
+
+    Read from the run's merge records (:meth:`slam_it.eval.runs.Run.merged_into`, as the run
+    format declares them), each followed on to the map its destination merged into in turn, as
+    the atlas follows them, so that a map merged into one later reset, whose frames the
+    trajectory no longer holds, still ends there; then checked
+    against the trajectory, each tracked frame's final pose being in the map its map ends in
+    (``pose_maps.npy``), and against the records, each naming a map the run ends with
+    (:meth:`slam_it.eval.runs.Run.maps`, the header's) once followed.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If one map's frames end in two maps, by its merges and by the trajectory; or a record
+        names a map the run neither ends with nor merged into one it ends with.
+    """
+    run = baked.run
+    merged = run.merged_into()
+
+    def follow(number: int) -> int:
+        seen = {number}
+        while number in merged and merged[number] not in seen:
+            number = merged[number]
+            seen.add(number)
+        return number
+
+    named = {int(e["map"]) for e in run.diagnostics if e.get("map") is not None}
+    out = {m: follow(m) for m in sorted(named | set(run.tracked_maps.tolist()) | merged.keys())}
+    for tracked, final in zip(run.tracked_maps.tolist(), run.pose_maps.tolist(), strict=True):
+        if out[tracked] != final:
+            raise InvalidInputError(
+                f"{baked.folder}: map {tracked}'s frames end in maps {out[tracked]} and {final}: "
+                f"{out[tracked]} by the run's merges, {final} by its trajectory"
+            )
+    kept = set(run.maps().tolist())
+    for number in sorted(named):
+        if out[number] not in kept:
+            raise InvalidInputError(
+                f"{baked.folder}: a record names map {number}, which the run neither ends with "
+                f"({sorted(kept)}) nor merged into one it ends with"
+            )
+    return out
+
+
+def _stretches(at: NDArray[np.int32]) -> list[list[int]]:
+    """Return ascending frames as stretches of consecutive ones, each ``[first, end)``."""
+    breaks = np.flatnonzero(np.diff(at) != 1) + 1
+    return [[int(part[0]), int(part[-1]) + 1] for part in np.split(at, breaks) if len(part)]
+
+
+def _maps_info(
+    baked: _Baked, frames: NDArray[np.int32], named: Sequence[int | None]
+) -> list[dict[str, Any]]:
+    """Return each of a run's maps as the page shows it, in order (see :func:`_backend_info`).
+
+    `named` is each frame's map as the records hold it, the map it ends in.
+    """
     run, scored = baked.run, baked.scored
     errors = {} if scored is None else {e.map: e for e in scored.maps}
-    named = np.array([-1 if d.get("map") is None else d["map"] for d in run.diagnostics])
+    names = np.array([-1 if m is None else m for m in named], dtype=np.int64)
     reset = set(run.reset_maps().tolist())
     out = []
     for map_id in (int(m) for m in run.maps()):
-        at = frames[named == map_id]  # read_run holds every map named on a frame
         error = errors.get(map_id)
         out.append(
             {
                 "id": map_id,
-                "frames": [int(at[0]), int(at[-1]) + 1],
+                # read_run holds every map a keyframe ends in named on a frame
+                "frames": _stretches(frames[names == map_id]),
                 "tracked": int(np.count_nonzero(run.pose_maps == map_id)),
                 "reset": map_id in reset,
                 "score": None if error is None else _score_info(error),
@@ -267,18 +340,22 @@ def _maps_info(baked: _Baked, frames: NDArray[np.int32]) -> list[dict[str, Any]]
     return out
 
 
-def _backend_info(baked: _Baked, frames: NDArray[np.int32]) -> dict[str, Any]:
-    """Return what the page's header shows of a run.
+def _backend_info(
+    baked: _Baked, frames: NDArray[np.int32], named: Sequence[int | None]
+) -> dict[str, Any]:
+    """Return what the page's header shows of a run, its records' maps `named`.
 
     The frames it covers (``[first, end)``), the frames it tracked, the final maps' keyframes
     and points and how many it made, whether it recorded features, the alignment its maps were
     moved by (``"sim3"``, ``"se3"``, or null if none was), its score over every map placed
     (``matched``, ``ate_rmse``, ``rpe_translation_rmse``, ``rpe_rotation_rmse``, the pooled
     root mean squares, an RPE null where no map has one; null unless a map was placed), its
-    maps (``id``, the ``frames`` whose records name it, ``[first, end)``, the frames it
-    ``tracked``, whether it was ``reset``, and its own ``score``, with its ``scale``, null
-    unless placed), its latency against the frames' deadline (``deadline``, ``median``,
-    ``p95``, ``max``, ``late``; null for a run of fewer than two frames) and its peak memory.
+    maps, every one its keyframes end in (``id``; the ``frames`` whose records name it, as
+    stretches of consecutive frames, each ``[first, end)``, in order, several for a map taken up
+    again; the frames it ``tracked``, whether it was ``reset``, and its own ``score``, with its
+    ``scale``, null unless placed), its latency against the frames' deadline (``deadline``,
+    ``median``, ``p95``, ``max``, ``late``; null for a run of fewer than two frames) and its
+    peak memory.
     """
     run, scored = baked.run, baked.scored
     latency = None
@@ -309,7 +386,7 @@ def _backend_info(baked: _Baked, frames: NDArray[np.int32]) -> dict[str, Any]:
         "features": baked.features is not None,
         "alignment": alignment,
         "score": score,
-        "maps": _maps_info(baked, frames),
+        "maps": _maps_info(baked, frames, named),
         "latency": latency,
         "peak_memory": run.peak_memory,
     }
@@ -325,6 +402,11 @@ def _write_backend(out: Path, baked: _Baked, times: NDArray[np.float64]) -> dict
     columns: dict[str, list[Any]] = {"frame": frame.tolist()}
     for key in dict.fromkeys(k for d in run.diagnostics for k in d):
         columns[key] = [d.get(key) for d in run.diagnostics]
+    ends = _ends_in(baked)
+    tracked_in = [d.get("map") for d in run.diagnostics]
+    named = [None if m is None else ends[m] for m in tracked_in]
+    if "map" in columns:
+        columns["map"] = named
     folder.mkdir(parents=True)
     (folder / "records.json").write_text(json.dumps(columns, separators=(",", ":")) + "\n")
     _npy(folder / "poses.npy", _aligned(run.poses, run.pose_maps, alignments))
@@ -337,6 +419,7 @@ def _write_backend(out: Path, baked: _Baked, times: NDArray[np.float64]) -> dict
     _npy(folder / "keyframe_parents.npy", run.keyframe_parents.astype(np.int32))
     _npy(folder / "keyframe_links.npy", run.keyframe_links.astype(np.int32).reshape(-1, 3))
     _npy(folder / "keyframe_loops.npy", run.keyframe_loops.astype(np.int32).reshape(-1, 2))
+    _npy(folder / "keyframe_merges.npy", run.keyframe_merges.astype(np.int32).reshape(-1, 2))
     _npy(folder / "points.npy", _moved(run.points, run.point_maps, alignments))
     _npy(folder / "point_lives.npy", _lives(run.point_lives, frame))
     _npy(folder / "point_maps.npy", run.point_maps.astype(np.int32))
@@ -345,7 +428,7 @@ def _write_backend(out: Path, baked: _Baked, times: NDArray[np.float64]) -> dict
         records[:, 0] = frame[records[:, 0]]
         _npy(folder / runs.PIXELS, np.asarray(baked.features.pixels))
         _npy(folder / runs.RECORDS, records)
-    return _backend_info(baked, frame)
+    return _backend_info(baked, frame, named)
 
 
 def _write_images(out: Path, source: vo.Source, at: NDArray[np.int32]) -> bool:
@@ -445,10 +528,12 @@ def bake(run_folders: Sequence[str | Path], sequence: str | Path, out: str | Pat
     FileNotFoundError
         If a run's or the sequence's file is missing.
     slam_it.foundations.errors.InvalidInputError
-        If there are no runs, they are not of one sequence and mode, two are of one backend,
-        the sequence's folder is not theirs, a run's frame is not one of the sequence's, or
-        `out` is not empty; or a reader's error. A run its ATE alignment cannot place is not
-        an error: it stays in its own frame.
+        If there are no runs, one is of several sequences in turn (sessions), they are not of
+        one sequence and mode, two are of one backend, the sequence's folder is not theirs, a
+        run's frame is not one of the sequence's, or `out` is not empty; a run's maps disagree
+        (one map's frames end in two maps, by its merges and by its trajectory, or a record
+        names a map the run neither ends with nor merged); or a reader's error. A run its ATE
+        alignment cannot place is not an error: it stays in its own frame.
     """
     baked = _read(run_folders)
     first = baked[0].run

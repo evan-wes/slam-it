@@ -1,0 +1,118 @@
+{
+ "format": "slam-it-bundle",
+ "version": 5,
+ "dataset": "tum",
+ "sequence": "room_tum",
+ "mode": "rgbd",
+ "camera": {
+  "model": "pinhole",
+  "width": 320,
+  "height": 240,
+  "intrinsics": [
+   262.5,
+   262.5,
+   159.5,
+   119.5
+  ],
+  "baseline": 0.1523809523809524
+ },
+ "frames": 280,
+ "first_time": 0.0,
+ "extent": {
+  "frames": 280,
+  "start": 0.0,
+  "end": 9.3
+ },
+ "images": {
+  "chunk": 100,
+  "quality": 75,
+  "colour": true
+ },
+ "truth": true,
+ "fates": [
+  "unmatched",
+  "rejected",
+  "tracked",
+  "made"
+ ],
+ "steps": [
+  "read_seconds",
+  "build_seconds",
+  "track_seconds",
+  "map_seconds",
+  "loop_seconds"
+ ],
+ "backends": {
+  "cpp": {
+   "frames": [
+    0,
+    280
+   ],
+   "tracked": 154,
+   "keyframes": 15,
+   "points": 2639,
+   "made": {
+    "keyframes": 15,
+    "points": 6470
+   },
+   "features": false,
+   "alignment": "se3",
+   "score": {
+    "matched": 154,
+    "ate_rmse": 0.018877845051034972,
+    "rpe_translation_rmse": 0.019639371402360564,
+    "rpe_rotation_rmse": 0.006249808478538544
+   },
+   "maps": [
+    {
+     "id": 0,
+     "frames": [
+      [
+       0,
+       152
+      ],
+      [
+       260,
+       280
+      ]
+     ],
+     "tracked": 80,
+     "reset": false,
+     "score": {
+      "matched": 80,
+      "ate_rmse": 0.008388960419769458,
+      "rpe_translation_rmse": 0.007354917935794045,
+      "rpe_rotation_rmse": 0.0024254322753151933,
+      "scale": 1.0
+     }
+    },
+    {
+     "id": 1,
+     "frames": [
+      [
+       156,
+       260
+      ]
+     ],
+     "tracked": 74,
+     "reset": false,
+     "score": {
+      "matched": 74,
+      "ate_rmse": 0.025798458639993506,
+      "rpe_translation_rmse": 0.02720345603531344,
+      "rpe_rotation_rmse": 0.008631912528323044,
+      "scale": 1.0
+     }
+    }
+   ],
+   "latency": {
+    "deadline": 0.03333300000000028,
+    "median": 0.00396061,
+    "p95": 0.00479464655,
+    "max": 0.008573342000000001,
+    "late": 0
+   },
+   "peak_memory": 20955136
+  }
+ }
+}

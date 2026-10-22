@@ -129,6 +129,9 @@ pub struct Map {
     /// The loops closed in the map, each the two keyframes' ids, the older first, in the order
     /// they were closed.
     pub loop_edges: Vec<[i64; 2]>,
+    /// The merges that made the map, each the two keyframes' ids, the older (the matched map's)
+    /// first, in the order they were made.
+    pub merge_edges: Vec<[i64; 2]>,
     /// Each point's observing keypoint rows, ascending: the index of `kp_point` the operations
     /// here keep. It does not cross to Python; `index_observations` builds it for a map
     /// assembled column by column.
@@ -185,6 +188,7 @@ impl Map {
             gone_kf_parent: Vec::new(),
             gone_kf_relative: Vec::new(),
             loop_edges: Vec::new(),
+            merge_edges: Vec::new(),
             pt_observations: Vec::new(),
         }
     }
@@ -469,13 +473,18 @@ fn check_links(m: &Map) -> Result<()> {
             "map.kf_parent: a parent must be -1 or another of its keyframes",
         );
     }
-    if m.loop_edges.iter().any(|&[older, newer]| {
-        older >= newer || m.keyframe_row(older).is_none() || m.keyframe_row(newer).is_none()
-    }) {
-        return fail(
-            ErrorKind::InvalidInput,
-            "map.loop_edges: each joins two of its keyframes, the older (lower id) first",
-        );
+    for (name, edges) in [
+        ("loop_edges", &m.loop_edges),
+        ("merge_edges", &m.merge_edges),
+    ] {
+        if edges.iter().any(|&[older, newer]| {
+            older >= newer || m.keyframe_row(older).is_none() || m.keyframe_row(newer).is_none()
+        }) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("map.{name}: each joins two of its keyframes, the older (lower id) first"),
+            );
+        }
     }
     Ok(())
 }
@@ -1203,6 +1212,12 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
             format!("k: keyframe {} has a loop edge, and is kept", m.kf_id[k]),
         );
     }
+    if has_merge(m, k) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("k: keyframe {} has a merge edge, and is kept", m.kf_id[k]),
+        );
+    }
     let relative = relative_to_parent(m, k);
     let (start, stop) = (m.kf_start[k], m.kf_start[k + 1]);
     let rows: Vec<usize> = (start..stop).collect();
@@ -1279,6 +1294,21 @@ pub fn has_loop(m: &Map, k: usize) -> bool {
     m.loop_edges.iter().any(|edge| edge.contains(&m.kf_id[k]))
 }
 
+/// Whether a keyframe has a merge edge (`slam_it.edge.map.has_merge`).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `k` - The keyframe's row, in range.
+///
+/// # Returns
+///
+/// Whether a merge made in the map joins it.
+#[must_use]
+pub fn has_merge(m: &Map, k: usize) -> bool {
+    m.merge_edges.iter().any(|edge| edge.contains(&m.kf_id[k]))
+}
+
 /// Adds a loop edge joining two of the map's keyframes (`AddLoopEdge`, both ways).
 ///
 /// # Arguments
@@ -1290,14 +1320,46 @@ pub fn has_loop(m: &Map, k: usize) -> bool {
 ///
 /// `InvalidInput` if either is not the map's, or they are the same.
 pub fn add_loop_edge(m: &mut Map, first: i64, second: i64) -> Result<()> {
+    let edge = joining(m, first, second, "loop")?;
+    m.loop_edges.push(edge);
+    Ok(())
+}
+
+/// Adds a merge edge joining two of the map's keyframes (`AddMergeEdge`, both ways).
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `first`, `second` - The two keyframes' ids, in either order.
+///
+/// # Errors
+///
+/// `InvalidInput` if either is not the map's, or they are the same.
+pub fn add_merge_edge(m: &mut Map, first: i64, second: i64) -> Result<()> {
+    let edge = joining(m, first, second, "merge")?;
+    m.merge_edges.push(edge);
+    Ok(())
+}
+
+/// An edge joining two of the map's keyframes, the older first.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `first`, `second` - The two keyframes' ids, in either order.
+/// * `what` - The edge's kind, for the message.
+///
+/// # Errors
+///
+/// `InvalidInput` if either is not the map's, or they are the same.
+fn joining(m: &Map, first: i64, second: i64, what: &str) -> Result<[i64; 2]> {
     if first == second || m.keyframe_row(first).is_none() || m.keyframe_row(second).is_none() {
         return fail(
             ErrorKind::InvalidInput,
-            format!("loop edge {first}-{second}: expected two of the map's keyframes"),
+            format!("{what} edge {first}-{second}: expected two of the map's keyframes"),
         );
     }
-    m.loop_edges.push([first.min(second), first.max(second)]);
-    Ok(())
+    Ok([first.min(second), first.max(second)])
 }
 
 /// Replaces one point by another (`slam_it.edge.map.replace_point`, `MapPoint::Replace`).
@@ -1580,8 +1642,9 @@ mod tests {
     }
 
     /// Malformed maps and arguments are `InvalidInput`.
-    /// Loop edges are kept older first, refused between a keyframe and itself or a stranger, and
-    /// their keyframes never erased; an erased keyframe keeps its pose relative to its parent.
+    /// Loop and merge edges are kept older first, apart, refused between a keyframe and itself or
+    /// a stranger, and their keyframes never erased; an erased keyframe keeps its pose relative to
+    /// its parent.
     #[test]
     fn loop_edges_and_relative_poses() {
         let mut m = two_keyframes();
@@ -1600,6 +1663,18 @@ mod tests {
         assert!(erase_keyframe(&mut looped, 1).is_err());
         let mut backwards = m.clone();
         backwards.loop_edges = vec![[1, 0]];
+        assert!(check_map(&backwards).is_err());
+        let mut merged = m.clone();
+        add_merge_edge(&mut merged, 1, 0).unwrap();
+        assert_eq!(merged.merge_edges, vec![[0, 1]]);
+        assert!(merged.loop_edges.is_empty() && !has_loop(&merged, 1));
+        assert!(has_merge(&merged, 0) && has_merge(&merged, 1) && !has_merge(&merged, 2));
+        check_map(&merged).unwrap();
+        assert!(add_merge_edge(&mut merged, 1, 1).is_err());
+        assert!(add_merge_edge(&mut merged, 1, 9).is_err());
+        assert!(erase_keyframe(&mut merged, 1).is_err());
+        let mut backwards = m.clone();
+        backwards.merge_edges = vec![[1, 0]];
         assert!(check_map(&backwards).is_err());
         let expected = m.kf_pose[2] * m.kf_pose[0].try_inverse().unwrap();
         erase_keyframe(&mut m, 2).unwrap();

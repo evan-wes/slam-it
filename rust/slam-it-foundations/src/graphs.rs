@@ -240,6 +240,9 @@ pub struct Observations<'a> {
     pub right: &'a [f64],
     /// Each observation's information, `1 / sigma^2` in px^-2, positive.
     pub information: &'a [f64],
+    /// Each observation's Huber threshold on its whitened error's norm, positive; empty for no
+    /// robust loss.
+    pub huber: &'a [f64],
 }
 
 /// The camera every factor projects through.
@@ -1127,6 +1130,15 @@ fn check_bundle(
             "information: expected positive values",
         );
     }
+    if !observations.huber.is_empty()
+        && (observations.huber.len() != count
+            || !observations.huber.iter().all(|h| h.is_finite() && *h > 0.0))
+    {
+        return fail(
+            ErrorKind::InvalidInput,
+            "huber: expected one positive value per observation",
+        );
+    }
     if distinct(observations.point_ids).len() != points.len() {
         return fail(
             ErrorKind::InvalidInput,
@@ -1385,10 +1397,12 @@ pub fn refine_similarity(
     })
 }
 
-/// Adjusts every pose and point against every observation, with no robust loss
+/// Adjusts every pose and point against every observation, with no robust loss or Huber's
 /// (`graphs.bundle_adjust`).
 ///
-/// ORB-SLAM's `GlobalBundleAdjustemnt` as loop closing calls it (`bRobust` false), on GTSAM.
+/// ORB-SLAM's `GlobalBundleAdjustemnt` as loop closing calls it (`bRobust` false), on GTSAM; with
+/// the observations' `huber`, each whitened error through a Huber loss at its threshold, as
+/// ORB-SLAM's local and welding BAs weigh theirs.
 ///
 /// # Arguments
 ///
@@ -1406,8 +1420,8 @@ pub fn refine_similarity(
 /// # Errors
 ///
 /// `InvalidInput` for a pose not rigid, mismatched sizes, an index out of range, an
-/// unobserved point, a non-positive information, a right column without `bf`, a bad camera or
-/// bad options; `NotConverged` if GTSAM fails.
+/// unobserved point, a non-positive information or Huber threshold, a right column without
+/// `bf`, a bad camera or bad options; `NotConverged` if GTSAM fails.
 pub fn bundle_adjust(
     poses: &[Matrix4<f64>],
     points: &[Vector3<f64>],
@@ -1456,7 +1470,7 @@ pub fn bundle_adjust(
             &[POSE, POINT],
             measured.len(),
             observations.information[m],
-            0.0,
+            observations.huber.get(m).copied().unwrap_or(0.0), // the bridge's 0: no robust loss
             factors.len(),
         ))?;
         factors.push(Factor::Projection { measured });
@@ -1889,6 +1903,7 @@ mod tests {
                 pixels: &pixels,
                 right: &right,
                 information: &information,
+                huber: &[],
             },
             &lens,
             &[0],

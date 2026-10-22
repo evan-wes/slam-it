@@ -7,7 +7,9 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <span>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -100,5 +102,96 @@ struct Candidates {
 [[nodiscard]] foundations::Result<Candidates> loop_candidates(const Database& db, const Map& m,
                                                               std::int64_t keyframe,
                                                               const Options& options);
+
+/// @brief A map with its keyframe database, and its number among a run's maps
+///        (`slam_it.edge.database.Indexed`).
+struct Indexed {
+  /// @brief The map's number: maps are numbered in the order they started.
+  std::int64_t number{0};
+  /// @brief The map.
+  Map map;
+  /// @brief Its keyframe database, holding every keyframe of the map.
+  Database database;
+};
+
+/// @brief A map with its keyframe database and number, held elsewhere: an `Indexed` by
+///        reference, for a search over maps owned apart (relocalisation's over the one tracked
+///        and the kept ones; merge detection's over the kept ones, which the atlas holds).
+struct MapRef {
+  /// @brief The map's number.
+  std::int64_t number{0};
+  /// @brief The map.
+  const Map* map{nullptr};
+  /// @brief Its keyframe database, holding every keyframe of the map.
+  const Database* database{nullptr};
+};
+
+/// @brief Maps with their databases and numbers, by reference.
+/// @param maps The maps, which must outlive the references.
+/// @return Each map's reference, in order.
+[[nodiscard]] std::vector<MapRef> refs_of(std::span<const Indexed> maps);
+
+/// @brief Check that no two maps share a number.
+/// @tparam Numbered `Indexed` or `MapRef`.
+/// @param maps The maps.
+/// @param name The argument's name, for the message.
+/// @return Nothing, or `InvalidInput` for a number given twice.
+template <typename Numbered>
+[[nodiscard]] foundations::Result<void> check_numbers(std::span<const Numbered> maps,
+                                                      const char* name) {
+  std::set<std::int64_t> numbers;
+  for (const Numbered& map : maps) {
+    if (!numbers.insert(map.number).second) {
+      return foundations::fail(foundations::ErrorKind::kInvalidInput,
+                               std::string(name) + ": expected each map once, by its number");
+    }
+  }
+  return {};
+}
+
+/// @brief A candidate of one of several maps.
+struct Ranked {
+  /// @brief Its group's accumulated score.
+  double score{0.0};
+  /// @brief Its map's number.
+  std::int64_t map{0};
+  /// @brief Its id in that map.
+  std::int64_t keyframe{0};
+};
+
+/// @brief Order several maps' candidates best first: by score, descending; ties by the lower
+///        map number, then the lower id (a merge's and relocalisation's order across maps).
+/// @param found The candidates, reordered in place.
+void rank(std::vector<Ranked>& found);
+
+/// @brief A merge's candidates, from every other map, best first
+///        (`slam_it.edge.database.MergeCandidates`).
+struct MergeCandidates {
+  /// @brief Each candidate's map number.
+  std::vector<std::int64_t> maps;
+  /// @brief Its id in that map.
+  std::vector<std::int64_t> keyframes;
+  /// @brief Its group's accumulated score, descending (ties: the lower map number, then the
+  ///        lower id).
+  std::vector<double> scores;
+  /// @brief The keyframes, over every map, that share a word with the query.
+  std::int64_t sharing{0};
+  /// @brief Those scored.
+  std::int64_t scored{0};
+};
+
+/// @brief Find the keyframes of other maps a keyframe may merge its map with
+///        (`slam_it.edge.database.merge_candidates`, `DetectNBestCandidates`' merge list): in
+///        each map, `loop_candidates`' scoring of the query's words, its words counted within
+///        it, nothing left out, its best `loops.candidates` groups; then the best
+///        `loops.candidates` of every map's, by accumulated score.
+/// @param vector The query keyframe's word vector.
+/// @param others The other maps, each with its database and number.
+/// @param options The `loops` settings and `covisibility.min_points`.
+/// @return The candidates, best first; `InvalidInput` for a malformed vector or two maps with
+///         one number.
+[[nodiscard]] foundations::Result<MergeCandidates> merge_candidates(
+    const foundations::vocabulary::BowVector& vector, std::span<const MapRef> others,
+    const Options& options);
 
 }  // namespace slam_it::edge

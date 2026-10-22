@@ -7,6 +7,11 @@
 /// A detection crosses back as a dict of `pending` and `loop` (each a dict or None) and
 /// `summary`, its outcome as its code in `codes()["loop_outcome"]`; a correction as a dict of
 /// `map` and `summary`, each solve's termination as its code in `codes()["graphs_termination"]`.
+/// Merging's: the other maps as a list of `Indexed.as_dict()`'s dicts; a merge being confirmed
+/// and a merge found as dicts of `map` with `pending` or `loop`; a detection given to
+/// `merge_first` as Python's, its summary's outcome by name; a merge detection back as a
+/// detection, with `maps`; a merge back as `map`, `keyframe_offset`, `point_offset` and
+/// `summary`.
 #include "slam_it/edge/loops.hpp"
 
 #include <nanobind/nanobind.h>
@@ -17,6 +22,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "common.hpp"
@@ -46,6 +52,18 @@ nb::dict solve_dict(const graphs::Summary& summary) {
   out["iterations"] = summary.iterations;
   out["termination"] = static_cast<int>(summary.termination);
   return out;
+}
+
+/// @brief Write a correction's graph and global BA into its summary.
+/// @param summary The summary's dict.
+/// @param edges The essential graph's edges.
+/// @param essential Its solve.
+/// @param global_ba Global BA's solve, if it ran.
+void write_graph(nb::dict& summary, std::int64_t edges, const graphs::Summary& essential,
+                 const std::optional<graphs::Summary>& global_ba) {
+  summary["edges"] = edges;
+  summary["essential"] = solve_dict(essential);
+  summary["global_ba"] = global_ba ? nb::object(solve_dict(*global_ba)) : nb::none();
 }
 
 /// @brief A (4, 4) item of a dict.
@@ -144,6 +162,101 @@ nb::dict detection_summary_dict(const loops::DetectionSummary& summary) {
   out["scored"] = summary.scored;
   out["candidates"] = candidates;
   out["confirmations"] = summary.confirmations;
+  return out;
+}
+
+/// @brief A loop detection crossing out.
+/// @param found The detection.
+/// @return `pending`, `loop` and `summary`.
+nb::dict detection_dict(const loops::Detection& found) {
+  nb::dict out;
+  out["pending"] = found.pending ? nb::object(pending_dict(*found.pending)) : nb::none();
+  out["loop"] = found.loop ? nb::object(loop_dict(*found.loop)) : nb::none();
+  out["summary"] = detection_summary_dict(found.summary);
+  return out;
+}
+
+/// @brief An optional count crossing in.
+/// @param value An int, or None.
+/// @return The count, or none.
+std::optional<std::int64_t> count_in(const nb::handle value) {
+  if (value.is_none()) {
+    return std::nullopt;
+  }
+  return nb::cast<std::int64_t>(value);
+}
+
+/// @brief A detection's summary, crossing in as Python's `DetectionSummary.as_dict` gives it.
+/// @param values Its fields, the outcome by name.
+/// @return The summary.
+/// @throws std::invalid_argument for an unknown outcome.
+loops::DetectionSummary detection_summary_in(const nb::dict& values) {
+  loops::DetectionSummary out{.outcome = enum_by_name<loops::Outcome>(
+                                  nb::cast<std::string>(values["outcome"]),
+                                  [](loops::Outcome o) { return loops::name(o); }, "outcome"),
+                              .confirmation = std::nullopt,
+                              .sharing = nb::cast<std::int64_t>(values["sharing"]),
+                              .scored = nb::cast<std::int64_t>(values["scored"]),
+                              .candidates = {},
+                              .confirmations = nb::cast<std::int64_t>(values["confirmations"])};
+  if (const nb::object carried = values["confirmation"]; !carried.is_none()) {
+    const auto c = nb::cast<nb::dict>(carried);
+    out.confirmation =
+        loops::ConfirmationSummary{.matched = nb::cast<std::int64_t>(c["matched"]),
+                                   .projected = nb::cast<std::int64_t>(c["projected"]),
+                                   .refined = count_in(c["refined"]),
+                                   .reprojected = count_in(c["reprojected"]),
+                                   .confirmed = nb::cast<bool>(c["confirmed"])};
+  }
+  for (const nb::handle item : nb::cast<nb::list>(values["candidates"])) {
+    const auto c = nb::cast<nb::dict>(item);
+    out.candidates.push_back({.keyframe = nb::cast<std::int64_t>(c["keyframe"]),
+                              .score = nb::cast<double>(c["score"]),
+                              .near = nb::cast<bool>(c["near"]),
+                              .matches = count_in(c["matches"]),
+                              .best = count_in(c["best"]),
+                              .inliers = count_in(c["inliers"]),
+                              .projected = count_in(c["projected"]),
+                              .refined = count_in(c["refined"]),
+                              .reprojected = count_in(c["reprojected"]),
+                              .confirmations = count_in(c["confirmations"])});
+  }
+  return out;
+}
+
+/// @brief A merge being confirmed, crossing in.
+/// @param values `map` and `pending`.
+/// @return The merge.
+loops::Merging merging_in(const nb::dict& values) {
+  return {.map = nb::cast<std::int64_t>(values["map"]),
+          .pending = pending_in(nb::cast<nb::dict>(values["pending"]))};
+}
+
+/// @brief A merge being confirmed, crossing out.
+/// @param merging The merge.
+/// @return `map` and `pending`.
+nb::dict merging_dict(const loops::Merging& merging) {
+  nb::dict out;
+  out["map"] = merging.map;
+  out["pending"] = pending_dict(merging.pending);
+  return out;
+}
+
+/// @brief A merge found, crossing in.
+/// @param values `map` and `loop`.
+/// @return The merge.
+loops::Merge merge_in(const nb::dict& values) {
+  return {.map = nb::cast<std::int64_t>(values["map"]),
+          .loop = loop_in(nb::cast<nb::dict>(values["loop"]))};
+}
+
+/// @brief A merge found, crossing out.
+/// @param found The merge.
+/// @return `map` and `loop`.
+nb::dict merge_dict(const loops::Merge& found) {
+  nb::dict out;
+  out["map"] = found.map;
+  out["loop"] = loop_dict(found.loop);
   return out;
 }
 
@@ -312,15 +425,10 @@ nb::dict detect(const nb::dict& m, const nb::dict& database, const nb::dict& cam
   if (!pending.is_none()) {
     carried = pending_in(nb::cast<nb::dict>(pending));
   }
-  const loops::Detection found =
+  return detection_dict(
       unwrap(loops::detect(edge_crossing::map_in(m), edge_crossing::database_in(database),
                            edge_crossing::camera_in(camera), keyframe, carried, mode,
-                           edge_crossing::options_in(options)));
-  nb::dict out;
-  out["pending"] = found.pending ? nb::object(pending_dict(*found.pending)) : nb::none();
-  out["loop"] = found.loop ? nb::object(loop_dict(*found.loop)) : nb::none();
-  out["summary"] = detection_summary_dict(found.summary);
-  return out;
+                           edge_crossing::options_in(options))));
 }
 
 /// @brief Correct a loop closed at a keyframe.
@@ -346,11 +454,113 @@ nb::dict correct(const nb::dict& m, const nb::dict& camera, const nb::dict& loop
   summary["replaced"] = s.replaced;
   summary["fused"] = s.fused;
   summary["links"] = s.links;
-  summary["edges"] = s.edges;
-  summary["essential"] = solve_dict(s.essential);
-  summary["global_ba"] = s.global_ba ? nb::object(solve_dict(*s.global_ba)) : nb::none();
+  write_graph(summary, s.edges, s.essential, s.global_ba);
   nb::dict out;
   out["map"] = edge_crossing::map_dict(map);
+  out["summary"] = summary;
+  return out;
+}
+
+/// @brief Look for another map at a newly mapped keyframe.
+/// @param m The active map, as a dict.
+/// @param database Its database, as a dict.
+/// @param camera The camera, as a dict.
+/// @param keyframe The keyframe's id.
+/// @param others The other maps, each a dict of `number`, `m` and `database`.
+/// @param pending The merge being confirmed, as a dict, or None.
+/// @param mode The mode's name.
+/// @param options The settings, as a dict.
+/// @return `pending`, `merge`, `summary` and `maps`.
+/// @throws CoreError for invalid input.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
+nb::dict detect_merge(const nb::dict& m, const nb::dict& database, const nb::dict& camera,
+                      std::int64_t keyframe, const nb::list& others, const nb::object& pending,
+                      const std::string& mode, const nb::dict& options) {
+  std::optional<loops::Merging> carried;
+  if (!pending.is_none()) {
+    carried = merging_in(nb::cast<nb::dict>(pending));
+  }
+  const std::vector<edge::Indexed> maps = edge_crossing::indexed_in(others);
+  const loops::MergeDetection found =
+      unwrap(loops::detect_merge(edge_crossing::map_in(m), edge_crossing::database_in(database),
+                                 edge_crossing::camera_in(camera), keyframe, edge::refs_of(maps),
+                                 carried, mode, edge_crossing::options_in(options)));
+  nb::dict out;
+  out["pending"] = found.pending ? nb::object(merging_dict(*found.pending)) : nb::none();
+  out["merge"] = found.merge ? nb::object(merge_dict(*found.merge)) : nb::none();
+  out["summary"] = detection_summary_dict(found.summary);
+  out["maps"] = vector_array(found.maps);
+  return out;
+}
+
+/// @brief Give a merge found on a keyframe priority over a loop closed on it.
+/// @param loop Loop detection's result, as Python's crosses it.
+/// @param merging Merge detection's, as Python's crosses it.
+/// @return The loop's detection: `pending`, `loop` and `summary`.
+/// @throws std::invalid_argument for an unknown outcome.
+nb::dict merge_first(const nb::dict& loop, const nb::dict& merging) {
+  loops::Detection given{.pending = std::nullopt,
+                         .loop = std::nullopt,
+                         .summary = detection_summary_in(nb::cast<nb::dict>(loop["summary"]))};
+  if (const nb::object pending = loop["pending"]; !pending.is_none()) {
+    given.pending = pending_in(nb::cast<nb::dict>(pending));
+  }
+  if (const nb::object closed = loop["loop"]; !closed.is_none()) {
+    given.loop = loop_in(nb::cast<nb::dict>(closed));
+  }
+  loops::MergeDetection found{
+      .pending = std::nullopt,
+      .merge = std::nullopt,
+      .summary = detection_summary_in(nb::cast<nb::dict>(merging["summary"])),
+      .maps = edge_crossing::vector_item<std::int64_t>(merging, "maps")};
+  if (const nb::object pending = merging["pending"]; !pending.is_none()) {
+    found.pending = merging_in(nb::cast<nb::dict>(pending));
+  }
+  if (const nb::object made = merging["merge"]; !made.is_none()) {
+    found.merge = merge_in(nb::cast<nb::dict>(made));
+  }
+  return detection_dict(loops::merge_first(std::move(given), found));
+}
+
+/// @brief Merge the active map into the one it matched.
+/// @param active The active map, as a dict.
+/// @param matched The matched map, as a dict.
+/// @param camera The camera, as a dict.
+/// @param found The merge, as a dict of `map` and `loop`.
+/// @param mode The mode's name.
+/// @param options The settings, as a dict.
+/// @return `map`, `keyframe_offset`, `point_offset` and `summary`.
+/// @throws CoreError for invalid input or GTSAM's failure.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
+nb::dict merge(const nb::dict& active, const nb::dict& matched, const nb::dict& camera,
+               const nb::dict& found, const std::string& mode, const nb::dict& options) {
+  const loops::Merged merged = unwrap(loops::merge(
+      edge_crossing::map_in(active), edge_crossing::map_in(matched),
+      edge_crossing::camera_in(camera), merge_in(found), mode, edge_crossing::options_in(options)));
+  const loops::MergeSummary& s = merged.summary;
+  nb::dict weld;
+  weld["keyframes"] = s.weld.keyframes;
+  weld["held"] = s.weld.held;
+  weld["points"] = s.weld.points;
+  weld["observations"] = s.weld.observations;
+  weld["outliers"] = s.weld.outliers;
+  weld["forgotten"] = s.weld.forgotten;
+  weld["first"] = solve_dict(s.weld.first);
+  weld["second"] = s.weld.second ? nb::object(solve_dict(*s.weld.second)) : nb::none();
+  nb::dict summary;
+  summary["map"] = s.map;
+  summary["current"] = s.current;
+  summary["matched"] = s.matched;
+  summary["similarity"] = matrix_array(s.similarity);
+  summary["window"] = s.window;
+  summary["matched_window"] = s.matched_window;
+  summary["fused"] = s.fused;
+  summary["weld"] = weld;
+  write_graph(summary, s.edges, s.essential, s.global_ba);
+  nb::dict out;
+  out["map"] = edge_crossing::map_dict(merged.map);
+  out["keyframe_offset"] = merged.keyframe_offset;
+  out["point_offset"] = merged.point_offset;
   out["summary"] = summary;
   return out;
 }
@@ -383,6 +593,13 @@ void bind_loops(nb::module_& m) {
         "Look for a loop at a newly mapped keyframe.");
   m.def("correct", &correct, nb::arg("m"), nb::arg("camera"), nb::arg("loop"), nb::arg("mode"),
         nb::arg("options"), "Correct a loop closed at a keyframe.");
+  m.def("detect_merge", &detect_merge, nb::arg("m"), nb::arg("database"), nb::arg("camera"),
+        nb::arg("keyframe"), nb::arg("others"), nb::arg("pending").none(), nb::arg("mode"),
+        nb::arg("options"), "Look for another map at a newly mapped keyframe.");
+  m.def("merge_first", &merge_first, nb::arg("loop"), nb::arg("merging"),
+        "Give a merge found on a keyframe priority over a loop closed on it.");
+  m.def("merge", &merge, nb::arg("active"), nb::arg("matched"), nb::arg("camera"), nb::arg("found"),
+        nb::arg("mode"), nb::arg("options"), "Merge the active map into the one it matched.");
 }
 
 }  // namespace slam_it::bindings

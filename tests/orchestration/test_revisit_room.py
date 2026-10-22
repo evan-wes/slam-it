@@ -1,0 +1,133 @@
+"""The revisit room's bar: every language takes a kept map up again when relocalisation finds it.
+
+The revisit room (:func:`tests.orchestration.datasets.revisit_frames`) is the merge room with
+loop closing off, so its two maps never merge, and blinded a second time, from
+:data:`~tests.orchestration.datasets.REVISIT_AT`, for less than the loss window: the camera comes
+back over the first map's start, which the second map has not seen. At
+:data:`~tests.orchestration.datasets.REVISIT_OPTIONS`, each backend's run must (the online-SLAM
+design's section 14, item 2): be lost once, on the first black stretch; on the first frame after
+the second, relocalise in the first map, kept, leave the second, kept too (``left`` recorded),
+and go on in the first, tracking every frame to the end there, the maps it tracks in going 0,
+1, 0; keep both maps to the end; keep each map's final trajectory within :data:`REVISIT_ATE` of
+the truth, map 0 aligned once over both its stretches, so a map taken up in the wrong world, or
+with the wrong run ids, fails; and keep map 0's frames from the take-up on, aligned with the rest
+of map 0, within :data:`REVISIT_TAKEN_UP_ATE`, so that a take-up a couple of centimetres off,
+which the whole map's bar dilutes, fails too. Inline in every language, threaded in each
+native scheme (:data:`tests.orchestration.test_merge_room_threads.THREADED`), its programs on
+the performance cores (:func:`tests.orchestration.conftest.fast_cores`), and under
+ThreadSanitizer in both of C++'s (``test_merge_room_tsan.py``).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from slam_it import backends
+from slam_it.edge import pipeline
+from slam_it.eval import runs
+from slam_it.orchestration import vo
+from tests.edge import room
+from tests.orchestration.conftest import RoomRun, fast_cores, require_program
+from tests.orchestration.datasets import (
+    LOOP_CASES,
+    MERGE_BLANKS,
+    REVISIT_AT,
+    REVISIT_BLANKS,
+    REVISIT_OPTIONS,
+    Room,
+    revisit_frames,
+)
+from tests.orchestration.test_merge_room_threads import THREADED
+
+REVISIT_ATE = {"rgbd": 0.04, "stereo": 0.05, "monocular": 0.028}
+"""Each map's final ATE (RMSE, metres), each map aligned once, each mode stays under: about half
+again the largest measured (2026-10-20, map 1's: 2.58 cm RGB-D, 3.37 cm stereo, 2.08 cm
+monocular; map 0's 0.84, 0.96 and 1.18 to 1.19 cm), the same inline in every language and
+threaded in each native scheme; and never above the merge room's bar
+(:data:`tests.orchestration.test_merge_room.MERGE_ATE`), which monocular's then is."""
+
+
+REVISIT_TAKEN_UP_ATE = 0.015
+"""The RMSE (metres) of map 0's final ATE over its frames from the take-up on, map 0 aligned once
+over both its stretches, every mode stays under: two to three times the measured (2026-10-20,
+C++ inline: 0.49 cm RGB-D, 0.73 cm stereo, 0.51 cm monocular). It holds the take-up itself, the
+path this room exists for, at about 2 cm (B4's review panel, run 3, L15): the 20 frames after it
+are a quarter of map 0's, so :data:`REVISIT_ATE` lets a shift of them by 6 to 14 cm through."""
+
+
+def assert_revisited(run: runs.Run, folders: Room, mode: str) -> None:
+    """Assert a run of the revisit room took its first map up again, as the module docstring says.
+
+    Parameters
+    ----------
+    run : slam_it.eval.runs.Run
+        The run.
+    folders : tests.orchestration.datasets.Room
+        The revisit room's folders, with its truth.
+    mode : str
+        The run's mode.
+    """
+    states = [d["state"] for d in run.diagnostics]
+    assert states.count("lost") == 1
+    left = [k for k, d in enumerate(run.diagnostics) if d["left"] is not None]
+    assert left == [REVISIT_AT + REVISIT_BLANKS], "the first frame after the second blind stretch"
+    taken = run.diagnostics[left[0]]
+    assert (taken["map"], taken["placed_by"]) == (0, pipeline.Placement.RELOCALIZATION.value)
+    assert taken["left"]["reset"] is False
+    tracked = run.tracked_maps.tolist()
+    assert [m for k, m in enumerate(tracked) if k == 0 or m != tracked[k - 1]] == [0, 1, 0]
+    assert run.maps().tolist() == [0, 1]
+    assert len(run.keyframe_merges) == 0
+    since = run.timestamps >= taken["timestamp"]
+    assert np.count_nonzero(since) == len(run.diagnostics) - left[0], "every frame from it on"
+    assert set(run.tracked_maps[since].tolist()) == {0}
+    final = runs.evaluate_absolute(run, folders.timestamps, folders.poses)
+    assert [error.map for error in final.maps] == [0, 1]
+    for error in final.maps:
+        assert error.absolute.rmse < REVISIT_ATE[mode], f"map {error.map}"
+    first = final.maps[0]
+    rows = np.flatnonzero(run.pose_maps == 0)
+    assert first.matched == len(rows)  # every frame has its truth: the errors are by these rows
+    taken_up = first.absolute.errors[since[rows]]
+    assert np.sqrt(np.mean(taken_up**2)) < REVISIT_TAKEN_UP_ATE, "map 0 from the take-up on"
+
+
+def test_the_revisit_room_is_blind_twice_within_the_loss_window_the_second_time() -> None:
+    """Its second black frames, after the camera's turn passes 345 degrees, last 1 s."""
+    lit = np.full((2, 3), 9, dtype=np.uint8)
+    given = [room.Frame(k / 30.0, lit, np.ones((2, 3)), lit, np.eye(4)) for k in range(280)]
+    made = revisit_frames(given)
+    black = [k for k, f in enumerate(made) if not np.any(f.gray)]
+    second = list(range(REVISIT_AT, REVISIT_AT + REVISIT_BLANKS))
+    assert black[-REVISIT_BLANKS:] == second
+    assert len(black) == MERGE_BLANKS + REVISIT_BLANKS
+    seconds = made[second[-1] + 1].timestamp - made[second[0]].timestamp
+    assert seconds < REVISIT_OPTIONS.loss.relocalize_seconds
+    assert not REVISIT_OPTIONS.loops.enabled
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
+def test_every_backend_takes_the_first_map_up_again(
+    dataset: str, mode: str, backend: str, revisit_runs: RoomRun, revisit_folders: Room
+) -> None:
+    """Relocalised in the first map, the run leaves the second and goes on in the first."""
+    assert_revisited(revisit_runs(dataset, mode, backend), revisit_folders, mode)
+
+
+@pytest.mark.parametrize(("backend", "locks"), THREADED)
+@pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
+def test_a_native_threaded_run_takes_the_first_map_up_again(  # noqa: PLR0917 -- the case, the fixtures
+    dataset: str, mode: str, backend: str, locks: bool, revisit_folders: Room, tmp_path: Path
+) -> None:
+    """Threaded, the threads settled as the map is left, the run goes on in the first map."""
+    folder = revisit_folders.tum if dataset == "tum" else revisit_folders.euroc
+    run = vo.run(
+        dataset, folder, mode, tmp_path / "run", backend=require_program(backend),
+        options=REVISIT_OPTIONS, threaded=True, locks=locks, cpus=fast_cores(),
+    )  # fmt: skip
+    assert (run.threaded, run.locks) == (True, locks)
+    assert_revisited(run, revisit_folders, mode)
