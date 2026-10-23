@@ -2,8 +2,9 @@
 /// @brief Native tests for loop closing (slam_it/edge/loops.hpp) on the exact scene's map:
 ///        similarities' scale and rigid part, the RANSAC budget, the keyframes a loop holds, a
 ///        keyframe's points found through its own pose, a small map not searched, global BA
-///        leaving an exact map where it is, and the refusals. Python's tests hold every stage to
-///        the reference on the loop room (tests/edge/test_loops.py).
+///        leaving an exact map where it is, a merge's priority over a loop, and the refusals.
+///        Python's tests hold every stage to the reference on the loop room
+///        (tests/edge/test_loops.py).
 #include <Eigen/Geometry>
 #include <cmath>
 #include <cstdint>
@@ -61,8 +62,29 @@ void check_held(int& failures) {
   pending.last = 9;
   expect(loops::held(pending) == std::vector<std::int64_t>{9}, "once when they are one", failures);
   expect(std::string(loops::name(loops::Outcome::kSkipped)) == "skipped" &&
-             std::string(loops::name(loops::Outcome::kDropped)) == "dropped",
+             std::string(loops::name(loops::Outcome::kDropped)) == "dropped" &&
+             std::string(loops::name(loops::Outcome::kMerged)) == "merged",
          "the outcomes are named as Python's", failures);
+}
+
+/// @brief Check a merge's priority over a loop closed on its keyframe.
+/// @param failures Running failure count.
+void check_merge_first(int& failures) {
+  loops::Detection closed{.pending = std::nullopt, .loop = loops::Loop{}, .summary = {}};
+  closed.summary.outcome = loops::Outcome::kClosed;
+  loops::MergeDetection merged{
+      .pending = std::nullopt, .merge = loops::Merge{}, .summary = {}, .maps = {0}};
+  const loops::Detection first = loops::merge_first(closed, merged);
+  expect(!first.loop && !first.pending && first.summary.outcome == loops::Outcome::kMerged,
+         "a loop closed where a merge was found is dropped, its outcome merged", failures);
+  merged.merge.reset();
+  const loops::Detection kept = loops::merge_first(closed, merged);
+  expect(kept.loop.has_value() && kept.summary.outcome == loops::Outcome::kClosed,
+         "with no merge found, the loop stands", failures);
+  const loops::Detection carried{.pending = loops::Pending{}, .loop = std::nullopt, .summary = {}};
+  merged.merge = loops::Merge{};
+  expect(loops::merge_first(carried, merged).pending.has_value(),
+         "a loop being confirmed is kept beside a merge", failures);
 }
 
 /// @brief The exact scene's map, its building checked.
@@ -157,6 +179,7 @@ int run() {
   check_similarities(failures);
   check_budget(failures);
   check_held(failures);
+  check_merge_first(failures);
   if (const std::optional<edge::Map> m = scene_map(failures)) {
     check_scene(*m, failures);
     check_refusals(*m, failures);

@@ -105,8 +105,8 @@ using Reader = std::function<Read(std::size_t)>;
 struct Source {
   /// @brief The camera the pipeline runs with.
   edge::Camera camera;
-  /// @brief The sequence's frames.
-  std::size_t frames{0};
+  /// @brief Each frame's time, in seconds, in the sequence's order.
+  std::vector<double> times;
   /// @brief Reads one.
   Reader read;
   /// @brief The features every frame drops, those on a 0 (a TUM-format folder's `mask.png`);
@@ -164,7 +164,7 @@ Result<Source> tum_source(const std::string& root, edge::Mode mode) {
                             .width = sensor.width,
                             .height = sensor.height,
                             .baseline = baseline};
-  const std::size_t count = read->images.size();
+  std::vector<double> times = read->timestamps;
   std::optional<Image> mask = std::move(read->mask);
   Reader deliver = [frames = std::move(*read), mode](std::size_t i) -> Read {
     auto image = eval::png::read_gray(frames.images.at(i));
@@ -189,8 +189,10 @@ Result<Source> tum_source(const std::string& root, edge::Mode mode) {
         .timestamp = timestamp,
         .images = RgbdImages{.image = std::move(*image), .depth = std::move(depth_map)}};
   };
-  return Source{
-      .camera = camera, .frames = count, .read = std::move(deliver), .mask = std::move(mask)};
+  return Source{.camera = camera,
+                .times = std::move(times),
+                .read = std::move(deliver),
+                .mask = std::move(mask)};
 }
 
 /// @brief Read an image and rectify it.
@@ -239,7 +241,7 @@ Result<Source> stereo_source(eval::euroc::Frames frames) {
                             .width = left.cols,
                             .height = left.rows,
                             .baseline = rectification->baseline};
-  const std::size_t count = frames.left.size();
+  std::vector<double> times = frames.timestamps;
   Reader deliver = [frames = std::move(frames), maps = std::array{*map_left, *map_right},
                     camera](std::size_t i) -> Read {
     auto image_left = rectified(frames.left.at(i), maps[0], camera);
@@ -254,8 +256,10 @@ Result<Source> stereo_source(eval::euroc::Frames frames) {
         .timestamp = frames.timestamps.at(i),
         .images = StereoImages{.left = std::move(*image_left), .right = std::move(*image_right)}};
   };
-  return Source{
-      .camera = camera, .frames = count, .read = std::move(deliver), .mask = std::nullopt};
+  return Source{.camera = camera,
+                .times = std::move(times),
+                .read = std::move(deliver),
+                .mask = std::nullopt};
 }
 
 /// @brief Open a EuRoC sequence: its left camera for monocular, the pairs rectified for
@@ -277,7 +281,7 @@ Result<Source> euroc_source(const std::string& root, edge::Mode mode) {
                             .width = left.cols,
                             .height = left.rows,
                             .baseline = 0.0};
-  const std::size_t count = read->left.size();
+  std::vector<double> times = read->timestamps;
   Reader deliver = [frames = std::move(*read)](std::size_t i) -> Read {
     auto image = eval::png::read_gray(frames.left.at(i));
     if (!image) {
@@ -285,8 +289,10 @@ Result<Source> euroc_source(const std::string& root, edge::Mode mode) {
     }
     return Delivered{.timestamp = frames.timestamps.at(i), .images = std::move(*image)};
   };
-  return Source{
-      .camera = camera, .frames = count, .read = std::move(deliver), .mask = std::nullopt};
+  return Source{.camera = camera,
+                .times = std::move(times),
+                .read = std::move(deliver),
+                .mask = std::nullopt};
 }
 
 /// @brief The settings as a run records them (`Options.as_dict`): each group an object of its
@@ -326,6 +332,35 @@ std::string sequence_name(const std::string& sequence) {
   std::error_code error;
   const std::filesystem::path resolved = std::filesystem::weakly_canonical(sequence, error);
   return (error ? std::filesystem::path(sequence) : resolved).filename().string();
+}
+
+/// @brief Whether two sequences' cameras are the same: model, intrinsics, size, baseline.
+/// @param first One's camera.
+/// @param other The other's.
+/// @return Whether they are.
+bool same_camera(const edge::Camera& first, const edge::Camera& other) {
+  return first.model == other.model && first.intrinsics.size() == other.intrinsics.size() &&
+         first.intrinsics == other.intrinsics && first.width == other.width &&
+         first.height == other.height && first.baseline == other.baseline;
+}
+
+/// @brief A session's median frame interval, as numpy's `median` of its times' differences.
+/// @param times Its frames' times, at least two, ascending.
+/// @return The median interval, in seconds.
+double median_interval(const std::vector<double>& times) {
+  std::vector<double> intervals;
+  intervals.reserve(times.size() - 1);
+  for (std::size_t i = 1; i < times.size(); ++i) {
+    intervals.push_back(times[i] - times[i - 1]);
+  }
+  const std::size_t half = intervals.size() / 2;
+  std::ranges::nth_element(intervals, intervals.begin() + static_cast<std::ptrdiff_t>(half));
+  const double upper = intervals[half];
+  if (intervals.size() % 2 == 1) {
+    return upper;
+  }
+  const double lower = *std::ranges::max_element(std::span(intervals).first(half));
+  return (lower + upper) / 2.0;
 }
 
 /// @brief A count as JSON, or null if there is none.
@@ -520,17 +555,17 @@ Result<eval::runs::JsonValue> detection_json(const edge::loops::DetectionSummary
                  {"confirmations", s.confirmations}});
 }
 
-/// @brief A loop's correction as JSON (`slam_it.edge.loops.CorrectionSummary.as_dict`).
-/// @param s The summary.
-/// @return Its object.
-Result<eval::runs::JsonValue> correction_json(const edge::loops::CorrectionSummary& s) {
+/// @brief A similarity as JSON: its rows.
+/// @param similarity The similarity.
+/// @return Its four rows of four numbers; `InvalidInput` for a number that is not finite.
+Result<eval::runs::JsonValue> similarity_json(const Eigen::Matrix4d& similarity) {
   std::vector<eval::runs::JsonValue> rows;
   rows.reserve(4);
   for (Eigen::Index r = 0; r < 4; ++r) {
     std::vector<eval::runs::JsonValue> row;
     row.reserve(4);
     for (Eigen::Index c = 0; c < 4; ++c) {
-      row.emplace_back(s.similarity(r, c));
+      row.emplace_back(similarity(r, c));
     }
     auto text = eval::runs::json_array(row);
     if (!text) {
@@ -538,53 +573,8 @@ Result<eval::runs::JsonValue> correction_json(const edge::loops::CorrectionSumma
     }
     rows.emplace_back(std::move(*text));
   }
-  auto similarity = eval::runs::json_array(rows);
-  if (!similarity) {
-    return std::unexpected(std::move(similarity.error()));
-  }
-  auto essential = graph_solve_json(s.essential);
-  if (!essential) {
-    return std::unexpected(std::move(essential.error()));
-  }
-  eval::runs::JsonValue ba(nullptr);
-  if (s.global_ba) {
-    auto solved = graph_solve_json(*s.global_ba);
-    if (!solved) {
-      return std::unexpected(std::move(solved.error()));
-    }
-    ba = std::move(*solved);
-  }
-  return nested({{"current", s.current},
-                 {"matched", s.matched},
-                 {"similarity", std::move(*similarity)},
-                 {"corrected", s.corrected},
-                 {"moved", s.moved},
-                 {"replaced", s.replaced},
-                 {"fused", s.fused},
-                 {"links", s.links},
-                 {"edges", s.edges},
-                 {"essential", std::move(*essential)},
-                 {"global_ba", std::move(ba)}});
-}
-
-/// @brief How loop closing went on a keyframe, as JSON
-///        (`slam_it.edge.pipeline.LoopSummary.as_dict`).
-/// @param s The summary.
-/// @return Its object.
-Result<eval::runs::JsonValue> loop_json(const edge::LoopSummary& s) {
-  auto detection = detection_json(s.detection);
-  if (!detection) {
-    return std::unexpected(std::move(detection.error()));
-  }
-  eval::runs::JsonValue correction(nullptr);
-  if (s.correction) {
-    auto corrected = correction_json(*s.correction);
-    if (!corrected) {
-      return std::unexpected(std::move(corrected.error()));
-    }
-    correction = std::move(*corrected);
-  }
-  return nested({{"detection", std::move(*detection)}, {"correction", std::move(correction)}});
+  return eval::runs::json_array(rows).transform(
+      [](eval::runs::JsonText text) { return eval::runs::JsonValue(std::move(text)); });
 }
 
 /// @brief A stage's summary as JSON, or null if the stage did not run.
@@ -599,6 +589,148 @@ Result<eval::runs::JsonValue> or_null(const std::optional<Summary>& summary, Wri
     return eval::runs::JsonValue(nullptr);
   }
   return write(*summary);
+}
+
+/// @brief How a map was closed as JSON (`slam_it.edge.pipeline.LostSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> lost_json(const edge::LostSummary& s) {
+  return nested({{"keyframes", s.keyframes}, {"points", s.points}, {"reset", s.reset}});
+}
+
+/// @brief A correction's similarity, essential graph and global BA as JSON: a loop's or a merge's.
+struct Spread {
+  /// @brief The similarity.
+  eval::runs::JsonValue similarity;
+  /// @brief The essential graph's solve.
+  eval::runs::JsonValue essential;
+  /// @brief Global BA's solve, or null.
+  eval::runs::JsonValue global_ba;
+};
+
+/// @brief A correction's similarity, essential graph and global BA as JSON.
+/// @param similarity The similarity.
+/// @param essential The essential graph's solve.
+/// @param global_ba Global BA's, if it ran.
+/// @return Their values; `InvalidInput` for a number that is not finite.
+Result<Spread> spread_json(const Eigen::Matrix4d& similarity,
+                           const foundations::graphs::Summary& essential,
+                           const std::optional<foundations::graphs::Summary>& global_ba) {
+  auto placed = similarity_json(similarity);
+  if (!placed) {
+    return std::unexpected(std::move(placed.error()));
+  }
+  auto graph = graph_solve_json(essential);
+  if (!graph) {
+    return std::unexpected(std::move(graph.error()));
+  }
+  auto ba = or_null(global_ba, graph_solve_json);
+  if (!ba) {
+    return std::unexpected(std::move(ba.error()));
+  }
+  return Spread{.similarity = std::move(*placed),
+                .essential = std::move(*graph),
+                .global_ba = std::move(*ba)};
+}
+
+/// @brief A loop's correction as JSON (`slam_it.edge.pipeline.Corrected.as_dict`): the
+///        summary's (`slam_it.edge.loops.CorrectionSummary.as_dict`), its keyframes by the run's
+///        ids too (`matched_run`, `current_run`).
+/// @param corrected The correction.
+/// @return Its object; a graph solve's error.
+Result<eval::runs::JsonValue> correction_json(const edge::Corrected& corrected) {
+  const edge::loops::CorrectionSummary& s = corrected.summary;
+  auto spread = spread_json(s.similarity, s.essential, s.global_ba);
+  if (!spread) {
+    return std::unexpected(std::move(spread.error()));
+  }
+  return nested({{"current", s.current},
+                 {"matched", s.matched},
+                 {"similarity", std::move(spread->similarity)},
+                 {"corrected", s.corrected},
+                 {"moved", s.moved},
+                 {"replaced", s.replaced},
+                 {"fused", s.fused},
+                 {"links", s.links},
+                 {"edges", s.edges},
+                 {"essential", std::move(spread->essential)},
+                 {"global_ba", std::move(spread->global_ba)},
+                 {"matched_run", corrected.run_ids[0]},
+                 {"current_run", corrected.run_ids[1]}});
+}
+
+/// @brief A merge's welding BA as JSON (`slam_it.edge.loops.WeldSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> weld_json(const edge::loops::WeldSummary& s) {
+  auto first = graph_solve_json(s.first);
+  if (!first) {
+    return std::unexpected(std::move(first.error()));
+  }
+  auto second = or_null(s.second, graph_solve_json);
+  if (!second) {
+    return std::unexpected(std::move(second.error()));
+  }
+  return nested({{"keyframes", s.keyframes},
+                 {"held", s.held},
+                 {"points", s.points},
+                 {"observations", s.observations},
+                 {"outliers", s.outliers},
+                 {"forgotten", s.forgotten},
+                 {"first", std::move(*first)},
+                 {"second", std::move(*second)}});
+}
+
+/// @brief A merge as JSON (`slam_it.edge.loops.MergeSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> merge_json(const edge::loops::MergeSummary& s) {
+  auto spread = spread_json(s.similarity, s.essential, s.global_ba);
+  if (!spread) {
+    return std::unexpected(std::move(spread.error()));
+  }
+  auto weld = weld_json(s.weld);
+  if (!weld) {
+    return std::unexpected(std::move(weld.error()));
+  }
+  return nested({{"map", s.map},
+                 {"current", s.current},
+                 {"matched", s.matched},
+                 {"similarity", std::move(spread->similarity)},
+                 {"window", s.window},
+                 {"matched_window", s.matched_window},
+                 {"fused", s.fused},
+                 {"weld", std::move(*weld)},
+                 {"edges", s.edges},
+                 {"essential", std::move(spread->essential)},
+                 {"global_ba", std::move(spread->global_ba)}});
+}
+
+/// @brief How loop closing went on a keyframe, as JSON
+///        (`slam_it.edge.pipeline.LoopSummary.as_dict`).
+/// @param s The summary.
+/// @return Its object.
+Result<eval::runs::JsonValue> loop_json(const edge::LoopSummary& s) {
+  auto detection = detection_json(s.detection);
+  if (!detection) {
+    return std::unexpected(std::move(detection.error()));
+  }
+  auto correction = or_null(s.correction, correction_json);
+  if (!correction) {
+    return std::unexpected(std::move(correction.error()));
+  }
+  auto merging = or_null(s.merging, detection_json);
+  if (!merging) {
+    return std::unexpected(std::move(merging.error()));
+  }
+  auto merge = or_null(s.merge, merge_json);
+  if (!merge) {
+    return std::unexpected(std::move(merge.error()));
+  }
+  return nested({{"detection", std::move(*detection)},
+                 {"correction", std::move(*correction)},
+                 {"merging", std::move(*merging)},
+                 {"merge", std::move(*merge)}});
 }
 
 /// @brief How a frame's stages went, as a run records it
@@ -619,10 +751,7 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
                    {"points", s.points},
                    {"reference", s.reference}});
   };
-  const auto lost = [](const edge::LostSummary& s) {
-    return nested({{"keyframes", s.keyframes}, {"points", s.points}, {"reset", s.reset}});
-  };
-  const std::array<std::pair<const char*, Result<JsonValue>>, 8> stages = {{
+  const std::array<std::pair<const char*, Result<JsonValue>>, 9> stages = {{
       {"init", or_null(summary.init, init_json)},
       {"motion", or_null(summary.motion, motion)},
       {"pnp", or_null(summary.pnp, pnp_json)},
@@ -630,7 +759,8 @@ Result<eval::runs::JsonObject> summary_json(const edge::FrameSummary& summary) {
       {"local_map", or_null(summary.local_map, local_map)},
       {"mapping", or_null(summary.mapping, mapping_json)},
       {"loop", or_null(summary.loop, loop_json)},
-      {"lost", or_null(summary.lost, lost)},
+      {"lost", or_null(summary.lost, lost_json)},
+      {"left", or_null(summary.left, lost_json)},
   }};
   eval::runs::JsonObject out;
   out.emplace_back("placed_by", summary.placed_by ? name_json(edge::name(*summary.placed_by))
@@ -671,6 +801,26 @@ Result<eval::runs::JsonValue> global_json(const edge::loops::GlobalSummary& s) {
                  {"propagated", moved.propagated},
                  {"points", moved.points},
                  {"carried", moved.carried}});
+}
+
+/// @brief A session's start as JSON (`slam_it.orchestration.vo`'s docstring): its index, its
+///        sequence's name, its time offset, and how the map tracked before it was closed.
+/// @param index The session's index.
+/// @param sequence Its folder.
+/// @param offset Its time offset, in seconds.
+/// @param closed How the map tracked was closed; none if none was.
+/// @return Its object.
+Result<eval::runs::JsonValue> session_json(std::size_t index, const std::string& sequence,
+                                           double offset,
+                                           const std::optional<edge::LostSummary>& closed) {
+  auto map = or_null(closed, lost_json);
+  if (!map) {
+    return std::unexpected(std::move(map.error()));
+  }
+  return nested({{"index", static_cast<std::int64_t>(index)},
+                 {"sequence", sequence_name(sequence)},
+                 {"offset", offset},
+                 {"closed", *std::move(map)}});
 }
 
 /// @brief Record a frame's result: its diagnostics (the trajectory is the pipeline's, at the
@@ -737,6 +887,7 @@ Result<void> record_trajectory(eval::runs::Run& out, const edge::Trajectory& tra
     out.poses.push_back(*final_pose);
     out.tracked_poses.push_back(*tracked_pose);
     out.pose_maps.push_back(trajectory.maps[i]);
+    out.tracked_maps.push_back(trajectory.tracked_maps[i]);
   }
   return {};
 }
@@ -761,6 +912,7 @@ Result<void> record_lives(eval::runs::Run& out, const edge::Lifetimes& lives) {
   out.keyframe_parents = lives.keyframe_parents;
   out.keyframe_links = lives.keyframe_links;
   out.keyframe_loops = lives.keyframe_loops;
+  out.keyframe_merges = lives.keyframe_merges;
   out.point_maps = lives.point_maps;
   out.keyframe_maps = lives.keyframe_maps;
   return {};
@@ -990,28 +1142,119 @@ Result<void> finish(edge::Pipeline& pipeline, eval::runs::Run& out, std::vector<
   return {};
 }
 
-/// @brief Track a sequence's frames, from the first asked for, to the end: a lost track
-///        closes its map, and the next frame starts a new one. Threaded, the frames come at
-///        their recorded rate, and the run's end waits for the threads.
-/// @param source The sequence.
+/// @brief The frames of a run's sequences, in turn.
+struct Turns {
+  /// @brief Each frame's session and its index in it.
+  std::vector<std::pair<std::size_t, std::size_t>> order;
+  /// @brief Each session's time offset, in seconds (`session_offsets`).
+  std::vector<double> offsets;
+};
+
+/// @brief Put a run's sequences' frames in turn.
+/// @param sources The sequences.
+/// @return Their frames, in turn, and the sessions' time offsets.
+Turns in_turn(std::span<const Source> sources) {
+  Turns out;
+  std::vector<std::vector<double>> times;
+  for (std::size_t k = 0; k < sources.size(); ++k) {
+    times.push_back(sources[k].times);
+    for (std::size_t i = 0; i < sources[k].times.size(); ++i) {
+      out.order.emplace_back(k, i);
+    }
+  }
+  out.offsets = session_offsets(times);
+  return out;
+}
+
+/// @brief Before a frame of session `index` runs: start the session if it follows another
+///        (`slam_it.orchestration.vo._start_session`), closing the map tracked
+///        (`edge::Pipeline::start_session`), its record kept for its first frame
+///        (`session_json`).
+/// @param pipeline The pipeline.
+/// @param request The request.
+/// @param turns The run's frames in turn, and the sessions' offsets.
+/// @param index The frame's session.
+/// @param current The session of the frame run before, if any; set to `index`.
+/// @param session The record of a session started, set when one starts.
+/// @return Whether a session started; the threads' or a summary's error.
+Result<bool> enter_session(edge::Pipeline& pipeline, const Request& request, const Turns& turns,
+                           std::size_t index, std::optional<std::size_t>& current,
+                           std::optional<eval::runs::JsonValue>& session) {
+  const bool starts = current.has_value() && index != *current;
+  current = index;
+  if (!starts) {
+    return false;
+  }
+  auto closed = pipeline.start_session();
+  if (!closed) {
+    return std::unexpected(std::move(closed.error()));
+  }
+  auto started = session_json(index, request.sequences[index], turns.offsets[index], *closed);
+  if (!started) {
+    return std::unexpected(std::move(started.error()));
+  }
+  session = *std::move(started);
+  return true;
+}
+
+/// @brief Add the record of the session a frame started to the frame's diagnostics, the frame
+///        recorded last; nothing if none started on it.
+/// @param out The run.
+/// @param session The record, if a session started; emptied.
+void note_session(eval::runs::Run& out, std::optional<eval::runs::JsonValue>& session) {
+  if (session && !out.diagnostics.empty()) {
+    out.diagnostics.back().emplace_back("session", *std::move(session));
+  }
+  session.reset();
+}
+
+/// @brief Keep a frame's keypoints for the run: written at once, or, threaded, held until
+///        their keyframe's points are made (`finish` writes them).
+/// @param keypoints The frame's keypoints, with their fates.
+/// @param threaded Whether the run is threaded.
+/// @param held The keypoints held, given these when threaded.
+/// @param features The writer of each frame's keypoints.
+/// @return Nothing; the feature writer's error.
+Result<void> keep_keypoints(Keypoints keypoints, bool threaded, std::vector<Keypoints>& held,
+                            eval::runs::FeatureWriter& features) {
+  if (threaded) {
+    held.push_back(std::move(keypoints));
+    return {};
+  }
+  return write_features(features, keypoints);
+}
+
+/// @brief Track the sequences' frames in turn, from the first asked for, to the end: a lost
+///        track closes its map, and the next frame starts a new one; so does each sequence
+///        after the first (`edge::Pipeline::start_session`), its first frame run recording the
+///        session (`session_json`). Threaded, the frames come at their recorded rate, each
+///        session's first at once (as ORB-SLAM3's examples sleep only within a sequence), and
+///        the run's end waits for the threads.
+/// @param sources The sequences.
 /// @param pipeline The pipeline.
 /// @param request The request.
 /// @param out The run, each frame recorded.
 /// @param features The writer of each frame's keypoints, if the run records them.
 /// @return Nothing; a reader's, a frame builder's, the pipeline's or the feature writer's error.
-Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request& request,
-                   eval::runs::Run& out, eval::runs::FeatureWriter* features) {
+Result<void> track(std::span<const Source> sources, edge::Pipeline& pipeline,
+                   const Request& request, eval::runs::Run& out,
+                   eval::runs::FeatureWriter* features) {
+  const Turns turns = in_turn(sources);
   const auto first = static_cast<std::size_t>(request.first);
   const std::size_t end =
       request.count.has_value()
-          ? std::min(source.frames, first + static_cast<std::size_t>(*request.count))
-          : source.frames;
+          ? std::min(turns.order.size(), first + static_cast<std::size_t>(*request.count))
+          : turns.order.size();
   const foundations::stereo::MatchOptions matching = edge::stereo_matching(request.options);
   Pacer pacer;
   std::vector<Keypoints> held;  // threaded: written once their keyframes are mapped
-  for (std::size_t i = first; i < end; ++i) {
+  std::optional<std::size_t> current;
+  std::optional<eval::runs::JsonValue> session;  // a session started, for its first frame run
+  for (std::size_t n = first; n < end; ++n) {
+    const auto [k, i] = turns.order[n];
+    const Source& source = sources[k];
     const auto start = Clock::now();
-    const Read delivered = source.read(i);
+    Read delivered = source.read(i);
     const auto read = Clock::now();
     if (!delivered) {
       return std::unexpected(delivered.error());
@@ -1019,6 +1262,14 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
     if (!delivered->has_value()) {
       continue;
     }
+    const auto entered = enter_session(pipeline, request, turns, k, current, session);
+    if (!entered) {
+      return std::unexpected(entered.error());
+    }
+    if (*entered) {
+      pacer = Pacer{};  // a session's first frame comes at once
+    }
+    (*delivered)->timestamp += turns.offsets[k];
     if (request.threaded) {
       pacer.wait((*delivered)->timestamp);
     }
@@ -1038,12 +1289,12 @@ Result<void> track(const Source& source, edge::Pipeline& pipeline, const Request
         !recorded) {
       return recorded;
     }
+    note_session(out, session);
     if (features != nullptr) {
-      Keypoints keypoints = keypoints_of(*frame, result->fates);
-      if (request.threaded) {
-        held.push_back(std::move(keypoints));
-      } else if (const auto written = write_features(*features, keypoints); !written) {
-        return written;
+      if (const auto kept = keep_keypoints(keypoints_of(*frame, result->fates), request.threaded,
+                                           held, *features);
+          !kept) {
+        return kept;
       }
     }
   }
@@ -1153,7 +1404,7 @@ Result<void> read_flag(Request& out, std::string_view flag, const std::string& v
   if (flag == "--dataset") {
     out.dataset = value;
   } else if (flag == "--sequence") {
-    out.sequence = value;
+    out.sequences.push_back(value);
   } else if (flag == "--out") {
     out.out = value;
   } else if (flag == "--mode") {
@@ -1220,7 +1471,7 @@ Result<Request> parse(std::span<const std::string> arguments) {
   std::size_t i = 0;
   while (i < arguments.size()) {
     const std::string& flag = arguments[i];
-    if (flag != "--option" && std::ranges::find(seen, flag) != seen.end()) {
+    if (flag != "--option" && flag != "--sequence" && std::ranges::find(seen, flag) != seen.end()) {
       return fail(ErrorKind::kInvalidInput, flag + ": given twice");
     }
     if (bool* const set = switched(out, flag)) {
@@ -1247,6 +1498,9 @@ Result<Request> parse(std::span<const std::string> arguments) {
 }
 
 Result<void> check(const Request& request) {
+  if (request.sequences.empty()) {
+    return fail(ErrorKind::kInvalidInput, "--sequence: missing");
+  }
   if (std::ranges::find(kDatasets, request.dataset) == kDatasets.end()) {
     return fail(ErrorKind::kInvalidInput,
                 "dataset: expected tum or euroc, got '" + request.dataset + "'");
@@ -1278,14 +1532,39 @@ Result<void> check(const Request& request) {
   return edge::check_options(request.options);
 }
 
+std::vector<double> session_offsets(std::span<const std::vector<double>> times) {
+  std::vector<double> offsets;
+  std::optional<double> end;
+  double period = 1.0;
+  for (const std::vector<double>& session : times) {
+    double offset = 0.0;
+    if (end.has_value() && !session.empty() && session.front() <= *end) {
+      offset = *end + period - session.front();
+    }
+    offsets.push_back(offset);
+    if (!session.empty()) {
+      end = session.back() + offset;
+      period = session.size() >= 2 ? median_interval(session) : 1.0;
+    }
+  }
+  return offsets;
+}
+
 Result<eval::runs::Run> run(const Request& request) {
   if (const auto checked = check(request); !checked) {
     return std::unexpected(checked.error());
   }
-  auto source = request.dataset == "tum" ? tum_source(request.sequence, request.mode)
-                                         : euroc_source(request.sequence, request.mode);
-  if (!source) {
-    return std::unexpected(source.error());
+  std::vector<Source> sources;
+  for (const std::string& sequence : request.sequences) {
+    auto source = request.dataset == "tum" ? tum_source(sequence, request.mode)
+                                           : euroc_source(sequence, request.mode);
+    if (!source) {
+      return std::unexpected(source.error());
+    }
+    if (!sources.empty() && !same_camera(sources.front().camera, source->camera)) {
+      return fail(ErrorKind::kInvalidInput, "--sequence: the sequences' cameras differ");
+    }
+    sources.push_back(*std::move(source));
   }
   std::optional<foundations::vocabulary::Vocabulary> words;
   std::optional<eval::vocabularies::Header> record;
@@ -1297,14 +1576,16 @@ Result<eval::runs::Run> run(const Request& request) {
     words = std::move(read->vocabulary);
     record = read->header;
   }
-  auto pipeline = edge::Pipeline::create(request.mode, source->camera, request.options,
+  auto pipeline = edge::Pipeline::create(request.mode, sources.front().camera, request.options,
                                          std::move(words), threading_of(request));
   if (!pipeline) {
     return std::unexpected(pipeline.error());
   }
   eval::runs::Run out;
   out.dataset = request.dataset;
-  out.sequence = sequence_name(request.sequence);
+  for (const std::string& sequence : request.sequences) {
+    out.sequence += (out.sequence.empty() ? "" : "+") + sequence_name(sequence);
+  }
   out.mode = edge::name(request.mode);
   out.backend = "cpp";
   auto recorded = settings(request.options);
@@ -1324,7 +1605,7 @@ Result<eval::runs::Run> run(const Request& request) {
     }
     features = std::move(*opened);
   }
-  if (const auto tracked = track(*source, *pipeline, request, out, features ? &*features : nullptr);
+  if (const auto tracked = track(sources, *pipeline, request, out, features ? &*features : nullptr);
       !tracked) {
     return std::unexpected(tracked.error());
   }

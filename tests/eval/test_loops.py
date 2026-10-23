@@ -1,4 +1,4 @@
-"""Tests for slam_it.eval.loops: a run's loops judged against its reference.
+"""Tests for slam_it.eval.loops: a run's loops and merges judged against its reference.
 
 Moved from the test-set measure's tests with the judge (B3's review panel, run 2, H26 = A23).
 """
@@ -54,3 +54,15 @@ def test_a_loop_turned_about_its_view_is_in_the_right_place() -> None:
     (judged,) = loops.judge_loops(run, (times, rolled), scored)
     assert judged["angle"] == pytest.approx(0.0, abs=1e-6)
     assert judged["wrong_place"] is False
+
+
+def test_a_merge_is_judged_as_a_loop_is() -> None:
+    """A run's merges are judged by the same rules as its loops (milestone 2B's B4)."""
+    run, truth = line_run(30)
+    run = replace(run, keyframe_merges=np.array([[0, 1], [0, 3]], dtype=np.int64))
+    scored = runs.evaluate_absolute(run, *truth)
+    merges = loops.judge_pairs(run.keyframe_merges, run, truth, scored)
+    as_loops = loops.judge_loops(replace(run, keyframe_loops=run.keyframe_merges), truth, scored)
+    assert merges == as_loops
+    assert [merge["wrong_place"] for merge in merges] == [False, True]
+    assert loops.judge_pairs(np.zeros((0, 2), dtype=np.int64), run, truth, scored) == []

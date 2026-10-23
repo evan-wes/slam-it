@@ -11,6 +11,10 @@
 ///
 /// C++ also runs the threads by ORB-SLAM's own locking (`Threading::kLocks`), the baseline the
 /// design compares ours with (section 12, item 7).
+///
+/// Threaded, a merge loop closing finds waits for tracking, which makes it between two frames
+/// (`Pipeline::track`, the design's section 14, item 4, option B), as `slam_it.edge.pipeline`
+/// says; the native owner's anchor, which the views follow, takes the merged map's ids.
 #pragma once
 
 #include <Eigen/Core>
@@ -105,25 +109,43 @@ struct Fates {
   std::vector<std::int64_t> point;
 };
 
-/// @brief The map a lost track closed, as a run records it on the frame it was lost on
-///        (`slam_it.edge.pipeline.LostSummary`).
+/// @brief A map closed, as a run records it (`slam_it.edge.pipeline.LostSummary`): on the frame
+///        a track was lost on, the frame that took up a kept map, or a session's first frame.
 struct LostSummary {
   /// @brief The map's keyframes then.
   std::int64_t keyframes{0};
   /// @brief Its points.
   std::int64_t points{0};
-  /// @brief Whether it was reset, having `loss.reset_keyframes` keyframes or fewer, rather than
-  ///        kept.
+  /// @brief Whether it was reset rather than kept, having too few keyframes:
+  ///        `loss.reset_keyframes` or fewer, or fewer than `loss.session_keyframes` as a session
+  ///        ended.
   bool reset{false};
+};
+
+/// @brief A loop's correction as a run records it (`slam_it.edge.pipeline.Corrected`): how it
+///        went, and its keyframes by the run's ids, which live with it so that no correction is
+///        without them (B4's review panel, run 3, A15); `loops` sits below the atlas, and its
+///        `loops::CorrectionSummary` cannot know them.
+struct Corrected {
+  /// @brief How the correction went, its keyframes by the map's ids, which a later merge
+  ///        renumbers.
+  loops::CorrectionSummary summary;
+  /// @brief Its matched and current keyframes by the run's ids (the ids `keyframe_loops.npy`
+  ///        holds, `Atlas::run_id`), which a later merge does not renumber.
+  std::array<std::int64_t, 2> run_ids{};
 };
 
 /// @brief How loop closing went on a keyframe (`slam_it.edge.pipeline.LoopSummary`); its time
 ///        is the frame's `loop_seconds`.
 struct LoopSummary {
-  /// @brief The search.
+  /// @brief The search for a loop.
   loops::DetectionSummary detection;
-  /// @brief The correction, when a loop closed.
-  std::optional<loops::CorrectionSummary> correction;
+  /// @brief The correction, with its keyframes by the run's ids, when a loop closed.
+  std::optional<Corrected> correction;
+  /// @brief The search for a merge, when other maps are kept (`loops::detect_merge`).
+  std::optional<loops::DetectionSummary> merging;
+  /// @brief The merge, when one was found.
+  std::optional<loops::MergeSummary> merge;
 };
 
 /// @brief How the stages went on one frame (`slam_it.edge.pipeline.FrameSummary`); each
@@ -147,6 +169,9 @@ struct FrameSummary {
   std::optional<LoopSummary> loop;
   /// @brief The map closed, on the frame the track was lost on.
   std::optional<LostSummary> lost;
+  /// @brief The map closed on a frame relocalisation found in another kept map, which tracking
+  ///        goes on in.
+  std::optional<LostSummary> left;
 };
 
 /// @brief What tracking one frame gave (`slam_it.edge.pipeline.FrameResult`).
@@ -311,6 +336,25 @@ void set_reference(TrackingState& state, const Frame& frame);
 /// @param pose Its new `T_cam_world`.
 void move_last(TrackingState& state, const Eigen::Matrix4d& pose);
 
+/// @brief Leave the last frame's map for another (`TrackingState.change_map`): its points and
+///        its motion hold there no more; the frame placed in the other map follows with no
+///        velocity, and the loss's time starts again from it.
+/// @param state Tracking's state.
+void change_map(TrackingState& state);
+
+/// @brief Carry the last frame into the map a merge made (`TrackingState.merged`, threaded):
+///        its points and anchor keyframe take their ids moved on by the merge's offsets, and its
+///        two motions, the velocity and its pose relative to the anchor, take `G`'s scale (1 but
+///        in monocular). The view the merge published carries a new count, so the next frame
+///        first places the last one by its anchor in the merged map (`follow`).
+/// @param state Tracking's state.
+/// @param keyframe_offset How far the map's keyframe ids moved on.
+/// @param point_offset How far its point ids moved on.
+/// @param to_world `G`, carrying the map into the matched map's world.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the merge's two offsets, as Python's
+void merged(TrackingState& state, std::int64_t keyframe_offset, std::int64_t point_offset,
+            const Eigen::Matrix4d& to_world);
+
 /// @brief Keep the last frame's pose relative to the keyframe it was tracked against
 ///        (`slam_it.edge.pipeline.TrackingState.anchor_to`, threaded).
 /// @param state Tracking's state, its last frame tracked.
@@ -329,17 +373,36 @@ void anchor_to(TrackingState& state, const Map& view, std::size_t row, std::int6
 /// @param corrections The corrections that view carries (`View::corrections`), read with it.
 void follow(TrackingState& state, const Map& view, std::int64_t corrections);
 
+/// @brief A merge loop closing found, waiting for tracking to make it at its next frame
+///        (`slam_it.edge.pipeline.WaitingMerge`, threaded).
+struct WaitingMerge {
+  /// @brief The frame whose keyframe it was found on, counted from 0.
+  std::int64_t index{0};
+  /// @brief The merge.
+  loops::Merge merge;
+  /// @brief Loop closing's search on that keyframe, the merge to come.
+  LoopSummary summary;
+  /// @brief The search's time.
+  double seconds{0.0};
+};
+
 /// @brief Loop closing's own state from keyframe to keyframe (`slam_it.edge.pipeline.LoopState`,
 ///        ORB-SLAM3's `LoopClosing`'s). A map closed takes it with it.
 struct LoopState {
   /// @brief The loop being confirmed in the map, if any.
   std::optional<loops::Pending> pending;
+  /// @brief The merge being confirmed with another map, if any.
+  std::optional<loops::Merging> merging;
+  /// @brief Threaded: the merge found, waiting for tracking to make it; none inline, where a
+  ///        merge is made once found.
+  std::optional<WaitingMerge> waiting;
 };
 
-/// @brief The keyframes the loop being confirmed holds, which mapping's culling spares
-///        (`slam_it.edge.pipeline.LoopState.held`).
+/// @brief The keyframes a loop or merge being confirmed holds, which mapping's culling spares
+///        (`slam_it.edge.pipeline.LoopState.held`): the loop's two, the merge's last, and the
+///        current keyframe of a merge waiting (ORB-SLAM3's `SetNotErase`).
 /// @param state Loop closing's state.
-/// @return Their ids in the map; none when no loop is being confirmed.
+/// @return Their ids in the map; none when there are none.
 [[nodiscard]] std::vector<std::int64_t> held(const LoopState& state);
 
 /// @brief The map being tracked and its keyframe database (`slam_it.edge.pipeline.MapOwner`):
@@ -552,9 +615,30 @@ class MapOwner {
   /// @brief Empty the map's archive of removals, once the atlas has dated them.
   void clear_gone();
 
-  /// @brief Give up the map, lost: the database and the view go with it.
-  /// @return The map, if there was one.
-  std::optional<Map> close();
+  /// @brief Give up the map, to be kept or reset: its database goes with it; the view and the
+  ///        counts waiting are dropped.
+  /// @return The map, if there was one, and its database, when it keeps one.
+  std::pair<std::optional<Map>, std::optional<Database>> close();
+
+  /// @brief Take a kept map up again, with its database, as the map being tracked; its view is
+  ///        made once tracking anchors it (`relocalized`). Counted as a correction first, so
+  ///        that view carries a new count and nothing stamped with the map left's is taken as the
+  ///        new map's (`slam_it.edge.pipeline.MapOwner.resume`).
+  /// @param m The map.
+  /// @param database Its keyframe database, when it keeps one.
+  void resume(Map m, std::optional<Database> database);
+
+  /// @brief Take a merge's map, bring the matched map's database to its keyframes, and publish
+  ///        it: the merge moved the map's ids and world, so it is counted as a correction first,
+  ///        and the view published carries the new count. Where tracking last said it was
+  ///        (`anchor`) takes the merged map's ids, so the view follows it.
+  /// @param m The merged map.
+  /// @param database The matched map's database, which becomes the merged map's.
+  /// @param keyframe_offset How far the merge moved the map's keyframe ids on.
+  /// @param point_offset How far it moved its point ids on.
+  /// @return Nothing; a quantisation's error.
+  foundations::Result<void> take_merged(Map m, Database database, std::int64_t keyframe_offset,
+                                        std::int64_t point_offset);
 
  private:
   /// @brief After a step changed the map: bring the database to it and, threaded, publish it.
@@ -667,7 +751,9 @@ class Pipeline {
   [[nodiscard]] foundations::orb::Options extraction() const;
 
   /// @brief Track one frame (and map, if it becomes a keyframe; threaded, local mapping is
-  ///        given it).
+  ///        given it). Threaded, a merge loop closing found waits for this: tracking makes it
+  ///        first, between the last frame and this one (`slam_it.edge.pipeline._Threads.
+  ///        merge_waiting`).
   /// @param frame The next frame, built with `extraction`'s settings.
   /// @return Its pose, or why there is none; a stage's error, the error a thread failed with,
   ///         or `InvalidInput` once the run is finished.
@@ -675,8 +761,8 @@ class Pipeline {
 
   /// @brief End the run: threaded, wait for the threads to finish their work, then end them.
   ///        Local mapping and loop closing handle every keyframe given, and each global BA
-  ///        running ends, the latest carried onto the map. Inline, nothing waits. No frame is
-  ///        tracked after.
+  ///        running ends, the latest carried onto the map; a merge found then is made. Inline,
+  ///        nothing waits. No frame is tracked after.
   /// @return Nothing; the error a thread failed with.
   foundations::Result<void> finish();
 
@@ -712,6 +798,15 @@ class Pipeline {
   /// @return The frames tracked, but a reset map's.
   [[nodiscard]] Trajectory trajectory() const;
 
+  /// @brief Start the next of a run's sequences (`slam_it.edge.pipeline.Pipeline.start_session`,
+  ///        ORB-SLAM3's `ChangeDataset`): the map being tracked is reset if it holds fewer than
+  ///        `loss.session_keyframes` keyframes and kept whole otherwise, and tracking and loop
+  ///        closing start again, so the sequence's first frames start a new map.
+  ///        Threaded, the map waits for the threads first, as a lost map does.
+  /// @return How the map was closed; none if none was being tracked; `InvalidInput` if the run
+  ///         was finished (`finish`), its maps as they ended; the error a thread failed with.
+  foundations::Result<std::optional<LostSummary>> start_session();
+
  private:
   /// @brief A frame handled, as `initialize` and `track_frame` give it.
   struct Step {
@@ -742,6 +837,8 @@ class Pipeline {
     std::int64_t queue{0};
     /// @brief How mapping scheduled its keyframe's steps, inline.
     std::optional<Schedule> schedule;
+    /// @brief The map the frame was tracked in, when a merge took that map into another on it.
+    std::optional<std::int64_t> merged_from;
   };
 
   /// @brief A keyframe mapped and searched for loops, as `make_keyframe` gives it.
@@ -756,6 +853,8 @@ class Pipeline {
     std::vector<std::int64_t> made;
     /// @brief How mapping scheduled its steps.
     Schedule schedule;
+    /// @brief How a merge on it moved the map's point ids on, if one was made.
+    std::optional<std::int64_t> point_offset;
   };
 
   /// @brief What the threads share with tracking, on the heap so that a pipeline moved leaves
@@ -836,6 +935,14 @@ class Pipeline {
   ///         loop closing took, and how its stages went; a stage's error.
   foundations::Result<Step> track_frame(const Frame& frame);
 
+  /// @brief Threaded, make a merge loop closing found first, if one waits, between the last
+  ///        frame and this one (`PipelineThreads::merge_waiting`); then run the steps on the
+  ///        frame (`track_frame`).
+  /// @param frame The frame.
+  /// @return As `track_frame`, its wait counting the merge's; a stage's error, the merge's, or
+  ///         the error a thread failed with.
+  foundations::Result<Step> merge_then_track(const Frame& frame);
+
   /// @brief Threaded: place a tracked frame, and give local mapping its keyframe if it is one.
   /// @param frame The frame.
   /// @param seen The view tracking read, with the corrections it carries.
@@ -855,12 +962,41 @@ class Pipeline {
   foundations::Result<Keyframed> make_keyframe(const Map& m, const Frame& frame,
                                                const Tracked& tracked, FrameSummary& summary);
 
-  /// @brief Close the map the track was lost in, on this frame: keep it, or reset it if it has
-  ///        `loss.reset_keyframes` keyframes or fewer (`Atlas::close`). Tracking's and loop
-  ///        closing's state go with it, so the next frame starts a new map.
-  /// @param m The map, given up by the owner.
-  /// @return The closed map's summary.
-  LostSummary close(const Map& m);
+  /// @brief Why the map being tracked closes (`slam_it.edge.pipeline._Closing`).
+  enum class Closing : std::uint8_t {
+    /// @brief The track was lost on this frame.
+    kLost,
+    /// @brief Relocalisation found this frame in a kept map, which tracking takes up.
+    kLeft,
+    /// @brief A new session starts (`start_session`).
+    kSession,
+  };
+
+  /// @brief Close the map being tracked: keep it whole, or reset it if it is small
+  ///        (`Atlas::close`): a map lost or left with `loss.reset_keyframes` keyframes or fewer,
+  ///        one a new session closes with fewer than `loss.session_keyframes`. A map lost is
+  ///        closed after its frame is dated, one left or a session's before. Loop closing's
+  ///        state goes with it, a merge waiting too; threaded, the threads have settled first.
+  /// @param why Why it closes.
+  /// @return The closed map's summary; the atlas's error (`Atlas::close`).
+  [[nodiscard]] foundations::Result<LostSummary> leave(Closing why);
+
+  /// @brief On a frame that lost the track of a map, close it (`leave`, dated) and start none
+  ///        until the next frame: its summary's `lost` set; nothing on any other frame.
+  /// @param step The frame's step.
+  /// @return Nothing; `leave`'s error.
+  [[nodiscard]] foundations::Result<void> close_lost(Step& step);
+
+  /// @brief Take up kept map `number`, where relocalisation found this frame, leaving the map
+  ///        tracked, kept or reset as a lost map is; tracking goes on in the map found
+  ///        (`change_map`). Threaded, the map left waits for the threads first, as a lost map
+  ///        does, the baseline's lock let go meanwhile.
+  /// @param number The kept map's number.
+  /// @param lock Tracking's hold on the map's lock, the baseline's; empty otherwise.
+  /// @return How the map left was closed, and the time spent waiting for the threads; the
+  ///         error a thread failed with, or the database's.
+  foundations::Result<std::pair<LostSummary, double>> switch_map(
+      std::int64_t number, std::unique_lock<std::mutex>& lock);
 
   /// @brief The sensor mode.
   Mode mode_;

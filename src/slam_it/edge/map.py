@@ -22,7 +22,9 @@ records from them when each point and keyframe was removed (:mod:`slam_it.eval.r
 places the frames tracked from a culled keyframe through its parents.
 
 **The loops closed** are the map's loop edges (``loop_edges``), each a pair of keyframe ids: a
-keyframe with one is never culled, as ORB-SLAM's ``AddLoopEdge`` marks it not to be erased.
+keyframe with one is never culled, as ORB-SLAM's ``AddLoopEdge`` marks it not to be erased. **The
+merges made** are its merge edges (``merge_edges``), kept apart from them, as a run keeps them:
+a keyframe with one is never culled either (``AddMergeEdge``).
 
 **A point's descriptor, normal and distances** follow ORB-SLAM's ``MapPoint``:
 
@@ -150,6 +152,9 @@ class Map:
     loop_edges : ndarray of int64, shape (E, 2)
         The loops closed in the map, each the two keyframes' ids, the older first, in the order
         they were closed.
+    merge_edges : ndarray of int64, shape (F, 2)
+        The merges that made the map, each the two keyframes' ids, the older (the matched map's)
+        first, in the order they were made.
     """
 
     levels: int
@@ -188,6 +193,7 @@ class Map:
     gone_kf_parent: IntArray
     gone_kf_relative: Array
     loop_edges: IntArray
+    merge_edges: IntArray
 
     def __post_init__(self) -> None:
         """Check the tables' shapes, types and links (not copied: maps are built by this module).
@@ -199,8 +205,8 @@ class Map:
             to the keypoint count, an id column is not strictly ascending or reaches its next
             id, a keypoint observes a point that is not in the map, a keyframe's parent is
             neither -1 nor another of its keyframes, the archive holds an id the map still
-            has, one it never gave, or an unknown removal, or a loop edge joins a keyframe the
-            map does not hold, or one to itself, or lists the newer first.
+            has, one it never gave, or an unknown removal, or a loop or merge edge joins a
+            keyframe the map does not hold, or one to itself, or lists the newer first.
         """
         _check(self)
 
@@ -377,6 +383,7 @@ def empty(levels: int, scale_factor: float) -> Map:
         gone_kf_parent=no_int,
         gone_kf_relative=np.zeros((0, 4, 4)),
         loop_edges=np.zeros((0, 2), dtype=np.int64),
+        merge_edges=np.zeros((0, 2), dtype=np.int64),
     )
 
 
@@ -416,7 +423,7 @@ def has_loop(m: Map, k: int) -> bool:
     bool
         Whether a loop closed in the map joins it.
     """
-    return bool(np.any(m.loop_edges == m.kf_id[k]))
+    return _joins(m.loop_edges, int(m.kf_id[k]))
 
 
 def add_loop_edge(m: Map, first: int, second: int) -> Map:
@@ -439,10 +446,64 @@ def add_loop_edge(m: Map, first: int, second: int) -> Map:
     slam_it.foundations.errors.InvalidInputError
         If either is not a keyframe of the map, or they are the same.
     """
+    return replace(m, loop_edges=_with_edge(m, m.loop_edges, (first, second), "loop"))
+
+
+def has_merge(m: Map, k: int) -> bool:
+    """Return whether keyframe row `k` has a merge edge.
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    k : int
+        The keyframe's row.
+
+    Returns
+    -------
+    bool
+        Whether a merge made in the map joins it.
+    """
+    return _joins(m.merge_edges, int(m.kf_id[k]))
+
+
+def add_merge_edge(m: Map, first: int, second: int) -> Map:
+    """Return the map with a merge edge joining two of its keyframes (``AddMergeEdge``, both ways).
+
+    Parameters
+    ----------
+    m : Map
+        The map.
+    first, second : int
+        The two keyframes' ids, in either order.
+
+    Returns
+    -------
+    Map
+        The map, the edge last in ``merge_edges``, the older keyframe first.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either is not a keyframe of the map, or they are the same.
+    """
+    return replace(m, merge_edges=_with_edge(m, m.merge_edges, (first, second), "merge"))
+
+
+def _joins(edges: IntArray, keyframe: int) -> bool:
+    """Return whether an edge list joins a keyframe, by its id."""
+    return bool(np.any(edges == keyframe))
+
+
+def _with_edge(m: Map, edges: IntArray, ends: tuple[int, int], what: str) -> IntArray:
+    """Return an edge list with an edge joining two of the map's keyframes, the older first."""
+    first, second = ends
     edge = np.array([[min(first, second), max(first, second)]], dtype=np.int64)
     if first == second or np.any(m.keyframe_rows(edge[0]) < 0):
-        raise InvalidInputError(f"loop edge {first}-{second}: expected two of the map's keyframes")
-    return replace(m, loop_edges=np.concatenate([m.loop_edges, edge]))
+        raise InvalidInputError(
+            f"{what} edge {first}-{second}: expected two of the map's keyframes"
+        )
+    return np.concatenate([edges, edge])
 
 
 def replace_point(m: Map, *, lose: int, keep: int) -> Map:
@@ -760,9 +821,10 @@ _SHAPES: dict[str, tuple[str, type[np.generic], tuple[int, ...]]] = {
     "gone_kf_parent": ("H", np.int64, ()),
     "gone_kf_relative": ("H", np.float64, (4, 4)),
     "loop_edges": ("E", np.int64, (2,)),
+    "merge_edges": ("F", np.int64, (2,)),
 }
-"""Each table array's row count (keyframes, keypoints, points, erased points and keyframes, or
-loop edges), dtype and item shape."""
+"""Each table array's row count (keyframes, keypoints, points, erased points and keyframes,
+loop edges, or merge edges), dtype and item shape."""
 
 
 def _check(m: Map) -> None:
@@ -782,6 +844,7 @@ def _check(m: Map) -> None:
         "G": len(np.asarray(m.gone_pt_id)),
         "H": len(np.asarray(m.gone_kf_id)),
         "E": len(np.asarray(m.loop_edges)),
+        "F": len(np.asarray(m.merge_edges)),
     }
     for name, (rows, dtype, item) in _SHAPES.items():
         value = np.asarray(getattr(m, name))
@@ -817,15 +880,16 @@ def _check(m: Map) -> None:
 
 
 def _check_links(m: Map) -> None:
-    """Check the keyframes' links: each parent, and each loop edge (see :func:`_check`)."""
+    """Check the keyframes' links: each parent, loop edge and merge edge (see :func:`_check`)."""
     parents = np.asarray(m.kf_parent)
     if np.any(parents == m.kf_id) or not np.all((parents == -1) | np.isin(parents, m.kf_id)):
         raise InvalidInputError("map.kf_parent: a parent must be -1 or another of its keyframes")
-    edges = np.asarray(m.loop_edges)
-    if not np.all(np.isin(edges, m.kf_id)) or np.any(edges[:, 0] >= edges[:, 1]):
-        raise InvalidInputError(
-            "map.loop_edges: each joins two of its keyframes, the older (lower id) first"
-        )
+    for name in ("loop_edges", "merge_edges"):
+        edges = np.asarray(getattr(m, name))
+        if not np.all(np.isin(edges, m.kf_id)) or np.any(edges[:, 0] >= edges[:, 1]):
+            raise InvalidInputError(
+                f"map.{name}: each joins two of its keyframes, the older (lower id) first"
+            )
 
 
 class Implementation(Protocol):
@@ -1472,9 +1536,9 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
     A keyframe that is still another's parent is refused, so every parent stays a keyframe of
     the map: :func:`slam_it.edge.covisibility.cull` gives its children new parents first. It
     guards the parents, not the root: a childless first keyframe is erased; callers above the map
-    go through ``cull``, which refuses it. A keyframe with a loop edge is refused too: the loops
-    closed keep theirs (``cull`` spares it). The erased keyframe's pose relative to its parent
-    is archived, for the final trajectory.
+    go through ``cull``, which refuses it. A keyframe with a loop or merge edge is refused too:
+    the loops closed and the merges made keep theirs (``cull`` spares it). The erased keyframe's
+    pose relative to its parent is archived, for the final trajectory.
 
     Parameters
     ----------
@@ -1494,7 +1558,7 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
     ------
     slam_it.foundations.errors.InvalidInputError
         If `k` is not a keyframe's row, or the keyframe is still another's parent, or has a loop
-        edge.
+        or merge edge.
     """
     if m.keyframes == 0:
         raise InvalidInputError("k: the map has no keyframes")
@@ -1507,6 +1571,8 @@ def erase_keyframe(m: Map, k: int, *, backend: str = "python") -> Map:
         )
     if has_loop(m, row):
         raise InvalidInputError(f"k: keyframe {m.kf_id[row]} has a loop edge, and is kept")
+    if has_merge(m, row):
+        raise InvalidInputError(f"k: keyframe {m.kf_id[row]} has a merge edge, and is kept")
     return backends.call(
         backend,
         __name__,

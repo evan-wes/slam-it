@@ -4,6 +4,224 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.17.0] - 2026-10-19
+
+Milestone 2B's B4: maps merged, in the three languages (`docs/design/2026-10-14-online-slam.md`,
+section 14). The atlas keeps every map the track leaves whole, each with its keyframe database;
+relocalisation searches every kept map with the one tracked; loop closing searches each keyframe for
+a merge with a kept map beside its loop, by ORB-SLAM3's stages, and merges the map tracked into the
+one it matched, with the paper's correction (a welding BA over both windows, the essential graph
+over the whole merged map) and global BA after. A run can take several sequences in turn, each a
+session that starts a new map. The run format is version 9: runs written in version 8 no longer
+read; the bundle's is version 5, so the showcase's runs are baked and uploaded again before a
+release serves this viewer. Threaded, loop closing finds a merge and tracking makes it between
+two frames, pausing for the whole merge (option B, decided by evan-wes on 2026-10-18); a merge that
+does not block tracking is the later design. Section 15's measurements (multi-session EuRoC, the
+kidnap, 7-Scenes, the loss window, and the test set and the loop sequences) are not run for this
+release (decided by evan-wes on 2026-10-18). B4's review panel's findings, cited below by their
+IDs in parentheses, were decided by evan-wes on 2026-10-19 (run 1), 2026-10-20 (run 2) and
+2026-10-21 (run 3) and fixed in the PR, or recorded where they are tracked
+(`docs/reviews/2026-10-19-feature-2b-b4-merging-maps.md`); run 3's are named so, apart from B3's
+panel's IDs.
+
+### Added
+
+- **The atlas keeps maps whole** (`slam_it.edge.atlas`, with C++ and Rust twins): a map the track
+  leaves is kept with its keyframes, keypoints, points, observations, links and keyframe database
+  (`Kept`), or reset if it is too small; each map keeps its ids' run ids, which a merge joins.
+  Every point, keyframe and final pose records the map it ends in, and each frame the map it was
+  tracked in. A merge carries the active map's records into the matched map's world, its frames'
+  and culled keyframes' poses relative to their keyframes into its units (L1). A
+  merged map that is reset drops the frames of the maps merged into it with its own, as a reset
+  map's frames are not in the trajectory (A12). A kept map that is not there is `InvalidInput`
+  naming its number, in all three languages, at the atlas (H2) and at the merge's lookup of the
+  matched map (H15).
+- **Relocalisation in every map** (`relocalization.relocalize_across`, with
+  `database.merge_candidates` and `database.Indexed`): each map's database finds its own
+  candidates, its words counted within the map (B1's panel, L7), all tried best score first. A
+  frame found in a kept map goes on in it, the map left kept or reset as a lost map is, recorded
+  as the frame's `left`.
+- **Merge detection** (`loops.detect_merge`, `loops.merge_first`): ORB-SLAM3's merge branch
+  beside loop detection, by the same stages: up to 3 candidates from the other maps, none below
+  `loops.min_keyframes`, a merge confirmed as a loop is. A merge found on a keyframe goes before
+  a loop closed on it, the loop's outcome `merged` (code 6). Culling spares the last keyframe of a
+  merge being confirmed.
+- **The merge** (`loops.merge`, `loops.merge_transform`): the active map carried into the matched
+  map's world by the merge's Sim(3) and taken in after it, its ids moved on by the matched map's
+  next ones; its spanning tree re-rooted and hung under the matched keyframe; the welding windows
+  (`loops.weld_neighbours` 25, `loops.weld_widen` 12, `loops.weld_rounds` 5); the matched
+  window's points fused into the active window's keyframes; the welding BA with a Huber loss
+  (`graphs.bundle_adjust`'s `huber`, in the three languages); the essential graph over the whole
+  merged map, both windows held; global BA after, under `loops.global_ba`; and a merge edge
+  (`map.add_merge_edge`), apart from the loop edges. A loop being confirmed is carried into the
+  merged map, in its units: `diag(1/s, 1/s, 1/s, 1) S G⁻¹` (L2).
+- **Sessions** (`Pipeline.start_session`, `--sequence` repeated, `vo.session_offsets`): a run over
+  several sequences of one camera in turn, each starting a new map, the map before reset with
+  fewer than `loss.session_keyframes` (12) keyframes and kept otherwise, as ORB-SLAM3's
+  `ChangeDataset`. A session whose times do not come after the last one's is moved on, and each
+  session's first frame records `session`.
+- **Threaded merging, tracking paused for the merge** (option B; `_Threads.merge_waiting` and
+  `TrackingState.merged`, with C++ and Rust twins): loop closing's thread leaves a merge found
+  waiting (`LoopState.waiting`), and tracking makes it before its next frame, or as the run
+  finishes: mapping's queue mapped first, loop closing passing those keyframes by; then, with
+  mapping stopped, a global BA still running superseded, the merge made as inline without global
+  BA, a global BA started on the merged map only if one was superseded, and the merged view
+  published with a new correction count. Tracking's last frame takes the merged map's ids, its
+  motions G's scale. A merge waiting when the track leaves its map is dropped.
+- **A loss window of 0** (`loss.relocalize_seconds` may be 0): a map above `loss.reset_keyframes`
+  is lost on its first failed frame, and the next frame starts a new map.
+- **The run format, version 9:** `tracked_maps.npy` and `keyframe_merges.npy`; a run's maps no
+  longer need to rise; the diagnostics' `loop` gains `merging` and `merge`, and a loop's
+  `correction` names its two keyframes by the run's ids too (`matched_run`, `current_run`), which
+  no merge renumbers, held with the correction itself (`Corrected`, in each language), so none
+  can be written without them (run 3's A15); a frame gains `left` and, on a session's first,
+  `session`.
+- **The bundle, version 5:** each run's merges (`keyframe_merges.npy`), which the viewer draws
+  with the covisibility graph in a colour of their own (`--graph-merge`). The map at a frame is
+  the map it ends in: the records' `map` is written through each merge's destination, read from
+  the run's merge records, and a run whose maps disagree (one map's frames ending in two maps,
+  by its merges and by its trajectory) or a record naming a map the run neither ends with nor
+  merged is refused (A12, H21); the header lists the maps a run ends with, each map's `frames`
+  as stretches, and the viewer draws a map through the runs of rows its poses come in, and
+  finds a loop's keyframes by the run's ids its correction names, in a map taken up again or
+  merged away since too (A1). A run of several sequences in turn is refused by name (H13).
+- **A 7-Scenes importer** (`slam_it.eval.sevenscenes`, `python -m slam_it.eval.sevenscenes SCENE
+  OUT`): a scene's sequences to TUM format, monocular, for section 15.
+- **The test-set measure takes sessions** (`scripts/measure_testset.py`): a sequence's `folders`
+  run in turn and scored against their ground truths in turn; each result's `sessions`, `maps`
+  and `merges`, each merge judged as a loop is (`slam_it.eval.loops.judge_pairs`). A config
+  gives `folders` alone, a list of one for a single sequence: `folder` is refused (A10), the
+  refusal naming the keys missing and unknown (H22); the measure and `compare_testsets.py`
+  share the sessions' offsets (`offsets_of`, H12).
+
+### Changed
+
+- **On B3b's threads:** relocalisation into a kept map and a session's start wait for local
+  mapping and loop closing to finish the keyframes given, and supersede a global BA running, as
+  a lost map does; the native programs feed each session's first frame at once. Taking up a kept
+  map and a merge count as a correction, so the view after carries a new count; threaded, a merge
+  waits for tracking, which makes it between two frames (the design's section 14, item 4).
+- **`slam_it.eval.loops.judge_loops` is `judge_pairs` over a run's loops:** the loop and merge
+  rooms' tests and the measure judge loops and merges by it.
+- **A map's ids keep their run ids in a table, not a base** (`Atlas.run_ids`,
+  `Atlas.point_run_ids`), so a tracked frame's reference keyframe and its keypoints' points are
+  reported by the run's ids through a merge.
+- **From B4's review panel:** Rust's loop closing and relocalisation read the kept maps with the
+  atlas's lock let go (shared, `Arc`), so threaded tracking never waits on a search (A2), a kept
+  map a search still holds never taken out but refused, naming it, where it was copied out (H20,
+  A13), and `loops::detect_merge` and `merge_candidates` take the maps by reference in C++ and
+  Rust, as relocalisation does; C++ and Rust keep each kept map as one `Kept`, its run ids with
+  it (H2); `start_session` refuses a finished run in all three languages (H4);
+  `eval.runs.tracking` gives a segment per stretch tracked in one map, and the worker's summary
+  counts the maps a run ends with apart (`maps`, which the status page's "maps" row shows, where
+  it showed the segments), and the frames relocalisation found in a map kept from earlier
+  (`taken_up`, which the status page says apart from those found again in their map) (A11);
+  both counts are `eval.runs.Tracking`'s, which the worker and the test-set measure read alike
+  (the measure's `taken_up` and `kept_maps`, its table's maps column counting maps kept, not
+  stretches), and the run format lists a merge's record among the keys read across a run's
+  maps, which `Run.merged_into` reads for the bake (run 3's A17);
+  threaded, C++ and Rust read a loop correction's run ids inside its stop, once the atlas has
+  recorded the corrected map, as Python does (run 3's A18); `Crossing` is `slam_it.backends`'
+  alone (H10); each weld setting's doc stands alone (H7); and
+  why a map closes is named (`_Closing`), in place of a keyframe count with `+ 1` (H8).
+
+### Tests
+
+- **The merge room** (`tests/orchestration/test_merge_room.py`): the loop room blinded for 3.2 s
+  from 90 degrees round, so its first map is lost and kept and a second starts. At
+  `MERGE_OPTIONS`, every language ends in one map, merged at no wrong place, its final ATE over
+  the merged map and its points' distance to the walls within bounds set from the first runs.
+- **Two maps, merged** (`tests/edge/test_merges.py`, on `TwoMaps`): merge candidates,
+  relocalisation in every map, merge detection and its confirmation, `merge_first` and the merge,
+  each compiled backend held to Python's reference; the welding BA's Huber loss
+  (`tests/foundations/test_graphs.py`); merge edges and culling's spared keyframes.
+- **The merge room threaded** (`tests/orchestration/test_merge_room_threads.py`): each native
+  program, C++ in both schemes, merges it in every mode and holds the merge room's bar, its first
+  frame after the merge placed by the motion model; Python's run, in process, each frame waiting
+  for its threads, keeps tracking's last frame naming the same keyframe and points through the
+  merge, and leaves no thread. ThreadSanitizer runs it threaded in both C++ schemes
+  (`tests/orchestration/test_merge_room_tsan.py`, in `scripts/check.sh`'s ThreadSanitizer step).
+  Its TUM monocular case in C++'s own scheme, which failed in one of three full layer-1 runs
+  (its first frame after the merge placed by relocalisation), is no longer flaky: the threaded
+  room tests run on the performance cores (below, run 3's L14).
+- **Sessions** (`tests/orchestration/test_sessions.py`): the room run twice in turn through every
+  backend, the offsets, the shared camera and the refusals; `start_session` in each language's
+  pipeline tests; a loss window of 0 in each language's loss rules.
+- **The rooms' golden records are regenerated, one per language:** 22 of each record's 27 cases
+  are unchanged; window/tum/monocular and window/euroc/monocular change in their fates and stage
+  summaries alone (merge detection from frame 22, relocalisation searching the kept map on
+  frames 23 to 25), and the loop room's three cases in their corrections alone, which name
+  their keyframes by the run's ids too; their states, maps and poses unchanged.
+- The golden bundles are rebaked at version 5 with all three programs; the run fixture is at
+  format 9.
+- `slam_it.eval.loops` judges merges as it judges loops (`tests/eval/test_loops.py`).
+- The positional test paths are collected in path order, so no directory is collected twice
+  (`tests/conftest.py`): pytest lost a sub-directory's conftest fixtures otherwise
+  (pytest-dev/pytest#14635, in 9.1.1; `tests/test_collection_order.py`).
+- **From B4's review panel:**
+  - **The revisit room** (`tests/orchestration/test_revisit_room.py`, A3): the merge
+    room with loop closing off, blinded again for 1 s before the camera comes back over the
+    first map's start; every language, inline, and each native scheme, threaded, takes the
+    first map up again by relocalisation (`left` recorded, the maps tracked in going 0, 1, 0),
+    each map's final ATE within a per-mode bar, map 0 aligned once over both its stretches (L10),
+    and map 0's frames from the take-up on within 1.5 cm, so that a take-up some 2 cm off fails
+    too (run 3's L15); ThreadSanitizer runs it threaded in both C++ schemes.
+  - **The atlas through a monocular merge** (`tests/edge/test_atlas.py`,
+    `cpp/tests/edge/test_atlas.cpp`, `rust/slam-it-edge/tests/atlas.rs`): frames placed through
+    the merge, through a culled keyframe too, and the removed points and keyframes, against
+    `rigid_of(T G⁻¹)`; a merged map reset, taking both maps' frames (A12); in Rust, a kept map
+    a snapshot still holds refused, and moved out once let go (H20); a loop being confirmed
+    carried through the merge, a loop of scale 1.25 keeping it (L9), and confirmed on the next
+    keyframe (`tests/edge/test_merges.py`), and in C++ and Rust the carry itself, a loop of scale
+    1.25 keeping it, against its known answer (`carry_through`: C++'s in `edge::detail`,
+    declared for its test in an internal header, `cpp/src/edge/carry.hpp`, out of the edge
+    rung's interface (run 3's A16), and tested in `cpp/tests/edge/test_pipeline.cpp`; Rust's in
+    `pipeline.rs`'s own tests).
+  - `held()` and `TrackingState.merged` with a scaled `G` in each language (the native ones
+    H19), a finished run's session refused in each language, and the Huber loss's known answer
+    on one stereo observation in every backend (`initial_error` 10.0702).
+  - **Two golden bundles** (`merge_bundle/`, `revisit_bundle/`), on which the viewer's tests
+    choose the map shown (`viewer/tests/maps.test.js`). They leave out their frames' JPEG
+    chunks, which no test reads, keeping the images' spans the page's loader reads; the layout
+    test compares them without the chunks.
+  - **The threaded room tests run their native programs on the performance cores** (run 3's
+    L14): the loop, merge and revisit rooms threaded, under ThreadSanitizer too, and the room's
+    threaded program test (`tests/orchestration/conftest.py`'s `fast_cores`; nothing pinned on a
+    CPU with one kind of core, nor Python's threaded runs in process, which would pin the whole
+    session). These tests hold each run to a bar of results; on this machine's efficiency cores
+    mapping a keyframe takes about half again as long, so that ORB-SLAM3's keyframe rule, which
+    gives a monocular frame no keyframe while mapping is busy, dropped keyframes and failed
+    their monocular cases at random (the revisit room's in C++'s own scheme 4 of 77 runs over
+    three sessions, the loop room's 2 of 20 in C++ and 1 of 20 in Rust). Pinned, the loop
+    room's case passed 30 of 30 runs and the merge room's 25 of 25, which closes their flaky
+    threaded cases in the ladder's open items; the revisit room's failed 2 of 60, the same way,
+    its keyframe at frame 183 still mapped close to the next frame's decision in C++'s own
+    scheme. The ladder's open items hold the question left: why one deferred keyframe starves a
+    monocular map. No bar changed. `vo.run` takes `cpus`, pinning a program without a
+    budget (`slam_it.eval.budgets.pin`, which a budget's command line shares), and
+    `budgets.performance_cores` reads the performance cores, as a budget's CPUs do.
+  - **A loop's keyframes by the run's ids:** each loop room run, in every language and threaded,
+    names each loop it corrects by the run's ids, the `keyframe_loops.npy` row
+    (`tests/orchestration/test_loop_room.py`); the viewer finds a loop closed in a map later
+    merged away by them, which the k-th of the map's run ids did not (`viewer/tests/loops.test.js`).
+
+## [0.3.16.2] - 2026-10-19
+
+The two tests that failed the Test workflow on `main` no longer depend on the machine running
+them, and the workflow has more time.
+
+### Fixed
+
+- **`tests/eval/test_budgets.py`**: two tests of `budgets.cpus` faked the CPUs offered and the
+  performance cores but read the host's hyperthread layout, so they failed on a runner whose
+  CPUs 2 and 3 are one core. They now pass an absent topology, each CPU a core of its own on
+  any machine.
+
+### Changed
+
+- **`.github/workflows/test.yml`**: the job's time limit is 180 min, not 120; its last run took
+  118 min.
+
 ## [0.3.16.1] - 2026-10-19
 
 The showcase's home page shows only its runs: the demo shows the run viewer alone until public

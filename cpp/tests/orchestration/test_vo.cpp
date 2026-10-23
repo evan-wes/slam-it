@@ -1,8 +1,8 @@
 /// @file
 /// @brief Native tests for the native program's run (slam_it/orchestration/vo.hpp): reading the
-///        command line, the request's checks, and a run of no frames on a fixture folder (the
-///        fixtures list images without holding them). The whole room is run, through every
-///        backend, by tests/orchestration.
+///        command line, the request's checks, the sessions' time offsets, and runs of no frames
+///        on fixture folders (the fixtures list images without holding them). The whole room is
+///        run, through every backend, by tests/orchestration.
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -37,7 +37,7 @@ std::string sequence(const std::string& name) {
 vo::Request request_for(const std::string& dataset, edge::Mode mode, const std::string& name) {
   vo::Request out;
   out.dataset = dataset;
-  out.sequence = sequence(name);
+  out.sequences = {sequence(name)};
   out.mode = mode;
   out.out = "run";
   out.options.relocalization.enabled = false;  // no vocabulary: these check the request
@@ -81,8 +81,13 @@ void check_parse(int& failures) {
          "parse sets the options named, the rest default", failures);
   const auto plain = vo::parse(command({}));
   expect(plain.has_value() && plain->first == 0 && !plain->count.has_value() &&
-             !plain->record_features,
+             !plain->record_features && plain->sequences == std::vector{sequence("tum_camera")},
          "first and count default to all frames, and no features are recorded", failures);
+  const auto sessions = vo::parse(command({"--sequence", "second", "--sequence", "third"}));
+  expect(sessions.has_value() &&
+             sessions->sequences ==
+                 std::vector<std::string>{sequence("tum_camera"), "second", "third"},
+         "--sequence repeats, each a session in turn", failures);
   const std::vector<std::vector<std::string>> refused{
       {"--mode", "lidar"},
       {"--first", "x"},
@@ -123,6 +128,23 @@ void check_requests(int& failures) {
   bad = good;
   bad.options.covisibility.local_neighbours = 0;
   expect(is_invalid_input(vo::check(bad)), "check refuses settings out of range", failures);
+  bad = good;
+  bad.sequences.clear();
+  expect(is_invalid_input(vo::check(bad)), "check refuses a request of no sequence", failures);
+}
+
+/// @brief Check the sessions' time offsets (`slam_it.orchestration.vo.session_offsets`'s
+///        examples, and more).
+/// @param failures Running failure count.
+void check_session_offsets(int& failures) {
+  using Times = std::vector<std::vector<double>>;
+  expect(vo::session_offsets(Times{{0.0, 0.5, 1.0}, {2.0, 2.5}}) == std::vector{0.0, 0.0},
+         "a session after the ones before keeps its clock", failures);
+  expect(vo::session_offsets(Times{{0.0, 0.5, 1.0}, {0.0, 0.5}}) == std::vector{0.0, 1.5},
+         "one that starts again comes a frame period after the last time before", failures);
+  expect(vo::session_offsets(Times{{0.0, 0.1, 0.2, 0.6}, {}, {1.0}, {0.0}}) ==
+             std::vector{0.0, 0.0, 0.0, 2.0},
+         "the period is the median interval of the session before, 1 s for one frame", failures);
 }
 
 /// @brief Check runs on the fixture folders: none of their images exist.
@@ -158,11 +180,27 @@ void check_runs(int& failures) {
   request.count = 1;
   expect(is_invalid_input(vo::run(request)), "a missing image fails the run", failures);
   request.dataset = "euroc";
-  request.sequence = sequence("euroc");
+  request.sequences = {sequence("euroc")};
   request.mode = edge::Mode::kStereo;
   expect(is_invalid_input(vo::run(request)), "a missing stereo image fails the run", failures);
-  request.sequence = sequence("no_such_sequence");
+  request.sequences = {sequence("no_such_sequence")};
   expect(is_invalid_input(vo::run(request)), "a missing sequence fails the run", failures);
+}
+
+/// @brief Check runs of several sequences on the fixture folders, of no frames.
+/// @param failures Running failure count.
+void check_sessions(int& failures) {
+  const slam_it::testing::ScratchDir scratch("slam_it_test_vo_sessions");
+  vo::Request request = request_for("tum", edge::Mode::kMonocular, "tum_camera");
+  request.out = scratch.path().string();
+  request.count = 0;
+  request.sequences.push_back(sequence("tum_no_depth"));
+  const auto both = vo::run(request);
+  expect(both.has_value() && both->sequence == "tum_camera+tum_no_depth",
+         "a run of two sequences is named for both", failures);
+  request.sequences.back() = sequence("rgbd_dataset_freiburg1_fixture");
+  expect(is_invalid_input(vo::run(request)), "sequences of different cameras are refused",
+         failures);
 }
 
 /// @brief The test body.
@@ -172,7 +210,9 @@ int run() {
   check_exit_codes(failures);
   check_parse(failures);
   check_requests(failures);
+  check_session_offsets(failures);
   check_runs(failures);
+  check_sessions(failures);
   return slam_it::testing::finish("orchestration/vo", failures);
 }
 

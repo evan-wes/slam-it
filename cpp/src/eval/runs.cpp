@@ -148,7 +148,7 @@ Result<void> check_stamped(const std::vector<double>& times,
   return {};
 }
 
-/// @brief Check maps: one per row, numbers from 0, never descending.
+/// @brief Check maps: one per row, numbers from 0.
 /// @param maps The maps.
 /// @param rows The rows they are for.
 /// @param name Their name, for messages.
@@ -160,11 +160,10 @@ Result<void> check_maps(const std::vector<std::int64_t>& maps, std::size_t rows,
                                               std::to_string(maps.size()));
   }
   for (std::size_t row = 0; row < maps.size(); ++row) {
-    if (maps[row] < 0 || (row > 0 && maps[row] < maps[row - 1])) {
+    if (maps[row] < 0) {
       return fail(ErrorKind::kInvalidInput,
-                  std::string(name) + ": maps must be numbers from 0, never descending; row " +
-                      std::to_string(row) + " is " + std::to_string(maps[row]) +
-                      (row > 0 ? ", after " + std::to_string(maps[row - 1]) : ""));
+                  std::string(name) + ": maps must be numbers from 0; row " + std::to_string(row) +
+                      " is " + std::to_string(maps[row]));
     }
   }
   return {};
@@ -223,26 +222,30 @@ Result<void> check_links(const std::vector<std::array<std::int64_t, 3>>& links,
   return {};
 }
 
-/// @brief Check loop edges: two keyframes of one map, the lower first, each pair once
-///        (`slam_it.eval.runs._check_loops`).
-/// @param loops The loops.
+/// @brief Check loop or merge edges: two keyframes of one map, the lower first, each pair once
+///        (`slam_it.eval.runs._check_edges`).
+/// @param edges The edges.
 /// @param maps Each keyframe's map, checked.
+/// @param name Their name, for messages.
+/// @param what An edge's name, for messages.
 /// @return Nothing, or `InvalidInput`.
-Result<void> check_loops(const std::vector<std::array<std::int64_t, 2>>& loops,
-                         const std::vector<std::int64_t>& maps) {
-  for (std::size_t i = 0; i < loops.size(); ++i) {
-    const auto [first, second] = loops[i];
+Result<void> check_edges(const std::vector<std::array<std::int64_t, 2>>& edges,
+                         const std::vector<std::int64_t>& maps, const std::string& name,
+                         const char* what) {
+  std::string an = name;
+  an += ": a ";
+  an += what;
+  for (std::size_t i = 0; i < edges.size(); ++i) {
+    const auto [first, second] = edges[i];
     if (first < 0 || first >= second || std::cmp_greater_equal(second, maps.size())) {
-      return fail(ErrorKind::kInvalidInput,
-                  "keyframe_loops: a loop must join two keyframes, the lower first");
+      return fail(ErrorKind::kInvalidInput, an + " must join two keyframes, the lower first");
     }
     if (maps[static_cast<std::size_t>(first)] != maps[static_cast<std::size_t>(second)]) {
-      return fail(ErrorKind::kInvalidInput,
-                  "keyframe_loops: a loop's keyframes must be in one map");
+      return fail(ErrorKind::kInvalidInput, an + "'s keyframes must be in one map");
     }
-    if (std::find(loops.begin(), loops.begin() + static_cast<std::ptrdiff_t>(i), loops[i]) !=
-        loops.begin() + static_cast<std::ptrdiff_t>(i)) {
-      return fail(ErrorKind::kInvalidInput, "keyframe_loops: a loop must close once");
+    if (std::find(edges.begin(), edges.begin() + static_cast<std::ptrdiff_t>(i), edges[i]) !=
+        edges.begin() + static_cast<std::ptrdiff_t>(i)) {
+      return fail(ErrorKind::kInvalidInput, an + " must be made once");
     }
   }
   return {};
@@ -278,9 +281,9 @@ Result<void> check_lives(const std::vector<Life>& lives, std::size_t rows, std::
   return {};
 }
 
-/// @brief Check the diagnostics' `map` keys against the run's maps (those of its keyframes): each
-///        null or a map number, never descending, and every map named on a frame, so that its
-///        frames can be found (Python's `_check_frame_maps`).
+/// @brief Check the diagnostics' `map` keys against the run's maps (those its keyframes end in):
+///        each null or a map number, and every map a keyframe ends in named on a frame, so that
+///        its frames can be found (Python's `_check_frame_maps`).
 /// @param run The run.
 /// @return Nothing, or `InvalidInput`.
 Result<void> check_frame_maps(const Run& run) {
@@ -297,14 +300,10 @@ Result<void> check_frame_maps(const Run& run) {
     if (value == nullptr || *value < 0) {
       return fail(ErrorKind::kInvalidInput, where + ": map: expected a map number or null");
     }
-    if (!named.empty() && *value < named.back()) {
-      return fail(ErrorKind::kInvalidInput, where + ": map " + std::to_string(*value) +
-                                                " after map " + std::to_string(named.back()) +
-                                                ": maps never descend");
-    }
     named.push_back(*value);
   }
-  for (const std::int64_t map : run.keyframe_maps) {  // ascending, as checked
+  std::ranges::sort(named);
+  for (const std::int64_t map : run.keyframe_maps) {
     if (!std::ranges::binary_search(named, map)) {
       return fail(ErrorKind::kInvalidInput, "diagnostics: no frame names map " +
                                                 std::to_string(map) + ", which has keyframes");
@@ -361,7 +360,8 @@ Result<void> check(const Run& run) {
   for (const auto& [maps, rows, name] :
        {std::tuple{&run.pose_maps, run.timestamps.size(), "pose_maps"},
         std::tuple{&run.keyframe_maps, run.keyframe_timestamps.size(), "keyframe_maps"},
-        std::tuple{&run.point_maps, run.points.size(), "point_maps"}}) {
+        std::tuple{&run.point_maps, run.points.size(), "point_maps"},
+        std::tuple{&run.tracked_maps, run.timestamps.size(), "tracked_maps"}}) {
     if (auto ok = check_maps(*maps, rows, name); !ok) {
       return ok;
     }
@@ -372,7 +372,11 @@ Result<void> check(const Run& run) {
   if (auto ok = check_links(run.keyframe_links, run.keyframe_maps); !ok) {
     return ok;
   }
-  if (auto ok = check_loops(run.keyframe_loops, run.keyframe_maps); !ok) {
+  if (auto ok = check_edges(run.keyframe_loops, run.keyframe_maps, "keyframe_loops", "loop"); !ok) {
+    return ok;
+  }
+  if (auto ok = check_edges(run.keyframe_merges, run.keyframe_maps, "keyframe_merges", "merge");
+      !ok) {
     return ok;
   }
   if (!finite(run.settings)) {
@@ -403,7 +407,7 @@ Result<void> check(const Run& run) {
 }
 
 /// @brief Stamped poses as TUM-format lines, each number round-tripping, a `# map <n>` line
-///        before each map's first pose.
+///        before each run of one map's poses (a map's may come in several runs).
 /// @param times The times.
 /// @param poses The poses.
 /// @param maps Their maps.
@@ -621,7 +625,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (!trajectory) {
     return std::unexpected(std::move(trajectory.error()));
   }
-  auto tracked = trajectory_text(run.timestamps, run.tracked_poses, run.pose_maps);
+  auto tracked = trajectory_text(run.timestamps, run.tracked_poses, run.tracked_maps);
   if (!tracked) {
     return std::unexpected(std::move(tracked.error()));
   }
@@ -663,7 +667,7 @@ Result<void> write_run(const std::string& folder, const Run& run) {
   if (auto ok = create_folder(out); !ok) {
     return ok;
   }
-  const std::array<std::pair<const char*, std::string>, 15> files = {{
+  const std::array<std::pair<const char*, std::string>, 17> files = {{
       {"run.json", info_text},
       {"trajectory.txt", *trajectory},
       {"trajectory_tracked.txt", *tracked},
@@ -673,11 +677,13 @@ Result<void> write_run(const std::string& folder, const Run& run) {
       {"keyframe_parents.npy", npy({run.keyframe_parents.size()}, run.keyframe_parents)},
       {"keyframe_links.npy", npy({run.keyframe_links.size(), 3}, flatten(run.keyframe_links))},
       {"keyframe_loops.npy", npy({run.keyframe_loops.size(), 2}, flatten(run.keyframe_loops))},
+      {"keyframe_merges.npy", npy({run.keyframe_merges.size(), 2}, flatten(run.keyframe_merges))},
       {"points.npy", npy({run.points.size(), 3}, points)},
       {"point_lives.npy", npy({run.point_lives.size(), 3}, flatten(run.point_lives))},
       {"pose_maps.npy", npy({run.pose_maps.size()}, run.pose_maps)},
       {"keyframe_maps.npy", npy({run.keyframe_maps.size()}, run.keyframe_maps)},
       {"point_maps.npy", npy({run.point_maps.size()}, run.point_maps)},
+      {"tracked_maps.npy", npy({run.tracked_maps.size()}, run.tracked_maps)},
       {"diagnostics.jsonl", diagnostics},
   }};
   for (const auto& [name, data] : files) {

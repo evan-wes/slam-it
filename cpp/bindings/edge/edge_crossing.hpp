@@ -216,7 +216,7 @@ inline nanobind::ndarray<nanobind::numpy, std::uint8_t> descriptors_array(
 }
 
 /// @brief The map's fields, as the dict's keys.
-inline constexpr std::array<const char*, 36> kMapKeys = {
+inline constexpr std::array<const char*, 37> kMapKeys = {
     "levels",          "scale_factor", "kf_id",         "kf_time",        "kf_pose",
     "kf_parent",       "kf_start",     "kp_xy",         "kp_level",       "kp_angle",
     "kp_descriptor",   "kp_bearing",   "kp_depth",      "kp_right",       "kp_point",
@@ -224,7 +224,7 @@ inline constexpr std::array<const char*, 36> kMapKeys = {
     "pt_max_distance", "pt_visible",   "pt_found",      "pt_first_kf",    "pt_reference_kf",
     "next_kf_id",      "next_pt_id",   "gone_pt_id",    "gone_pt_xyz",    "gone_pt_how",
     "gone_kf_id",      "gone_kf_time", "gone_kf_pose",  "gone_kf_parent", "gone_kf_relative",
-    "loop_edges"};
+    "loop_edges",      "merge_edges"};
 
 /// @brief Read a map from a dict of its fields, its observations indexed, checked.
 /// @param values The dict.
@@ -269,6 +269,7 @@ inline edge::Map map_in(const nanobind::dict& values) {
               .gone_kf_parent = vector_item<std::int64_t>(values, "gone_kf_parent"),
               .gone_kf_relative = poses_item(values, "gone_kf_relative"),
               .loop_edges = pairs_item<std::int64_t>(values, "loop_edges"),
+              .merge_edges = pairs_item<std::int64_t>(values, "merge_edges"),
               .pt_observations = {}};
   edge::index_observations(m);
   unwrap(edge::check_map(m));
@@ -316,6 +317,7 @@ inline nanobind::dict map_dict(const edge::Map& m) {
   out["gone_kf_parent"] = vector_array(m.gone_kf_parent);
   out["gone_kf_relative"] = poses_array(m.gone_kf_relative);
   out["loop_edges"] = pairs_array(m.loop_edges);
+  out["merge_edges"] = pairs_array(m.merge_edges);
   return out;
 }
 
@@ -564,6 +566,27 @@ inline edge::Database database_in(const nanobind::dict& values) {
                         {.vector = {.ids = {words.begin(), words.end()},
                                     .values = {weights.begin(), weights.end()}},
                          .nodes = {nodes.begin(), nodes.end()}}));
+  }
+  return out;
+}
+
+/// @brief The keys of a map crossing with its database and number (`Indexed.as_dict`).
+inline constexpr std::array<const char*, 3> kIndexedKeys = {"number", "m", "database"};
+
+/// @brief Read maps with their databases and numbers (`slam_it.edge.database.Indexed`).
+/// @param values A list of dicts, each `number`, `m` and `database`.
+/// @return The maps.
+/// @throws std::invalid_argument for a missing or unknown key; what `map_in` and `database_in`
+///         throw.
+inline std::vector<edge::Indexed> indexed_in(const nanobind::list& values) {
+  std::vector<edge::Indexed> out;
+  out.reserve(values.size());
+  for (const nanobind::handle item : values) {
+    const auto dict = nanobind::cast<nanobind::dict>(item);
+    check_keys(dict, kIndexedKeys, "edge.database.Indexed.as_dict");
+    out.push_back({.number = nanobind::cast<std::int64_t>(dict["number"]),
+                   .map = map_in(nanobind::cast<nanobind::dict>(dict["m"])),
+                   .database = database_in(nanobind::cast<nanobind::dict>(dict["database"]))});
   }
   return out;
 }

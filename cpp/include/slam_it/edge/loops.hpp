@@ -4,7 +4,10 @@
 ///        source: detection (a loop being confirmed carried to the new keyframe, else the
 ///        database's candidates tried with their groups), and correction (the keyframe and its
 ///        links moved by the loop's similarity, the loop's points fused, the essential graph
-///        optimised, the loop edge added, then global BA).
+///        optimised, the loop edge added, then global BA); and merging (another map's place
+///        found by detection's stages, each search taking the map searched as well as the
+///        keyframe's own, and the active map brought into it, welded, and the weld spread:
+///        ORB-SLAM3's `MergeLocal`, its correction as its paper gives it).
 ///
 /// Similarities are ORB-SLAM's `S_cw`, `[[s R, t], [0, 1]]`; a search projects through the rigid
 /// `(R, t / s)`. Stereo and RGB-D measure their scale, so their similarities are rigid.
@@ -135,8 +138,10 @@ enum class Outcome : std::uint8_t {
   kClosed = 4,
   /// @brief The loop being confirmed went unconfirmed too many keyframes in a row.
   kDropped = 5,
+  /// @brief A loop closed on the keyframe was dropped for a merge found on it (`merge_first`).
+  kMerged = 6,
   /// @brief The number of outcomes (a sentinel).
-  kCount = 6,
+  kCount = 7,
 };
 
 /// @brief An outcome's name, as Python's enum value.
@@ -375,5 +380,152 @@ struct CorrectionSummary {
                                                              const Loop& loop,
                                                              const std::string& mode,
                                                              const Options& options);
+
+/// @brief A merge being confirmed (`slam_it.edge.loops.Merging`).
+struct Merging {
+  /// @brief The number of the map it matched.
+  std::int64_t map{0};
+  /// @brief The region as a loop being confirmed holds it: its matched keyframe that map's, its
+  ///        last the active map's.
+  Pending pending;
+};
+
+/// @brief A merge found, ready to make (`slam_it.edge.loops.Merge`).
+struct Merge {
+  /// @brief The number of the map it matched.
+  std::int64_t map{0};
+  /// @brief The common region as a closed loop holds it: its similarity the current keyframe's
+  ///        `S_cw` in the matched map's world.
+  Loop loop;
+};
+
+/// @brief Merge detection's result (`slam_it.edge.loops.MergeDetection`).
+struct MergeDetection {
+  /// @brief The merge being confirmed after it, if any.
+  std::optional<Merging> pending;
+  /// @brief The merge found on this keyframe, if any.
+  std::optional<Merge> merge;
+  /// @brief How it went, as loop detection's says; each candidate's keyframe an id in its map.
+  DetectionSummary summary;
+  /// @brief Each candidate's map number, in the summary's order.
+  std::vector<std::int64_t> maps;
+};
+
+/// @brief Look for another map at a newly mapped keyframe (`slam_it.edge.loops.detect_merge`,
+///        `NewDetectCommonRegions`' merge branch): none below `loops.min_keyframes`; the merge
+///        being confirmed carried through its matched map; else the other maps' candidates, each
+///        tried against its own map. A confirmation resets the misses, as a loop's does.
+/// @param m The active map, holding the keyframe.
+/// @param db Its keyframe database, holding the keyframe.
+/// @param camera The camera.
+/// @param keyframe The new keyframe's id.
+/// @param others The other maps, each with its database and number.
+/// @param pending The merge being confirmed, if any.
+/// @param mode The pipeline's mode: the similarity is rigid but in monocular.
+/// @param options The settings.
+/// @return The merge being confirmed after the keyframe, the merge found on it, how it went;
+///         `InvalidInput` for a keyframe the map or a database does not hold, two maps with one
+///         number, a merge being confirmed in a map not given, an unknown mode or invalid
+///         settings; GTSAM's failure.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the stage's state, as Python's
+[[nodiscard]] foundations::Result<MergeDetection> detect_merge(
+    const Map& m, const Database& db, const Camera& camera, std::int64_t keyframe,
+    std::span<const MapRef> others, const std::optional<Merging>& pending, const std::string& mode,
+    const Options& options);
+
+/// @brief Give a merge found on a keyframe priority over a loop closed on it
+///        (`slam_it.edge.loops.merge_first`, ORB-SLAM3's `Run`): the loop forgotten, its outcome
+///        `kMerged`; a loop still being confirmed kept.
+/// @param loop Loop detection's result on the keyframe.
+/// @param merging Merge detection's on the same keyframe.
+/// @return The loop's detection, its loop and state dropped if a merge was found too.
+[[nodiscard]] Detection merge_first(Detection loop, const MergeDetection& merging);
+
+/// @brief How a merge's welding BA went (`slam_it.edge.loops.WeldSummary`).
+struct WeldSummary {
+  /// @brief The keyframes optimised.
+  std::int64_t keyframes{0};
+  /// @brief The keyframes held fixed.
+  std::int64_t held{0};
+  /// @brief The points optimised.
+  std::int64_t points{0};
+  /// @brief The observations weighed.
+  std::int64_t observations{0};
+  /// @brief Those failing the chi-square test, or behind their camera, after the first solve.
+  std::int64_t outliers{0};
+  /// @brief Those failing it after the second, forgotten.
+  std::int64_t forgotten{0};
+  /// @brief The first solve, with a Huber loss.
+  foundations::graphs::Summary first;
+  /// @brief The second, with none, if any observation was left for it.
+  std::optional<foundations::graphs::Summary> second;
+};
+
+/// @brief How a merge went (`slam_it.edge.loops.MergeSummary`).
+struct MergeSummary {
+  /// @brief The number of the map the active one was merged into.
+  std::int64_t map{0};
+  /// @brief The id, in the merged map, of the keyframe the merge was found on.
+  std::int64_t current{0};
+  /// @brief The id of the keyframe it matched.
+  std::int64_t matched{0};
+  /// @brief The current keyframe's `S_cw` in the matched map's world, as the merge placed it.
+  Eigen::Matrix4d similarity{Eigen::Matrix4d::Identity()};
+  /// @brief The active side's welding window's keyframes.
+  std::int64_t window{0};
+  /// @brief The matched side's.
+  std::int64_t matched_window{0};
+  /// @brief The matched window's points fused into the active window's keyframes.
+  std::int64_t fused{0};
+  /// @brief The welding BA.
+  WeldSummary weld;
+  /// @brief The essential graph's edges.
+  std::int64_t edges{0};
+  /// @brief Its solve.
+  foundations::graphs::Summary essential;
+  /// @brief Global BA's solve, if it ran.
+  std::optional<foundations::graphs::Summary> global_ba;
+};
+
+/// @brief Two maps merged (`slam_it.edge.loops.Merged`).
+struct Merged {
+  /// @brief The merged map: the matched map's, then the active map's, each id of the active
+  ///        map's moved on by an offset.
+  Map map;
+  /// @brief What each of the active map's keyframe ids, live or archived, became: the id plus
+  ///        this.
+  std::int64_t keyframe_offset{0};
+  /// @brief The same for its point ids.
+  std::int64_t point_offset{0};
+  /// @brief How it went.
+  MergeSummary summary;
+};
+
+/// @brief `G`, the similarity carrying a merge's active map into the matched map's world
+///        (`slam_it.edge.loops.merge_transform`): `S^-1 T`, `S` the merge's similarity placing
+///        the current keyframe in the matched map's world, `T` its pose in the active map's; a
+///        point `p` of the active map goes to `G p`.
+/// @param active The active map, holding the merge's current keyframe.
+/// @param found The merge.
+/// @return `G`; `InvalidInput` if the active map does not hold the current keyframe.
+[[nodiscard]] foundations::Result<Eigen::Matrix4d> merge_transform(const Map& active,
+                                                                   const Merge& found);
+
+/// @brief Merge the active map into the one it matched (`slam_it.edge.loops.merge`,
+///        `MergeLocal` as ORB-SLAM3's paper gives it; the Python module's docstring states the
+///        steps).
+/// @param active The active map, holding the merge's current keyframe.
+/// @param matched The map it matched, holding the merge's matched keyframe.
+/// @param camera The camera.
+/// @param found The merge.
+/// @param mode The pipeline's mode: the similarity's scale is used but in stereo and RGB-D.
+/// @param options The settings.
+/// @return The merged map, the offsets that carried the active map's ids, and how it went;
+///         `InvalidInput` for a keyframe its map does not hold, a similarity that is not one,
+///         maps of different pyramids, an unknown mode or invalid settings; GTSAM's failure.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (active, matched), as Python's
+[[nodiscard]] foundations::Result<Merged> merge(const Map& active, const Map& matched,
+                                                const Camera& camera, const Merge& found,
+                                                const std::string& mode, const Options& options);
 
 }  // namespace slam_it::edge::loops

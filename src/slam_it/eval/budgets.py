@@ -9,8 +9,11 @@ not claim.
 - :data:`BUDGETS`: the budgets by name; ``laptop-cpu`` for milestone 2.
 - :func:`cpus`: the CPUs a budget pins a program to: one logical CPU on each of as many
   physical cores (a core's hyperthreads are not cores of its own), this machine's performance
-  cores on a CPU that has two kinds.
-- :func:`command`: a command line wrapped to run within a budget.
+  cores on a CPU that has two kinds (:func:`performance_cores`).
+- :func:`command`: a command line wrapped to run within a budget, its CPUs pinned by
+  :func:`pin`. The threaded room tests use :func:`pin` alone, uncapped, to run their native
+  programs on the performance cores (``tests/orchestration/conftest.py``): they hold each run to
+  a bar of results, and the slow cores' timing is the budget runs' to judge.
 - :func:`peak_memory`, :func:`allowed_cpus` and :func:`memory_cap`: what a program records in
   its run (:mod:`slam_it.eval.runs`) of the process that ran it: its largest resident set, the
   CPUs it could run on and its memory cap. C++'s ``slam_it::eval::budgets`` and Rust's
@@ -148,6 +151,32 @@ def _core_of(cpu: int, topology: Path) -> int:
         return cpu
 
 
+def performance_cores(performance: str | Path = PERFORMANCE_CORES) -> list[int] | None:
+    """Return the performance cores of a hybrid CPU that this process may run on.
+
+    Parameters
+    ----------
+    performance : str or pathlib.Path, optional
+        The file listing the performance cores (default :data:`PERFORMANCE_CORES`); a CPU
+        without one has one kind of core.
+
+    Returns
+    -------
+    list of int or None
+        Their logical CPUs, ascending, those this process may run on (none if it may run on
+        none of them); None on a CPU with one kind of core.
+
+    Examples
+    --------
+    >>> performance_cores("/no/such/file") is None
+    True
+    """
+    listed = Path(performance)
+    if not listed.is_file():
+        return None
+    return sorted(os.sched_getaffinity(0) & _cpu_list(listed.read_text(encoding="utf-8")))
+
+
 def cpus(
     budget: Budget,
     *,
@@ -183,10 +212,8 @@ def cpus(
     slam_it.foundations.errors.InvalidInputError
         If this machine offers fewer physical cores.
     """
-    offered = os.sched_getaffinity(0)
-    listed = Path(performance)
-    if listed.is_file():
-        offered &= _cpu_list(listed.read_text(encoding="utf-8"))
+    fast = performance_cores(performance)
+    offered = os.sched_getaffinity(0) if fast is None else set(fast)
     cores = physical(offered, topology=topology)
     if len(cores) < budget.cores:
         raise InvalidInputError(
@@ -246,9 +273,38 @@ def command(budget: Budget, pinned: Sequence[int], argv: Sequence[str]) -> list[
     return [
         *("systemd-run", "--user", "--scope", "--quiet"),
         *("-p", f"MemoryMax={budget.memory}", "-p", "MemorySwapMax=0", "--"),
-        *("taskset", "--cpu-list", ",".join(map(str, pinned))),
-        *argv,
+        *pin(pinned, argv),
     ]
+
+
+def pin(pinned: Sequence[int], argv: Sequence[str]) -> list[str]:
+    """Return a command line wrapped to run on the given CPUs alone (``taskset``).
+
+    Parameters
+    ----------
+    pinned : sequence of int
+        The CPUs, at least one.
+    argv : sequence of str
+        The program and its arguments.
+
+    Returns
+    -------
+    list of str
+        The wrapped command line.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If no CPU is given.
+
+    Examples
+    --------
+    >>> pin([0, 1, 2], ["slam_it_vo", "--help"])
+    ['taskset', '--cpu-list', '0,1,2', 'slam_it_vo', '--help']
+    """
+    if len(pinned) == 0:
+        raise InvalidInputError("pinned: expected at least one CPU")
+    return ["taskset", "--cpu-list", ",".join(map(str, pinned)), *argv]
 
 
 def _status_lines(status: str | Path) -> list[list[str]]:

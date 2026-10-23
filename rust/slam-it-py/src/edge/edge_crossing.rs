@@ -18,7 +18,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use slam_it_edge::adjust::Solve;
-use slam_it_edge::database::{Database, Words};
+use slam_it_edge::database::{Database, Indexed, Words};
 use slam_it_edge::frames::{Camera, Frame, Tracked};
 use slam_it_edge::initialization::{Initialization, Outcome};
 use slam_it_edge::map::{Map, check_map, index_observations};
@@ -56,7 +56,7 @@ pub fn changed<'py>(
 }
 
 /// The map's fields, as the dict's keys.
-const MAP_KEYS: [&str; 36] = [
+const MAP_KEYS: [&str; 37] = [
     "levels",
     "scale_factor",
     "kf_id",
@@ -93,6 +93,7 @@ const MAP_KEYS: [&str; 36] = [
     "gone_kf_parent",
     "gone_kf_relative",
     "loop_edges",
+    "merge_edges",
 ];
 
 /// The frame's fields, as the dict's keys.
@@ -301,6 +302,7 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         gone_kf_parent: vector(&get("gone_kf_parent")?)?,
         gone_kf_relative: poses(&get("gone_kf_relative")?)?,
         loop_edges: rows::<i64, 2>(&get("loop_edges")?)?,
+        merge_edges: rows::<i64, 2>(&get("merge_edges")?)?,
         pt_observations: Vec::new(),
     };
     index_observations(&mut m);
@@ -461,6 +463,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("gone_kf_parent", vector_array(py, &m.gone_kf_parent))?;
     out.set_item("gone_kf_relative", poses_array(py, &m.gone_kf_relative)?)?;
     out.set_item("loop_edges", rows_array(py, &m.loop_edges)?)?;
+    out.set_item("merge_edges", rows_array(py, &m.merge_edges)?)?;
     Ok(out)
 }
 
@@ -884,6 +887,37 @@ pub fn database_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Datab
             nodes: node[node_start[i]..node_start[i + 1]].to_vec(),
         };
         unwrap(py, out.insert(keyframe, words))?;
+    }
+    Ok(out)
+}
+
+/// `Indexed.as_dict()`'s keys: a map with its database and number.
+const INDEXED_KEYS: [&str; 3] = ["number", "m", "database"];
+
+/// Reads maps with their databases and numbers (`slam_it.edge.database.Indexed`).
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `values` - A list of dicts, each `number`, `m` and `database`.
+///
+/// # Returns
+///
+/// The maps.
+///
+/// # Errors
+///
+/// `ValueError` for a missing or extra key; what `map_in` and `database_in` raise.
+pub fn indexed_in(py: Python<'_>, values: &Bound<'_, PyList>) -> PyResult<Vec<Indexed>> {
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        let dict: Bound<'_, PyDict> = value.extract()?;
+        let field = |key| item(&dict, &INDEXED_KEYS, key);
+        out.push(Indexed {
+            number: field("number")?.extract()?,
+            map: map_in(py, &field("m")?.extract()?)?,
+            database: database_in(py, &field("database")?.extract()?)?,
+        });
     }
     Ok(out)
 }

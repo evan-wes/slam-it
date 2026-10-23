@@ -8,28 +8,48 @@ is its format::
 
     [[sequence]]
     name = "advio-07"
-    folder = "/data/imported/advio-07"
+    folders = ["/data/imported/advio-07"]
     mode = "monocular"
     reference = "ADVIO: IMU and fixed points"
 
-A sequence may also name its ``dataset``, ``"tum"`` (the default) or ``"euroc"``: a EuRoC
-sequence's own folder, run as EuRoC (monocular or stereo; :func:`slam_it.eval.euroc`).
+A sequence's ``folders`` are a list of one for a single sequence. A sequence may also name its
+``dataset``, ``"tum"`` (the default) or ``"euroc"``: a EuRoC sequence's own folder, run as
+EuRoC (monocular or stereo; :func:`slam_it.eval.euroc`). Several ``folders`` are sequences of
+one camera run in turn in one run, each a session (:mod:`slam_it.orchestration.vo`): a
+session's times are moved on by its offset where they do not come after those before, its
+ground truth with them, and the sequences' ground truths are scored as one, so the run's maps
+are aligned once each across the sessions (the online-SLAM design's section 15)::
+
+    [[sequence]]
+    name = "euroc-MH01-03-stereo"
+    folders = ["/data/euroc/MH_01_easy", "/data/euroc/MH_02_easy", "/data/euroc/MH_03_medium"]
+    mode = "stereo"
+    reference = "EuRoC: Vicon or Leica, processed"
+    dataset = "euroc"
 
 Each sequence runs on one backend (:func:`slam_it.orchestration.vo.run`) with ORB-SLAM's
 settings and, unless ``--features default``, the features for its frame size, as the demo's
 worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is measured:
 
-- ``frames``: the sequence's frames for its mode; ``run``: those run (an RGB-D frame without a
-  depth map is skipped); a lost track closes its map and the next frame starts a new one, so a
-  run goes on to the sequence's end;
+- ``frames``: the sequence's frames for its mode (every session's); ``run``: those run (an
+  RGB-D frame without a depth map is skipped); a lost track closes its map and the next frame
+  starts a new one, so a run goes on to the sequence's end;
+- ``sessions``: each sequence's ``sequence`` (its folder's name), its time ``offset``, its
+  ``frames``, those ``tracked``, the ``maps`` they end in (the final trajectory's), and how the
+  map tracked as it began was ``closed`` (the run's diagnostics; null for the first); one
+  session for one folder. ``maps``: the maps the final trajectory's frames end in, all
+  sessions' (section 15's bar: every session ending in one map);
 - ``tracked`` and ``share``: the frames tracked, in every map, and their share of the
   sequence's;
-- ``segments``: each map's stretch, ``map``, ``tracked`` and its first and last tracked frames'
-  times, ``tracked_from`` and ``tracked_to``; ``losses``, the frames the track was lost on,
-  ``resets``, the maps lost too soon to keep, and ``relocalizations``, the frames that tracking
-  failed and relocalisation found in their map; and ``tracked_from``, ``tracked_to`` and
-  ``ran_to`` for the whole run: every time since the sequence's first frame
-  (:func:`slam_it.eval.runs.tracking`);
+- ``segments``: each stretch of frames tracked in one map, ``map``, ``tracked`` and its first
+  and last tracked frames' times, ``tracked_from`` and ``tracked_to``
+  (:func:`slam_it.eval.runs.tracking`); ``losses``, the frames the track was lost on,
+  ``resets``, the maps lost too soon to keep, ``relocalizations``, the frames that tracking
+  failed and relocalisation found, in their map or in a kept one, ``taken_up``, those of them
+  found in a kept one, which tracking went on in, and ``kept_maps``, the maps the run ends
+  with, those reset left out (a map taken up again is one, however many segments it has); and
+  ``tracked_from``, ``tracked_to`` and ``ran_to`` for the whole run: every time since the
+  sequence's first frame (:func:`slam_it.eval.runs.tracking`, as the demo's worker reads it);
 - ``ate``: the RMSE in metres over the tracked frames matched to the reference, each map aligned
   on its own, Sim(3) for monocular and SE(3) otherwise, with ``matched`` and the ``reference``
   named; each map's own in ``map_ate`` (``map``, ``matched``, ``ate``), and in
@@ -46,7 +66,8 @@ worker sets a run up (:func:`slam_it.orchestration.vo.options_for`), then is mea
   against the reference's, ``translation_error`` and ``rotation_error`` (degrees), and
   ``poor_pose`` (the online-SLAM design's section 10). Each judgement is null where the
   reference has no pose within :data:`slam_it.eval.runs.MAX_DIFFERENCE` of a keyframe, or the
-  map was not scored;
+  map was not scored; ``merges``: each merge made, its two keyframes judged the same way
+  (:func:`slam_it.eval.loops.judge_pairs`);
 - ``p95``: the 95th percentile of a frame's latency, building and tracking it, in seconds,
   read against the frame period ``deadline``, with the frames ``late`` past it
   (:func:`slam_it.eval.budgets.judge`); null, with ``unjudged`` saying why, if the run is too
@@ -106,25 +127,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import tomllib
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
+from numpy.typing import NDArray
 
 from slam_it.edge.options import MODES, Options
 from slam_it.eval import budgets, lenses, loops, runs, tum
 from slam_it.foundations.errors import DegenerateError, InvalidInputError, SlamItError
 from slam_it.orchestration import vo
 
-KEYS = ("name", "folder", "mode", "reference")
-"""Each sequence's keys in the config, every one a string."""
+REQUIRED = frozenset({"name", "folders", "mode", "reference"})
+"""The keys every sequence in the config has: ``folders``, where it is (a list of folders, one
+for a single sequence, several run in turn), and the others strings."""
 
-OPTIONAL_KEYS = ("dataset",)
-"""The keys a sequence may also have: its ``dataset``, ``"tum"`` unless given."""
+ALLOWED = REQUIRED | {"dataset"}
+"""The keys a sequence may have: :data:`REQUIRED`, and its ``dataset``, a string, ``"tum"``
+unless given."""
 
 SETTINGS = frozenset(Options().settings())
 """The settings an ``--option`` may replace, each named by its group and field."""
@@ -144,10 +170,10 @@ DETAILS = ("lost_frames", "stretches", "latency", "relocalised_frames")
 
 
 class Entry(NamedTuple):
-    """A sequence of the test set, as its config lists it."""
+    """A sequence of the test set, as its config lists it: one folder, or several in turn."""
 
     name: str
-    folder: Path
+    folders: tuple[Path, ...]
     mode: str
     reference: str
     dataset: str = "tum"
@@ -291,8 +317,9 @@ def read_config(path: Path) -> list[Entry]:
     FileNotFoundError
         If the file does not exist.
     slam_it.foundations.errors.InvalidInputError
-        If it is not TOML, lists no sequence, a sequence lacks a key or has another, a value is
-        not a string, a mode or dataset is unknown, or two sequences share a name.
+        If it is not TOML, lists no sequence, a sequence lacks a key or has another (the message
+        names them), a value is not a string, its folders not a list of them, a mode or dataset
+        is unknown, or two sequences share a name.
     """
     try:
         data = tomllib.loads(path.read_text())
@@ -303,19 +330,33 @@ def read_config(path: Path) -> list[Entry]:
         raise InvalidInputError(f"{path}: no [[sequence]]")
     entries: list[Entry] = []
     for number, item in enumerate(listed, start=1):
-        if not isinstance(item, dict) or not set(KEYS) <= set(item) <= {*KEYS, *OPTIONAL_KEYS}:
+        keys = set(item) if isinstance(item, dict) else set()
+        missing, unknown = sorted(REQUIRED - keys), sorted(keys - ALLOWED)
+        if not isinstance(item, dict) or missing or unknown:
             raise InvalidInputError(
-                f"{path}: sequence {number}: expected the keys {KEYS}, and maybe {OPTIONAL_KEYS}"
+                f"{path}: sequence {number}: expected the keys {sorted(REQUIRED)}, and maybe "
+                f"{sorted(ALLOWED - REQUIRED)}; missing {missing}, unknown {unknown}"
             )
-        if not all(isinstance(value, str) for value in item.values()):
-            raise InvalidInputError(f"{path}: sequence {number}: expected strings")
+        folders = item["folders"]
+        if not all(isinstance(item[key], str) for key in item if key != "folders") or not (
+            isinstance(folders, list) and folders and all(isinstance(f, str) for f in folders)
+        ):
+            raise InvalidInputError(
+                f"{path}: sequence {number}: expected strings, folders a list of them"
+            )
         if item["mode"] not in MODES:
             raise InvalidInputError(f"{path}: sequence {number}: unknown mode {item['mode']!r}")
         dataset = item.get("dataset", "tum")
         if dataset not in runs.DATASETS:
             raise InvalidInputError(f"{path}: sequence {number}: unknown dataset {dataset!r}")
         entries.append(
-            Entry(item["name"], Path(item["folder"]), item["mode"], item["reference"], dataset)
+            Entry(
+                item["name"],
+                tuple(Path(folder) for folder in folders),
+                item["mode"],
+                item["reference"],
+                dataset,
+            )
         )
     names = [e.name for e in entries]
     if len(set(names)) != len(names):
@@ -382,6 +423,88 @@ def nominal_folder(sequence: Path, out: Path) -> Path:
     return out
 
 
+def offsets_of(entry: Entry) -> list[float]:
+    """Return each of a sequence's sessions' clock offsets, as its run moved its times on.
+
+    :func:`slam_it.orchestration.vo.session_offsets` of its folders' frames' times; ``[0.0]``
+    for one folder, which keeps its own clock, without reading it. ``compare_testsets.py`` uses
+    it, holding no sources of its own; :func:`measure` takes the offsets from the sources it
+    opened, so it reads each folder once.
+
+    Parameters
+    ----------
+    entry : Entry
+        The sequence.
+
+    Returns
+    -------
+    list of float
+        Each session's offset, in seconds.
+    """
+    if len(entry.folders) == 1:
+        return [0.0]
+    times = [vo.open_source(entry.dataset, folder, entry.mode).times for folder in entry.folders]
+    return vo.session_offsets(times)
+
+
+def truth_of(dataset: str, folders: Sequence[Path], offsets: Sequence[float]) -> runs.Truth | None:
+    """Return sequences' ground truth in turn, each moved on by its session's time offset.
+
+    A session's reference times that do not come after those kept before it are dropped, so the
+    times ascend (a reference may outlast its sequence's frames). None if no sequence has one.
+    """
+    times: list[NDArray[np.float64]] = []
+    poses: list[NDArray[np.float64]] = []
+    end = -math.inf
+    for folder, offset in zip(folders, offsets, strict=True):
+        truth = runs.ground_truth(dataset, folder)
+        if truth is None:
+            continue
+        moved = truth[0] + offset
+        after = moved > end
+        times.append(moved[after])
+        poses.append(truth[1][after])
+        end = max(end, float(moved[after][-1])) if after.any() else end
+    if not times:
+        return None
+    return np.concatenate(times), np.concatenate(poses)
+
+
+def session_results(
+    run: runs.Run,
+    folders: Sequence[Path],
+    times: Sequence[NDArray[np.float64]],
+    offsets: Sequence[float],
+) -> list[dict[str, Any]]:
+    """Return each session's account of a run (the module docstring's ``sessions``).
+
+    `times` are each session's frames' own times, `offsets` what moved them on in the run
+    (:func:`slam_it.orchestration.vo.session_offsets`). A session's frames tracked are the final
+    trajectory's within its first and last times, moved on.
+    """
+    closed = {
+        line["session"]["index"]: line["session"]["closed"]
+        for line in run.diagnostics
+        if "session" in line
+    }
+    out: list[dict[str, Any]] = []
+    for k, (folder, own, offset) in enumerate(zip(folders, times, offsets, strict=True)):
+        inside = np.zeros(len(run.timestamps), dtype=bool)
+        if len(own):
+            inside = (run.timestamps >= own[0] + offset) & (run.timestamps <= own[-1] + offset)
+        out.append(
+            {
+                "sequence": folder.resolve().name,
+                "offset": offset,
+                "frames": len(own),
+                "tracked": int(inside.sum()),
+                "maps": sorted(set(run.pose_maps[inside].tolist())),
+                "closed": closed.get(k),
+            }
+        )
+    return out
+
+
 def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keyword-only
     entry: Entry,
     out: Path,
@@ -400,18 +523,21 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
     `locks` say how its steps run, and `budget` what it runs within.
     """
     replaced = replaced or {}
-    if nominal and entry.dataset != "tum":
-        raise InvalidInputError(f"{entry.name}: a nominal camera is guessed for TUM folders only")
-    folder = nominal_folder(entry.folder, out / "sequence") if nominal else entry.folder
-    source = vo.open_source(entry.dataset, folder, entry.mode)
-    camera = source.camera
+    if nominal and (entry.dataset != "tum" or len(entry.folders) > 1):
+        raise InvalidInputError(
+            f"{entry.name}: a nominal camera is guessed for one TUM folder only"
+        )
+    folders = [nominal_folder(entry.folders[0], out / "sequence")] if nominal else entry.folders
+    sources = [vo.open_source(entry.dataset, folder, entry.mode) for folder in folders]
+    camera = sources[0].camera
     chosen = vo.options_for(camera.width, camera.height) if by_size else Options()
     options = chosen.with_settings(replaced)
     run = vo.run(
-        entry.dataset, folder, entry.mode, out / "run", backend=backend, options=options,
+        entry.dataset, folders, entry.mode, out / "run", backend=backend, options=options,
         threaded=threaded, locks=locks, budget=budget,
     )  # fmt: skip
-    times = source.times
+    offsets = vo.session_offsets([s.times for s in sources])
+    times = np.concatenate([s.times + offset for s, offset in zip(sources, offsets, strict=True)])
     span = runs.tracking(run, times)
     result: dict[str, Any] = {
         "name": entry.name,
@@ -426,6 +552,8 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "locks": locks,
         "budget": None if budget is None else budget.name,
         "frames": len(times),
+        "sessions": session_results(run, folders, [s.times for s in sources], offsets),
+        "maps": sorted(set(run.pose_maps.tolist())),
         "run": span.frames,
         "tracked": span.tracked,
         "share": span.tracked / len(times) if len(times) else 0.0,
@@ -441,6 +569,8 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "losses": span.losses,
         "resets": span.resets,
         "relocalizations": span.relocalizations,
+        "taken_up": span.taken_up,
+        "kept_maps": span.maps,
         "tracked_from": span.tracked_from,
         "tracked_to": span.tracked_to,
         "ran_to": span.ran_to,
@@ -457,7 +587,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
         "late": None,
         "unjudged": None,
     }
-    truth = runs.ground_truth(entry.dataset, folder)
+    truth = truth_of(entry.dataset, folders, offsets)
     scored = None
     if truth is None:
         result["unscored"] = "no ground truth"
@@ -485,6 +615,7 @@ def measure(  # noqa: PLR0913 -- the sequence and its folder; how it runs keywor
     except InvalidInputError as error:  # a run too short to judge: said, never hidden
         result["unjudged"] = str(error)
     result["loops"] = loops.judge_loops(run, truth, scored)
+    result["merges"] = loops.judge_pairs(run.keyframe_merges, run, truth, scored)
     result.update(details(run, truth, scored))
     return result
 
@@ -525,7 +656,7 @@ def row(result: dict[str, Any]) -> str:
         if result["p95"] is None
         else f"{1000 * result['p95']:.0f} of {1000 * result['deadline']:.0f} ms"
     )
-    maps = f"{len(result['segments'])} ({result['resets']} reset)"
+    maps = f"{result['kept_maps']} ({result['resets']} reset)"
     return (
         f"| {result['name']} | {result['mode']} | {width}x{height} | {result['features']} | "
         f"{result['tracked']}/{result['frames']} ({100 * result['share']:.0f}%) | {span} | "
@@ -534,7 +665,7 @@ def row(result: dict[str, Any]) -> str:
 
 
 HEADER = (
-    "| sequence | mode | size | features | tracked | tracked from-to | maps tracked | losses | "
+    "| sequence | mode | size | features | tracked | tracked from-to | maps kept | losses | "
     "relocalised | ATE (matched) | p95 latency of the frame period |\n"
     "|---|---|---|---|---|---|---|---|---|---|---|"
 )

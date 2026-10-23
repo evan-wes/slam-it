@@ -40,7 +40,7 @@ def batches(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Path]
     write_tum(base / "room", found_frames(room.sequence(FRAMES)))
     config = base / "testset.toml"
     config.write_text(
-        f'[[sequence]]\nname = "room-found"\nfolder = "{base / "room"}"\nmode = "rgbd"\n'
+        f'[[sequence]]\nname = "room-found"\nfolders = ["{base / "room"}"]\nmode = "rgbd"\n'
         'reference = "its own poses"\n'
     )
     default = Options().settings()
@@ -161,5 +161,35 @@ def test_summarize_reads_each_sequences_truth_as_its_dataset(
     read: list[tuple[str, Path]] = []
     monkeypatch.setattr(script.runs, "ground_truth", lambda *given: read.append(given))
     assert script.summarize(copy, euroc) == 1
-    (folder,) = [e.folder for e in script.measure_testset.read_config(config)]
+    ((folder,),) = [e.folders for e in script.measure_testset.read_config(config)]
     assert read == [("euroc", folder)]
+
+
+def test_a_measure_of_sessions_in_turn_is_given_its_details(
+    script: ModuleType, tmp_path: Path
+) -> None:
+    """Sessions in turn are scored on their truths moved on by the run's offsets, as measured.
+
+    The room twice, two sessions of one run (``measure_testset.offsets_of``): ``summarize``
+    gives the measure back the details it recorded itself.
+    """
+    require_program("cpp")
+    write_tum(tmp_path / "room", room.sequence(FRAMES))
+    config = tmp_path / "testset.toml"
+    folder = tmp_path / "room"
+    config.write_text(
+        f'[[sequence]]\nname = "twice"\nfolders = ["{folder}", "{folder}"]\nmode = "rgbd"\n'
+        'reference = "its own poses"\n'
+    )
+    (entry,) = script.measure_testset.read_config(config)
+    out = tmp_path / "measure"
+    out.mkdir()
+    measured = script.measure_testset.measure(
+        entry, out / entry.name, backend="cpp", by_size=False, nominal=False,
+        replaced={"loss.session_keyframes": 0},
+    )  # fmt: skip
+    details = script.measure_testset.DETAILS
+    bare = {k: v for k, v in measured.items() if k not in details}
+    (out / "results.jsonl").write_text(json.dumps(bare) + "\n")
+    assert script.summarize(out, config) == 1
+    assert json.loads((out / "results.jsonl").read_text()) == json.loads(json.dumps(measured))

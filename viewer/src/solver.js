@@ -56,7 +56,7 @@ export const STAGES = [
       candidates:
         "the keyframes tried, best first: each one's score, its points matched by word, and " +
         "the inliers of RANSAC, pose refinement and the searches by projection, as far as it got",
-      placed: "whether a candidate placed the frame: it was found again in its map",
+      placed: "whether a candidate placed the frame: it was found again, in its map or a kept one",
     },
   },
   {

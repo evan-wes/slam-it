@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "slam_it/edge/options.hpp"
 #include "slam_it/eval/runs.hpp"
@@ -22,9 +23,10 @@ inline constexpr std::array<const char*, 2> kDatasets{"tum", "euroc"};
 
 /// @brief The program's command line.
 inline constexpr const char* kUsage =
-    "usage: slam_it_vo --dataset tum|euroc --sequence PATH --mode monocular|stereo|rgbd "
-    "--out RUN_DIR [--first I] [--count N] [--vocabulary FOLDER] [--record-features] "
-    "[--threaded [--locks] | --views] [--option KEY=VALUE ...]";
+    "usage: slam_it_vo --dataset tum|euroc --sequence PATH [--sequence PATH ...] "
+    "--mode monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] "
+    "[--vocabulary FOLDER] [--record-features] [--threaded [--locks] | --views] "
+    "[--option KEY=VALUE ...]";
 
 /// @brief The program's exit code for a command line it cannot read.
 inline constexpr int kExitUsage = 2;
@@ -52,8 +54,9 @@ inline constexpr int kExitFailed = 3;
 struct Request {
   /// @brief One of `kDatasets`.
   std::string dataset;
-  /// @brief The sequence's folder.
-  std::string sequence;
+  /// @brief The sequences' folders, run in turn, each its own session
+  ///        (`slam_it.orchestration.vo`'s docstring): one or more.
+  std::vector<std::string> sequences;
   /// @brief The sensor mode.
   edge::Mode mode{edge::Mode::kMonocular};
   /// @brief The run's folder, written.
@@ -81,8 +84,8 @@ struct Request {
 };
 
 /// @brief Read the command line: `kUsage`, flags in any order, each with its value but
-///        `--record-features`, `--threaded`, `--locks` and `--views`, `--option` repeatable and
-///        naming a field of
+///        `--record-features`, `--threaded`, `--locks` and `--views`; `--sequence` repeatable,
+///        each a session in turn; `--option` repeatable and naming a field of
 ///        `slam_it.edge.options.Options`.
 /// @param arguments The arguments after the program's name.
 /// @return The request; `InvalidInput` for an unknown, repeated or missing flag, a flag
@@ -91,11 +94,19 @@ struct Request {
 
 /// @brief Check a request (`slam_it.orchestration.vo.check`).
 /// @param request The request.
-/// @return Nothing; `InvalidInput` for an unknown dataset, a mode it does not record (TUM has
-///         no stereo pairs, EuRoC no depth maps), a negative `first` or `count`, settings
-///         out of range, a vocabulary missing while relocalising or given while not,
-///         `--locks` without `--threaded`, or `--views` with it.
+/// @return Nothing; `InvalidInput` for no sequence, an unknown dataset, a mode it does not
+///         record (TUM has no stereo pairs, EuRoC no depth maps), a negative `first` or
+///         `count`, settings out of range, a vocabulary missing while relocalising or given
+///         while not, `--locks` without `--threaded`, or `--views` with it.
 [[nodiscard]] foundations::Result<void> check(const Request& request);
+
+/// @brief Each session's time offset, in seconds (`slam_it.orchestration.vo.session_offsets`):
+///        0 while its times come after those before; otherwise its first frame is moved on to
+///        one frame period after the last time before (moved by its own offset), the period
+///        the session before's median frame interval (1 s for one of fewer than two frames).
+/// @param times Each session's frames' times, in seconds, ascending.
+/// @return Each session's offset, the first's 0.
+[[nodiscard]] std::vector<double> session_offsets(std::span<const std::vector<double>> times);
 
 /// @brief Run a sequence through the pipeline: the run, not yet written, as Python's program
 ///        builds it before writing (`slam_it.orchestration.vo.main`). The program records its

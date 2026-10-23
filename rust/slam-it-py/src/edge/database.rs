@@ -2,15 +2,17 @@
 //!
 //! A database crosses as `Database.as_dict()`'s dict, from which the core builds its own index
 //! (`edge_crossing::database_in`); a frame's word vector as its `ids` (int64) and `values`
-//! (float64). Candidates return as a dict of `keyframes`, `scores`, `sharing` and `scored`.
+//! (float64); the other maps as a list of `Indexed.as_dict()`'s dicts
+//! (`edge_crossing::indexed_in`). Candidates return as a dict of `keyframes`, `scores`,
+//! `sharing` and `scored`, a merge's with `maps` too.
 
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use slam_it_edge::database as core;
+use pyo3::types::{PyDict, PyList};
+use slam_it_edge::database::{self as core, MapRef};
 use slam_it_foundations::vocabulary::BowVector;
 
-use super::edge_crossing::{database_in, map_in, options_in, vector_array};
+use super::edge_crossing::{database_in, indexed_in, map_in, options_in, vector_array};
 use crate::common::{add_functions, contiguous, to_i64, unwrap};
 
 /// Finds the keyframes a frame may be relocalised against.
@@ -95,6 +97,55 @@ fn loop_candidates<'py>(
     candidates_dict(py, &found)
 }
 
+/// Finds the keyframes of other maps a keyframe may merge its map with.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `ids` - The keyframe's words, ascending.
+/// * `values` - Their values.
+/// * `others` - The other maps, each a dict of `number`, `m` and `database`.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// `maps` and `keyframes` (int64), `scores` (float64), `sharing` and `scored`.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+#[pyo3(signature = (ids, values, others, options))]
+fn merge_candidates<'py>(
+    py: Python<'py>,
+    ids: PyReadonlyArray1<'py, i64>,
+    values: PyReadonlyArray1<'py, f64>,
+    others: &Bound<'py, PyList>,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let vector = BowVector {
+        ids: contiguous(&ids)?.to_vec(),
+        values: contiguous(&values)?.to_vec(),
+    };
+    let others = indexed_in(py, others)?;
+    let others: Vec<MapRef<'_>> = others.iter().map(MapRef::from).collect();
+    let found = unwrap(
+        py,
+        core::merge_candidates(&vector, &others, &options_in(options)?),
+    )?;
+    let out = candidates_dict(
+        py,
+        &core::Candidates {
+            keyframes: found.keyframes,
+            scores: found.scores,
+            sharing: found.sharing,
+            scored: found.scored,
+        },
+    )?;
+    out.set_item("maps", vector_array(py, &found.maps))?;
+    Ok(out)
+}
+
 /// Candidates as a dict.
 ///
 /// # Arguments
@@ -125,6 +176,6 @@ fn candidates_dict<'py>(py: Python<'py>, found: &core::Candidates) -> PyResult<B
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn database(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; candidates, loop_candidates);
+    add_functions!(m; candidates, loop_candidates, merge_candidates);
     Ok(())
 }

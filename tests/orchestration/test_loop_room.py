@@ -15,7 +15,8 @@ walls 7.3, 7.1 and 3.9 to 4.3 cm; 276 of the 280 frames tracked in monocular, ev
 otherwise.
 
 The compiled backends hold the same bar threaded (:data:`THREADED`), their frames fed at the
-room's rate (the online-SLAM design's section 12); Python's threaded run is measured, not tested.
+room's rate (the online-SLAM design's section 12), their programs on the performance cores
+(:func:`tests.orchestration.conftest.fast_cores`); Python's threaded run is measured, not tested.
 Their writers publish views of a part of the map, each recorded with its size.
 """
 
@@ -28,10 +29,9 @@ import pytest
 
 from slam_it import backends
 from slam_it.eval import loops, runs
-from tests.edge import room
 from tests.edge.support import OPTIONS
 from tests.orchestration.conftest import RoomRun
-from tests.orchestration.datasets import LOOP_CASES, Room
+from tests.orchestration.datasets import LOOP_CASES, Room, wall_distance
 
 LOOP_ATE = {"rgbd": 0.07, "stereo": 0.055, "monocular": 0.02}
 """The final trajectory's ATE (RMSE, metres) each mode stays under."""
@@ -91,6 +91,26 @@ def test_every_backend_closes_the_loop_room(  # noqa: PLR0917 -- the case, the f
     assert final.ate_rmse < tracked.ate_rmse
 
 
+@pytest.mark.parametrize(("backend", "threaded"), RUNS)
+@pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
+def test_each_correction_names_its_loop_by_the_runs_ids(
+    request: pytest.FixtureRequest, dataset: str, mode: str, backend: str, threaded: bool
+) -> None:
+    """Each loop's correction names its two keyframes by the run's ids, as the loop closed.
+
+    In the order the loops closed, a correction's ``matched_run`` and ``current_run`` are the
+    ``keyframe_loops.npy`` row the run viewer finds the loop by, beside its ``matched`` and
+    ``current`` by the map's ids, which a merge renumbers.
+    """
+    run = _run(request, dataset, mode, backend, threaded)
+    corrections = [
+        d["loop"]["correction"] for d in run.diagnostics
+        if d.get("loop") is not None and d["loop"]["correction"] is not None
+    ]  # fmt: skip
+    named = [sorted((c["matched_run"], c["current_run"])) for c in corrections]
+    assert named == run.keyframe_loops.tolist()
+
+
 @pytest.mark.parametrize("backend", THREADED)
 @pytest.mark.parametrize(("dataset", "mode"), LOOP_CASES)
 def test_threaded_the_views_published_are_parts_of_the_map(
@@ -146,10 +166,7 @@ def test_the_points_lie_on_the_walls(  # noqa: PLR0917 -- the case, the fixtures
 ) -> None:
     """Placed on the truth by the trajectory's alignment, the points lie near the room's walls."""
     run = _run(request, dataset, mode, backend, threaded)
-    (placed,) = runs.evaluate_absolute(run, loop_folders.timestamps, loop_folders.poses).maps
-    alignment = placed.absolute.alignment
-    points = run.final_points() @ alignment[:3, :3].T + alignment[:3, 3]
-    assert float(np.median(room.surface_distance(points))) < SURFACE[mode]
+    assert wall_distance(run, loop_folders) < SURFACE[mode]
 
 
 def test_a_loop_closes_with_relocalisation_off(loop_folders: Room, tmp_path: Path) -> None:

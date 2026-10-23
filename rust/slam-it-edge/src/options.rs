@@ -452,6 +452,10 @@ impl Default for RelocalizationOptions {
 }
 
 /// Loop closure: detection, the loop's similarity, its correction (`Options.loops`).
+///
+/// A merge's welding window (`MergeLocal`'s) is built in three steps: the merge's keyframe and
+/// its best `weld_neighbours` links; then, while it holds fewer than `weld_neighbours`
+/// keyframes, each member's best `weld_widen` links taken in; that at most `weld_rounds` times.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoopOptions {
     /// Close loops in the map being tracked (needs the keyframe database).
@@ -524,6 +528,14 @@ pub struct LoopOptions {
     pub global_ba: bool,
     /// Its iterations.
     pub global_iterations: usize,
+    /// The best links of the merge's keyframe a welding window starts with, and the keyframes it
+    /// is widened to while it holds fewer (`numTemporalKFs`).
+    pub weld_neighbours: usize,
+    /// The best links of each member a welding window takes in each time it is widened
+    /// (`numTemporalKFs / 2`).
+    pub weld_widen: usize,
+    /// The most times a welding window is widened (`nMaxTries`); 0 widens it none.
+    pub weld_rounds: usize,
 }
 
 impl Default for LoopOptions {
@@ -564,6 +576,9 @@ impl Default for LoopOptions {
             essential_damping: 1e-16,
             global_ba: true,
             global_iterations: 10,
+            weld_neighbours: 25,
+            weld_widen: 12,
+            weld_rounds: 5,
         }
     }
 }
@@ -572,13 +587,16 @@ impl Default for LoopOptions {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LossOptions {
     /// A recently lost track is lost once more than this has passed since its first failed
-    /// frame, in seconds.
+    /// frame, in seconds; 0 loses the map on its first failed frame.
     pub relocalize_seconds: f64,
     /// A map of `loss.reset_keyframes` keyframes or fewer is lost after this many failed frames in
     /// a row instead.
     pub lost_frames: usize,
     /// A map lost with this many keyframes or fewer is reset rather than kept.
     pub reset_keyframes: usize,
+    /// A map a session ends with fewer keyframes than this is reset rather than kept, when a run
+    /// of several sequences starts the next (ORB-SLAM3's `ChangeDataset`, 12). 0 keeps every map.
+    pub session_keyframes: usize,
 }
 
 impl Default for LossOptions {
@@ -587,6 +605,7 @@ impl Default for LossOptions {
             relocalize_seconds: 3.0,
             lost_frames: 5,
             reset_keyframes: 10,
+            session_keyframes: 12,
         }
     }
 }
@@ -799,8 +818,8 @@ named_settings!(
         strong_points: Integer,
     },
     relocalization: RelocalizationOptions { enabled: Flag, ratio: Real, common_words: Real, neighbours: Integer, group_score: Real, min_matches: Integer, inlier_ratio: Real, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, window: Real, narrow_inliers: Integer, narrow_window: Real, narrow_distance: Integer },
-    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer },
-    loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer },
+    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer, weld_neighbours: Integer, weld_widen: Integer, weld_rounds: Integer },
+    loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer, session_keyframes: Integer },
 );
 
 /// Checks the descriptor distances and the stereo matching's settings, named as `Options`' fields.
@@ -852,6 +871,8 @@ pub fn check_options(options: &Options) -> Result<()> {
             options.initialization.min_features_depth,
         ),
         ("loss.reset_keyframes", options.loss.reset_keyframes),
+        ("loss.session_keyframes", options.loss.session_keyframes),
+        ("loops.weld_rounds", options.loops.weld_rounds),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
     }
@@ -1019,13 +1040,16 @@ fn check_counts(options: &Options) -> Result<()> {
             options.loops.essential_iterations,
         ),
         ("loops.global_iterations", options.loops.global_iterations),
+        ("loops.weld_neighbours", options.loops.weld_neighbours),
+        ("loops.weld_widen", options.loops.weld_widen),
     ] {
         check_range(name, value, 1, MAX_SETTING)?;
     }
     Ok(())
 }
 
-/// Checks the real settings that must be finite and positive.
+/// Checks the real settings that must be finite and positive, and the loss window, which may be
+/// 0.
 ///
 /// # Errors
 ///
@@ -1076,7 +1100,6 @@ fn check_positive(options: &Options) -> Result<()> {
             "relocalization.narrow_window",
             options.relocalization.narrow_window,
         ),
-        ("loss.relocalize_seconds", options.loss.relocalize_seconds),
         ("loops.chi2", options.loops.chi2),
         ("loops.coarse_window", options.loops.coarse_window),
         ("loops.huber_chi2", options.loops.huber_chi2),
@@ -1088,6 +1111,14 @@ fn check_positive(options: &Options) -> Result<()> {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
         }
+    }
+    let seconds = options.loss.relocalize_seconds;
+    if !(seconds.is_finite() && seconds >= 0.0) {
+        return fail_setting(
+            "loss.relocalize_seconds",
+            "must be finite and not negative",
+            seconds,
+        );
     }
     Ok(())
 }
@@ -1184,7 +1215,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 134);
+        assert_eq!(settings.len(), 138);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
         options
@@ -1208,10 +1239,13 @@ mod tests {
         }
     }
 
-    /// The defaults pass; settings out of range are `InvalidInput`.
+    /// The defaults pass, and a loss window of 0; settings out of range are `InvalidInput`.
     #[test]
     fn checks_ranges() {
         check_options(&Options::default()).unwrap();
+        let mut at_once = Options::default();
+        at_once.loss.relocalize_seconds = 0.0;
+        check_options(&at_once).unwrap();
         for bad in [
             Options {
                 covisibility: CovisibilityOptions {
@@ -1231,6 +1265,13 @@ mod tests {
                 adjustment: AdjustmentOptions {
                     chi2_mono: f64::NAN,
                     ..AdjustmentOptions::default()
+                },
+                ..Options::default()
+            },
+            Options {
+                loss: LossOptions {
+                    relocalize_seconds: -1.0,
+                    ..LossOptions::default()
                 },
                 ..Options::default()
             },

@@ -276,6 +276,10 @@ struct RelocalizationOptions {
 };
 
 /// @brief Loop closure: detection, the loop's similarity, its correction (`Options.loops`).
+///
+/// A merge's welding window (`MergeLocal`'s) is built in three steps: the merge's keyframe and
+/// its best `weld_neighbours` links; then, while it holds fewer than `weld_neighbours`
+/// keyframes, each member's best `weld_widen` links taken in; that at most `weld_rounds` times.
 struct LoopOptions {
   /// @brief Close loops in the map being tracked (needs the keyframe database).
   bool enabled{true};
@@ -348,18 +352,30 @@ struct LoopOptions {
   bool global_ba{true};
   /// @brief Its iterations.
   std::int64_t global_iterations{10};
+  /// @brief The best links of the merge's keyframe a welding window starts with, and the
+  ///        keyframes it is widened to while it holds fewer (`numTemporalKFs`).
+  std::int64_t weld_neighbours{25};
+  /// @brief The best links of each member a welding window takes in each time it is widened
+  ///        (`numTemporalKFs / 2`).
+  std::int64_t weld_widen{12};
+  /// @brief The most times a welding window is widened (`nMaxTries`); 0 widens it none.
+  std::int64_t weld_rounds{5};
 };
 
 /// @brief When a lost track's map is closed (`Options.loss`).
 struct LossOptions {
   /// @brief A recently lost track is lost once more than this has passed since its first
-  ///        failed frame, in seconds.
+  ///        failed frame, in seconds; 0 loses the map on its first failed frame.
   double relocalize_seconds{3.0};
   /// @brief A map of `loss.reset_keyframes` keyframes or fewer is lost after this many failed
   ///        frames in a row instead.
   std::int64_t lost_frames{5};
   /// @brief A map lost with this many keyframes or fewer is reset rather than kept.
   std::int64_t reset_keyframes{10};
+  /// @brief A map a session ends with fewer keyframes than this is reset rather than kept, when
+  ///        a run of several sequences starts the next (ORB-SLAM3's `ChangeDataset`, 12). 0
+  ///        keeps every map.
+  std::int64_t session_keyframes{12};
 };
 
 /// @brief The edge pipeline's settings (`slam_it.edge.options.Options`), grouped by the stage
@@ -545,9 +561,13 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("loops.essential_damping", options.loops.essential_damping);
   visit("loops.global_ba", options.loops.global_ba);
   visit("loops.global_iterations", options.loops.global_iterations);
+  visit("loops.weld_neighbours", options.loops.weld_neighbours);
+  visit("loops.weld_widen", options.loops.weld_widen);
+  visit("loops.weld_rounds", options.loops.weld_rounds);
   visit("loss.relocalize_seconds", options.loss.relocalize_seconds);
   visit("loss.lost_frames", options.loss.lost_frames);
   visit("loss.reset_keyframes", options.loss.reset_keyframes);
+  visit("loss.session_keyframes", options.loss.session_keyframes);
   visit("seed", options.seed);
 }
 

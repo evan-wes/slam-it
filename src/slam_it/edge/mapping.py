@@ -47,6 +47,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
+from slam_it.backends import Crossing
 from slam_it.edge import adjust, covisibility, residuals
 from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
@@ -59,10 +60,6 @@ from slam_it.foundations.errors import InvalidInputError
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
 Mask = NDArray[np.bool_]
-
-
-Crossing = dict[str, Any]
-"""A map, camera, tracked frame or the settings, as it crosses the bindings."""
 
 
 class Interrupts(Protocol):

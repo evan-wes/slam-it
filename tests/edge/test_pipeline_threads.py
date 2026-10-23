@@ -146,8 +146,8 @@ def test_busy_mapping_queues_up_to_three(
     view = run.owner.view
     assert view is not None
     found = pipeline._track_frame(
-        run.tracking, run.owner, view, CAMERA, _frame(rendered[asks], run), mode="rgbd",
-        options=OPTIONS, keyframe_base=run.atlas.keyframe_base, mapper=busy,
+        run.tracking, run.owner, view, CAMERA, _frame(rendered[asks], run), atlas=run.atlas,
+        mode="rgbd", options=OPTIONS, mapper=busy, switch=run._switch,
     )  # fmt: skip
     assert found.asked
     assert busy.interrupted

@@ -82,6 +82,7 @@ def test_the_settings_cross_as_groups_of_scalars() -> None:
         ({"loops.confidence": 1.0}, r"loops.confidence: must be in \(0, 1\), got 1.0"),
         ({"loops.fine_distance": 257}, "loops.fine_distance: must be from 1 to 256"),
         ({"loops.essential_damping": 0.0}, "loops.essential_damping: must be finite and positive"),
+        ({"loss.relocalize_seconds": -1.0}, "loss.relocalize_seconds: must be finite and not neg"),
         ({"features.n_features": "a"}, "features.n_features: must be an integer"),
         ({"features.n_features": None}, "features.n_features: must be an integer"),
     ],
@@ -103,6 +104,13 @@ def test_every_setting_refuses_a_bad_value_by_name(name: str) -> None:
         Options().with_settings({name: bad})
 
 
+def test_the_loss_window_may_be_zero() -> None:
+    """``loss.relocalize_seconds`` 0 is no window, a new map at once; the other reals may not."""
+    assert Options().with_settings({"loss.relocalize_seconds": 0}).loss.relocalize_seconds == 0.0
+    with pytest.raises(InvalidInputError, match="must be finite and positive"):
+        Options().with_settings({"loops.chi2": 0.0})
+
+
 def test_an_unknown_setting_or_group_is_refused() -> None:
     """A name no group holds, and a group given as anything but its class."""
     with pytest.raises(InvalidInputError, match="options: no setting 'window'"):
@@ -112,9 +120,9 @@ def test_an_unknown_setting_or_group_is_refused() -> None:
 
 
 def test_the_settings_are_named_by_group_and_field() -> None:
-    """settings() lists all 134, each ``group.field`` but ``seed``, and with_settings reads them."""
+    """settings() lists all 138, each ``group.field`` but ``seed``, and with_settings reads them."""
     settings = Options().settings()
-    assert len(settings) == 134
+    assert len(settings) == 138
     assert [name for name in settings if "." not in name] == ["seed"]
     changed = Options().with_settings({"relocalization.min_inliers": 12, "seed": 3})
     assert (changed.relocalization.min_inliers, changed.seed) == (12, 3)

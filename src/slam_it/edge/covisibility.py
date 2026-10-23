@@ -18,7 +18,7 @@ V.D; ``KeyFrame::UpdateConnections``, ``KeyFrame::SetBadFlag``, ``Tracking::Upda
   keyframe has none. A keyframe leaves the map only by :func:`cull`, ORB-SLAM's ``SetBadFlag``:
   its children are given new parents (:func:`reparent`), then it is erased, and
   :func:`slam_it.edge.map.erase_keyframe` refuses a keyframe that is still a parent. ``cull``
-  spares a keyframe with a loop edge, and one loop detection holds, as ORB-SLAM's
+  spares a keyframe with a loop or merge edge, and one loop detection holds, as ORB-SLAM's
   ``SetNotErase`` does.
 - **Tracking's local map** (:func:`local_map`, ``UpdateLocalKeyFrames``): K1, the keyframes
   that observe the points a frame was matched to, the most shared first, the first of them
@@ -305,7 +305,7 @@ def _reparent(m: Map, k: int, options: Options) -> Map:
 
 def _cull(m: Map, k: int, options: Options, held: IntArray) -> Map:
     """Give a keyframe's children new parents, then erase it, unless it is spared (reference)."""
-    if maps.has_loop(m, k) or m.kf_id[k] in held:
+    if maps.has_loop(m, k) or maps.has_merge(m, k) or m.kf_id[k] in held:
         return m
     return maps.erase_keyframe(_reparent(m, k, options), k)
 
@@ -596,9 +596,9 @@ def cull(m: Map, k: int, options: Options, *, held: ArrayLike = (), backend: str
     The one way a keyframe leaves the graph: :func:`reparent`, then
     :func:`slam_it.edge.map.erase_keyframe`, which refuses a keyframe that is still a parent, so
     every parent stays a keyframe of the map. The map's first keyframe (id 0), its tree's root,
-    is refused, as ``SetBadFlag`` leaves it. A keyframe with a loop edge, or one of `held`, is
-    spared: the map comes back as it was (ORB-SLAM's ``SetNotErase``; ORB-SLAM erases a spared
-    keyframe once it is released, where here a later culling weighs it again).
+    is refused, as ``SetBadFlag`` leaves it. A keyframe with a loop or merge edge, or one of
+    `held`, is spared: the map comes back as it was (ORB-SLAM's ``SetNotErase``; ORB-SLAM erases
+    a spared keyframe once it is released, where here a later culling weighs it again).
 
     Parameters
     ----------

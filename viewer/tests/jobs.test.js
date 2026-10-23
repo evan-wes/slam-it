@@ -110,9 +110,13 @@ test("a summary is listed, its mode and intrinsics source named", () => {
     ["frames", "0"],
     ["tracked", "0"],
   ]);
-  // The maps, where a lost track started more than one, or one was reset.
-  assert.deepEqual(summaryRows({ segment_count: 3, resets: 0 })[2], ["maps", "3"]);
-  assert.deepEqual(summaryRows({ segment_count: 1, resets: 2 })[2], ["maps", "1 kept, 2 reset"]);
+  // The maps the run ends with, where a lost track started more than one, or one was reset; not
+  // its stretches: a map taken up again is tracked in three stretches, its maps 0, 1, 0.
+  assert.deepEqual(summaryRows({ maps: 3, resets: 0 })[2], ["maps", "3"]);
+  assert.deepEqual(summaryRows({ maps: 1, resets: 2 })[2], ["maps", "1 kept, 2 reset"]);
+  assert.deepEqual(summaryRows({ maps: 2, segment_count: 3, resets: 0 })[2], ["maps", "2"]);
+  // A map merged into another: two stretches, one map, no row.
+  assert.ok(!summaryRows({ maps: 1, segment_count: 2 }).some(([label]) => label === "maps"));
   // The frames found again in their map, where there were any.
   assert.deepEqual(summaryRows({ relocalizations: 3 })[2], ["frames found again", "3"]);
   assert.ok(!summaryRows({ relocalizations: 0 }).some(([label]) => label === "frames found again"));
@@ -175,6 +179,31 @@ test("what of the clip was tracked is said, in stretches, and why there are seve
   assert.match(
     trackingText({ ...two, relocalizations: 3 }),
     /Tracking failed on 3 frames and found each again in the same map/,
+  );
+  // Frames found in a map kept from earlier, which tracking went on in: said apart.
+  const revisit = {
+    ...three,
+    segments: [
+      [0, 9],
+      [10, 20],
+      [21, 27.1],
+    ],
+    relocalizations: 1,
+  };
+  assert.equal(
+    trackingText({ ...revisit, taken_up: 1, losses: 1 }),
+    "Tracked 0.0–9.0 s, 10.0–20.0 s and 21.0–27.1 s of your 27.1 s clip. Tracking failed on " +
+      "one frame and found it in a map kept from earlier in the clip, by recognising a place " +
+      "seen there, and went on in the map found. The track was lost once, and each time a new " +
+      "map was started, so the rest of the clip was still processed.",
+  );
+  assert.match(
+    trackingText({ ...two, relocalizations: 3, taken_up: 2 }),
+    new RegExp(
+      "Tracking failed on one frame and found it again in the same map, by recognising a " +
+        "place it had seen. It also failed on 2 frames and found each in a map kept from " +
+        "earlier in the clip",
+    ),
   );
   const whole = summary({ clip_seconds: 10, tracked_from: 0, tracked_to: 10, segment_count: 1 });
   assert.equal(trackingText(whole), "Tracked from 0.0 s to 10.0 s of your 10.0 s clip.");

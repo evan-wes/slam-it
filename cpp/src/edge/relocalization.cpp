@@ -7,8 +7,11 @@
 #include <cstddef>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "slam_it/edge/tracking.hpp"
 #include "slam_it/foundations/correspondences.hpp"
@@ -366,31 +369,66 @@ Result<std::vector<std::int64_t>> search_keyframe(const Map& m, const Camera& ca
   return out;
 }
 
-Result<Relocalized> relocalize(const Map& m, const Database& db,
-                               const foundations::vocabulary::Vocabulary& vocabulary,
-                               const Camera& camera, const Frame& frame, const Options& options) {
-  const vocabulary::Quantized quantized =
-      vocabulary::quantize(vocabulary, frame.features.descriptors);
+namespace {
+
+/// @brief A frame's words: each feature's node and its word vector.
+struct FrameWords {
+  /// @brief The features quantised.
+  vocabulary::Quantized quantized;
+  /// @brief The word vector.
+  vocabulary::BowVector vector;
+};
+
+/// @brief A frame's words, the camera and settings checked first.
+/// @param vocabulary The vocabulary.
+/// @param camera The camera.
+/// @param frame The frame.
+/// @param options The settings.
+/// @return The words; `InvalidInput` for an invalid camera or settings.
+Result<FrameWords> frame_words(const vocabulary::Vocabulary& vocabulary, const Camera& camera,
+                               const Frame& frame, const Options& options) {
+  vocabulary::Quantized quantized = vocabulary::quantize(vocabulary, frame.features.descriptors);
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  auto vector = vocabulary::bow(vocabulary, quantized.words);
-  if (!vector) {
-    return std::unexpected(std::move(vector.error()));
+  return vocabulary::bow(vocabulary, quantized.words)
+      .transform([&quantized](vocabulary::BowVector vector) {
+        return FrameWords{.quantized = std::move(quantized), .vector = std::move(vector)};
+      });
+}
+
+/// @brief A relocalisation that has placed nothing yet.
+/// @param words The frame's words.
+/// @param frame The frame.
+/// @return The result, its summary's counts zero.
+Relocalized unplaced(const FrameWords& words, const Frame& frame) {
+  return {.tracked = std::nullopt,
+          .summary = {.words = static_cast<std::int64_t>(words.vector.ids.size()),
+                      .sharing = 0,
+                      .scored = 0,
+                      .candidates = {},
+                      .placed = false},
+          .matched = std::vector<std::int64_t>(keypoint_count(frame), -1)};
+}
+
+}  // namespace
+
+Result<Relocalized> relocalize(const Map& m, const Database& db,
+                               const foundations::vocabulary::Vocabulary& vocabulary,
+                               const Camera& camera, const Frame& frame, const Options& options) {
+  auto words = frame_words(vocabulary, camera, frame, options);
+  if (!words) {
+    return std::unexpected(std::move(words.error()));
   }
-  auto found = candidates(db, m, *vector, options);
+  auto found = candidates(db, m, words->vector, options);
   if (!found) {
     return std::unexpected(std::move(found.error()));
   }
-  Relocalized out{.tracked = std::nullopt,
-                  .summary = {.words = static_cast<std::int64_t>(vector->ids.size()),
-                              .sharing = found->sharing,
-                              .scored = found->scored,
-                              .candidates = {},
-                              .placed = false},
-                  .matched = std::vector<std::int64_t>(keypoint_count(frame), -1)};
+  Relocalized out = unplaced(*words, frame);
+  out.summary.sharing = found->sharing;
+  out.summary.scored = found->scored;
   for (std::size_t i = 0; i < found->keyframes.size(); ++i) {
-    auto attempt = try_candidate(m, db, camera, frame, quantized.nodes,
+    auto attempt = try_candidate(m, db, camera, frame, words->quantized.nodes,
                                  {found->keyframes[i], found->scores[i]}, options);
     if (!attempt) {
       return std::unexpected(std::move(attempt.error()));
@@ -400,6 +438,56 @@ Result<Relocalized> relocalize(const Map& m, const Database& db,
     if (attempt->tracked) {
       out.tracked = std::move(attempt->tracked);
       out.summary.placed = true;
+      return out;
+    }
+  }
+  return out;
+}
+
+Result<Across> relocalize_across(std::span<const MapRef> searched,
+                                 const foundations::vocabulary::Vocabulary& vocabulary,
+                                 const Camera& camera, const Frame& frame, const Options& options) {
+  if (searched.empty()) {
+    return fail(ErrorKind::kInvalidInput, "searched: expected at least one map");
+  }
+  if (auto ok = check_numbers(searched, "searched"); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  auto words = frame_words(vocabulary, camera, frame, options);
+  if (!words) {
+    return std::unexpected(std::move(words.error()));
+  }
+  std::vector<Ranked> found;
+  std::map<std::int64_t, std::size_t> place;
+  Across out{.map = std::nullopt, .relocalized = unplaced(*words, frame), .maps = {}};
+  for (std::size_t at = 0; at < searched.size(); ++at) {
+    place[searched[at].number] = at;
+    auto each = candidates(*searched[at].database, *searched[at].map, words->vector, options);
+    if (!each) {
+      return std::unexpected(std::move(each.error()));
+    }
+    out.relocalized.summary.sharing += each->sharing;
+    out.relocalized.summary.scored += each->scored;
+    for (std::size_t i = 0; i < each->keyframes.size(); ++i) {
+      found.push_back(
+          {.score = each->scores[i], .map = searched[at].number, .keyframe = each->keyframes[i]});
+    }
+  }
+  rank(found);
+  for (const Ranked& candidate : found) {
+    const MapRef& map = searched[place.at(candidate.map)];
+    auto attempt = try_candidate(*map.map, *map.database, camera, frame, words->quantized.nodes,
+                                 {candidate.keyframe, candidate.score}, options);
+    if (!attempt) {
+      return std::unexpected(std::move(attempt.error()));
+    }
+    out.relocalized.summary.candidates.push_back(attempt->summary);
+    out.maps.push_back(candidate.map);
+    out.relocalized.matched = std::move(attempt->matched);
+    if (attempt->tracked) {
+      out.relocalized.tracked = std::move(attempt->tracked);
+      out.relocalized.summary.placed = true;
+      out.map = candidate.map;
       return out;
     }
   }

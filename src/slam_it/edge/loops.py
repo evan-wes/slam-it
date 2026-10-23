@@ -47,6 +47,12 @@ onto the map as it has become (:func:`propagate_global_ba`, ORB-SLAM's
 made since moves with its parent in the spanning tree, and a point made since with its reference
 keyframe.
 
+**Merging** (milestone 2B's B4; the online-SLAM design, section 14): :func:`detect_merge` looks
+for the place a keyframe revisits in the other maps, by detection's stages, each search taking
+the map searched as well as the keyframe's own (a loop's are one); :func:`merge` brings the
+active map into the one it matched, welds them, and spreads the weld (ORB-SLAM3's ``MergeLocal``,
+its correction as its paper gives it).
+
 **Similarities** are ORB-SLAM's ``S_cw``: ``[[s R, t], [0, 1]]`` carrying a world point into a
 keyframe's camera, scaled; a keyframe's own pose ``T_cam_world`` is one with ``s = 1``. A search
 projects through the rigid ``(R, t / s)``, as ORB-SLAM's does. Stereo and RGB-D measure their
@@ -82,7 +88,7 @@ from __future__ import annotations
 
 import enum
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
@@ -90,6 +96,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from slam_it import backends
+from slam_it.backends import Crossing
 from slam_it.edge import covisibility, database, residuals
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database
@@ -195,6 +202,19 @@ def _candidates_near(m: Map, k: int, pixel: Array, radius: float, level: int) ->
     return rows[near]
 
 
+@dataclass(frozen=True)
+class _Searched:
+    """The map a place is looked for in, and its database: the new keyframe's own, for a loop.
+
+    In its own map the new keyframe's links are left out of the groups (``own``); another map
+    holds none of them.
+    """
+
+    map: Map
+    database: Database
+    own: bool
+
+
 def _search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe, the search
     m: Map,
     camera: Camera,
@@ -202,44 +222,49 @@ def _search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe
     similarity: Array,
     points: IntArray,
     *,
+    source: Map,
     window: float,
     distance: int,
     options: Options,
 ) -> IntArray:
-    """Match points to a keyframe's keypoints through a similarity (reference)."""
+    """Match points of `source` to keyframe `k` of `m` through a similarity (reference)."""
     start = int(m.kf_start[k])
     out = np.full(int(m.kf_start[k + 1]) - start, -1, dtype=np.int64)
-    seen = _in_view(m, camera, similarity, points, options)
+    seen = _in_view(source, camera, similarity, points, options)
     for p, pixel, level in zip(seen.rows, seen.pixels, seen.levels.tolist(), strict=True):
         near = _candidates_near(m, k, pixel, window * m.scale_factor**level, level)
         near = near[out[near - start] < 0]
         if len(near) == 0:
             continue
-        hamming = matching.distances(m.pt_descriptor[p : p + 1], m.kp_descriptor[near])[0]
+        hamming = matching.distances(source.pt_descriptor[p : p + 1], m.kp_descriptor[near])[0]
         best = int(np.argmin(hamming))
         if hamming[best] <= distance:
-            out[near[best] - start] = m.pt_id[p]
+            out[near[best] - start] = source.pt_id[p]
     return out
 
 
-def _match_by_word(m: Map, db: Database, k1: int, k2: int, options: Options) -> IntArray:
-    """Match two keyframes' points by word (reference)."""
-    rows1, rows2 = (np.arange(m.kf_start[k], m.kf_start[k + 1], dtype=np.int64) for k in (k1, k2))
-    nodes1, nodes2 = (db.nodes(int(m.kf_id[k])) for k in (k1, k2))
-    own1, own2 = rows1[m.kp_point[rows1] >= 0], rows2[m.kp_point[rows2] >= 0]
+def _match_by_word(  # noqa: PLR0913 -- the keyframe with its map and database, the other
+    m: Map, db: Database, k1: int, k2: int, *, searched: _Searched, options: Options
+) -> IntArray:
+    """Match keyframe `k1` of `m` to `k2` of the searched map by their points' words (reference)."""
+    other = searched.map
+    rows1 = np.arange(m.kf_start[k1], m.kf_start[k1 + 1], dtype=np.int64)
+    rows2 = np.arange(other.kf_start[k2], other.kf_start[k2 + 1], dtype=np.int64)
+    nodes1, nodes2 = db.nodes(int(m.kf_id[k1])), searched.database.nodes(int(other.kf_id[k2]))
+    own1, own2 = rows1[m.kp_point[rows1] >= 0], rows2[other.kp_point[rows2] >= 0]
     found = matching.search_by_bow(
         m.kp_descriptor[own1],
         nodes1[own1 - rows1[0]] if len(rows1) else np.zeros(0, dtype=np.int64),
-        m.kp_descriptor[own2],
+        other.kp_descriptor[own2],
         nodes2[own2 - rows2[0]] if len(rows2) else np.zeros(0, dtype=np.int64),
         m.kp_angle[own1],
-        m.kp_angle[own2],
+        other.kp_angle[own2],
         matching.Options(
             max_distance=options.matching.th_low, ratio=options.loops.ratio, check_orientation=True
         ),
     )
     out = np.full(len(rows1), -1, dtype=np.int64)
-    out[own1[found.pairs[:, 0]] - (rows1[0] if len(rows1) else 0)] = m.kp_point[
+    out[own1[found.pairs[:, 0]] - (rows1[0] if len(rows1) else 0)] = other.kp_point[
         own2[found.pairs[:, 1]]
     ]
     return out
@@ -332,34 +357,35 @@ def _refine(  # noqa: PLR0913 -- the map, the two keyframes, the start, the matc
     k1: int,
     k2: int,
     *,
+    other: Map,
     similarity: Array,
     matched: IntArray,
     fixed_scale: bool,
     options: Options,
 ) -> Refined | None:
-    """Refine the similarity between two keyframes against their matches (reference)."""
+    """Refine the similarity between keyframe `k1` of `m` and `k2` of `other` (reference)."""
     settings = options.loops
     rows1 = np.arange(m.kf_start[k1], m.kf_start[k1 + 1], dtype=np.int64)
     use = (matched >= 0) & (m.kp_point[rows1] >= 0)
     own = m.point_rows(m.kp_point[rows1[use]])
-    partner = m.point_rows(matched[use])
+    partner = other.point_rows(matched[use])
     keep = (own >= 0) & (partner >= 0)
     rows, own, partner = rows1[use][keep], own[keep], partner[keep]
     points1 = maps.to_camera(m.kf_pose[k1], m.pt_xyz[own])
-    points2 = maps.to_camera(m.kf_pose[k2], m.pt_xyz[partner])
+    points2 = maps.to_camera(other.kf_pose[k2], other.pt_xyz[partner])
     front = (points1[:, 2] > cameras.MIN_DEPTH) & (points2[:, 2] > cameras.MIN_DEPTH)
     rows, partner, points1, points2 = rows[front], partner[front], points1[front], points2[front]
     if len(rows) == 0:
         return None
-    rows2 = np.arange(m.kf_start[k2], m.kf_start[k2 + 1], dtype=np.int64)
+    rows2 = np.arange(other.kf_start[k2], other.kf_start[k2 + 1], dtype=np.int64)
     pixels2 = np.full((len(rows), 2), np.nan)
     level2 = np.zeros(len(rows), dtype=np.int64)
-    for i, point_id in enumerate(m.pt_id[partner].tolist()):
-        at = rows2[m.kp_point[rows2] == point_id]
+    for i, point_id in enumerate(other.pt_id[partner].tolist()):
+        at = rows2[other.kp_point[rows2] == point_id]
         if len(at):
-            pixels2[i], level2[i] = m.kp_xy[at[0]], m.kp_level[at[0]]
+            pixels2[i], level2[i] = other.kp_xy[at[0]], other.kp_level[at[0]]
     information = np.column_stack(
-        [1.0 / residuals.sigma2(m, m.kp_level[rows]), 1.0 / residuals.sigma2(m, level2)]
+        [1.0 / residuals.sigma2(m, m.kp_level[rows]), 1.0 / residuals.sigma2(other, level2)]
     )
     pixels1 = m.kp_xy[rows]
 
@@ -405,6 +431,8 @@ class Outcome(enum.StrEnum):
     """A loop closed on this keyframe."""
     DROPPED = "dropped"
     """The loop being confirmed went unconfirmed ``loops.misses`` keyframes in a row."""
+    MERGED = "merged"
+    """A loop closed on the keyframe was dropped for a merge found on it (:func:`merge_first`)."""
 
 
 @dataclass(frozen=True)
@@ -649,21 +677,24 @@ def _confirm_by_projection(  # noqa: PLR0913 -- the map, its camera, the keyfram
     matched: int,
     similarity: Array,
     *,
+    searched: _Searched,
     options: Options,
 ) -> tuple[IntArray, IntArray]:
     """Search a matched keyframe's group's points in a keyframe through a similarity.
 
-    ORB-SLAM's ``FindMatchesByProjection``: :func:`group_points`, then
-    :func:`search_by_similarity` with ``loops.confirm_window`` and ``loops.confirm_distance``.
-    Return the group's points' ids and each of the keyframe's keypoints' match.
+    ORB-SLAM's ``FindMatchesByProjection``: :func:`group_points` in the searched map (the
+    keyframe's links left out in its own), then :func:`search_by_similarity` with
+    ``loops.confirm_window`` and ``loops.confirm_distance``. Return the group's points' ids
+    and each of the keyframe's keypoints' match.
     """
-    points = _group_points(m, matched, _linked(m, k, options), options)
+    linked = _linked(m, k, options) if searched.own else set()
+    points = _group_points(searched.map, matched, linked, options)
     found = _search_by_similarity(
-        m, camera, k, similarity, points,
+        m, camera, k, similarity, points, source=searched.map,
         window=options.loops.confirm_window, distance=options.loops.confirm_distance,
         options=options,
     )  # fmt: skip
-    return m.pt_id[points], found
+    return searched.map.pt_id[points], found
 
 
 def _matched(found: IntArray) -> int:
@@ -672,29 +703,42 @@ def _matched(found: IntArray) -> int:
 
 
 def _carry(  # noqa: PLR0913 -- the map, its camera, the keyframe, the loop, the settings
-    m: Map, camera: Camera, k: int, pending: Pending, *, fixed_scale: bool, options: Options
+    m: Map,
+    camera: Camera,
+    k: int,
+    pending: Pending,
+    *,
+    searched: _Searched,
+    fixed_scale: bool,
+    options: Options,
 ) -> tuple[Pending | None, ConfirmationSummary]:
     """Try to confirm the loop being confirmed on a later keyframe (module docstring, step 1).
 
+    The loop's last keyframe is the new keyframe's map's, its matched one the searched map's.
     Return the loop as it stands after the keyframe, None once dropped, and how it went.
     """
     settings = options.loops
-    current, matched = m.kf_pose[k], maps.keyframe_row(m, pending.matched)
+    other = searched.map
+    current, matched = m.kf_pose[k], maps.keyframe_row(other, pending.matched)
     last = maps.keyframe_row(m, pending.last)
     carried = _relative(current, m.kf_pose[last]) @ pending.similarity
-    points, found = _confirm_by_projection(m, camera, k, matched, carried, options=options)
+    points, found = _confirm_by_projection(
+        m, camera, k, matched, carried, searched=searched, options=options
+    )
     summary = ConfirmationSummary(matched=pending.matched, projected=_matched(found))
     confirmed: tuple[Array, IntArray, IntArray] | None = None
     if summary.projected >= settings.confirm_matches:
-        start = carried @ sim3.inverse(m.kf_pose[matched])
+        start = carried @ sim3.inverse(other.kf_pose[matched])
         refined = _refine(
-            m, camera, k, matched, similarity=start, matched=found, fixed_scale=fixed_scale,
-            options=options,
+            m, camera, k, matched, other=other, similarity=start, matched=found,
+            fixed_scale=fixed_scale, options=options,
         )  # fmt: skip
         summary = replace(summary, refined=None if refined is None else refined.inliers)
         if refined is not None and refined.inliers > settings.temporal_refined:
-            placed = refined.similarity @ m.kf_pose[matched]
-            points, again = _confirm_by_projection(m, camera, k, matched, placed, options=options)
+            placed = refined.similarity @ other.kf_pose[matched]
+            points, again = _confirm_by_projection(
+                m, camera, k, matched, placed, searched=searched, options=options
+            )
             summary = replace(summary, reprojected=_matched(again))
             if _matched(again) >= settings.temporal_matches:
                 confirmed = (placed, points, again)
@@ -727,14 +771,15 @@ class _Found:
     confirmations: int
 
 
-def _merged_by_word(
-    m: Map, db: Database, k: int, group: list[int], options: Options
+def _merged_by_word(  # noqa: PLR0913 -- the keyframe with its map and database, the group
+    m: Map, db: Database, k: int, group: list[int], *, searched: _Searched, options: Options
 ) -> tuple[IntArray, IntArray, int]:
     """Match a keyframe by word to each of a group's keyframes, and merge the matches.
 
-    Each keypoint takes its first match in the group's order whose point no earlier keypoint
-    took. Return each keypoint's point id and the row of the keyframe it was matched in (-1
-    where none), and the row of the group's keyframe that matched most (ties: the first).
+    The group is the searched map's. Each keypoint takes its first match in the group's order
+    whose point no earlier keypoint took. Return each keypoint's point id and the row of the
+    keyframe it was matched in (-1 where none), and the row of the group's keyframe that
+    matched most (ties: the first).
     """
     size = int(m.kf_start[k + 1] - m.kf_start[k])
     merged = np.full(size, -1, dtype=np.int64)
@@ -742,7 +787,7 @@ def _merged_by_word(
     used: set[int] = set()
     best, most = group[0], -1
     for g in group:
-        found = _match_by_word(m, db, k, g, options)
+        found = _match_by_word(m, db, k, g, searched=searched, options=options)
         if _matched(found) > most:
             best, most = g, _matched(found)
         for i in np.flatnonzero(found >= 0).tolist():
@@ -760,6 +805,7 @@ def _similarity_by_ransac(  # noqa: PLR0913 -- the map, its camera, the matches,
     best: int,
     merged: IntArray,
     *,
+    other: Map,
     source: IntArray,
     fixed_scale: bool,
     options: Options,
@@ -767,22 +813,23 @@ def _similarity_by_ransac(  # noqa: PLR0913 -- the map, its camera, the matches,
     """Find the similarity from the best keyframe's frame to the keyframe's by RANSAC.
 
     Each merged match gives the keyframe's own point in its frame and the matched point in the
-    best keyframe's, both in front, each with its keypoint's level variance (the matched
-    point's in the keyframe it was matched in). Return ``S_kb`` and its inliers, or None and
-    the inliers it found (None if it did not run) when it falls short of ``loops.min_inliers``.
+    best keyframe's (of `other`), both in front, each with its keypoint's level variance (the
+    matched point's in the keyframe it was matched in). Return ``S_kb`` and its inliers, or
+    None and the inliers it found (None if it did not run) when it falls short of
+    ``loops.min_inliers``.
     """
     settings = options.loops
     rows = m.kf_start[k] + np.flatnonzero(merged >= 0)
     own = m.point_rows(m.kp_point[rows])
-    partner = m.point_rows(merged[merged >= 0])
+    partner = other.point_rows(merged[merged >= 0])
     points1 = maps.to_camera(m.kf_pose[k], m.pt_xyz[own])
-    points2 = maps.to_camera(m.kf_pose[best], m.pt_xyz[partner])
+    points2 = maps.to_camera(other.kf_pose[best], other.pt_xyz[partner])
     level2 = np.zeros(len(rows), dtype=np.int64)
     for i, (point_id, g) in enumerate(
         zip(merged[merged >= 0].tolist(), source[merged >= 0].tolist(), strict=True)
     ):
-        at = np.flatnonzero(m.kp_point[m.keypoint_rows(g)] == point_id)
-        level2[i] = m.kp_level[m.kf_start[g] + at[0]]
+        at = np.flatnonzero(other.kp_point[other.keypoint_rows(g)] == point_id)
+        level2[i] = other.kp_level[other.kf_start[g] + at[0]]
     front = (points1[:, 2] > cameras.MIN_DEPTH) & (points2[:, 2] > cameras.MIN_DEPTH)
     count = int(np.count_nonzero(front))
     if count < max(settings.min_inliers, sim3.SAMPLE_SIZE):
@@ -796,7 +843,7 @@ def _similarity_by_ransac(  # noqa: PLR0913 -- the map, its camera, the matches,
     try:
         found = sim3.sim3_ransac(
             points1[front], points2[front], residuals.sigma2(m, m.kp_level[rows[front]]),
-            residuals.sigma2(m, level2[front]), run, model=camera.model,
+            residuals.sigma2(other, level2[front]), run, model=camera.model,
             intrinsics=camera.intrinsics, fixed_scale=fixed_scale,
         )  # fmt: skip
     except DegenerateError:
@@ -808,7 +855,14 @@ def _similarity_by_ransac(  # noqa: PLR0913 -- the map, its camera, the matches,
 
 
 def _confirmations(  # noqa: PLR0913 -- the map, its camera, the keyframe, the loop
-    m: Map, camera: Camera, k: int, best: int, similarity: Array, *, options: Options
+    m: Map,
+    camera: Camera,
+    k: int,
+    best: int,
+    similarity: Array,
+    *,
+    searched: _Searched,
+    options: Options,
 ) -> int:
     """Count the keyframe's best links that confirm the loop, at most ``loops.confirmations``."""
     count = 0
@@ -816,7 +870,9 @@ def _confirmations(  # noqa: PLR0913 -- the map, its camera, the keyframe, the l
         if count == options.loops.confirmations:
             break
         carried = _relative(m.kf_pose[j], m.kf_pose[k]) @ similarity
-        _, found = _confirm_by_projection(m, camera, j, best, carried, options=options)
+        _, found = _confirm_by_projection(
+            m, camera, j, best, carried, searched=searched, options=options
+        )
         if _matched(found) >= options.loops.confirm_matches:
             count += 1
     return count
@@ -829,36 +885,37 @@ def _place(  # noqa: PLR0913 -- the map, its camera, the two keyframes, the star
     best: int,
     model: Array,
     *,
+    other: Map,
     summary: CandidateSummary,
     fixed_scale: bool,
     options: Options,
 ) -> tuple[tuple[Array, IntArray, IntArray] | None, CandidateSummary]:
     """Place a candidate's loop: search, refine, search again (module docstring, step 2).
 
-    The best keyframe's group's points searched through ``S_kb`` (`model`), the similarity
-    refined against those matches, and the points searched through the refined one. Return the
-    keyframe's ``S_cw``, the group's points' rows and the second search's matches, or None where
-    a test failed; and the summary with each count reached.
+    The best keyframe's (of `other`) group's points searched through ``S_kb`` (`model`), the
+    similarity refined against those matches, and the points searched through the refined one.
+    Return the keyframe's ``S_cw`` in `other`'s world, the group's points' rows and the second
+    search's matches, or None where a test failed; and the summary with each count reached.
     """
     settings = options.loops
-    points = _keyframe_points(m, [*_best_links(m, best, options), best])
+    points = _keyframe_points(other, [*_best_links(other, best, options), best])
     coarse = _search_by_similarity(
-        m, camera, k, model @ m.kf_pose[best], points,
+        m, camera, k, model @ other.kf_pose[best], points, source=other,
         window=settings.coarse_window, distance=settings.coarse_distance, options=options,
     )  # fmt: skip
     summary = replace(summary, projected=_matched(coarse))
     if _matched(coarse) < settings.coarse_matches:
         return None, summary
     refined = _refine(
-        m, camera, k, best, similarity=model, matched=coarse, fixed_scale=fixed_scale,
-        options=options,
+        m, camera, k, best, other=other, similarity=model, matched=coarse,
+        fixed_scale=fixed_scale, options=options,
     )  # fmt: skip
     summary = replace(summary, refined=None if refined is None else refined.inliers)
     if refined is None or refined.inliers < settings.min_refined:
         return None, summary
-    placed = refined.similarity @ m.kf_pose[best]
+    placed = refined.similarity @ other.kf_pose[best]
     fine = _search_by_similarity(
-        m, camera, k, placed, points,
+        m, camera, k, placed, points, source=other,
         window=settings.fine_window, distance=settings.fine_distance, options=options,
     )  # fmt: skip
     summary = replace(summary, reprojected=_matched(fine))
@@ -874,39 +931,48 @@ def _try_candidate(  # noqa: PLR0913 -- the map, its database and camera, the ke
     k: int,
     candidate: tuple[int, float],
     *,
+    searched: _Searched,
     linked: set[int],
     fixed_scale: bool,
     options: Options,
 ) -> tuple[CandidateSummary, _Found | None]:
-    """Try one of the database's candidates (module docstring, step 2)."""
+    """Try one of the database's candidates, a keyframe of the searched map (docstring, step 2).
+
+    A group holding one of `linked`, the keyframe's links in its own map, is passed over.
+    """
     settings = options.loops
+    other = searched.map
     keyframe, score = candidate
-    c = maps.keyframe_row(m, keyframe)
-    group = [c, *_best_links(m, c, options)]
+    c = maps.keyframe_row(other, keyframe)
+    group = [c, *_best_links(other, c, options)]
     summary = CandidateSummary(keyframe=keyframe, score=score)
     if linked & set(group):
         return replace(summary, near=True), None
-    merged, source, best = _merged_by_word(m, db, k, group, options)
-    summary = replace(summary, matches=_matched(merged), best=int(m.kf_id[best]))
+    merged, source, best = _merged_by_word(m, db, k, group, searched=searched, options=options)
+    summary = replace(summary, matches=_matched(merged), best=int(other.kf_id[best]))
     if _matched(merged) < settings.min_matches:
         return summary, None
     model, inliers = _similarity_by_ransac(
-        m, camera, k, best, merged, source=source, fixed_scale=fixed_scale, options=options
-    )
+        m, camera, k, best, merged, other=other, source=source, fixed_scale=fixed_scale,
+        options=options,
+    )  # fmt: skip
     summary = replace(summary, inliers=inliers)
     if model is None:
         return summary, None
     placed, summary = _place(
-        m, camera, k, best, model, summary=summary, fixed_scale=fixed_scale, options=options
-    )
+        m, camera, k, best, model, other=other, summary=summary, fixed_scale=fixed_scale,
+        options=options,
+    )  # fmt: skip
     if placed is None:
         return summary, None
     similarity, points, fine = placed
-    confirmations = _confirmations(m, camera, k, best, similarity, options=options)
+    confirmations = _confirmations(
+        m, camera, k, best, similarity, searched=searched, options=options
+    )
     found = _Found(
         best=best,
         similarity=similarity,
-        points=m.pt_id[points],
+        points=other.pt_id[points],
         matched_points=fine,
         reprojected=_matched(fine),
         confirmations=confirmations,
@@ -919,6 +985,7 @@ def _search(  # noqa: PLR0913 -- the map, its database and camera, the keyframe,
 ) -> tuple[_Found | None, DetectionSummary]:
     """Try the database's candidates; return the best that passed, and how the search went."""
     candidates = database.loop_candidates(db, m, int(m.kf_id[k]), options)
+    own = _Searched(m, db, own=True)
     linked = _linked(m, k, options)
     tried: list[CandidateSummary] = []
     best: _Found | None = None
@@ -926,8 +993,8 @@ def _search(  # noqa: PLR0913 -- the map, its database and camera, the keyframe,
         candidates.keyframes.tolist(), candidates.scores.tolist(), strict=True
     ):
         summary, found = _try_candidate(
-            m, db, camera, k, (keyframe, score), linked=linked, fixed_scale=fixed_scale,
-            options=options,
+            m, db, camera, k, (keyframe, score), searched=own, linked=linked,
+            fixed_scale=fixed_scale, options=options,
         )  # fmt: skip
         tried.append(summary)
         if found is not None and (best is None or found.reprojected > best.reprojected):
@@ -962,8 +1029,9 @@ def _detect(  # noqa: PLR0913 -- the map, its database and camera, the keyframe,
     dropped = False
     if pending is not None:
         carried, confirmation = _carry(
-            m, camera, k, pending, fixed_scale=fixed_scale, options=options
-        )
+            m, camera, k, pending, searched=_Searched(m, db, own=True), fixed_scale=fixed_scale,
+            options=options,
+        )  # fmt: skip
         if confirmation.confirmed and carried is not None:
             confirmed = DetectionSummary(Outcome.CONFIRMED, confirmation)
             return _settle(carried, confirmed, options=options)
@@ -1006,6 +1074,191 @@ def _settle(state: Pending, summary: DetectionSummary, *, options: Options) -> D
     if state.confirmations == 0:
         return Detection(None, None, replace(summary, outcome=Outcome.NONE, confirmations=0))
     return Detection(state, None, summary)
+
+
+# --- merge detection ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Merging:
+    """A merge being confirmed: the matched map's number, and the common region's state.
+
+    Attributes
+    ----------
+    map : int
+        The number of the map it matched.
+    pending : Pending
+        The region as a loop being confirmed holds it: its matched keyframe that map's, its
+        last the active map's.
+    """
+
+    map: int
+    pending: Pending
+
+
+@dataclass(frozen=True)
+class Merge:
+    """A merge found, ready to make (:func:`merge`).
+
+    Attributes
+    ----------
+    map : int
+        The number of the map it matched.
+    loop : Loop
+        The common region as a closed loop holds it: its current keyframe the active map's,
+        its matched one that map's, its similarity the current keyframe's ``S_cw`` in that
+        map's world (scaled by the two maps' scale ratio in monocular).
+    """
+
+    map: int
+    loop: Loop
+
+
+@dataclass(frozen=True)
+class MergeDetection:
+    """Merge detection's result, as :class:`Detection` is loop detection's.
+
+    Attributes
+    ----------
+    pending : Merging or None
+        The merge being confirmed, carried to the keyframes that follow; None if none is.
+    merge : Merge or None
+        The merge found on this keyframe; None if none was.
+    summary : DetectionSummary
+        How it went, as loop detection's says; each candidate's keyframe an id in its map.
+    maps : tuple of int
+        Each candidate's map number, in the summary's order.
+    """
+
+    pending: Merging | None
+    merge: Merge | None
+    summary: DetectionSummary
+    maps: tuple[int, ...] = ()
+
+
+def _settle_merge(
+    number: int,
+    state: Pending,
+    summary: DetectionSummary,
+    *,
+    maps: tuple[int, ...],
+    options: Options,
+) -> MergeDetection:
+    """Settle a merge as :func:`_settle` settles a loop, its map's number kept with it."""
+    settled = _settle(state, summary, options=options)
+    return MergeDetection(
+        pending=None if settled.pending is None else Merging(number, settled.pending),
+        merge=None if settled.loop is None else Merge(number, settled.loop),
+        summary=settled.summary,
+        maps=maps,
+    )
+
+
+def _search_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the others
+    m: Map,
+    db: Database,
+    camera: Camera,
+    k: int,
+    others: dict[int, database.Indexed],
+    *,
+    fixed_scale: bool,
+    options: Options,
+) -> tuple[tuple[int, _Found] | None, DetectionSummary, tuple[int, ...]]:
+    """Try the other maps' candidates; return the best that passed with its map, and the search.
+
+    Each candidate is tried as a loop's (:func:`_try_candidate`) against its own map, which
+    holds none of the keyframe's links.
+    """
+    candidates = database.merge_candidates(
+        db.vector(int(m.kf_id[k])), list(others.values()), options
+    )
+    tried: list[CandidateSummary] = []
+    best: tuple[int, _Found] | None = None
+    for number, keyframe, score in zip(
+        candidates.maps.tolist(),
+        candidates.keyframes.tolist(),
+        candidates.scores.tolist(),
+        strict=True,
+    ):
+        other = others[number]
+        summary, found = _try_candidate(
+            m, db, camera, k, (keyframe, score),
+            searched=_Searched(other.map, other.database, own=False), linked=set(),
+            fixed_scale=fixed_scale, options=options,
+        )  # fmt: skip
+        tried.append(summary)
+        if found is not None and (best is None or found.reprojected > best[1].reprojected):
+            best = (number, found)
+    searched = DetectionSummary(
+        outcome=Outcome.NONE,
+        sharing=candidates.sharing,
+        scored=candidates.scored,
+        candidates=tuple(tried),
+    )
+    return best, searched, tuple(candidates.maps.tolist())
+
+
+def _detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
+    m: Map,
+    db: Database,
+    camera: Camera,
+    keyframe: int,
+    *,
+    others: dict[int, database.Indexed],
+    pending: Merging | None,
+    mode: str,
+    options: Options,
+) -> MergeDetection:
+    """Look for another map at a newly mapped keyframe (reference)."""
+    k = maps.keyframe_row(m, keyframe)
+    fixed_scale = mode != "monocular"
+    settings = options.loops
+    held = 0 if pending is None else pending.pending.confirmations
+    if m.keyframes < settings.min_keyframes:
+        skipped = DetectionSummary(Outcome.SKIPPED, confirmations=held)
+        return MergeDetection(pending, None, skipped)
+    confirmation: ConfirmationSummary | None = None
+    dropped = False
+    if pending is not None:
+        other = others[pending.map]
+        carried, confirmation = _carry(
+            m, camera, k, pending.pending,
+            searched=_Searched(other.map, other.database, own=False), fixed_scale=fixed_scale,
+            options=options,
+        )  # fmt: skip
+        if confirmation.confirmed and carried is not None:
+            confirmed = DetectionSummary(Outcome.CONFIRMED, confirmation)
+            return _settle_merge(pending.map, carried, confirmed, maps=(), options=options)
+        dropped = carried is None
+        pending = None if carried is None else Merging(pending.map, carried)
+    found, searched, tried = _search_merge(
+        m, db, camera, k, others, fixed_scale=fixed_scale, options=options
+    )
+    searched = replace(searched, confirmation=confirmation)
+    if found is None:
+        outcome = Outcome.DROPPED if dropped else Outcome.NONE
+        held = 0 if pending is None else pending.pending.confirmations
+        summary = replace(searched, outcome=outcome, confirmations=held)
+        return MergeDetection(pending, None, summary, tried)
+    number, best = found
+    started = Pending(
+        matched=int(others[number].map.kf_id[best.best]),
+        last=keyframe,
+        similarity=best.similarity,
+        confirmations=best.confirmations,
+        misses=0,
+        points=best.points,
+        matched_points=best.matched_points,
+    )
+    began = replace(searched, outcome=Outcome.STARTED)
+    return _settle_merge(number, started, began, maps=tried, options=options)
+
+
+def _merge_first(loop: Detection, merging: MergeDetection) -> Detection:
+    """Give a merge priority over a loop closed on its keyframe (reference)."""
+    if merging.merge is None or loop.loop is None:
+        return loop
+    return Detection(None, None, replace(loop.summary, outcome=Outcome.MERGED))
 
 
 # --- correction ---------------------------------------------------------------------------
@@ -1266,6 +1519,7 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
     loop_links: dict[int, set[int]],
     ends: tuple[int, int],
     *,
+    fixed: list[int],
     fixed_scale: bool,
     options: Options,
 ) -> tuple[list[Array], int, graphs.Summary]:
@@ -1276,9 +1530,10 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
     whatever it shares, each measured between the starting similarities; and, measured between
     the poses before the correction, each keyframe's to its parent, its loop edges to older
     keyframes, and its links sharing ``loops.essential_points`` points to older keyframes but its
-    parent and children. Unit information, the matched keyframe held fixed,
-    ``loops.essential_iterations`` of Levenberg-Marquardt from ``loops.essential_damping``
-    (:func:`slam_it.foundations.graphs.optimize_pose_graph`), on Sim(3) but in stereo and RGB-D.
+    parent and children. Unit information, the `fixed` keyframes held (a loop's matched one, a
+    merge's welding window), ``loops.essential_iterations`` of Levenberg-Marquardt from
+    ``loops.essential_damping`` (:func:`slam_it.foundations.graphs.optimize_pose_graph`), on
+    Sim(3) but in stereo and RGB-D.
 
     Parameters
     ----------
@@ -1292,6 +1547,8 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
         Each moved keyframe's (row) links new across the loop.
     ends : tuple of int
         The current and the matched keyframes' rows.
+    fixed : list of int
+        The rows held fixed, at least one.
     fixed_scale : bool
         Optimise SE(3), not Sim(3).
     options : slam_it.edge.options.Options
@@ -1324,7 +1581,7 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
         np.array([sim3.inverse(s) for s in start]),
         np.array(graph.edges, dtype=np.int64).reshape(-1, 2),
         np.array(graph.relatives).reshape(-1, 4, 4),
-        [ends[1]],
+        fixed,
         similarity=not fixed_scale,
         options=graphs.Options(
             max_iterations=options.loops.essential_iterations,
@@ -1386,8 +1643,9 @@ def _correct(m: Map, camera: Camera, loop: Loop, *, mode: str, options: Options)
     for r in moved_rows:
         start[r] = corrected[r]
     optimised, edges, essential = essential_graph(
-        m, start, before, loop_links, (k, matched), fixed_scale=fixed_scale, options=options
-    )
+        m, start, before, loop_links, (k, matched), fixed=[matched], fixed_scale=fixed_scale,
+        options=options,
+    )  # fmt: skip
     m = _move_by_graph(m, start, optimised, moved_by)
     m = maps.add_loop_edge(m, loop.matched, loop.current)
     ba: graphs.Summary | None = None
@@ -1602,10 +1860,492 @@ def _move_by_graph(
     return maps.refresh_points(out, np.arange(out.points))
 
 
-# --- the backends -------------------------------------------------------------------------
+# --- merging ------------------------------------------------------------------------------
 
-Crossing = dict[str, Any]
-"""A value as it crosses the bindings: a dict of arrays, numbers, and dicts of them."""
+
+@dataclass(frozen=True)
+class WeldSummary:
+    """How a merge's welding BA went, as a run records it.
+
+    Attributes
+    ----------
+    keyframes : int
+        The keyframes optimised: both welding windows', or the active side's alone where the
+        matched window was held.
+    held : int
+        The keyframes held fixed: the matched map's outside the windows that observe their
+        points, or else the matched window.
+    points : int
+        The points optimised: every point the windows observe.
+    observations : int
+        The observations weighed: those of the optimised and held keyframes.
+    outliers : int
+        Those failing the chi-square test, or behind their camera, after the first solve, and
+        left out of the second.
+    forgotten : int
+        Those failing it after the second, forgotten (:func:`slam_it.edge.map.forget_observations`).
+    first : slam_it.foundations.graphs.Summary
+        The first solve, with a Huber loss.
+    second : slam_it.foundations.graphs.Summary or None
+        The second, with none; None if no observation was left for it.
+    """
+
+    keyframes: int
+    held: int
+    points: int
+    observations: int
+    outliers: int
+    forgotten: int
+    first: graphs.Summary
+    second: graphs.Summary | None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            Its counts, and each solve as :func:`slam_it.foundations.graphs.Summary`'s fields
+            (or None).
+        """
+        return {
+            "keyframes": self.keyframes,
+            "held": self.held,
+            "points": self.points,
+            "observations": self.observations,
+            "outliers": self.outliers,
+            "forgotten": self.forgotten,
+            "first": _solve_record(self.first),
+            "second": None if self.second is None else _solve_record(self.second),
+        }
+
+
+@dataclass(frozen=True)
+class MergeSummary:
+    """How a merge went, as a run records it.
+
+    Attributes
+    ----------
+    map : int
+        The number of the map the active one was merged into.
+    current : int
+        The id, in the merged map, of the active map's keyframe the merge was found on.
+    matched : int
+        The id of the keyframe it matched.
+    similarity : ndarray of float64, shape (4, 4)
+        The current keyframe's ``S_cw`` in the matched map's world, as the merge placed it.
+    window, matched_window : int
+        The welding windows' keyframes, on each side.
+    fused : int
+        The matched window's points fused into the active window's keyframes.
+    weld : WeldSummary
+        The welding BA.
+    edges : int
+        The essential graph's edges.
+    essential : slam_it.foundations.graphs.Summary
+        Its solve.
+    global_ba : slam_it.foundations.graphs.Summary or None
+        Global BA's solve; None with ``loops.global_ba`` off.
+    """
+
+    map: int
+    current: int
+    matched: int
+    similarity: Array
+    window: int
+    matched_window: int
+    fused: int
+    weld: WeldSummary
+    edges: int
+    essential: graphs.Summary
+    global_ba: graphs.Summary | None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the summary as JSON values.
+
+        Returns
+        -------
+        dict
+            Its fields, the similarity as rows, the welding BA as :meth:`WeldSummary.as_dict`,
+            each solve as :func:`slam_it.foundations.graphs.Summary`'s fields (or None).
+        """
+        return {
+            "map": self.map,
+            "current": self.current,
+            "matched": self.matched,
+            "similarity": self.similarity.tolist(),
+            "window": self.window,
+            "matched_window": self.matched_window,
+            "fused": self.fused,
+            "weld": self.weld.as_dict(),
+            "edges": self.edges,
+            "essential": _solve_record(self.essential),
+            "global_ba": None if self.global_ba is None else _solve_record(self.global_ba),
+        }
+
+
+@dataclass(frozen=True)
+class Merged:
+    """Two maps merged: the matched map with the active one in it, and how it went.
+
+    Attributes
+    ----------
+    map : slam_it.edge.map.Map
+        The merged map: the matched map's keyframes and points, ids and world, then the
+        active map's, each id moved on by an offset.
+    keyframe_offset : int
+        What each of the active map's keyframe ids, live or archived, became: the id plus this
+        (the matched map's next keyframe id).
+    point_offset : int
+        The same for its point ids (the matched map's next point id).
+    summary : MergeSummary
+        How it went.
+    """
+
+    map: Map
+    keyframe_offset: int
+    point_offset: int
+    summary: MergeSummary
+
+
+def _scaled(pose: Array, scale: float) -> Array:
+    """Return a pose scaled into a similarity: ``[[s R, s t], [0, 1]]``."""
+    out = pose.copy()
+    out[:3, :] *= scale
+    return out
+
+
+def _moved_into(m: Map, to_world: Array) -> Map:
+    """Carry a map into another world by a similarity ``G`` on its own: ``p`` goes to ``G p``.
+
+    Each keyframe's pose becomes the rigid one through which it sees its points where it saw
+    them, scaled (:func:`rigid_of` of ``T G⁻¹``); its archive with it, each culled keyframe's
+    pose relative to its parent scaled into the new world's units. Every point observed is
+    refreshed.
+    """
+    back = sim3.inverse(to_world)
+    scale = scale_of(back)
+    turn, shift = to_world[:3, :3], to_world[:3, 3]
+    relative = m.gone_kf_relative.copy()
+    relative[:, :3, 3] /= scale
+    out = replace(
+        m,
+        kf_pose=np.array([rigid_of(pose @ back) for pose in m.kf_pose]).reshape(-1, 4, 4),
+        pt_xyz=m.pt_xyz @ turn.T + shift,
+        gone_kf_pose=np.array([rigid_of(pose @ back) for pose in m.gone_kf_pose]).reshape(-1, 4, 4),
+        gone_pt_xyz=m.gone_pt_xyz @ turn.T + shift,
+        gone_kf_relative=relative,
+    )
+    seen = out.point_rows(np.unique(out.kp_point[out.kp_point >= 0]))
+    return maps.refresh_points(out, seen[seen >= 0])
+
+
+def _offset(ids: IntArray, offset: int) -> IntArray:
+    """Return ids moved on by an offset, -1 (none) kept."""
+    return np.where(ids >= 0, ids + offset, ids).astype(np.int64)
+
+
+def _absorb(into: Map, other: Map, keyframe_offset: int, point_offset: int) -> Map:
+    """Return `into` with `other`'s keyframes, keypoints, points and archive after its own.
+
+    Every id of `other`'s, live or archived, moves on by its offset; `other` must already be in
+    `into`'s world (:func:`_moved_into`).
+    """
+    kf, pt = keyframe_offset, point_offset
+    tables: dict[str, Any] = {
+        name: np.concatenate([getattr(into, name), getattr(other, name)])
+        for name in (
+            "kf_time", "kf_pose", "kp_xy", "kp_level", "kp_angle", "kp_descriptor", "kp_bearing",
+            "kp_depth", "kp_right", "pt_xyz", "pt_descriptor", "pt_normal", "pt_min_distance",
+            "pt_max_distance", "pt_visible", "pt_found", "gone_pt_xyz", "gone_pt_how",
+            "gone_kf_time", "gone_kf_pose", "gone_kf_relative",
+        )
+    }  # fmt: skip
+    return replace(
+        into,
+        **tables,
+        kf_id=np.concatenate([into.kf_id, other.kf_id + kf]),
+        kf_parent=np.concatenate([into.kf_parent, _offset(other.kf_parent, kf)]),
+        kf_start=np.concatenate([into.kf_start, other.kf_start[1:] + into.kf_start[-1]]),
+        kp_point=np.concatenate([into.kp_point, _offset(other.kp_point, pt)]),
+        pt_id=np.concatenate([into.pt_id, other.pt_id + pt]),
+        pt_first_kf=np.concatenate([into.pt_first_kf, other.pt_first_kf + kf]),
+        pt_reference_kf=np.concatenate([into.pt_reference_kf, other.pt_reference_kf + kf]),
+        next_kf_id=kf + other.next_kf_id,
+        next_pt_id=pt + other.next_pt_id,
+        gone_pt_id=np.concatenate([into.gone_pt_id, other.gone_pt_id + pt]),
+        gone_kf_id=np.concatenate([into.gone_kf_id, other.gone_kf_id + kf]),
+        gone_kf_parent=np.concatenate([into.gone_kf_parent, _offset(other.gone_kf_parent, kf)]),
+        loop_edges=np.concatenate([into.loop_edges, other.loop_edges + kf]),
+        merge_edges=np.concatenate([into.merge_edges, other.merge_edges + kf]),
+    )
+
+
+def _rehang(m: Map, current: int, matched: int) -> Map:
+    """Re-root the active side's spanning tree at its current keyframe, hung under the matched.
+
+    Each parent on the path from the current keyframe up to its tree's root becomes the child
+    of its child, and the current keyframe's parent becomes the matched one (ORB-SLAM3's
+    ``ChangeParent`` chain in ``MergeLocal``): the old root is an ordinary keyframe after, and
+    the merged map's root is the matched map's own.
+    """
+    parent_of = dict(zip(m.kf_id.tolist(), m.kf_parent.tolist(), strict=True))
+    chain = [current]
+    while parent_of[chain[-1]] >= 0:
+        chain.append(parent_of[chain[-1]])
+    parents = m.kf_parent.copy()
+    rows = m.keyframe_rows(np.array(chain, dtype=np.int64))
+    for child, row in zip(chain[:-1], rows[1:].tolist(), strict=True):
+        parents[row] = child
+    parents[rows[0]] = matched
+    return replace(m, kf_parent=parents)
+
+
+def _weld_window(m: Map, k: int, options: Options) -> list[int]:
+    """Return a welding window's keyframe rows (ORB-SLAM3's ``MergeLocal``, visual).
+
+    The keyframe and its best ``loops.weld_neighbours`` links; while it holds fewer than that,
+    each member's best ``loops.weld_widen`` links not yet in it, at most ``loops.weld_rounds``
+    times. In the order taken in.
+    """
+    settings = options.loops
+    window = [k, *covisibility.links(m, k, options)[0][: settings.weld_neighbours].tolist()]
+    for _ in range(settings.weld_rounds):
+        if len(window) >= settings.weld_neighbours:
+            break
+        inside, added = set(window), []
+        for r in window:
+            for other in covisibility.links(m, r, options)[0][: settings.weld_widen].tolist():
+                if other not in inside:
+                    inside.add(other)
+                    added.append(other)
+        if not added:
+            break
+        window += added
+    return [int(r) for r in window]
+
+
+@dataclass(frozen=True)
+class _Bundle:
+    """A welding BA's problem: its cameras and points, and each observation of them."""
+
+    cameras: list[int]
+    fixed: list[int]
+    points: IntArray
+    rows: IntArray
+    camera: IntArray
+    point: IntArray
+    xy: Array
+    right: Array
+    variance: Array
+    limits: Array
+
+
+def _weld_problem(
+    m: Map, windows: tuple[list[int], list[int]], keyframe_offset: int, options: Options
+) -> _Bundle:
+    """Gather a welding BA's problem (the paper's: ORB-SLAM3, section VI-B, step 3).
+
+    Both windows' keyframes free, with every point they observe; the matched map's keyframes
+    outside them that observe those points held fixed (ORB-SLAM3's source holds the matched
+    window instead, which serves here only when no such keyframe exists). The active map's
+    keyframes outside the window are left out.
+    """
+    window, matched_window = windows
+    free = sorted(set(window) | set(matched_window))
+    points = m.observed_by(np.array(free, dtype=np.int64))
+    keyframe_of = m.keypoint_keyframe()
+    observing = np.flatnonzero(np.isin(m.kp_point, m.pt_id[points]))
+    outside = sorted({int(r) for r in keyframe_of[observing]} - set(free))
+    held = [r for r in outside if int(m.kf_id[r]) < keyframe_offset]
+    cameras = free + held
+    fixed = held or sorted(matched_window)
+    rows = observing[np.isin(keyframe_of[observing], cameras)]
+    index = {r: i for i, r in enumerate(cameras)}
+    return _Bundle(
+        cameras=cameras,
+        fixed=[index[r] for r in fixed],
+        points=points,
+        rows=rows,
+        camera=np.array([index[int(r)] for r in keyframe_of[rows]], dtype=np.int64),
+        point=np.searchsorted(points, m.point_rows(m.kp_point[rows])).astype(np.int64),
+        xy=m.kp_xy[rows],
+        right=m.kp_right[rows],
+        variance=residuals.sigma2(m, m.kp_level[rows]),
+        limits=residuals.thresholds(m.kp_right[rows], options),
+    )
+
+
+def _weld_solve(  # noqa: PLR0913 -- the problem, its state, which observations, the solve
+    problem: _Bundle,
+    camera: Camera,
+    state: tuple[Array, Array],
+    use: Mask,
+    *,
+    robust: bool,
+    iterations: int,
+) -> tuple[Array, Array, graphs.Summary]:
+    """Solve the welding BA on the observations `use` marks, from `state` (poses, points).
+
+    Only the cameras and points those observations reach take part, with the held cameras;
+    the rest keep their state.
+    """
+    poses, xyz = state
+    cameras = np.unique(np.concatenate([problem.camera[use], problem.fixed])).astype(np.int64)
+    points = np.unique(problem.point[use])
+    result = graphs.bundle_adjust(
+        poses[cameras], xyz[points], np.searchsorted(cameras, problem.camera[use]),
+        np.searchsorted(points, problem.point[use]), problem.xy[use], problem.right[use],
+        1.0 / problem.variance[use], model=camera.model, intrinsics=camera.intrinsics,
+        bf=camera.focal * camera.baseline, fixed=np.searchsorted(cameras, problem.fixed),
+        huber=np.sqrt(problem.limits[use]) if robust else None,
+        options=graphs.Options(max_iterations=iterations),
+    )  # fmt: skip
+    poses, xyz = poses.copy(), xyz.copy()
+    poses[cameras], xyz[points] = result.poses, result.points
+    return poses, xyz, result.summary
+
+
+def _weld_errors(problem: _Bundle, camera: Camera, poses: Array, xyz: Array) -> Array:
+    """Return each observation's chi-square error at `poses` (``T_world_cam``) and `xyz`."""
+    to_camera = np.array([sim3.inverse(pose) for pose in poses]).reshape(-1, 4, 4)
+    rotation, shift = to_camera[problem.camera, :3, :3], to_camera[problem.camera, :3, 3]
+    local = np.einsum("nij,nj->ni", rotation, xyz[problem.point]) + shift
+    return residuals.chi2(camera, local, problem.xy, problem.right, problem.variance)
+
+
+def _weld(
+    m: Map,
+    camera: Camera,
+    windows: tuple[list[int], list[int]],
+    keyframe_offset: int,
+    options: Options,
+) -> tuple[Map, WeldSummary]:
+    """Bundle-adjust the welding windows (ORB-SLAM3's welding BA, as its paper gives it).
+
+    :func:`_weld_problem`'s problem, solved as ORB-SLAM's local BA solves its own: a Huber loss
+    at each observation's chi-square threshold's root (:func:`slam_it.edge.residuals.thresholds`)
+    for ``adjustment.iterations``; the observations then failing the test, or behind their
+    camera, left out; ``adjustment.refine_iterations`` more with no robust loss; the observations
+    still failing it forgotten, and the points refreshed.
+    """
+    problem = _weld_problem(m, windows, keyframe_offset, options)
+    state = (
+        np.array([sim3.inverse(m.kf_pose[r]) for r in problem.cameras]).reshape(-1, 4, 4),
+        m.pt_xyz[problem.points].copy(),
+    )
+    everything = np.ones(len(problem.rows), dtype=bool)
+    poses, xyz, first = _weld_solve(
+        problem, camera, state, everything, robust=True, iterations=options.adjustment.iterations
+    )
+    inliers = _weld_errors(problem, camera, poses, xyz) <= problem.limits
+    second: graphs.Summary | None = None
+    if np.any(inliers):
+        poses, xyz, second = _weld_solve(
+            problem, camera, (poses, xyz), inliers, robust=False,
+            iterations=options.adjustment.refine_iterations,
+        )  # fmt: skip
+    failing = ~(_weld_errors(problem, camera, poses, xyz) <= problem.limits)
+    kf_pose, pt_xyz = m.kf_pose.copy(), m.pt_xyz.copy()
+    held = set(problem.fixed)
+    for i, r in enumerate(problem.cameras):
+        if i not in held:
+            kf_pose[r] = sim3.inverse(poses[i])
+    pt_xyz[problem.points] = xyz
+    out = maps.refresh_points(replace(m, kf_pose=kf_pose, pt_xyz=pt_xyz), problem.points)
+    out = maps.forget_observations(out, problem.rows[failing])
+    summary = WeldSummary(
+        keyframes=len(problem.cameras) - len(held),
+        held=len(held),
+        points=len(problem.points),
+        observations=len(problem.rows),
+        outliers=int(np.count_nonzero(~inliers)),
+        forgotten=int(np.count_nonzero(failing)),
+        first=first,
+        second=second,
+    )
+    return out, summary
+
+
+def merge_transform(active: Map, found: Merge) -> Array:
+    """Return ``G``, the similarity carrying a merge's active map into the matched map's world.
+
+    ``G = S⁻¹ T``: `found`'s similarity places the current keyframe in the matched map's world,
+    ``T`` is its pose in the active map's; a point ``p`` of the active map goes to ``G p``.
+
+    Parameters
+    ----------
+    active : slam_it.edge.map.Map
+        The active map, holding the merge's current keyframe.
+    found : Merge
+        The merge.
+
+    Returns
+    -------
+    ndarray of float64, shape (4, 4)
+        ``G``.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the active map does not hold the current keyframe.
+    """
+    region = found.loop
+    placed = active.kf_pose[maps.keyframe_row(active, region.current)]
+    return np.asarray(sim3.inverse(region.similarity) @ placed, dtype=np.float64)
+
+
+def _merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
+    active: Map, matched: Map, camera: Camera, found: Merge, *, mode: str, options: Options
+) -> Merged:
+    """Merge the active map into the matched one (reference)."""
+    region = found.loop
+    fixed_scale = mode != "monocular"
+    scale = 1.0 if fixed_scale else scale_of(region.similarity)
+    to_matched = merge_transform(active, found)
+    keyframe_offset, point_offset = matched.next_kf_id, matched.next_pt_id
+    m = _absorb(matched, _moved_into(active, to_matched), keyframe_offset, point_offset)
+    current = region.current + keyframe_offset
+    m = _rehang(m, current, region.matched)
+    k, km = maps.keyframe_row(m, current), maps.keyframe_row(m, region.matched)
+    window, matched_window = _weld_window(m, k, options), _weld_window(m, km, options)
+    points = m.pt_id[_keyframe_points(m, matched_window)]
+    fused = 0
+    for r in window:  # fusion erases points, never keyframes: the rows hold
+        m, count = _fuse_by_similarity(m, camera, r, m.kf_pose[r], points, options=options)
+        fused += count
+    before = m.kf_pose.copy()
+    m, weld = _weld(m, camera, (window, matched_window), keyframe_offset, options)
+    absorbed = (m.kf_id >= keyframe_offset).tolist()
+    # The active side's nodes carry its own units, as its edges measured before were.
+    start = [_scaled(p, scale) if a else p for p, a in zip(m.kf_pose, absorbed, strict=True)]
+    prior = [_scaled(p, scale) if a else p for p, a in zip(before, absorbed, strict=True)]
+    welded = sorted(set(window) | set(matched_window))
+    optimised, edges, essential = essential_graph(
+        m, start, prior, {}, (k, km), fixed=welded, fixed_scale=fixed_scale, options=options
+    )
+    m = _move_by_graph(m, start, optimised, {})
+    m = maps.add_merge_edge(m, region.matched, current)
+    ba: graphs.Summary | None = None
+    if options.loops.global_ba:
+        m, ba = _global_bundle_adjust(m, camera, options)
+    summary = MergeSummary(
+        map=found.map,
+        current=current,
+        matched=region.matched,
+        similarity=region.similarity,
+        window=len(window),
+        matched_window=len(matched_window),
+        fused=fused,
+        weld=weld,
+        edges=edges,
+        essential=essential,
+        global_ba=ba,
+    )
+    return Merged(m, keyframe_offset, point_offset, summary)
+
+
+# --- the backends -------------------------------------------------------------------------
 
 
 class Implementation(Protocol):
@@ -1616,7 +2356,12 @@ class Implementation(Protocol):
     (``_pending_as_dict``, ``_loop_as_dict``); the mode by name. Results cross back as dicts:
     a detection's ``pending`` and ``loop`` (each a dict or None) and ``summary``, its outcome a
     code in ``codes()["loop_outcome"]``; a correction's ``map`` and ``summary``, each solve's
-    termination a code in ``codes()["graphs_termination"]``.
+    termination a code in ``codes()["graphs_termination"]``. Merging's: the other maps as a
+    list of :meth:`slam_it.edge.database.Indexed.as_dict`; a :class:`Merging` and a
+    :class:`Merge` as ``map`` with ``pending`` or ``loop``; a detection given to
+    :func:`merge_first` with its summary's :meth:`DetectionSummary.as_dict`, its outcome by name;
+    a merge detection back as a detection is, with ``maps``; a merge back as ``map``,
+    ``keyframe_offset``, ``point_offset`` and ``summary``.
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -1704,6 +2449,38 @@ class Implementation(Protocol):
         self, *, m: Crossing, camera: Crossing, loop: Crossing, mode: str, options: Crossing
     ) -> Crossing:
         """Correct a loop closed at a keyframe."""
+        ...
+
+    def detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
+        self,
+        *,
+        m: Crossing,
+        database: Crossing,
+        camera: Crossing,
+        keyframe: int,
+        others: list[Crossing],
+        pending: Crossing | None,
+        mode: str,
+        options: Crossing,
+    ) -> Crossing:
+        """Look for another map at a newly mapped keyframe."""
+        ...
+
+    def merge_first(self, *, loop: Crossing, merging: Crossing) -> Crossing:
+        """Give a merge found on a keyframe priority over a loop closed on it."""
+        ...
+
+    def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
+        self,
+        *,
+        active: Crossing,
+        matched: Crossing,
+        camera: Crossing,
+        found: Crossing,
+        mode: str,
+        options: Crossing,
+    ) -> Crossing:
+        """Merge the active map into the one it matched."""
         ...
 
 
@@ -1821,7 +2598,30 @@ def _optional(raw: Any) -> int | None:  # noqa: ANN401 -- a compiled backend's v
 
 def _decode_detection(raw: Crossing, codes: backends.Codes) -> Detection:
     """Rebuild :class:`Detection` from a compiled backend's dict."""
-    summary = raw["summary"]
+    return Detection(
+        pending=_decode_pending(raw["pending"]),
+        loop=_decode_loop(raw["loop"]),
+        summary=_decode_summary(raw["summary"], codes),
+    )
+
+
+def _decode_merge_detection(raw: Crossing, codes: backends.Codes) -> MergeDetection:
+    """Rebuild :class:`MergeDetection` from a compiled backend's dict."""
+    pending, found = raw["pending"], raw["merge"]
+    carried = _decode_pending(None if pending is None else pending["pending"])
+    region = _decode_loop(None if found is None else found["loop"])
+    return MergeDetection(
+        pending=None
+        if pending is None or carried is None
+        else Merging(int(pending["map"]), carried),
+        merge=None if found is None or region is None else Merge(int(found["map"]), region),
+        summary=_decode_summary(raw["summary"], codes),
+        maps=tuple(_checked_ids(raw["maps"], "merge detection maps").tolist()),
+    )
+
+
+def _decode_summary(summary: Crossing, codes: backends.Codes) -> DetectionSummary:
+    """Rebuild :class:`DetectionSummary` from a compiled backend's dict."""
     carried = summary["confirmation"]
     confirmation = (
         None
@@ -1850,18 +2650,78 @@ def _decode_detection(raw: Crossing, codes: backends.Codes) -> Detection:
         for c in summary["candidates"]
     )
     outcome = Outcome(backends.decode_name(codes, "loop_outcome", summary["outcome"]))
-    return Detection(
-        pending=_decode_pending(raw["pending"]),
-        loop=_decode_loop(raw["loop"]),
-        summary=DetectionSummary(
-            outcome=outcome,
-            confirmation=confirmation,
-            sharing=int(summary["sharing"]),
-            scored=int(summary["scored"]),
-            candidates=candidates,
-            confirmations=int(summary["confirmations"]),
+    return DetectionSummary(
+        outcome=outcome,
+        confirmation=confirmation,
+        sharing=int(summary["sharing"]),
+        scored=int(summary["scored"]),
+        candidates=candidates,
+        confirmations=int(summary["confirmations"]),
+    )
+
+
+def _decode_merged(raw: Crossing, codes: backends.Codes) -> Merged:
+    """Rebuild :class:`Merged` from a compiled backend's dict."""
+    s, weld = raw["summary"], raw["summary"]["weld"]
+    second, ba = weld["second"], s["global_ba"]
+    return Merged(
+        map=maps.decode(raw["map"], codes),
+        keyframe_offset=int(raw["keyframe_offset"]),
+        point_offset=int(raw["point_offset"]),
+        summary=MergeSummary(
+            map=int(s["map"]),
+            current=int(s["current"]),
+            matched=int(s["matched"]),
+            similarity=_checked_similarity(s["similarity"], "merge similarity"),
+            window=int(s["window"]),
+            matched_window=int(s["matched_window"]),
+            fused=int(s["fused"]),
+            weld=WeldSummary(
+                keyframes=int(weld["keyframes"]),
+                held=int(weld["held"]),
+                points=int(weld["points"]),
+                observations=int(weld["observations"]),
+                outliers=int(weld["outliers"]),
+                forgotten=int(weld["forgotten"]),
+                first=graphs.summary_from_backend(weld["first"], codes),
+                second=None if second is None else graphs.summary_from_backend(second, codes),
+            ),
+            edges=int(s["edges"]),
+            essential=graphs.summary_from_backend(s["essential"], codes),
+            global_ba=None if ba is None else graphs.summary_from_backend(ba, codes),
         ),
     )
+
+
+def _detection_as_dict(detection: Detection) -> Crossing:
+    """Return a loop detection's result as it crosses the bindings, its outcome by name."""
+    return {
+        "pending": None if detection.pending is None else _pending_as_dict(detection.pending),
+        "loop": None if detection.loop is None else _loop_as_dict(detection.loop),
+        "summary": detection.summary.as_dict(),
+    }
+
+
+def _merging_as_dict(merging: Merging | None) -> Crossing | None:
+    """Return a merge being confirmed as it crosses the bindings."""
+    if merging is None:
+        return None
+    return {"map": merging.map, "pending": _pending_as_dict(merging.pending)}
+
+
+def _merge_detection_as_dict(found: MergeDetection) -> Crossing:
+    """Return merge detection's result as it crosses the bindings, its outcome by name."""
+    return {
+        "pending": _merging_as_dict(found.pending),
+        "merge": None if found.merge is None else _merge_as_dict(found.merge),
+        "summary": found.summary.as_dict(),
+        "maps": np.array(found.maps, dtype=np.int64),
+    }
+
+
+def _merge_as_dict(found: Merge) -> Crossing:
+    """Return a merge found as it crosses the bindings."""
+    return {"map": found.map, "loop": _loop_as_dict(found.loop)}
 
 
 def _decode_corrected(raw: Crossing, codes: backends.Codes) -> Corrected:
@@ -1951,7 +2811,15 @@ def search_by_similarity(  # noqa: PLR0913 -- the map, its camera, the keyframe,
         __name__,
         "search_by_similarity",
         reference=lambda: _search_by_similarity(
-            m, camera, row, chosen, rows, window=window, distance=distance, options=options
+            m,
+            camera,
+            row,
+            chosen,
+            rows,
+            source=m,
+            window=window,
+            distance=distance,
+            options=options,
         ),
         arguments={
             "m": m.as_dict(),
@@ -2004,7 +2872,9 @@ def match_by_word(  # noqa: PLR0913 -- the map, its database, the two keyframes,
         backend,
         __name__,
         "match_by_word",
-        reference=lambda: _match_by_word(m, db, first, second, options),
+        reference=lambda: _match_by_word(
+            m, db, first, second, searched=_Searched(m, db, own=True), options=options
+        ),
         arguments={
             "m": m.as_dict(),
             "database": db.as_dict(),
@@ -2137,6 +3007,7 @@ def refine(  # noqa: PLR0913 -- the map, the two keyframes, the start, the match
             camera,
             first,
             second,
+            other=m,
             similarity=start,
             matched=ids,
             fixed_scale=bool(fixed_scale),
@@ -2410,4 +3281,219 @@ def correct(  # noqa: PLR0913 -- the map, its camera, the loop, the settings, th
             "options": options.as_dict(),
         },
         decode=_decode_corrected,
+    )
+
+
+def detect_merge(  # noqa: PLR0913 -- the map, its database and camera, the keyframe, the state
+    m: Map,
+    db: Database,
+    camera: Camera,
+    keyframe: int,
+    *,
+    others: Sequence[database.Indexed],
+    pending: Merging | None,
+    mode: str,
+    options: Options,
+    backend: str = "python",
+) -> MergeDetection:
+    """Look for another map at a newly mapped keyframe (ORB-SLAM3's merge detection).
+
+    ``NewDetectCommonRegions``' merge branch, beside loop detection and by its stages (the
+    module docstring's): nothing while the active map holds fewer than ``loops.min_keyframes``;
+    the merge being confirmed carried to the keyframe, in its matched map; and, when it is not
+    confirmed here, the other maps' candidates tried (:func:`slam_it.edge.database
+    .merge_candidates`), each against its own map, which holds none of the keyframe's links.
+    Unlike ORB-SLAM3's source, a confirmation resets the merge's misses as it resets a loop's,
+    so two misses in a row drop it. A monocular merge's similarity carries the two maps' scale
+    ratio, unbounded (ORB-SLAM3 bounds it for inertial maps alone). :func:`merge_first` gives
+    a merge priority over a loop found on the same keyframe.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The active map, holding the keyframe.
+    db : slam_it.edge.database.Database
+        Its keyframe database, holding the keyframe.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    keyframe : int
+        The new keyframe's id.
+    others : sequence of slam_it.edge.database.Indexed
+        The other maps, each with its database and number.
+    pending : Merging or None
+        The merge being confirmed, from the keyframes before; None if none is.
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode: the similarity is rigid but in monocular.
+    options : slam_it.edge.options.Options
+        The ``loops`` settings, and those the searches read.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    MergeDetection
+        The merge being confirmed after the keyframe, the merge found on it, and how it went.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the keyframe is not in the map, the mode is unknown, two maps share a number, the
+        merge being confirmed names a map not among `others` or holds a similarity that is not
+        one.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while refining a candidate's similarity
+        (:func:`slam_it.foundations.graphs.refine_similarity`).
+    """
+    check_mode(mode)
+    maps.keyframe_row(m, keyframe)
+    by_number = {other.number: other for other in others}
+    if len(by_number) != len(others):
+        raise InvalidInputError("others: expected each map once, by its number")
+    if pending is not None:
+        if pending.map not in by_number:
+            raise InvalidInputError(f"pending.map: map {pending.map} is not among the others")
+        _similarity(pending.pending.similarity, "pending.similarity")
+    return backends.call(
+        backend,
+        __name__,
+        "detect_merge",
+        reference=lambda: _detect_merge(
+            m, db, camera, keyframe, others=by_number, pending=pending, mode=mode, options=options
+        ),
+        arguments={
+            "m": m.as_dict(),
+            "database": db.as_dict(),
+            "camera": camera.as_dict(),
+            "keyframe": int(keyframe),
+            "others": [other.as_dict() for other in others],
+            "pending": _merging_as_dict(pending),
+            "mode": mode,
+            "options": options.as_dict(),
+        },
+        decode=_decode_merge_detection,
+    )
+
+
+def merge_first(loop: Detection, merging: MergeDetection, *, backend: str = "python") -> Detection:
+    """Give a merge found on a keyframe priority over a loop closed on it (ORB-SLAM3's ``Run``).
+
+    Where both were found on one keyframe, the merge is made and the loop forgotten, as
+    ORB-SLAM3 resets its loop's state after a merge, its outcome :attr:`Outcome.MERGED`; a loop
+    still being confirmed is kept.
+
+    Parameters
+    ----------
+    loop : Detection
+        Loop detection's result on the keyframe.
+    merging : MergeDetection
+        Merge detection's on the same keyframe.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Detection
+        `loop`, its closed loop and its state dropped, its outcome ``merged``, if a merge was
+        found too.
+    """
+    return backends.call(
+        backend,
+        __name__,
+        "merge_first",
+        reference=lambda: _merge_first(loop, merging),
+        arguments={
+            "loop": _detection_as_dict(loop),
+            "merging": _merge_detection_as_dict(merging),
+        },
+        decode=_decode_detection,
+    )
+
+
+def merge(  # noqa: PLR0913 -- the two maps, the camera, the merge, the settings
+    active: Map,
+    matched: Map,
+    camera: Camera,
+    found: Merge,
+    *,
+    mode: str,
+    options: Options,
+    backend: str = "python",
+) -> Merged:
+    """Merge the active map into the one it matched (ORB-SLAM3's ``MergeLocal``, as its paper).
+
+    The online-SLAM design's section 14, item 4:
+
+    - the matched map survives with its world, scale and ids (it need not be the older: the
+      active map can be an older map taken up again); the active map is carried into its world
+      by the merge's similarity (each keyframe as the current one sees it, each point with it)
+      and taken in after it, every id of its, live or archived, moved on by the matched map's
+      next id (:class:`Merged`);
+    - the active side's spanning tree is re-rooted at the current keyframe and hung under the
+      matched one, so the merged map's root is the matched map's;
+    - the welding windows: each of the two keyframes and its best links
+      (``loops.weld_neighbours``, widened by ``loops.weld_widen`` up to ``loops.weld_rounds``
+      times);
+    - the matched window's points fused into the active window's keyframes (``SearchAndFuse``:
+      ``loops.fuse_window``, ``matching.th_low``), each replacing the point a keypoint had;
+    - the welding BA (the paper's: both windows optimised, the matched map's keyframes outside
+      them that see their points held; ORB-SLAM3's source holds the matched window instead);
+    - the essential graph over the whole merged map, both windows held (:func:`essential_graph`,
+      the paper's; ORB-SLAM3's source covers only the rest of the active map, in stereo and
+      RGB-D, and moves a monocular one by one similarity), the active side's nodes in its own
+      units, so its edges hold;
+    - global BA after (``loops.global_ba``), as after a loop; ORB-SLAM3's source runs it only
+      where one was interrupted.
+
+    Parameters
+    ----------
+    active : slam_it.edge.map.Map
+        The active map, holding the merge's current keyframe.
+    matched : slam_it.edge.map.Map
+        The map it matched, holding the merge's matched keyframe.
+    camera : slam_it.edge.frames.Camera
+        The camera.
+    found : Merge
+        The merge (:func:`detect_merge`).
+    mode : {"monocular", "stereo", "rgbd"}
+        The pipeline's mode: the similarity's scale is used but in stereo and RGB-D.
+    options : slam_it.edge.options.Options
+        The ``loops`` and ``adjustment`` settings, and those the fusion reads.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    Merged
+        The merged map, the two offsets that carried the active map's ids, and how it went.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If either keyframe is not in its map, the mode is unknown, the similarity is not one,
+        or the maps' pyramids differ.
+    slam_it.foundations.errors.NotConvergedError
+        If GTSAM fails while solving the welding BA, the essential graph or global BA
+        (:mod:`slam_it.foundations.graphs`).
+    """
+    check_mode(mode)
+    region = found.loop
+    maps.keyframe_row(active, region.current)
+    maps.keyframe_row(matched, region.matched)
+    _similarity(region.similarity, "found.loop.similarity")
+    if (active.levels, active.scale_factor) != (matched.levels, matched.scale_factor):
+        raise InvalidInputError("merge: the two maps' pyramids differ")
+    return backends.call(
+        backend,
+        __name__,
+        "merge",
+        reference=lambda: _merge(active, matched, camera, found, mode=mode, options=options),
+        arguments={
+            "active": active.as_dict(),
+            "matched": matched.as_dict(),
+            "camera": camera.as_dict(),
+            "found": _merge_as_dict(found),
+            "mode": mode,
+            "options": options.as_dict(),
+        },
+        decode=_decode_merged,
     )

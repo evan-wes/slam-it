@@ -104,8 +104,9 @@ def read_batch(folder: Path) -> Batch:
 def summarize(folder: Path, config: Path) -> int:
     """Give each of a measure's results its run's details (the module docstring).
 
-    Reads each result's run, and its sequence's ground truth through `config`; results that
-    have their details, and sequences that failed, are left as they are.
+    Reads each result's run, and its sequence's ground truth through `config` (its sessions' in
+    turn, :func:`measure_testset.truth_of`); results that have their details, and sequences that
+    failed, are left as they are.
 
     Returns
     -------
@@ -126,9 +127,10 @@ def summarize(folder: Path, config: Path) -> int:
             continue
         if row["name"] not in entries:
             raise InvalidInputError(f"{config}: no sequence {row['name']!r}")
-        run = runs.read_run(folder / row["name"] / "run")
         entry = entries[row["name"]]
-        truth = runs.ground_truth(entry.dataset, entry.folder)
+        run = runs.read_run(folder / row["name"] / "run")
+        offsets = measure_testset.offsets_of(entry)
+        truth = measure_testset.truth_of(entry.dataset, entry.folders, offsets)
         scored = None
         if truth is not None:
             with contextlib.suppress(DegenerateError):  # no map aligned: its ATE says so

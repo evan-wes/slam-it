@@ -492,6 +492,11 @@ class LoopOptions:
     its source hard-codes. A distance named here is a Hamming distance; ORB-SLAM writes the
     projection searches' as ``TH_LOW`` (50) times a ratio.
 
+    A merge's welding window (``MergeLocal``'s) is built in three steps: the merge's keyframe
+    and its best ``weld_neighbours`` links; then, while it holds fewer than ``weld_neighbours``
+    keyframes, each member's best ``weld_widen`` links taken in; that at most ``weld_rounds``
+    times.
+
     Attributes
     ----------
     enabled : bool
@@ -579,6 +584,15 @@ class LoopOptions:
         off measures what it adds).
     global_iterations : int
         Its iterations (``GlobalBundleAdjustemnt``'s 10).
+    weld_neighbours : int
+        The best links of the merge's keyframe a welding window starts with, and the keyframes
+        it is widened to while it holds fewer (ORB-SLAM3's ``numTemporalKFs``, 25, which
+        ``MergeLocal`` uses for visual maps too).
+    weld_widen : int
+        The best links of each member a welding window takes in each time it is widened
+        (``numTemporalKFs / 2``, 12).
+    weld_rounds : int
+        The most times a welding window is widened (``nMaxTries``, 5); 0 widens it none.
     """
 
     enabled: bool = True
@@ -616,6 +630,9 @@ class LoopOptions:
     essential_damping: float = 1e-16
     global_ba: bool = True
     global_iterations: int = 10
+    weld_neighbours: int = 25
+    weld_widen: int = 12
+    weld_rounds: int = 5
 
 
 @dataclass(frozen=True)
@@ -628,7 +645,7 @@ class LossOptions:
         Relocalising, a recently lost track is lost once more than this has passed since its
         first failed frame with none tracked (ORB-SLAM3's ``RECENTLY_LOST``, 3 s): the map is
         kept, or reset (``loss.reset_keyframes``), and the next frame starts a new one (ORB-SLAM3's
-        atlas).
+        atlas). 0 has no window: the map is lost on its first failed frame, a new map at once.
     lost_frames : int
         A map is lost after this many failed frames in a row instead when it has
         ``loss.reset_keyframes`` keyframes or fewer (ORB-SLAM3 loses one at once), or whenever
@@ -637,11 +654,16 @@ class LossOptions:
         A map lost with this many keyframes or fewer is reset rather than kept: its keyframes
         and points removed, its frames' poses dropped (ORB-SLAM3's ``ResetActiveMap``, for a
         map of up to 10 keyframes). 0 keeps every map.
+    session_keyframes : int
+        A map a session ends with fewer keyframes than this is reset rather than kept, when a
+        run of several sequences starts the next (ORB-SLAM3's ``ChangeDataset``, 12). 0 keeps
+        every map.
     """
 
     relocalize_seconds: float = 3.0
     lost_frames: int = 5
     reset_keyframes: int = 10
+    session_keyframes: int = 12
 
 
 @dataclass(frozen=True)
@@ -866,7 +888,10 @@ def _checked(name: str, kind: str, value: Any) -> bool | int | float:  # noqa: A
     if kind == "int":
         return as_count(value, name, 0 if name in _MAY_BE_ZERO else 1, 1 << 30)
     number = as_number(value, name)
-    if name in _FRACTIONS:
+    if name in _MAY_BE_ZERO:
+        if not (math.isfinite(number) and number >= 0.0):
+            raise InvalidInputError(f"{name}: must be finite and not negative, got {number}")
+    elif name in _FRACTIONS:
         if not (math.isfinite(number) and 0.0 < number <= 1.0):
             raise InvalidInputError(f"{name}: must be in (0, 1], got {number}")
     elif not (math.isfinite(number) and number > 0.0):
@@ -880,9 +905,12 @@ _MAY_BE_ZERO = frozenset(
         "initialization.min_features",
         "initialization.min_features_depth",
         "loss.reset_keyframes",
+        "loss.session_keyframes",
+        "loops.weld_rounds",
+        "loss.relocalize_seconds",
     }
 )
-"""The integer settings that may be 0."""
+"""The settings that may be 0: integers, and one real."""
 
 _FRACTIONS = frozenset(
     {

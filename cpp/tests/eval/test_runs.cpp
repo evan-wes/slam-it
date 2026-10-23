@@ -149,7 +149,9 @@ runs::Run golden_run() {
       .locks = values["locks"].get<bool>(),
       .pose_maps = values["pose_maps"].get<std::vector<std::int64_t>>(),
       .keyframe_maps = values["keyframe_maps"].get<std::vector<std::int64_t>>(),
-      .point_maps = values["point_maps"].get<std::vector<std::int64_t>>()};
+      .point_maps = values["point_maps"].get<std::vector<std::int64_t>>(),
+      .tracked_maps = values["tracked_maps"].get<std::vector<std::int64_t>>(),
+      .keyframe_merges = values["keyframe_merges"].get<std::vector<std::array<std::int64_t, 2>>>()};
   for (const auto& point : values["points"]) {
     run.points.emplace_back(point[0].get<double>(), point[1].get<double>(), point[2].get<double>());
   }
@@ -231,10 +233,10 @@ void check_golden(int& failures) {
   const slam_it::testing::ScratchDir scratch("slam_it_test_runs");
   const fs::path& out = scratch.path();
   expect(runs::write_run(out.string(), golden_run()).has_value(), "the run is written", failures);
-  for (const char* name :
-       {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy", "keyframe_parents.npy",
-        "keyframe_links.npy", "keyframe_loops.npy", "points.npy", "point_lives.npy",
-        "pose_maps.npy", "keyframe_maps.npy", "point_maps.npy"}) {
+  for (const char* name : {"keyframes.npy", "keyframe_poses.npy", "keyframe_lives.npy",
+                           "keyframe_parents.npy", "keyframe_links.npy", "keyframe_loops.npy",
+                           "points.npy", "point_lives.npy", "pose_maps.npy", "keyframe_maps.npy",
+                           "point_maps.npy", "tracked_maps.npy", "keyframe_merges.npy"}) {
     expect(bytes(out / name) == bytes(golden / name),
            (std::string(name) + " matches numpy's byte for byte").c_str(), failures);
   }
@@ -405,8 +407,21 @@ void check_refusals(int& failures) {
          "maps that are not one per pose are refused", failures);
   run = golden_run();
   run.point_maps = {0, 1, 0, 1, 1};
-  expect(is_invalid_input(runs::write_run(out.string(), run)), "maps that descend are refused",
-         failures);
+  expect(runs::write_run(out.string(), run).has_value(),
+         "maps that descend are written: merges and relocalisation leave them so", failures);
+  fs::remove_all(out);
+  run = golden_run();
+  run.tracked_maps.pop_back();
+  expect(is_invalid_input(runs::write_run(out.string(), run)),
+         "maps tracked in that are not one per pose are refused", failures);
+  // The golden keyframes' maps are 0, 1, 1: a merge joins 1 and 2.
+  for (const std::array<std::int64_t, 2>& merge :
+       {std::array<std::int64_t, 2>{2, 1}, std::array<std::int64_t, 2>{0, 1}}) {
+    run = golden_run();
+    run.keyframe_merges = {merge};
+    expect(is_invalid_input(runs::write_run(out.string(), run)),
+           "a merge not joining two keyframes of one map, the lower first, is refused", failures);
+  }
   run = golden_run();
   run.keyframe_maps[0] = -1;
   expect(is_invalid_input(runs::write_run(out.string(), run)), "a negative map is refused",
@@ -455,9 +470,9 @@ void check_refusals(int& failures) {
       "a frame's negative map is refused", failures);
   expect(is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 3, true))),
          "a frame's map that is not a number is refused", failures);
-  expect(
-      is_invalid_input(runs::write_run(out.string(), with_map(golden_run(), 4, std::int64_t{0}))),
-      "frames' maps that descend are refused", failures);
+  expect(runs::write_run(out.string(), with_map(golden_run(), 4, std::int64_t{0})).has_value(),
+         "frames' maps that descend are written", failures);
+  fs::remove_all(out);
   run = golden_run();
   for (const std::size_t frame : {3, 4, 5}) {
     run = with_map(std::move(run), frame, nullptr);

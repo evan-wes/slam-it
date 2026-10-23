@@ -6,7 +6,8 @@ ORB-SLAM's TUM ``bf``) and as a EuRoC sequence (``mav0/cam0`` and ``cam1``: PNGs
 ``data.csv`` and ``sensor.yaml``, the right camera :data:`tests.edge.room.BASELINE` to the
 left one's right, no distortion). The gap room drops the frames of :data:`GAP`. The loop room
 follows :func:`tests.edge.room.loop_path` instead, back over where it began
-(:func:`loop_frames`). The tests' fixtures (``tests/orchestration/conftest.py``) and the golden
+(:func:`loop_frames`); the merge room is the loop room blinded long enough to start a new map
+(:func:`merge_frames`). The tests' fixtures (``tests/orchestration/conftest.py``) and the golden
 records' generator (``tests/fixtures/edge/generate_room_runs.py``) both write them from here.
 """
 
@@ -49,6 +50,18 @@ class Room:
     euroc: Path
     timestamps: NDArray[np.float64]
     poses: NDArray[np.float64]
+
+
+def wall_distance(run: runs.Run, folders: Room) -> float:
+    """Return the median distance of a run's final points to the room's walls and boxes, in metres.
+
+    The run's one map is placed on the truth by its ATE alignment (the loop and merge rooms'
+    bars).
+    """
+    (placed,) = runs.evaluate_absolute(run, folders.timestamps, folders.poses).maps
+    alignment = placed.absolute.alignment
+    points = run.final_points() @ alignment[:3, :3].T + alignment[:3, 3]
+    return float(np.median(room.surface_distance(points)))
 
 
 def png(path: Path, values: NDArray[np.uint8] | NDArray[np.uint16]) -> None:
@@ -394,6 +407,78 @@ def loop_frames() -> list[room.Frame]:
         The frames.
     """
     return room.sequence(room.LOOP_FRAMES, stereo=True, loop=True)
+
+
+MERGE_AT = 60
+"""Where the merge room's black frames begin: the loop room's camera about a quarter of the way
+round (90 degrees of its turn)."""
+
+MERGE_BLANKS = 96
+"""The merge room's black frames: 3.2 s at the room's 30 Hz, longer than the 3 s
+``loss.relocalize_seconds`` relocalises a lost map for, so the track is lost and a new map
+starts on the frames after, which begin about 235 degrees round; the camera comes back over the
+first map's start at 360 degrees, where the two maps merge (``tests/orchestration/
+test_merge_room.py``)."""
+
+MERGE_OPTIONS = OPTIONS.with_settings({"loss.reset_keyframes": 0, "loops.min_keyframes": 6})
+"""The merge room's settings, scaled to its size as the kept room's are: its first map, of 6
+keyframes or so when the black frames begin, is kept rather than reset (ORB-SLAM3 resets a map
+lost with 10 keyframes or fewer); and the second searches for a merge from 6 keyframes, where
+ORB-SLAM3 waits for 12, which the second map would not reach before the camera has passed the
+first map's start."""
+
+
+def merge_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the merge room: the loop room, its frames from :data:`MERGE_AT` blank.
+
+    :data:`MERGE_BLANKS` of them.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The loop room's frames (:func:`loop_frames`).
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        As many frames, at the same times, the black ones blank.
+    """
+    black = range(MERGE_AT, MERGE_AT + MERGE_BLANKS)
+    return [blank(f) if k in black else f for k, f in enumerate(rendered)]
+
+
+REVISIT_AT = 230
+"""Where the revisit room's second black stretch begins: the camera at 345 degrees of its turn,
+its second map not yet back over where the first began."""
+
+REVISIT_BLANKS = 30
+"""The revisit room's second black frames: 1 s, within the 3 s ``loss.relocalize_seconds``, so
+its second map is not lost; the camera comes back at 390 degrees, over the first map's start,
+which the second map has not seen, so relocalisation finds the frame in the first map, kept,
+and tracking takes it up (``tests/orchestration/test_revisit_room.py``)."""
+
+REVISIT_OPTIONS = MERGE_OPTIONS.with_settings({"loops.enabled": False})
+"""The revisit room's settings: the merge room's, loop closing off, so the maps never merge and
+only relocalisation can bring the first map back."""
+
+
+def revisit_frames(rendered: list[room.Frame]) -> list[room.Frame]:
+    """Return the revisit room: the merge room, its frames from :data:`REVISIT_AT` blank too.
+
+    :data:`REVISIT_BLANKS` of them.
+
+    Parameters
+    ----------
+    rendered : list of tests.edge.room.Frame
+        The loop room's frames (:func:`loop_frames`).
+
+    Returns
+    -------
+    list of tests.edge.room.Frame
+        As many frames, at the same times, the merge room's black ones and these blank.
+    """
+    black = range(REVISIT_AT, REVISIT_AT + REVISIT_BLANKS)
+    return [blank(f) if k in black else f for k, f in enumerate(merge_frames(rendered))]
 
 
 def room_inputs() -> dict[str, Any]:

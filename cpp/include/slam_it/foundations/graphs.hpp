@@ -188,11 +188,16 @@ struct Observations {
   std::span<const double> right;
   /// @brief Each observation's information, `1 / sigma^2` in px^-2, positive.
   std::span<const double> information;
+  /// @brief Each observation's Huber threshold on its whitened error's norm, positive; empty for
+  ///        no robust loss.
+  std::span<const double> huber;
 };
 
-/// @brief Adjust every pose and point against every observation, with no robust loss.
+/// @brief Adjust every pose and point against every observation, with no robust loss or Huber's.
 ///
-/// ORB-SLAM's `GlobalBundleAdjustemnt` as loop closing calls it (`bRobust` false), on GTSAM.
+/// ORB-SLAM's `GlobalBundleAdjustemnt` as loop closing calls it (`bRobust` false), on GTSAM; with
+/// the observations' `huber`, each whitened error through a Huber loss at its threshold, as
+/// ORB-SLAM's local and welding BAs weigh theirs.
 /// @param poses Each camera's starting `T_world_cam`.
 /// @param points Each point's start, in the world (P x 3), P >= 1.
 /// @param observations The observations; every point must be observed.
@@ -203,9 +208,9 @@ struct Observations {
 /// @param fixed The cameras held fixed.
 /// @param options How the solve runs.
 /// @return The poses, points and summary; `InvalidInput` for a pose not rigid, mismatched
-///         sizes, an index out of range, an unobserved point, a non-positive information, a
-///         right column without `bf`, a bad camera or bad options; `NotConverged` if GTSAM
-///         fails.
+///         sizes, an index out of range, an unobserved point, a non-positive information or
+///         Huber threshold, a right column without `bf`, a bad camera or bad options;
+///         `NotConverged` if GTSAM fails.
 [[nodiscard]] Result<Adjustment> bundle_adjust(std::span<const Eigen::Matrix4d> poses,
                                                const Eigen::Ref<const Points>& points,
                                                const Observations& observations,

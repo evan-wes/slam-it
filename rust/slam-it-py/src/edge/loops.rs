@@ -5,7 +5,11 @@
 //! dicts `slam_it.edge.loops` builds of them; the mode by name. Results cross back as dicts: a
 //! detection's `pending` and `loop` (each a dict or None) and `summary`, its outcome a code in
 //! `codes()["loop_outcome"]`; a correction's `map` and `summary`, each solve's termination a
-//! code in `codes()["graphs_termination"]`.
+//! code in `codes()["graphs_termination"]`. Merging's: the other maps as a list of
+//! `Indexed.as_dict()`'s dicts; a merge being confirmed and a merge found as dicts of `map` with
+//! `pending` or `loop`; a detection given to `merge_first` as Python's, its summary's outcome by
+//! name; a merge detection back as a detection, with `maps`; a merge back as `map`,
+//! `keyframe_offset`, `point_offset` and `summary`.
 
 use std::collections::BTreeSet;
 
@@ -14,18 +18,21 @@ use numpy::{PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use slam_it_edge::database::MapRef;
 use slam_it_edge::loops::{
-    self as core, CandidateSummary, ConfirmationSummary, CorrectionSummary, DetectionSummary, Loop,
-    Outcome, Pending, Search,
+    self as core, CandidateSummary, ConfirmationSummary, CorrectionSummary, Detection,
+    DetectionSummary, Loop, Merge, MergeDetection, Merging, Outcome, Pending, Search, WeldSummary,
 };
 use slam_it_foundations::graphs::{self, Termination};
 use slam_it_foundations::nls::Stop;
 
 use super::edge_crossing::{
-    camera_in, count_or_none, database_in, indices, indices_array, map_dict, map_in, mode_in,
-    options_in, pose_in, vector, vector_array,
+    camera_in, count_or_none, database_in, indexed_in, indices, indices_array, map_dict, map_in,
+    mode_in, options_in, pose_in, vector, vector_array,
 };
-use crate::common::{add_functions, contiguous, encode, enum_codes, item_array, to_i64, unwrap};
+use crate::common::{
+    add_functions, by_name, contiguous, encode, enum_codes, item_array, to_i64, unwrap,
+};
 
 /// Reads one item of a dict.
 ///
@@ -166,6 +173,187 @@ fn loop_dict<'py>(py: Python<'py>, closed: Option<&Loop>) -> PyResult<Bound<'py,
     out.set_item("points", vector_array(py, &closed.points))?;
     out.set_item("matched_points", vector_array(py, &closed.matched_points))?;
     Ok(out.into_any())
+}
+
+/// A loop detection's result as it crosses.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `found` - The detection.
+///
+/// # Returns
+///
+/// `pending`, `loop` and `summary`.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+fn detection_out<'py>(py: Python<'py>, found: &Detection) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item("pending", pending_dict(py, found.pending.as_ref())?)?;
+    out.set_item("loop", loop_dict(py, found.closed.as_ref())?)?;
+    out.set_item("summary", detection_dict(py, &found.summary)?)?;
+    Ok(out)
+}
+
+/// A dict item as a dict.
+///
+/// # Arguments
+///
+/// * `values` - The dict.
+/// * `key` - The item's key.
+///
+/// # Returns
+///
+/// The item, or `None` where it is None.
+///
+/// # Errors
+///
+/// `ValueError` for a missing key; a Python error for an item that is not a dict.
+fn dict_or_none<'py>(
+    values: &Bound<'py, PyDict>,
+    key: &str,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let item = field(values, key)?;
+    if item.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(item.extract()?))
+}
+
+/// A detection's summary, read from Python's `DetectionSummary.as_dict`.
+///
+/// # Arguments
+///
+/// * `values` - Its fields, the outcome by name.
+///
+/// # Returns
+///
+/// The summary.
+///
+/// # Errors
+///
+/// `ValueError` for a missing key, an unknown outcome or a malformed item.
+fn detection_summary_in(values: &Bound<'_, PyDict>) -> PyResult<DetectionSummary> {
+    let outcome: String = field(values, "outcome")?.extract()?;
+    let confirmation = dict_or_none(values, "confirmation")?
+        .map(|c| -> PyResult<ConfirmationSummary> {
+            Ok(ConfirmationSummary {
+                matched: field(&c, "matched")?.extract()?,
+                projected: field(&c, "projected")?.extract()?,
+                refined: field(&c, "refined")?.extract()?,
+                reprojected: field(&c, "reprojected")?.extract()?,
+                confirmed: field(&c, "confirmed")?.extract()?,
+            })
+        })
+        .transpose()?;
+    let mut candidates = Vec::new();
+    for item in field(values, "candidates")?.extract::<Vec<Bound<'_, PyDict>>>()? {
+        candidates.push(CandidateSummary {
+            keyframe: field(&item, "keyframe")?.extract()?,
+            score: field(&item, "score")?.extract()?,
+            near: field(&item, "near")?.extract()?,
+            matches: field(&item, "matches")?.extract()?,
+            best: field(&item, "best")?.extract()?,
+            inliers: field(&item, "inliers")?.extract()?,
+            projected: field(&item, "projected")?.extract()?,
+            refined: field(&item, "refined")?.extract()?,
+            reprojected: field(&item, "reprojected")?.extract()?,
+            confirmations: field(&item, "confirmations")?.extract()?,
+        });
+    }
+    Ok(DetectionSummary {
+        outcome: by_name(&Outcome::ALL, Outcome::name, &outcome, "outcome")?,
+        confirmation,
+        sharing: field(values, "sharing")?.extract()?,
+        scored: field(values, "scored")?.extract()?,
+        candidates,
+        confirmations: field(values, "confirmations")?.extract()?,
+    })
+}
+
+/// A merge being confirmed, read from its dict.
+///
+/// # Arguments
+///
+/// * `values` - `map` and `pending`.
+///
+/// # Returns
+///
+/// The merge.
+///
+/// # Errors
+///
+/// `ValueError` for a missing key or a malformed item.
+fn merging_in(values: &Bound<'_, PyDict>) -> PyResult<Merging> {
+    Ok(Merging {
+        map: field(values, "map")?.extract()?,
+        pending: pending_in(&field(values, "pending")?.extract()?)?,
+    })
+}
+
+/// A merge found, read from its dict.
+///
+/// # Arguments
+///
+/// * `values` - `map` and `loop`.
+///
+/// # Returns
+///
+/// The merge.
+///
+/// # Errors
+///
+/// `ValueError` for a missing key or a malformed item.
+fn merge_in(values: &Bound<'_, PyDict>) -> PyResult<Merge> {
+    Ok(Merge {
+        map: field(values, "map")?.extract()?,
+        found: loop_in(&field(values, "loop")?.extract()?)?,
+    })
+}
+
+/// A merge detection's result as it crosses.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `found` - The merge detection.
+///
+/// # Returns
+///
+/// `pending` and `merge` (each a dict of `map` with `pending` or `loop`, or None), `summary`
+/// and `maps`.
+///
+/// # Errors
+///
+/// A Python error if the dict cannot be built.
+fn merge_detection_out<'py>(
+    py: Python<'py>,
+    found: &MergeDetection,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    match &found.pending {
+        Some(merging) => {
+            let item = PyDict::new(py);
+            item.set_item("map", merging.map)?;
+            item.set_item("pending", pending_dict(py, Some(&merging.pending))?)?;
+            out.set_item("pending", item)?;
+        }
+        None => out.set_item("pending", py.None())?,
+    }
+    match &found.merge {
+        Some(merge) => {
+            let item = PyDict::new(py);
+            item.set_item("map", merge.map)?;
+            item.set_item("loop", loop_dict(py, Some(&merge.found))?)?;
+            out.set_item("merge", item)?;
+        }
+        None => out.set_item("merge", py.None())?,
+    }
+    out.set_item("summary", detection_dict(py, &found.summary)?)?;
+    out.set_item("maps", vector_array(py, &found.maps))?;
+    Ok(out)
 }
 
 /// A candidate's summary as it crosses.
@@ -309,12 +497,83 @@ fn correction_dict<'py>(py: Python<'py>, c: &CorrectionSummary) -> PyResult<Boun
     out.set_item("replaced", to_i64(c.replaced))?;
     out.set_item("fused", to_i64(c.fused))?;
     out.set_item("links", to_i64(c.links))?;
-    out.set_item("edges", to_i64(c.edges))?;
-    out.set_item("essential", solve_dict(py, &c.essential)?)?;
-    match &c.global_ba {
-        Some(summary) => out.set_item("global_ba", solve_dict(py, summary)?)?,
-        None => out.set_item("global_ba", py.None())?,
+    write_graph(py, &out, c.edges, &c.essential, c.global_ba.as_ref())?;
+    Ok(out)
+}
+
+/// A solve's summary as it crosses, or None.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `summary` - The summary, if the solve ran.
+///
+/// # Returns
+///
+/// Its dict, or None.
+///
+/// # Errors
+///
+/// A Python error if an item cannot be set.
+fn solve_or_none<'py>(
+    py: Python<'py>,
+    summary: Option<&graphs::Summary>,
+) -> PyResult<Bound<'py, PyAny>> {
+    match summary {
+        Some(summary) => Ok(solve_dict(py, summary)?.into_any()),
+        None => Ok(py.None().into_bound(py)),
     }
+}
+
+/// Writes a correction's graph and global BA into its summary's dict.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `out` - The summary's dict.
+/// * `edges` - The essential graph's edges.
+/// * `essential` - Its solve.
+/// * `global_ba` - Global BA's, if it ran.
+///
+/// # Errors
+///
+/// A Python error if an item cannot be set.
+fn write_graph(
+    py: Python<'_>,
+    out: &Bound<'_, PyDict>,
+    edges: usize,
+    essential: &graphs::Summary,
+    global_ba: Option<&graphs::Summary>,
+) -> PyResult<()> {
+    out.set_item("edges", to_i64(edges))?;
+    out.set_item("essential", solve_dict(py, essential)?)?;
+    out.set_item("global_ba", solve_or_none(py, global_ba)?)
+}
+
+/// A merge's welding BA as it crosses.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `w` - The summary.
+///
+/// # Returns
+///
+/// The dict of its fields.
+///
+/// # Errors
+///
+/// A Python error if an item cannot be set.
+fn weld_dict<'py>(py: Python<'py>, w: &WeldSummary) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    out.set_item("keyframes", to_i64(w.keyframes))?;
+    out.set_item("held", to_i64(w.held))?;
+    out.set_item("points", to_i64(w.points))?;
+    out.set_item("observations", to_i64(w.observations))?;
+    out.set_item("outliers", to_i64(w.outliers))?;
+    out.set_item("forgotten", to_i64(w.forgotten))?;
+    out.set_item("first", solve_dict(py, &w.first)?)?;
+    out.set_item("second", solve_or_none(py, w.second.as_ref())?)?;
     Ok(out)
 }
 
@@ -674,11 +933,7 @@ fn detect<'py>(
             &options_in(options)?,
         ),
     )?;
-    let out = PyDict::new(py);
-    out.set_item("pending", pending_dict(py, found.pending.as_ref())?)?;
-    out.set_item("loop", loop_dict(py, found.closed.as_ref())?)?;
-    out.set_item("summary", detection_dict(py, &found.summary)?)?;
-    Ok(out)
+    detection_out(py, &found)
 }
 
 /// Corrects a loop closed at a keyframe.
@@ -727,6 +982,171 @@ fn correct<'py>(
     Ok(out)
 }
 
+/// Looks for another map at a newly mapped keyframe.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The active map, as a dict.
+/// * `database` - Its database, as a dict.
+/// * `camera` - The camera, as a dict.
+/// * `keyframe` - The keyframe's id.
+/// * `others` - The other maps, each a dict of `number`, `m` and `database`.
+/// * `pending` - The merge being confirmed, as a dict, or None.
+/// * `mode` - The mode's name.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// `pending`, `merge`, `summary` and `maps`.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+#[pyo3(signature = (m, database, camera, keyframe, others, pending, mode, options))]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the map, its database and camera, the keyframe, the others, the state, as Python's"
+)]
+fn detect_merge<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    database: &Bound<'py, PyDict>,
+    camera: &Bound<'py, PyDict>,
+    keyframe: i64,
+    others: &Bound<'py, PyList>,
+    pending: Option<&Bound<'py, PyDict>>,
+    mode: &str,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let carried = pending.map(merging_in).transpose()?;
+    let others = indexed_in(py, others)?;
+    let others: Vec<MapRef<'_>> = others.iter().map(MapRef::from).collect();
+    let found = unwrap(
+        py,
+        core::detect_merge(
+            &map_in(py, m)?,
+            &database_in(py, database)?,
+            &camera_in(camera)?,
+            keyframe,
+            &others,
+            carried.as_ref(),
+            mode_in(mode)?,
+            &options_in(options)?,
+        ),
+    )?;
+    merge_detection_out(py, &found)
+}
+
+/// Gives a merge found on a keyframe priority over a loop closed on it.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `loop` - Loop detection's result, as Python's crosses it.
+/// * `merging` - Merge detection's, as Python's crosses it.
+///
+/// # Returns
+///
+/// The loop's detection: `pending`, `loop` and `summary`.
+///
+/// # Errors
+///
+/// `ValueError` for a missing key, an unknown outcome or a malformed item.
+#[pyfunction]
+#[pyo3(signature = (r#loop, merging))]
+fn merge_first<'py>(
+    py: Python<'py>,
+    r#loop: &Bound<'py, PyDict>,
+    merging: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let given = Detection {
+        pending: dict_or_none(r#loop, "pending")?
+            .as_ref()
+            .map(pending_in)
+            .transpose()?,
+        closed: dict_or_none(r#loop, "loop")?
+            .as_ref()
+            .map(loop_in)
+            .transpose()?,
+        summary: detection_summary_in(&field(r#loop, "summary")?.extract()?)?,
+    };
+    let found = MergeDetection {
+        pending: dict_or_none(merging, "pending")?
+            .as_ref()
+            .map(merging_in)
+            .transpose()?,
+        merge: dict_or_none(merging, "merge")?
+            .as_ref()
+            .map(merge_in)
+            .transpose()?,
+        summary: detection_summary_in(&field(merging, "summary")?.extract()?)?,
+        maps: vector(&field(merging, "maps")?)?,
+    };
+    detection_out(py, &core::merge_first(given, &found))
+}
+
+/// Merges the active map into the one it matched.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `active` - The active map, as a dict.
+/// * `matched` - The matched map, as a dict.
+/// * `camera` - The camera, as a dict.
+/// * `found` - The merge, as a dict of `map` and `loop`.
+/// * `mode` - The mode's name.
+/// * `options` - The settings, as a dict.
+///
+/// # Returns
+///
+/// `map`, `keyframe_offset`, `point_offset` and `summary`.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+#[pyo3(signature = (active, matched, camera, found, mode, options))]
+fn merge<'py>(
+    py: Python<'py>,
+    active: &Bound<'py, PyDict>,
+    matched: &Bound<'py, PyDict>,
+    camera: &Bound<'py, PyDict>,
+    found: &Bound<'py, PyDict>,
+    mode: &str,
+    options: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let merged = unwrap(
+        py,
+        core::merge(
+            &map_in(py, active)?,
+            &map_in(py, matched)?,
+            &camera_in(camera)?,
+            &merge_in(found)?,
+            mode_in(mode)?,
+            &options_in(options)?,
+        ),
+    )?;
+    let s = &merged.summary;
+    let summary = PyDict::new(py);
+    summary.set_item("map", s.map)?;
+    summary.set_item("current", s.current)?;
+    summary.set_item("matched", s.matched)?;
+    summary.set_item("similarity", item_array(py, &s.similarity)?)?;
+    summary.set_item("window", to_i64(s.window))?;
+    summary.set_item("matched_window", to_i64(s.matched_window))?;
+    summary.set_item("fused", to_i64(s.fused))?;
+    summary.set_item("weld", weld_dict(py, &s.weld)?)?;
+    write_graph(py, &summary, s.edges, &s.essential, s.global_ba.as_ref())?;
+    let out = PyDict::new(py);
+    out.set_item("map", map_dict(py, &merged.map)?)?;
+    out.set_item("keyframe_offset", merged.keyframe_offset)?;
+    out.set_item("point_offset", merged.point_offset)?;
+    out.set_item("summary", summary)?;
+    Ok(out)
+}
+
 enum_codes!("loop_outcome" => Outcome, "graphs_termination" => Termination);
 
 /// Registers the module's functions.
@@ -747,7 +1167,10 @@ pub fn loops(m: &Bound<'_, PyModule>) -> PyResult<()> {
         global_bundle_adjust,
         propagate_global_ba,
         detect,
-        correct
+        correct,
+        detect_merge,
+        merge_first,
+        merge
     );
     Ok(())
 }

@@ -13,7 +13,6 @@ import {
   keypointRows,
   keypointsAt,
   mapAt,
-  mapRows,
   mapsShown,
   placed,
   posesUpTo,
@@ -100,8 +99,17 @@ test("the camera shown is the frame's own pose, or the last before it", async ()
   const held = cameraAt(new Float32Array(24).fill(1, 12), gaps, 1);
   assert.ok(held !== null && !held.tracked && held.pose[0] === 0);
   // Within a map's poses: none of map 1's before its first.
-  assert.equal(cameraAt(new Float32Array(24), gaps, 1, [1, 2]), null);
-  assert.ok(cameraAt(new Float32Array(24), gaps, 5, [0, 1])?.tracked === false);
+  assert.equal(cameraAt(new Float32Array(24), gaps, 1, [[1, 2]]), null);
+  assert.ok(cameraAt(new Float32Array(24), gaps, 5, [[0, 1]])?.tracked === false);
+  // A map in two runs of rows, another map's between: the last of its poses up to the frame.
+  const poses = Float32Array.from({ length: 5 * 12 }, (_, i) => Math.floor(i / 12));
+  const frames = new Int32Array([0, 1, 2, 3, 4]);
+  const runs = /** @type {[number, number][]} */ ([
+    [0, 2],
+    [4, 5],
+  ]);
+  assert.equal(cameraAt(poses, frames, 3, runs)?.pose[0], 1); // map 1's rows 2-3 left out
+  assert.ok(cameraAt(poses, frames, 4, runs)?.tracked === true);
 });
 
 test("the map shown at a frame is the frame's own, else the last before it", () => {
@@ -138,14 +146,6 @@ test("another backend's map is drawn where it shares the shown map's frame", () 
   // No map on either side: never.
   assert.equal(sharesFrame(null, 0, false, false), false);
   assert.equal(sharesFrame(0, null, false, false), false);
-});
-
-test("a map's poses are consecutive rows", () => {
-  const poseMaps = new Int32Array([0, 0, 0, 2, 2, 3]);
-  assert.deepEqual(mapRows(poseMaps, 0), [0, 3]);
-  assert.deepEqual(mapRows(poseMaps, 1), [3, 3]); // reset: no poses
-  assert.deepEqual(mapRows(poseMaps, 2), [3, 5]);
-  assert.deepEqual(mapRows(poseMaps, 3), [5, 6]);
 });
 
 test("the truth is drawn over the segments whose two frames are both in a stretch", () => {

@@ -1,6 +1,6 @@
 {
  "format": "slam-it-bundle",
- "version": 4,
+ "version": 5,
  "dataset": "tum",
  "sequence": "room_tum",
  "mode": "rgbd",
@@ -67,8 +67,10 @@
     {
      "id": 0,
      "frames": [
-      0,
-      36
+      [
+       0,
+       36
+      ]
      ],
      "tracked": 33,
      "reset": false,
@@ -83,9 +85,9 @@
    ],
    "latency": {
     "deadline": 0.03333300000000006,
-    "median": 0.04877696908079088,
-    "p95": 0.05163227510638535,
-    "max": 0.10592285078018904,
+    "median": 0.046533452812582254,
+    "p95": 0.04880453262012452,
+    "max": 0.09973132098093629,
     "late": 33
    },
    "peak_memory": null

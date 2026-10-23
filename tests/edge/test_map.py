@@ -219,6 +219,31 @@ def test_a_loop_edge_joins_two_keyframes_and_keeps_them(truth: Truth) -> None:
             replace(m, loop_edges=np.array([edge], dtype=np.int64))
 
 
+def test_a_merge_edge_joins_two_keyframes_and_keeps_them(truth: Truth) -> None:
+    """A merge edge is kept older first, apart from the loop edges; its keyframes never erased.
+
+    One between a keyframe and itself or a stranger is refused. Python refuses the erasing before
+    any backend runs; the C++ and Rust tests hold their cores' refusal.
+    """
+    m = truth.map
+    newer, older = int(m.kf_id[1]), int(m.kf_id[0])
+    merged = maps.add_merge_edge(m, newer, older)
+    assert merged.merge_edges.tolist() == [[older, newer]]
+    assert merged.loop_edges.tolist() == []
+    assert maps.has_merge(merged, 0)
+    assert maps.has_merge(merged, 1)
+    assert not maps.has_merge(merged, m.keyframes - 1)
+    assert not maps.has_loop(merged, 1)
+    for first, second in ((newer, newer), (newer, m.next_kf_id + 3)):
+        with pytest.raises(InvalidInputError, match="expected two of the map's keyframes"):
+            maps.add_merge_edge(m, first, second)
+    with pytest.raises(InvalidInputError, match="has a merge edge"):
+        maps.erase_keyframe(merged, 1)
+    for edge in ([newer, older], [older, m.next_kf_id + 3]):
+        with pytest.raises(InvalidInputError, match="merge_edges"):
+            replace(m, merge_edges=np.array([edge], dtype=np.int64))
+
+
 def test_erasing_a_keyframe_moves_the_others_keypoints_up(truth: Truth) -> None:
     """Erasing a keyframe removes exactly its keypoint rows; the others keep their contents."""
     m = truth.map

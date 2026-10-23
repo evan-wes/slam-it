@@ -23,6 +23,9 @@
   2A's test set imported to TUM format, each with its ground truth moved to the camera:
   ZJU-SenseTime's phones, ADVIO's iPhone video, ARKitScenes' iPad with LiDAR. Python only: the
   native readers take the folders they write.
+- :mod:`slam_it.eval.sevenscenes`: 7-Scenes' sequences imported to TUM format, monocular, for
+  relocalisation and merging across sequences (the online-SLAM design's section 15). Python
+  only, as the test set's imports are.
 - :mod:`slam_it.eval.lidar`: a phone's LiDAR depth kept by its confidence and brought to the
   colour frame, for an RGB-D run.
 - :mod:`slam_it.eval.sensor_yaml`: the ``sensor.yaml`` files of ASL-style datasets (EuRoC,

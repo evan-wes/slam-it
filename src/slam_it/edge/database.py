@@ -19,6 +19,12 @@ T-RO 2012), for the map being tracked:
   the same scoring of a keyframe of the map, with ``loops.common_words`` and ``loops.neighbours``,
   leaving out the keyframe and every keyframe linked to it; the best ``loops.candidates`` groups
   give the candidates, with no cut on their scores.
+- **A merge's candidates** (:func:`merge_candidates`, ``DetectNBestCandidates``' merge list):
+  the same scoring of a keyframe's words in each of the other maps' databases
+  (:class:`Indexed`), each map's words counted within it (the online-SLAM design, section 14,
+  item 2: ORB-SLAM3 counts them across its atlas, so that a strong match in one map can raise
+  the cut past every candidate of another); every map's best ``loops.candidates`` groups,
+  then the best ``loops.candidates`` of them all.
 
 **Covisibility** is the graph's (:func:`slam_it.edge.covisibility.links`): a keyframe's best
 are its links, those sharing at least ``covisibility.min_points`` points, the most shared
@@ -36,6 +42,7 @@ from __future__ import annotations
 
 import bisect
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Protocol
 
@@ -162,8 +169,9 @@ class Implementation(Protocol):
     """The functions a compiled backend's ``edge.database`` submodule provides.
 
     A database crosses as :meth:`Database.as_dict`'s dict, from which the backend builds its
-    own index; a frame's word vector as ``ids`` and ``values``; :class:`Candidates` as a dict
-    of its fields.
+    own index; a frame's word vector as ``ids`` and ``values``; the other maps as a list of
+    :meth:`Indexed.as_dict`; :class:`Candidates` and :class:`MergeCandidates` as dicts of their
+    fields.
     """
 
     def candidates(
@@ -181,6 +189,16 @@ class Implementation(Protocol):
         self, database: dict[str, Any], m: dict[str, Any], keyframe: int, options: dict[str, Any]
     ) -> dict[str, Any]:
         """Find the keyframes a keyframe may close a loop with."""
+        ...
+
+    def merge_candidates(
+        self,
+        ids: NDArray[np.int64],
+        values: NDArray[np.float64],
+        others: list[dict[str, Any]],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Find the keyframes of other maps a keyframe may merge its map with."""
         ...
 
 
@@ -441,4 +459,162 @@ def loop_candidates(
             "options": options.as_dict(),
         },
         decode=_decode_candidates,
+    )
+
+
+@dataclass(frozen=True)
+class Indexed:
+    """A map with its keyframe database, and its number among a run's maps.
+
+    What merge detection and relocalisation search a map by. The atlas keeps a map that is not
+    being tracked as a :class:`slam_it.edge.atlas.Kept`, which adds its ids' run ids, and gives
+    the searches each as an Indexed (:meth:`slam_it.edge.atlas.Atlas.indexed`).
+
+    Attributes
+    ----------
+    number : int
+        The map's number: maps are numbered in the order they started.
+    map : slam_it.edge.map.Map
+        The map.
+    database : Database
+        Its keyframe database, holding every keyframe of the map.
+    """
+
+    number: int
+    map: Map
+    database: Database
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the map, its database and number as they cross the bindings.
+
+        Returns
+        -------
+        dict
+            ``number``, ``m`` (:meth:`slam_it.edge.map.Map.as_dict`) and ``database``
+            (:meth:`Database.as_dict`).
+        """
+        return {"number": self.number, "m": self.map.as_dict(), "database": self.database.as_dict()}
+
+
+@dataclass(frozen=True)
+class MergeCandidates:
+    """A merge's candidates, from every other map, best first, and how many were weighed.
+
+    Attributes
+    ----------
+    maps : ndarray of int64, shape (C,)
+        Each candidate's map number.
+    keyframes : ndarray of int64, shape (C,)
+        Its id in that map.
+    scores : ndarray of float64, shape (C,)
+        Its group's accumulated score, descending (ties: the lower map number, then the lower
+        id).
+    sharing : int
+        The keyframes, over every map, that share a word with the query.
+    scored : int
+        Those scored.
+    """
+
+    maps: IntArray
+    keyframes: IntArray
+    scores: Array
+    sharing: int
+    scored: int
+
+
+def merge_candidates(
+    vector: tuple[ArrayLike, ArrayLike],
+    others: Sequence[Indexed],
+    options: Options,
+    *,
+    backend: str = "python",
+) -> MergeCandidates:
+    """Find the keyframes of other maps a keyframe may merge its map with.
+
+    ORB-SLAM3's ``DetectNBestCandidates``' merge list, with each map's words counted within it
+    (the module docstring): in each map, :func:`loop_candidates`' scoring of the query's words
+    (``loops.common_words``, ``loops.neighbours``), nothing left out, its best
+    ``loops.candidates`` groups; then the best ``loops.candidates`` of every map's, by
+    accumulated score (comparable across maps, all scored under one vocabulary).
+
+    Parameters
+    ----------
+    vector : tuple of array_like
+        The query keyframe's word vector: its words, ascending, and their values.
+    others : sequence of Indexed
+        The maps it may merge with, each with its database (not the query's own map).
+    options : slam_it.edge.options.Options
+        ``loops.candidates``, ``loops.common_words``, ``loops.neighbours`` and
+        ``covisibility.min_points``.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    MergeCandidates
+        The candidates, best first; none if no keyframe of another map shares a word.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If the vector is malformed, or two maps share a number.
+    """
+    query = vocabulary.as_vector(*vector)
+    numbers = [other.number for other in others]
+    if len(set(numbers)) != len(numbers):
+        raise InvalidInputError("others: expected each map once, by its number")
+    return backends.call(
+        backend,
+        __name__,
+        "merge_candidates",
+        reference=lambda: _merge_candidates(query, others, options),
+        arguments={
+            "ids": query[0],
+            "values": query[1],
+            "others": [other.as_dict() for other in others],
+            "options": options.as_dict(),
+        },
+        decode=_decode_merge_candidates,
+    )
+
+
+def _merge_candidates(
+    query: tuple[IntArray, Array], others: Sequence[Indexed], options: Options
+) -> MergeCandidates:
+    """Find a merge's candidates (reference)."""
+    settings = options.loops
+    found: list[tuple[float, int, int]] = []
+    sharing = scored = 0
+    for other in others:
+        scoring = _scoring(
+            other.database, other.map, query, excluded=set(),
+            rules=(settings.common_words, settings.neighbours), options=options,
+        )  # fmt: skip
+        sharing += scoring.sharing
+        scored += scoring.scored
+        chosen = _chosen(scoring.groups, above=-math.inf, most=settings.candidates)
+        pairs = zip(chosen.keyframes.tolist(), chosen.scores.tolist(), strict=True)
+        found.extend((score, other.number, keyframe) for keyframe, score in pairs)
+    found.sort(key=lambda c: (-c[0], c[1], c[2]))
+    best = found[: settings.candidates]
+    return MergeCandidates(
+        maps=np.array([c[1] for c in best], dtype=np.int64),
+        keyframes=np.array([c[2] for c in best], dtype=np.int64),
+        scores=np.array([c[0] for c in best], dtype=np.float64),
+        sharing=sharing,
+        scored=scored,
+    )
+
+
+def _decode_merge_candidates(raw: dict[str, Any], codes: backends.Codes) -> MergeCandidates:
+    """Rebuild :class:`MergeCandidates` from a compiled backend's dict, its arrays checked."""
+    del codes  # the candidates cross no codes
+    return MergeCandidates(
+        maps=backends.checked_array(raw["maps"], np.int64, 1, "merge candidates maps"),
+        keyframes=backends.checked_array(
+            raw["keyframes"], np.int64, 1, "merge candidates keyframes"
+        ),
+        scores=backends.checked_array(raw["scores"], np.float64, 1, "merge candidates scores"),
+        sharing=int(raw["sharing"]),
+        scored=int(raw["scored"]),
     )

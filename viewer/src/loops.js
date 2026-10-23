@@ -6,7 +6,7 @@
 
 import { seconds } from "./format.js";
 import { lowerBound, posesUpTo } from "./frames.js";
-import { centres } from "./geometry.js";
+import { centres, runsOf } from "./geometry.js";
 
 /** The "seen before" inset's window: from this long before a loop's frame, in seconds. */
 export const INSET_BEFORE = 3;
@@ -31,7 +31,8 @@ export const EFFECT_FADE = 1;
  * @property {number} map The map it closed in.
  * @property {number} older The keyframe it matched, by id (the order the run made them).
  * @property {number} newer The keyframe that closed it, by id.
- * @property {number} matched The keyframe it matched as the record names it: counted in its map.
+ * @property {number} matched The keyframe it matched as the record names it: by its id in the map
+ *     it was tracked in then, as the Solver panel names it.
  * @property {number} current The keyframe that closed it, as the record names it.
  * @property {number} olderMade The frame that made the matched keyframe.
  * @property {number} newerMade The frame that made the closing keyframe.
@@ -49,22 +50,19 @@ export const EFFECT_FADE = 1;
 /**
  * The loops a run closed: each frame whose record shows a loop's correction, its keyframes
  * checked against the loops the run's map holds.
+ *
+ * A correction names its two keyframes by the run's ids (`matched_run`, `current_run`), the ids
+ * the bundle's keyframes have, which no merge renumbers; its `matched` and `current` are their
+ * ids in the map tracked in then, which a merge renumbers, the merged-away map's keyframes moved
+ * on after the matched map's (`loops.merge`).
  * @param {{records: Record<string, unknown[]> & {frame: number[]}, keyframeMaps: Int32Array,
  *     keyframeLives: Int32Array, keyframeLoops: Int32Array}} run The run: its records, and its
  *     keyframes' maps, lives and loops (`Backend`).
  * @returns {Loop[]} The loops, in the order the frames closed them.
- * @throws {Error} If a correction names keyframes that are not a loop of `keyframeLoops` in its
- *     frame's map, made before it.
+ * @throws {Error} If a correction does not name, by the run's ids, keyframes that are a loop of
+ *     `keyframeLoops` in its frame's map, made before it.
  */
 export function loopsOf({ records, keyframeMaps, keyframeLives, keyframeLoops }) {
-  // A record counts a map's keyframes from 0; the run's ids count every map's, in order.
-  /** @type {Map<number, number>} */
-  const firsts = new Map();
-  keyframeMaps.forEach((map, id) => {
-    if (!firsts.has(map)) {
-      firsts.set(map, id);
-    }
-  });
   const pairs = new Set();
   for (let e = 0; e < keyframeLoops.length; e += 2) {
     pairs.add(`${keyframeLoops[e]} ${keyframeLoops[e + 1]}`);
@@ -81,11 +79,13 @@ export function loopsOf({ records, keyframeMaps, keyframeLives, keyframeLoops })
     }
     const { matched, current } = correction;
     const map = records.map?.[k];
-    const first = typeof map === "number" ? firsts.get(map) : undefined;
-    const [older, newer] = first === undefined ? [-1, -1] : [first + matched, first + current];
+    const [older, newer] = [correction.matched_run, correction.current_run];
+    const known = (/** @type {number} */ id) =>
+      Number.isInteger(id) && id >= 0 && id < keyframeMaps.length;
     const [olderMade, newerMade] = [keyframeLives[older * 3], keyframeLives[newer * 3]];
     const closed =
-      first !== undefined &&
+      known(older) &&
+      known(newer) &&
       pairs.has(`${Math.min(older, newer)} ${Math.max(older, newer)}`) &&
       keyframeMaps[older] === map &&
       keyframeMaps[newer] === map &&
@@ -267,22 +267,23 @@ export function seenText({ loop, earlier }, frame, times) {
 
 /**
  * The trajectory's rows of a loop's cycle: its map's poses from the frame that made the matched
- * keyframe to the loop's frame.
+ * keyframe to the loop's frame, in the runs of rows the map's poses come in (`runsOf`), so that
+ * another map's frames between are left out.
  * @param {Loop} loop The loop.
  * @param {Int32Array} poseFrames The run's tracked frames, ascending.
- * @param {Int32Array} poseMaps Their maps, never descending.
- * @returns {[number, number]} The rows, `[start, end)`; empty if it has none.
+ * @param {Int32Array} poseMaps Their maps.
+ * @returns {[number, number][]} The runs' rows, each `[start, end)`, in order; none if it has
+ *     none.
  */
-export function cycleRows(loop, poseFrames, poseMaps) {
-  let start = lowerBound(poseFrames, 1, loop.olderMade);
-  let end = posesUpTo(poseFrames, loop.frame);
-  while (start < end && poseMaps[start] !== loop.map) {
-    start += 1;
-  }
-  while (end > start && poseMaps[end - 1] !== loop.map) {
-    end -= 1;
-  }
-  return [start, end];
+export function cycleRuns(loop, poseFrames, poseMaps) {
+  const from = lowerBound(poseFrames, 1, loop.olderMade);
+  const to = posesUpTo(poseFrames, loop.frame);
+  return runsOf(poseMaps, loop.map)
+    .map(
+      ([start, end]) =>
+        /** @type {[number, number]} */ ([Math.max(start, from), Math.min(end, to)]),
+    )
+    .filter(([start, end]) => end > start);
 }
 
 /**

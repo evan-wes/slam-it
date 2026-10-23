@@ -1,24 +1,28 @@
 //! Integration tests of the pipeline (`slam_it_edge::pipeline`) on the exact scene seen along
 //! a sideways path: RGB-D and stereo track every frame exactly, monocular starts its map and
 //! keeps the path's direction, and empty frames lose the track, the next frame starting a new
-//! map; relocalising, a kept map is lost in time and a small one in frames, and a frame the
+//! map, as a new session does; relocalising, a kept map is lost in time and a small one in frames, and a frame the
 //! fallback cannot reach is relocalised; the final trajectory follows the keyframes, and a reset
 //! map's frames leave it. Tracking on the view a writer would publish decides as on the map, and
 //! threaded, the views published are a part of the map, their sizes kept; after a correction the
-//! next frame follows its keyframe, and a keyframe queued across it is placed by its reference.
+//! next frame follows its keyframe, and a keyframe queued across it is placed by its reference. A
+//! merge carries tracking's last frame into the merged map's ids and units.
 
 mod scene;
 
 use nalgebra::{Matrix4, Vector3};
-use slam_it_edge::frames::Frame;
+use slam_it_edge::frames::{Frame, Tracked};
+use slam_it_edge::loops::{self, DetectionSummary, Loop, Merge, Merging, Pending};
 use slam_it_edge::map::{Map, Removal};
 use slam_it_edge::options::{
     InitializationOptions, LoopOptions, Mode, Options, RelocalizationOptions,
 };
 use slam_it_edge::pipeline::{
-    Fate, FrameResult, LostSummary, Pipeline, Placement, State, Threading,
+    Fate, FrameResult, LoopState, LoopSummary, LostSummary, Pipeline, Placement, State, Threading,
+    TrackingState, WaitingMerge,
 };
 use slam_it_foundations::error::ErrorKind;
+use slam_it_foundations::so3;
 
 use scene::{camera, empty_frame, frame_at, one_word};
 
@@ -160,16 +164,30 @@ fn monocular_tracks_the_path_direction() {
     }
 }
 
+/// A pipeline in turn, with no vocabulary, its map started in map 0 on the path's first frame.
+///
+/// # Arguments
+///
+/// * `options` - The settings.
+///
+/// # Returns
+///
+/// The pipeline, and the first frame's result.
+fn start_on_the_path(options: &Options) -> (Pipeline, FrameResult) {
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), *options, None, Threading::Inline).unwrap();
+    let first = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
+    assert_eq!(first.map, Some(0));
+    (pipeline, first)
+}
+
 #[test]
 fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     // The map has one keyframe: 1, the rule's boundary, resets it; 0 keeps it.
     for reset_keyframes in [1, 0] {
         let mut options = small_scene();
         options.loss.reset_keyframes = reset_keyframes;
-        let mut pipeline =
-            Pipeline::new(Mode::Rgbd, camera(), options, None, Threading::Inline).unwrap();
-        let started = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
-        assert_eq!(started.map, Some(0));
+        let (mut pipeline, started) = start_on_the_path(&options);
         let empty = empty_frame(1.0);
         let results: Vec<FrameResult> = (0..options.loss.lost_frames)
             .map(|_| pipeline.track(&empty).unwrap())
@@ -229,6 +247,48 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
+/// A session started closes the map tracked: the map of one keyframe is reset with
+/// `loss.session_keyframes` 2 (fewer than 2) or kept with 1, nothing is closed with no map
+/// tracked, and the session's first frame starts map 1, a reset map's lives ending on it and
+/// its frames leaving the trajectory; once the run is finished, no session starts.
+#[test]
+fn a_new_session_closes_the_map_and_starts_another() {
+    for session_keyframes in [2, 1] {
+        let mut options = small_scene();
+        options.loss.session_keyframes = session_keyframes;
+        let (mut pipeline, started) = start_on_the_path(&options);
+        let reset = session_keyframes > 1;
+        assert_eq!(
+            pipeline.start_session().unwrap(),
+            Some(LostSummary {
+                keyframes: 1,
+                points: started.tracked,
+                reset
+            })
+        );
+        assert_eq!(pipeline.state(), State::NotInitialized);
+        assert!(pipeline.map().is_none());
+        assert_eq!(pipeline.start_session().unwrap(), None);
+        let restarted = pipeline.track(&frame_at(&along(1), true, 0)).unwrap();
+        assert_eq!((restarted.map, restarted.keyframe), (Some(1), true));
+        assert_eq!(
+            pipeline.trajectory().maps,
+            if reset { vec![1] } else { vec![0, 1] }
+        );
+        let ended = if reset {
+            [1, Removal::Reset.code()]
+        } else {
+            [-1, -1]
+        };
+        assert_eq!(pipeline.lifetimes().keyframe_lives[0][1..], ended);
+        // A finished run starts no session, its map left as it was.
+        pipeline.finish().unwrap();
+        let refused = pipeline.start_session().unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::InvalidInput);
+        assert!(pipeline.map().is_some());
+    }
+}
+
 /// The settings relocalising: the scene's, with `relocalization.enabled` and `loops.enabled` on
 /// and a lost map of more than `loss.reset_keyframes` keyframes kept.
 fn relocalizing(reset_keyframes: usize) -> Options {
@@ -272,11 +332,19 @@ fn lose_the_track(options: &Options, step: f64, count: usize) -> Vec<FrameResult
 /// above `loss.reset_keyframes` is lost once more than `loss.relocalize_seconds` have passed since
 /// the first failed frame (at 0.25 s a frame, on the fourteenth: 3.25 s, where the thirteenth's 3 s
 /// is not more), one of `loss.reset_keyframes` or fewer on the `loss.lost_frames`-th failure,
-/// whatever the time; each failed frame tried relocalisation.
+/// whatever the time; with `loss.relocalize_seconds` 0, a map above it on its first failed frame;
+/// each failed frame tried relocalisation.
 #[test]
 fn relocalizing_a_large_map_is_lost_in_time_and_a_small_one_in_frames() {
-    for (reset_keyframes, step, lost_on) in [(0, 0.25, 14), (1, 0.25, 5), (1, 0.001, 5)] {
-        let failed = lose_the_track(&relocalizing(reset_keyframes), step, lost_on);
+    for (reset_keyframes, step, lost_on, seconds) in [
+        (0, 0.25, 14, 3.0),
+        (1, 0.25, 5, 3.0),
+        (1, 0.001, 5, 3.0),
+        (0, 0.25, 1, 0.0),
+    ] {
+        let mut options = relocalizing(reset_keyframes);
+        options.loss.relocalize_seconds = seconds;
+        let failed = lose_the_track(&options, step, lost_on);
         assert!(failed.iter().all(|r| r.summary.relocalization.is_some()));
     }
 }
@@ -616,5 +684,130 @@ fn threaded_a_lost_map_settles_the_threads_then_closes() {
     assert_eq!(
         outcomes[1].last().map(|o| (o.0, o.1)),
         Some((State::Tracking, Some(1)))
+    );
+}
+
+/// A loop being confirmed between two keyframes, its similarity and points blank.
+fn pending(matched: i64, last: i64) -> Pending {
+    Pending {
+        matched,
+        last,
+        similarity: Matrix4::identity(),
+        confirmations: 1,
+        misses: 0,
+        points: Vec::new(),
+        matched_points: Vec::new(),
+    }
+}
+
+/// Culling spares a loop being confirmed's two keyframes, a merge being confirmed's last (its
+/// matched one is the other map's) and a merge waiting's current, alone or together, each once.
+#[test]
+fn culling_spares_what_a_loop_or_merge_being_confirmed_holds() {
+    let merging = Merging {
+        map: 0,
+        pending: pending(1, 7),
+    };
+    let waiting = WaitingMerge {
+        index: 12,
+        merge: Merge {
+            map: 0,
+            found: Loop {
+                current: 9,
+                matched: 1,
+                similarity: Matrix4::identity(),
+                points: Vec::new(),
+                matched_points: Vec::new(),
+            },
+        },
+        summary: LoopSummary {
+            detection: DetectionSummary::of(loops::Outcome::Closed),
+            correction: None,
+            merging: None,
+            merge: None,
+        },
+        seconds: 0.1,
+    };
+    let state =
+        |pending: Option<Pending>, merging: Option<&Merging>, waiting: Option<&WaitingMerge>| {
+            LoopState {
+                pending,
+                merging: merging.cloned(),
+                waiting: waiting.cloned(),
+            }
+        };
+    let cases: [(LoopState, Vec<i64>); 8] = [
+        (LoopState::default(), vec![]),
+        (state(Some(pending(2, 5)), None, None), vec![2, 5]),
+        (state(None, Some(&merging), None), vec![7]),
+        (state(None, None, Some(&waiting)), vec![9]),
+        (
+            state(Some(pending(2, 5)), Some(&merging), None),
+            vec![2, 5, 7],
+        ),
+        (state(None, Some(&merging), Some(&waiting)), vec![7, 9]),
+        (
+            state(Some(pending(2, 5)), Some(&merging), Some(&waiting)),
+            vec![2, 5, 7, 9],
+        ),
+        (state(Some(pending(2, 7)), Some(&merging), None), vec![2, 7]),
+    ];
+    for (state, held) in cases {
+        assert_eq!(state.held(), held);
+    }
+}
+
+/// A merge's carry of tracking's last frame (`TrackingState::merged`, as
+/// `tests/edge/test_pipeline.py` holds Python's), with a `G` of scale 1/0.7: its points' and
+/// anchor keyframe's ids moved on by the offsets, -1 kept; the velocity's and the pose relative
+/// to the anchor's translations times `G`'s scale, their rotations unchanged; and no motion stays
+/// none.
+#[test]
+fn a_merge_carries_tracking_into_the_merged_maps_ids_and_units() {
+    const SHRINK: f64 = 0.7; // G's scale is 1 / SHRINK
+    let mut to_world = Matrix4::identity();
+    to_world
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(&(so3::exp(&Vector3::new(0.0, 0.5, 0.0)) / SHRINK));
+    to_world
+        .fixed_view_mut::<3, 1>(0, 3)
+        .copy_from(&Vector3::new(0.4, -0.1, 0.25));
+    let mut motion = Matrix4::identity();
+    motion
+        .fixed_view_mut::<3, 3>(0, 0)
+        .copy_from(&so3::exp(&Vector3::new(0.1, 0.0, 0.2)));
+    motion
+        .fixed_view_mut::<3, 1>(0, 3)
+        .copy_from(&Vector3::new(0.07, -0.02, 0.14));
+    let mut state = TrackingState {
+        last_tracked: Some(Tracked {
+            pose: Matrix4::identity(),
+            points: vec![3, -1, 8],
+        }),
+        velocity: Some(motion),
+        anchor: Some(4),
+        anchor_relative: Some(motion),
+        ..TrackingState::default()
+    };
+    state.merged(10, 100, &to_world);
+    assert_eq!(
+        state.last_tracked.map(|last| last.points),
+        Some(vec![103, -1, 108])
+    );
+    assert_eq!(state.anchor, Some(14));
+    let scaled = motion.fixed_view::<3, 1>(0, 3) / SHRINK;
+    for moved in [state.velocity, state.anchor_relative] {
+        let moved = moved.unwrap();
+        assert_eq!(
+            moved.fixed_view::<3, 3>(0, 0),
+            motion.fixed_view::<3, 3>(0, 0)
+        );
+        assert!((moved.fixed_view::<3, 1>(0, 3) - scaled).amax() < 1e-12);
+    }
+    let mut still = TrackingState::default();
+    still.merged(10, 100, &to_world);
+    assert_eq!(
+        (still.velocity, still.anchor, still.anchor_relative),
+        (None, None, None)
     );
 }
