@@ -8,7 +8,7 @@
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/linear/NoiseModel.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
-#include <gtsam/nonlinear/NonlinearEquality.h>
+#include <gtsam/nonlinear/NoiseModelFactorN.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
@@ -163,6 +163,73 @@ class RustFactor final : public gtsam::NoiseModelFactor {
   Slot slot_;
 };
 
+/// @brief A pose graph's edge with one end held at a value: GTSAM's between factor, evaluated
+///        with that end a constant, so a factor on the other end alone.
+/// @tparam Motion `gtsam::Pose3` or `gtsam::Similarity3`.
+template <typename Motion>
+class OneEndHeld final : public gtsam::NoiseModelFactorN<Motion> {
+ public:
+  using gtsam::NoiseModelFactorN<Motion>::evaluateError;
+
+  /// @brief Build the factor.
+  /// @param between The edge's between factor, on both ends' keys.
+  /// @param held The held end's value.
+  /// @param first_held Whether the held end is the edge's first.
+  OneEndHeld(const gtsam::BetweenFactor<Motion>& between, Motion held, bool first_held)
+      : gtsam::NoiseModelFactorN<Motion>(between.noiseModel(),
+                                         first_held ? between.key2() : between.key1()),
+        between_(between),
+        held_(std::move(held)),
+        first_held_(first_held) {}
+
+  /// @brief The edge's residual, and its Jacobian on the end not held if asked.
+  /// @param other The value of the end not held.
+  /// @param jacobian Where to write the Jacobian on it, if asked.
+  /// @return The residual, as the between factor computes it.
+  gtsam::Vector evaluateError(const Motion& other,
+                              gtsam::OptionalMatrixType jacobian) const override {
+    const Motion& one = first_held_ ? held_ : other;
+    const Motion& two = first_held_ ? other : held_;
+    return between_.evaluateError(one, two, first_held_ ? nullptr : jacobian,
+                                  first_held_ ? jacobian : nullptr);
+  }
+
+ private:
+  /// @brief The edge's between factor.
+  gtsam::BetweenFactor<Motion> between_;
+  /// @brief The held end's value.
+  Motion held_;
+  /// @brief Whether the held end is the edge's first.
+  bool first_held_;
+};
+
+/// @brief The between factor on two keys, with unit information.
+/// @tparam Motion `gtsam::Pose3` or `gtsam::Similarity3`.
+/// @param first The first key.
+/// @param second The second.
+/// @param relative The measured relative value.
+/// @return The factor.
+template <typename Motion>
+gtsam::BetweenFactor<Motion> unit_between(std::uint64_t first, std::uint64_t second,
+                                          const Motion& relative) {
+  return {first, second, relative,
+          gtsam::noiseModel::Unit::Create(gtsam::traits<Motion>::dimension)};
+}
+
+/// @brief GTSAM's error of a between factor with unit information at two values.
+/// @tparam Motion `gtsam::Pose3` or `gtsam::Similarity3`.
+/// @param first The first value.
+/// @param second The second.
+/// @param relative The measured relative value.
+/// @return The error.
+template <typename Motion>
+double between_error(const Motion& first, const Motion& second, const Motion& relative) {
+  gtsam::Values at;
+  at.insert(0, first);
+  at.insert(1, second);
+  return unit_between<Motion>(0, 1, relative).error(at);
+}
+
 /// @brief Hold an evaluator in a slot for the length of a call.
 class Holding {
  public:
@@ -240,23 +307,41 @@ void add_point(Problem& problem, std::uint64_t key, rust::Slice<const double> po
 void add_between_poses(Problem& problem, std::uint64_t first, std::uint64_t second,
                        rust::Slice<const double> relative) {
   problem.state->graph.emplace_shared<gtsam::BetweenFactor<gtsam::Pose3>>(
-      first, second, gtsam::Pose3(matrix_of(relative)), gtsam::noiseModel::Unit::Create(6));
+      unit_between(first, second, gtsam::Pose3(matrix_of(relative))));
 }
 
 void add_between_similarities(Problem& problem, std::uint64_t first, std::uint64_t second,
                               rust::Slice<const double> relative) {
   problem.state->graph.emplace_shared<gtsam::BetweenFactor<gtsam::Similarity3>>(
-      first, second, gtsam::Similarity3(matrix_of(relative)), gtsam::noiseModel::Unit::Create(7));
+      unit_between(first, second, gtsam::Similarity3(matrix_of(relative))));
 }
 
-void fix_pose(Problem& problem, std::uint64_t key, rust::Slice<const double> matrix) {
-  problem.state->graph.emplace_shared<gtsam::NonlinearEquality<gtsam::Pose3>>(
-      key, gtsam::Pose3(matrix_of(matrix)));
+void add_held_between_poses(Problem& problem, std::uint64_t first, std::uint64_t second,
+                            rust::Slice<const double> relative, rust::Slice<const double> held,
+                            bool first_held) {
+  problem.state->graph.emplace_shared<OneEndHeld<gtsam::Pose3>>(
+      unit_between(first, second, gtsam::Pose3(matrix_of(relative))), gtsam::Pose3(matrix_of(held)),
+      first_held);
 }
 
-void fix_similarity(Problem& problem, std::uint64_t key, rust::Slice<const double> matrix) {
-  problem.state->graph.emplace_shared<gtsam::NonlinearEquality<gtsam::Similarity3>>(
-      key, gtsam::Similarity3(matrix_of(matrix)));
+void add_held_between_similarities(Problem& problem, std::uint64_t first, std::uint64_t second,
+                                   rust::Slice<const double> relative,
+                                   rust::Slice<const double> held, bool first_held) {
+  problem.state->graph.emplace_shared<OneEndHeld<gtsam::Similarity3>>(
+      unit_between(first, second, gtsam::Similarity3(matrix_of(relative))),
+      gtsam::Similarity3(matrix_of(held)), first_held);
+}
+
+double between_error_poses(rust::Slice<const double> first, rust::Slice<const double> second,
+                           rust::Slice<const double> relative) {
+  return between_error(gtsam::Pose3(matrix_of(first)), gtsam::Pose3(matrix_of(second)),
+                       gtsam::Pose3(matrix_of(relative)));
+}
+
+double between_error_similarities(rust::Slice<const double> first, rust::Slice<const double> second,
+                                  rust::Slice<const double> relative) {
+  return between_error(gtsam::Similarity3(matrix_of(first)), gtsam::Similarity3(matrix_of(second)),
+                       gtsam::Similarity3(matrix_of(relative)));
 }
 
 void add_rust_factor(Problem& problem, rust::Slice<const std::uint64_t> keys,

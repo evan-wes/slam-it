@@ -3,9 +3,10 @@
 ///        values and Levenberg-Marquardt, with factors that call back into Rust.
 ///
 /// Rust builds a problem through these functions: its variables (poses, similarities, points),
-/// GTSAM's own between and equality factors, and Rust factors, whose residual and Jacobians a
-/// Rust `Evaluator` computes (`evaluate`, declared by the bridge). The solve is driven from
-/// Rust one iteration at a time, so the stopping rule is Rust's own, as in
+/// GTSAM's own between factors (with one end held at a value, a factor on the other end alone),
+/// and Rust factors, whose residual and Jacobians a Rust `Evaluator` computes (`evaluate`,
+/// declared by the bridge). A held pose is never a variable: Rust leaves it out. The solve is
+/// driven from Rust one iteration at a time, so the stopping rule is Rust's own, as in
 /// `slam_it.foundations.graphs`. Every function that evaluates the factors takes the evaluator,
 /// and holds it only for the call. A pose crosses as 16 row-major doubles, `T_world_cam`; a
 /// similarity as GTSAM's own 4x4, `[[R, t'], [0, 1/s]]` (mapping `p` to `s (R p + t')`), which
@@ -103,17 +104,47 @@ void add_between_poses(Problem& problem, std::uint64_t first, std::uint64_t seco
 void add_between_similarities(Problem& problem, std::uint64_t first, std::uint64_t second,
                               rust::Slice<const double> relative);
 
-/// @brief Hold a pose exactly at a value (GTSAM's `NonlinearEquality`).
+/// @brief Add GTSAM's between factor on two poses, one of them held at a value, with unit
+///        information: a factor on the other pose alone, the held one a constant.
 /// @param problem The problem.
-/// @param key The pose's key.
-/// @param matrix The value, 16 row-major.
-void fix_pose(Problem& problem, std::uint64_t key, rust::Slice<const double> matrix);
+/// @param first The first pose's key.
+/// @param second The second's.
+/// @param relative The measured `T_first_second`, 16 row-major.
+/// @param held The held pose's value, 16 row-major.
+/// @param first_held Whether the first pose is the held one; else the second is.
+void add_held_between_poses(Problem& problem, std::uint64_t first, std::uint64_t second,
+                            rust::Slice<const double> relative, rust::Slice<const double> held,
+                            bool first_held);
 
-/// @brief Hold a similarity exactly at a value.
+/// @brief Add GTSAM's between factor on two similarities, one of them held at a value, with unit
+///        information: a factor on the other alone.
 /// @param problem The problem.
-/// @param key The similarity's key.
-/// @param matrix The value, 16 row-major.
-void fix_similarity(Problem& problem, std::uint64_t key, rust::Slice<const double> matrix);
+/// @param first The first similarity's key.
+/// @param second The second's.
+/// @param relative The measured relative similarity, 16 row-major (GTSAM's matrix).
+/// @param held The held similarity's value, 16 row-major (GTSAM's matrix).
+/// @param first_held Whether the first similarity is the held one; else the second is.
+void add_held_between_similarities(Problem& problem, std::uint64_t first, std::uint64_t second,
+                                   rust::Slice<const double> relative,
+                                   rust::Slice<const double> held, bool first_held);
+
+/// @brief GTSAM's error of its between factor on two poses at given values, unit information:
+///        what an edge between two held poses costs, a constant.
+/// @param first The first pose, 16 row-major.
+/// @param second The second.
+/// @param relative The measured `T_first_second`, 16 row-major.
+/// @return The error, `1/2 |Local(relative, first^-1 second)|^2`.
+double between_error_poses(rust::Slice<const double> first, rust::Slice<const double> second,
+                           rust::Slice<const double> relative);
+
+/// @brief GTSAM's error of its between factor on two similarities at given values, unit
+///        information.
+/// @param first The first similarity, 16 row-major (GTSAM's matrix).
+/// @param second The second.
+/// @param relative The measured relative similarity, 16 row-major (GTSAM's matrix).
+/// @return The error.
+double between_error_similarities(rust::Slice<const double> first, rust::Slice<const double> second,
+                                  rust::Slice<const double> relative);
 
 /// @brief Add a factor Rust evaluates.
 /// @param problem The problem.

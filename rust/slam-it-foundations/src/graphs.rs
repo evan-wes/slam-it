@@ -6,15 +6,22 @@
 //! for a pose, `(w, v, lambda)` for a similarity.
 //!
 //! GTSAM is reached through a `cxx` bridge (`cxx/graphs_bridge.cpp`): its graph, its values,
-//! its between and equality factors, and its Levenberg-Marquardt. The two factors GTSAM lacks
-//! are this crate's own: a generic C++ factor calls back into Rust (`evaluate`), which
-//! computes the residual and its Jacobians on this crate's camera model, as GTSAM's
-//! `CustomFactor` calls back into Python. The solve is driven from here one iteration at a
-//! time, by the rule every language stops by (`Termination`).
+//! its between factors, and its Levenberg-Marquardt. The two factors GTSAM lacks are this
+//! crate's own: a generic C++ factor calls back into Rust (`evaluate`), which computes the
+//! residual and its Jacobians on this crate's camera model, as GTSAM's `CustomFactor` calls back
+//! into Python. The solve is driven from here one iteration at a time, by the rule every
+//! language stops by (`Termination`).
+//!
+//! A held camera or pose is a constant, never a variable, as g2o's fixed vertices hold
+//! ORB-SLAM's (`slam_it.foundations.graphs` says why): a held camera's observation is a factor
+//! on its point alone, a pose graph's edge with one held end a factor on its other end, and one
+//! with both ends held a constant error, added to the errors the solve reads and reports.
 //!
 //! The bridge is the one place in the crate that writes `unsafe`: `cxx` declares the C++ side
 //! of a bridge in an `unsafe extern "C++"` block, the promise that its signatures are true.
 //! `cxx` checks the rest; the crate allows `unsafe` in that module alone.
+
+use std::pin::Pin;
 
 use cxx::UniquePtr;
 use nalgebra::{DMatrix, DVector, Matrix3, Matrix4, Vector2, Vector3};
@@ -499,6 +506,13 @@ enum Factor {
         /// The observation: `(u, v)`, and the right column if it has one.
         measured: Vec<f64>,
     },
+    /// A point's reprojection in a held camera: variable the point alone.
+    HeldProjection {
+        /// The observation: `(u, v)`, and the right column if it has one.
+        measured: Vec<f64>,
+        /// The held camera's `T_world_cam`.
+        pose: Matrix4<f64>,
+    },
     /// One side of a match carried through the motion: variable the motion.
     Similarity {
         /// The match's point in camera 1's frame.
@@ -546,8 +560,11 @@ fn write_rows(matrix: &DMatrix<f64>, out: &mut [f64]) {
 /// A pose's or a similarity's values as they cross the bridge: its 4x4 matrix, row-major.
 const MATRIX_VALUES: usize = 16;
 
+/// A point's values as they cross the bridge.
+const POINT_VALUES: usize = 3;
+
 /// A projection factor's values: its pose's matrix, then its point's 3.
-const PROJECTION_VALUES: usize = MATRIX_VALUES + 3;
+const PROJECTION_VALUES: usize = MATRIX_VALUES + POINT_VALUES;
 
 /// GTSAM's call into a Rust factor: its residual and its Jacobian (each variable's block side
 /// by side, row-major).
@@ -583,6 +600,13 @@ fn evaluate(
                 both.columns_mut(POSE_DIM, 3).copy_from(&at.d_point);
                 residual.copy_from_slice(at.residual.as_slice());
                 write_rows(&both, jacobian);
+            }
+        }
+        Some(Factor::HeldProjection { measured, pose }) if values.len() == POINT_VALUES => {
+            let point = Vector3::from_column_slice(values);
+            if let Ok(at) = projection_residual(pose, &point, measured, &evaluator.lens) {
+                residual.copy_from_slice(at.residual.as_slice());
+                write_rows(&at.d_point, jacobian);
             }
         }
         Some(Factor::Similarity {
@@ -667,10 +691,32 @@ mod ffi {
             second: u64,
             relative: &[f64],
         ) -> Result<()>;
-        /// Holds a pose exactly.
-        fn fix_pose(problem: Pin<&mut Problem>, key: u64, matrix: &[f64]) -> Result<()>;
-        /// Holds a similarity exactly.
-        fn fix_similarity(problem: Pin<&mut Problem>, key: u64, matrix: &[f64]) -> Result<()>;
+        /// Adds GTSAM's between factor on two poses, one held at a value: a factor on the other.
+        fn add_held_between_poses(
+            problem: Pin<&mut Problem>,
+            first: u64,
+            second: u64,
+            relative: &[f64],
+            held: &[f64],
+            first_held: bool,
+        ) -> Result<()>;
+        /// Adds GTSAM's between factor on two similarities, one held at a value.
+        fn add_held_between_similarities(
+            problem: Pin<&mut Problem>,
+            first: u64,
+            second: u64,
+            relative: &[f64],
+            held: &[f64],
+            first_held: bool,
+        ) -> Result<()>;
+        /// GTSAM's error of its between factor on two poses at given values.
+        fn between_error_poses(first: &[f64], second: &[f64], relative: &[f64]) -> Result<f64>;
+        /// GTSAM's error of its between factor on two similarities at given values.
+        fn between_error_similarities(
+            first: &[f64],
+            second: &[f64],
+            relative: &[f64],
+        ) -> Result<f64>;
         /// Adds a factor Rust evaluates.
         fn add_rust_factor(
             problem: Pin<&mut Problem>,
@@ -806,6 +852,9 @@ fn key(index: usize) -> u64 {
 /// * `problem` - The problem.
 /// * `evaluator` - Its Rust factors.
 /// * `options` - How the solve runs, checked.
+/// * `constant` - The error of the factors left out of the problem because every variable they
+///   join is held (a pose graph's edges between two held poses): added to every error the rule
+///   reads and the summary reports, so both are the whole problem's.
 ///
 /// # Returns
 ///
@@ -818,6 +867,7 @@ fn solve(
     problem: &ffi::Problem,
     evaluator: &Evaluator,
     options: &Options,
+    constant: f64,
 ) -> Result<(UniquePtr<ffi::Optimizer>, Summary)> {
     let mut optimizer = ffi::new_optimizer(
         problem,
@@ -827,7 +877,7 @@ fn solve(
         options.absolute_tolerance,
     )
     .map_err(|e| gtsam_failed(&e))?;
-    let initial = ffi::error(&optimizer);
+    let initial = ffi::error(&optimizer) + constant;
     let mut current = initial;
     let mut termination = Termination::MaxIterations;
     let mut iterations = 0;
@@ -838,7 +888,7 @@ fn solve(
         }
         ffi::iterate(optimizer.pin_mut(), evaluator).map_err(|e| gtsam_failed(&e))?;
         iterations += 1;
-        let error = ffi::error(&optimizer);
+        let error = ffi::error(&optimizer) + constant;
         if error >= current && ffi::damping(&optimizer) >= ffi::damping_limit(&optimizer) {
             termination = Termination::DampingLimit;
             break;
@@ -1155,18 +1205,39 @@ fn check_bundle(
 
 // --- the solves ------------------------------------------------------------------------------
 
+/// Which of `count` indices are held.
+///
+/// # Arguments
+///
+/// * `fixed` - The held indices, checked.
+/// * `count` - How many there are.
+///
+/// # Returns
+///
+/// A flag per index.
+fn held_flags(fixed: &[usize], count: usize) -> Vec<bool> {
+    let mut out = vec![false; count];
+    for &k in fixed {
+        out[k] = true;
+    }
+    out
+}
+
 /// Optimises a pose graph, each edge's measured relative pose with unit information
 /// (`graphs.optimize_pose_graph`).
 ///
 /// ORB-SLAM's `OptimizeEssentialGraph` on GTSAM: edge `(i, j)` measures `T_i_j = T_world_i^-1
-/// T_world_j` (`BetweenFactor`); the poses in `fixed` are held exactly (`NonlinearEquality`).
+/// T_world_j` (`BetweenFactor`); the poses in `fixed` are held as constants, as g2o's fixed
+/// vertices hold ORB-SLAM's: an edge with one held end is a factor on its other end, and one with
+/// both ends held a constant error, counted in the summary's errors. With every pose held,
+/// nothing is solved: the poses come back as given, after no iteration.
 ///
 /// # Arguments
 ///
 /// * `poses` - Each pose's start, camera-to-world: rigid, or a similarity with `similarity`.
 /// * `edges` - Each edge's two poses `(i, j)`, `i != j`.
 /// * `relatives` - Each edge's measured `T_i_j`, of the poses' kind.
-/// * `fixed` - The poses held fixed, at least one.
+/// * `fixed` - The poses held fixed, at least one; each comes back exactly as given.
 /// * `similarity` - Optimise Sim(3) rather than SE(3).
 /// * `options` - How the solve runs.
 ///
@@ -1209,51 +1280,37 @@ pub fn optimize_pose_graph(
             "fixed: expected at least one pose held fixed (the gauge)",
         );
     }
+    let held = held_flags(fixed, poses.len());
     let mut problem = ffi::new_problem();
-    let gtsam =
-        |result: std::result::Result<(), cxx::Exception>| result.map_err(|e| gtsam_failed(&e));
-    for (k, pose) in poses.iter().enumerate() {
+    for (k, pose) in poses.iter().enumerate().filter(|(k, _)| !held[*k]) {
         if similarity {
-            gtsam(ffi::add_similarity(
-                problem.pin_mut(),
-                key(k),
-                &to_similarity3(pose),
-            ))?;
+            ffi::add_similarity(problem.pin_mut(), key(k), &to_similarity3(pose))
         } else {
-            gtsam(ffi::add_pose(problem.pin_mut(), key(k), &rows_of(pose)))?;
+            ffi::add_pose(problem.pin_mut(), key(k), &rows_of(pose))
         }
+        .map_err(|e| gtsam_failed(&e))?;
     }
-    for ([i, j], relative) in edges.iter().zip(relatives) {
-        if similarity {
-            gtsam(ffi::add_between_similarities(
-                problem.pin_mut(),
-                key(*i),
-                key(*j),
-                &to_similarity3(relative),
-            ))?;
-        } else {
-            gtsam(ffi::add_between_poses(
-                problem.pin_mut(),
-                key(*i),
-                key(*j),
-                &rows_of(relative),
-            ))?;
-        }
+    let mut constant = 0.0;
+    for (&[i, j], relative) in edges.iter().zip(relatives) {
+        constant += add_edge(
+            problem.pin_mut(),
+            [i, j],
+            relative,
+            [held[i].then_some(&poses[i]), held[j].then_some(&poses[j])],
+            similarity,
+        )?;
     }
-    for k in distinct(fixed) {
-        if similarity {
-            gtsam(ffi::fix_similarity(
-                problem.pin_mut(),
-                key(k),
-                &to_similarity3(&poses[k]),
-            ))?;
-        } else {
-            gtsam(ffi::fix_pose(
-                problem.pin_mut(),
-                key(k),
-                &rows_of(&poses[k]),
-            ))?;
-        }
+    if held.iter().all(|&h| h) {
+        return Ok(PoseGraph {
+            poses: poses.to_vec(),
+            summary: Summary {
+                initial_error: constant,
+                final_error: constant,
+                iterations: 0,
+                termination: Termination::Function,
+                converged: true,
+            },
+        });
     }
     let evaluator = Evaluator {
         lens: Lens {
@@ -1263,11 +1320,81 @@ pub fn optimize_pose_graph(
         },
         factors: Vec::new(),
     };
-    let (optimizer, summary) = solve(&problem, &evaluator, options)?;
-    let poses = (0..poses.len())
-        .map(|k| matrix_at(&optimizer, k, similarity))
+    let (optimizer, summary) = solve(&problem, &evaluator, options, constant)?;
+    let poses = poses
+        .iter()
+        .enumerate()
+        .map(|(k, pose)| {
+            if held[k] {
+                Ok(*pose)
+            } else {
+                matrix_at(&optimizer, k, similarity)
+            }
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok(PoseGraph { poses, summary })
+}
+
+/// Adds a pose graph's edge to its problem: GTSAM's between factor on its two ends, a factor on
+/// its free end alone if the other is held, or, with both ends held, nothing (its error is then
+/// a constant).
+///
+/// # Arguments
+///
+/// * `problem` - The problem.
+/// * `ends` - The edge's two poses `(i, j)`.
+/// * `relative` - Its measured `T_i_j`.
+/// * `held` - Each end's value if it is held, none if it is a variable.
+/// * `similarity` - Whether the poses are similarities.
+///
+/// # Returns
+///
+/// The edge's error with both ends held, a constant; 0 otherwise.
+///
+/// # Errors
+///
+/// `NotConverged` if GTSAM fails.
+fn add_edge(
+    problem: Pin<&mut ffi::Problem>,
+    ends: [usize; 2],
+    relative: &Matrix4<f64>,
+    held: [Option<&Matrix4<f64>>; 2],
+    similarity: bool,
+) -> Result<f64> {
+    // A pose or similarity as the bridge takes it: GTSAM's own matrix for a similarity.
+    let crossing = |matrix: &Matrix4<f64>| {
+        if similarity {
+            to_similarity3(matrix)
+        } else {
+            rows_of(matrix)
+        }
+    };
+    let (first, second, measured) = (key(ends[0]), key(ends[1]), crossing(relative));
+    if let [Some(one), Some(two)] = held {
+        let (one, two) = (crossing(one), crossing(two));
+        return if similarity {
+            ffi::between_error_similarities(&one, &two, &measured)
+        } else {
+            ffi::between_error_poses(&one, &two, &measured)
+        }
+        .map_err(|e| gtsam_failed(&e));
+    }
+    let added = match held {
+        [Some(value), None] | [None, Some(value)] => {
+            let (value, first_held) = (crossing(value), held[0].is_some());
+            if similarity {
+                ffi::add_held_between_similarities(
+                    problem, first, second, &measured, &value, first_held,
+                )
+            } else {
+                ffi::add_held_between_poses(problem, first, second, &measured, &value, first_held)
+            }
+        }
+        _ if similarity => ffi::add_between_similarities(problem, first, second, &measured),
+        _ => ffi::add_between_poses(problem, first, second, &measured),
+    };
+    added.map_err(|e| gtsam_failed(&e))?;
+    Ok(0.0)
 }
 
 /// Refines the similarity carrying one keyframe's matched points into another's images
@@ -1360,7 +1487,7 @@ pub fn refine_similarity(
         }
     }
     let evaluator = Evaluator { lens, factors };
-    let (optimizer, summary) = solve(&problem, &evaluator, options)?;
+    let (optimizer, summary) = solve(&problem, &evaluator, options, 0.0)?;
     let motion = matrix_at(&optimizer, 0, !fixed_scale)?;
     let chi2 = (0..count)
         .map(|k| {
@@ -1402,7 +1529,9 @@ pub fn refine_similarity(
 ///
 /// ORB-SLAM's `GlobalBundleAdjustemnt` as loop closing calls it (`bRobust` false), on GTSAM; with
 /// the observations' `huber`, each whitened error through a Huber loss at its threshold, as
-/// ORB-SLAM's local and welding BAs weigh theirs.
+/// ORB-SLAM's local and welding BAs weigh theirs. The cameras in `fixed` are held as constants,
+/// as g2o's fixed vertices hold ORB-SLAM's: each of their observations is a factor on its point
+/// alone.
 ///
 /// # Arguments
 ///
@@ -1410,7 +1539,7 @@ pub fn refine_similarity(
 /// * `points` - Each point's start, in the world, at least one.
 /// * `observations` - The observations; every point must be observed.
 /// * `lens` - The camera; its `bf` positive if any observation has a right column.
-/// * `fixed` - The cameras held fixed.
+/// * `fixed` - The cameras held fixed; each comes back exactly as given.
 /// * `options` - How the solve runs.
 ///
 /// # Returns
@@ -1432,11 +1561,14 @@ pub fn bundle_adjust(
 ) -> Result<Adjustment> {
     check_bundle(poses, points, observations, lens, fixed, options)?;
     let count = observations.cameras.len();
+    // The held cameras are constants, not variables: each of their observations is a factor on
+    // its point alone.
+    let held = held_flags(fixed, poses.len());
     let mut problem = ffi::new_problem();
     let gtsam =
         |result: std::result::Result<(), cxx::Exception>| result.map_err(|e| gtsam_failed(&e));
     let first_point = poses.len();
-    for (c, pose) in poses.iter().enumerate() {
+    for (c, pose) in poses.iter().enumerate().filter(|(c, _)| !held[*c]) {
         gtsam(ffi::add_pose(problem.pin_mut(), key(c), &rows_of(pose)))?;
     }
     for (p, point) in points.iter().enumerate() {
@@ -1444,13 +1576,6 @@ pub fn bundle_adjust(
             problem.pin_mut(),
             key(first_point + p),
             point.as_slice(),
-        ))?;
-    }
-    for c in distinct(fixed) {
-        gtsam(ffi::fix_pose(
-            problem.pin_mut(),
-            key(c),
-            &rows_of(&poses[c]),
         ))?;
     }
     let mut factors = Vec::with_capacity(count);
@@ -1461,27 +1586,46 @@ pub fn bundle_adjust(
         } else {
             vec![pixel.x, pixel.y, observations.right[m]]
         };
+        let dimension = measured.len();
+        let c = observations.cameras[m];
+        let pair = [key(c), key(first_point + observations.point_ids[m])];
+        let (keys, kinds, factor) = if held[c] {
+            let pose = poses[c];
+            let factor = Factor::HeldProjection { measured, pose };
+            (&pair[1..], &[POINT][..], factor)
+        } else {
+            (
+                &pair[..],
+                &[POSE, POINT][..],
+                Factor::Projection { measured },
+            )
+        };
         gtsam(ffi::add_rust_factor(
             problem.pin_mut(),
-            &[
-                key(observations.cameras[m]),
-                key(first_point + observations.point_ids[m]),
-            ],
-            &[POSE, POINT],
-            measured.len(),
+            keys,
+            kinds,
+            dimension,
             observations.information[m],
             observations.huber.get(m).copied().unwrap_or(0.0), // the bridge's 0: no robust loss
             factors.len(),
         ))?;
-        factors.push(Factor::Projection { measured });
+        factors.push(factor);
     }
     let evaluator = Evaluator {
         lens: lens.clone(),
         factors,
     };
-    let (optimizer, summary) = solve(&problem, &evaluator, options)?;
-    let poses = (0..poses.len())
-        .map(|c| matrix_at(&optimizer, c, false))
+    let (optimizer, summary) = solve(&problem, &evaluator, options, 0.0)?;
+    let poses = poses
+        .iter()
+        .enumerate()
+        .map(|(c, pose)| {
+            if held[c] {
+                Ok(*pose)
+            } else {
+                matrix_at(&optimizer, c, false)
+            }
+        })
         .collect::<Result<Vec<_>>>()?;
     let points = (0..points.len())
         .map(|p| {
@@ -1844,8 +1988,30 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bundle_adjustment_recovers_a_stereo_scene() {
+    /// A stereo scene seen through the radtan camera: five cameras along x looking down +z, 60
+    /// points in front of them, every camera's view of every point (every second one with its
+    /// right column), and a start with the cameras after the first and every point perturbed.
+    struct Scene {
+        /// Each camera's true `T_world_cam`.
+        truth: Vec<Matrix4<f64>>,
+        /// Each point's true position.
+        points: Vec<Vector3<f64>>,
+        /// Each observation's camera.
+        cameras: Vec<usize>,
+        /// Each observation's point.
+        ids: Vec<usize>,
+        /// Each observation's pixel.
+        pixels: Vec<Vector2<f64>>,
+        /// Each observation's right column, NaN for none.
+        right: Vec<f64>,
+        /// Each camera's starting pose.
+        start: Vec<Matrix4<f64>>,
+        /// Each point's start.
+        start_points: Vec<Vector3<f64>>,
+    }
+
+    /// The stereo scene.
+    fn stereo_scene() -> Scene {
         const CAMERAS: usize = 5;
         const POINTS: usize = 60;
         #[allow(clippy::cast_precision_loss)] // a handful of cameras and points
@@ -1889,33 +2055,119 @@ mod tests {
             .enumerate()
             .map(|(p, point)| point + Vector3::new(0.03, -0.02, 0.04) * (p as f64).cos())
             .collect();
-        let information = vec![1.0; cameras.len()];
+        Scene {
+            truth,
+            points,
+            cameras,
+            ids,
+            pixels,
+            right,
+            start,
+            start_points,
+        }
+    }
+
+    /// Adjusts the scene from its start for 20 iterations, the cameras in `fixed` held, and
+    /// checks that the held ones come back exactly as they started, the others and every point
+    /// to the truth.
+    fn adjust_and_check(scene: &Scene, fixed: &[usize]) -> Adjustment {
+        let information = vec![1.0; scene.cameras.len()];
         let options = Options {
             max_iterations: 20,
             ..Options::default()
         };
         let result = bundle_adjust(
-            &start,
-            &start_points,
+            &scene.start,
+            &scene.start_points,
             &Observations {
-                cameras: &cameras,
-                point_ids: &ids,
-                pixels: &pixels,
-                right: &right,
+                cameras: &scene.cameras,
+                point_ids: &scene.ids,
+                pixels: &scene.pixels,
+                right: &scene.right,
                 information: &information,
                 huber: &[],
             },
-            &lens,
-            &[0],
+            &radtan(),
+            fixed,
             &options,
         )
         .unwrap();
-        assert_eq!(result.poses[0], truth[0]);
-        for (got, expected) in result.poses.iter().zip(&truth) {
-            assert!((got - expected).abs().max() < 1e-7);
+        for (c, got) in result.poses.iter().enumerate() {
+            if fixed.contains(&c) {
+                assert_eq!(*got, scene.start[c]);
+            } else {
+                assert!((got - scene.truth[c]).abs().max() < 1e-7);
+            }
         }
-        for (got, expected) in result.points.iter().zip(&points) {
+        for (got, expected) in result.points.iter().zip(&scene.points) {
             assert!((got - expected).abs().max() < 1e-6);
+        }
+        result
+    }
+
+    #[test]
+    fn bundle_adjustment_recovers_a_stereo_scene() {
+        adjust_and_check(&stereo_scene(), &[0]);
+    }
+
+    #[test]
+    fn held_cameras_come_back_exactly_with_three_held_or_every_one() {
+        let mut scene = stereo_scene();
+        scene.start.clone_from(&scene.truth);
+        scene.start[4] *= pose([0.02, -0.02, 0.01], [0.01, 0.0, -0.01]);
+        adjust_and_check(&scene, &[0, 1, 2]);
+        scene.start[4] = scene.truth[4];
+        let every = adjust_and_check(&scene, &[0, 1, 2, 3, 4]);
+        assert!(every.summary.iterations > 0);
+    }
+
+    #[test]
+    fn held_poses_are_constants_and_their_edges_cost_a_constant() {
+        for with_scale in [false, true] {
+            let truth = ring(4, with_scale);
+            // Both held; held first; held second; free.
+            let edges = vec![[0, 1], [1, 2], [3, 1], [2, 3]];
+            let mut relatives: Vec<Matrix4<f64>> = edges
+                .iter()
+                .map(|[i, j]| inverse(&truth[*i]) * truth[*j])
+                .collect();
+            relatives[0] *= pose([0.1, 0.0, 0.0], [0.0, 0.0, 0.05]); // costs a constant
+            let mut start = truth.clone();
+            start[2] *= pose([0.05, -0.03, 0.02], [0.01, 0.0, -0.02]);
+            start[3] *= pose([-0.04, 0.02, 0.01], [0.0, 0.02, 0.01]);
+            let options = Options {
+                max_iterations: 30,
+                ..Options::default()
+            };
+            let result =
+                optimize_pose_graph(&start, &edges, &relatives, &[0, 1], with_scale, &options)
+                    .unwrap();
+            assert_eq!(result.poses[..2], start[..2]);
+            for (got, expected) in result.poses.iter().zip(&truth).skip(2) {
+                assert!((got - expected).abs().max() < 1e-8);
+            }
+            let held = optimize_pose_graph(
+                &truth,
+                &edges,
+                &relatives,
+                &[0, 1, 2, 3],
+                with_scale,
+                &Options::default(),
+            )
+            .unwrap();
+            assert_eq!(held.poses, truth);
+            assert_eq!(
+                (held.summary.iterations, held.summary.termination),
+                (0, Termination::Function)
+            );
+            assert!(held.summary.converged);
+            let constant = held.summary.initial_error;
+            assert!(constant > 1e-4);
+            #[allow(clippy::float_cmp)] // nothing was solved: the very number
+            let unchanged = held.summary.final_error == constant;
+            assert!(unchanged);
+            assert!((result.summary.final_error - constant).abs() <= 1e-9 * constant);
+            assert!(result.summary.initial_error > result.summary.final_error);
         }
     }
 
