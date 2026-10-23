@@ -1,7 +1,8 @@
 // Loading a bundle (slam_it.orchestration.bundles, whose docstring states its files): its
-// description and frames first; every backend's track (its records and poses), to compare them;
-// and, when the page first shows a backend, its map and its features, each loaded apart, its
-// files fetched side by side, so that neither waits for the other.
+// description and frames first; every backend's track (its records and poses), to compare them,
+// which the page draws as soon as it is in; and, when the page first shows a backend, its map
+// and its features, each loaded apart, its files fetched side by side, so that neither waits for
+// the other and the page draws each as it arrives.
 //
 // The loader is given how to fetch a file, so the page fetches over HTTP and the tests read the
 // golden bundle from disk.
@@ -155,6 +156,14 @@ import { readFloat32, readInt32 } from "./npy.js";
 /**
  * A backend's track and map together; its features load apart (`loadFeatures`).
  * @typedef {Track & RunMap} Backend
+ */
+
+/**
+ * Where a part of a backend's run that the page loads apart stands: loading, in, or failed,
+ * with why.
+ * @template T
+ * @typedef {{status: "loading"} | {status: "loaded", value: T} |
+ *     {status: "failed", reason: string}} Held
  */
 
 /**
@@ -453,4 +462,18 @@ export async function loadFeatures(fetch, track) {
   );
   const records = await int32("feature_records.npy", [4]);
   return { pixels: await float32("feature_pixels.npy", [2], records.length / 4), records };
+}
+
+/**
+ * Where a part's load ends up: never rejected, a failure held with its message.
+ * @template T
+ * @param {Promise<T>} load The part's load.
+ * @returns {Promise<Held<T>>} Once the load settles: loaded with its value, or failed with why.
+ */
+export async function settle(load) {
+  try {
+    return { status: "loaded", value: await load };
+  } catch (error) {
+    return { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+  }
 }

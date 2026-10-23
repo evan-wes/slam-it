@@ -3,7 +3,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { bundleAddress, loadBundle, loadFeatures, loadMap, loadTrack } from "../src/bundle.js";
+import {
+  bundleAddress,
+  loadBundle,
+  loadFeatures,
+  loadMap,
+  loadTrack,
+  settle,
+} from "../src/bundle.js";
 import { readFloat32, readHeader, readInt32 } from "../src/npy.js";
 import { fetchGolden, fetchMerge, loadRun } from "./golden.js";
 
@@ -264,6 +271,18 @@ test("features that fail to load, or are mis-shaped, fail their own load alone",
     new RegExp(`cpp/feature_pixels.npy: expected \\(${rows / 4}, 2\\)`),
   );
   await loadMap(misshaped, track);
+});
+
+test("a part's load settles as where it stands: loaded with its value, or failed with why", async () => {
+  assert.deepEqual(await settle(Promise.resolve(7)), { status: "loaded", value: 7 });
+  assert.deepEqual(await settle(Promise.reject(new Error("cpp/points.npy: 404 Not Found"))), {
+    status: "failed",
+    reason: "cpp/points.npy: 404 Not Found",
+  });
+  assert.deepEqual(await settle(Promise.reject("refused")), {
+    status: "failed",
+    reason: "refused",
+  });
 });
 
 /**

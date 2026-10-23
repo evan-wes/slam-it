@@ -252,7 +252,7 @@ export class SolverView {
     this.placed.title = PLACED_HINT;
     this.tracked = new Plot(tracked, POINTS_AXIS);
     this.timing = new Plot(timing, LATENCY_AXIS);
-    /** @type {import("./bundle.js").Backend | null} */
+    /** @type {import("./bundle.js").Track | null} */
     this.run = null;
     this.frame = 0;
     /** @type {HTMLTableCellElement[][]} Each step's cells, a backend's each. */
@@ -267,8 +267,9 @@ export class SolverView {
   }
 
   /**
-   * Show a backend's run: its plots, built once, beside every backend's latency.
-   * @param {import("./bundle.js").Backend} run The run.
+   * Show a backend's run: its plots, built once, beside every backend's latency. Its track is
+   * all they need.
+   * @param {import("./bundle.js").Track} run The run's track.
    * @param {import("./bundle.js").Track[]} tracks Every backend's track, the run's among them.
    * @param {number} frames The bundle's frames.
    * @param {number[]} differ The frames where the backends decided differently.
