@@ -410,6 +410,27 @@ def test_bundle_adjustment_charges_a_point_behind_its_camera(
     np.testing.assert_array_equal(result.points, [[0.1, 0.2, -1.0]])
 
 
+def test_a_held_stereo_camera_charges_a_point_behind_it_as_gtsam_s_stereo_factor() -> None:
+    """Python's held stereo factor copies GTSAM's cheirality convention: pinned to the factor.
+
+    At a point behind the camera, its error, its right-hand side and its Jacobian on the point
+    equal ``GenericStereoFactor3D``'s with the pose a variable (0.3.17.2's review panel, L7).
+    """
+    build = graphs._pinhole_factors(PINHOLE[1], BF)
+    pose = se3.exp([0.1, 0.2, 0.3, 0.0, 0.1, 0.0])
+    noise = gtsam.noiseModel.Isotropic.Precision(3, 0.7)
+    measured = np.array([300.0, 290.0, 250.0])
+    held, free = build(measured, noise, pose, 1), build(measured, noise, 0, 1)
+    values = gtsam.Values()
+    values.insert(0, gtsam.Pose3(pose))
+    values.insert(1, pose[:3, :3] @ np.array([0.1, -0.2, -1.0]) + pose[:3, 3])  # behind it
+    assert held.error(values) == free.error(values) > 0.0
+    a_held, b_held = held.linearize(values).jacobian()
+    a_free, b_free = free.linearize(values).jacobian()
+    np.testing.assert_array_equal(b_held, b_free)
+    np.testing.assert_array_equal(a_held, a_free[:, graphs.POSE_DIM :])
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_a_huber_loss_holds_bundle_adjustment_against_an_outlier(backend: str) -> None:
     """One observation 40 px off: with Huber's loss the cameras move a tenth as far.
