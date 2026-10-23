@@ -125,6 +125,37 @@ BUNDLE` serves it with a bundle on this machine. The page reads a bundle from it
 - **The timeline**: under the slider, each backend's frames coloured by state, each frame
   relocalisation found again marked in green.
 
+**Loading** (since 0.3.17.1, 2026-10-22). The page draws what it has as soon as it has it. Once
+`bundle.json` and every backend's track (its records and poses, its four files requested side by
+side) are in, it draws the header, the timeline, the solver panel, the frame's image and the
+trajectory, with the camera. Then it loads the chosen backend's map and its features, each apart
+(`bundle.loadMap`, `bundle.loadFeatures`), each one's files requested side by side, and draws
+each as it arrives.
+
+- **The map**: its keyframes, points, graph and loops are drawn when its ten arrays are in.
+  Until then the map panel's label says they are loading, a small spinner turns in its corner,
+  and the camera's frustum is as deep as the trajectory alone makes it.
+- **The features**: their two files, by far the largest, are fetched at low priority. Over
+  HTTP/1.1 a browser opens 6 connections to a host, and at the default priority Chrome sent
+  both before 8 of the map's 10 requests (through a local proxy, 2026-10-22). Until they are
+  in, the frame panel says so; once in, the frame's keypoints are drawn over its image, which
+  is not fetched again. If they fail to load, the frame panel says why and the rest of the
+  page works on.
+- **Switching backends** shows the new backend's track at once. Each backend's map and
+  features are loaded the first time it is shown, and kept.
+- **Spinners** (`loading.js`): one over the frame until its image is drawn, and one over the
+  map until a run's track is in, whose small one in the corner follows while the map loads.
+  When the frame shown has waited 250 ms for its image, say after a far scrub with its chunk
+  still on its way, the spinner shows over the frame drawn before it, which is dimmed with its
+  fates' counts so neither passes for the frame asked for. A decode during playback takes less:
+  playing on a GPU never showed it. Where the 3D view renders slowly (software WebGL), no frame
+  is drawn while playing, as before, and the spinner says so. Each panel is `aria-busy`
+  meanwhile, and a visually hidden status says "Loading…". Under reduced motion the spinner is
+  still text. A failure takes the spinners down, and the page's message says what failed.
+
+Before, the page drew nothing until every one of the chosen backend's files was in, requested
+one at a time, the features, by far the largest files of a long run, among them.
+
 The modules that read a bundle and work out what a frame shows never touch the page (every
 module but `main.js` and the `*_view.js` views is checked without the DOM), so
 `node --test` checks them, on the golden bundle (`tests/fixtures/orchestration/bundle/`, the

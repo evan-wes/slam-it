@@ -7,7 +7,7 @@
 
 import { readFile } from "node:fs/promises";
 
-import { loadBundle, loadTrack } from "../src/bundle.js";
+import { loadBundle, loadFeatures, loadMap, loadTrack } from "../src/bundle.js";
 
 /**
  * A fetcher of one of the golden bundles' files.
@@ -46,3 +46,18 @@ export const fetchMerge = fetcher("merge_bundle/");
 
 /** Fetch one of the revisit bundle's files: the revisit room run by C++, map 0 taken up again. */
 export const fetchRevisit = fetcher("revisit_bundle/");
+
+/**
+ * A backend's whole run, as the page holds it once every part is in: its track, its map and its
+ * features.
+ * @param {import("../src/bundle.js").Fetch} fetch How to fetch the bundle's files.
+ * @param {import("../src/bundle.js").Bundle} bundle The bundle.
+ * @param {string} name The backend.
+ * @returns {Promise<import("../src/bundle.js").Backend &
+ *     {features: import("../src/bundle.js").Features | null}>} Its run.
+ */
+export async function loadRun(fetch, bundle, name) {
+  const track = await loadTrack(fetch, bundle, name);
+  const [map, features] = await Promise.all([loadMap(fetch, track), loadFeatures(fetch, track)]);
+  return { ...track, ...map, features };
+}

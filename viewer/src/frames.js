@@ -1,6 +1,6 @@
 // What a backend's run shows at a frame, worked out from its arrays: the points and keyframes
-// alive, its keypoints and their fates, its record and pose. No drawing: the views draw what
-// these return, and Node tests them.
+// alive, its keypoints and their fates (or why there are none, as while they load), its record
+// and pose. No drawing: the views draw what these return, and Node tests them.
 
 import { lastRow } from "./geometry.js";
 
@@ -89,6 +89,58 @@ export function keypointsAt(features, frame) {
     counts[fate[i - start]] += 1;
   }
   return { xy: features.pixels.subarray(start * 2, end * 2), fate, counts };
+}
+
+/**
+ * What the image panel draws over a frame of a run: its keypoints, if the run ran the frame and
+ * its feature records are in; else none, and the note over the frame that says why.
+ * @param {string} name The run's backend.
+ * @param {number} k The frame's record in the run (`recordIndex`); -1 if it did not run it.
+ * @param {number} frame The frame.
+ * @param {import("./bundle.js").Held<import("./bundle.js").Features | null>} features The
+ *     run's feature records as the page holds them: null once in if it recorded none.
+ * @returns {{keypoints: {xy: Float32Array, fate: Int32Array, counts: number[]} | null,
+ *     note: string}} The frame's keypoints (`keypointsAt`), or null; the note, "" with them.
+ */
+export function frameKeypoints(name, k, frame, features) {
+  if (k < 0) {
+    return { keypoints: null, note: `${name} did not run this frame` };
+  }
+  if (features.status === "loading") {
+    return { keypoints: null, note: "loading feature records" };
+  }
+  if (features.status === "failed") {
+    return { keypoints: null, note: `feature records did not load: ${features.reason}` };
+  }
+  if (features.value === null) {
+    return { keypoints: null, note: "no feature records" };
+  }
+  return { keypoints: keypointsAt(features.value, frame), note: "" };
+}
+
+/**
+ * The 3D panel's label at a frame: the run, its state there, the map shown, and, until the run's
+ * map is in, that its keyframes and points are loading, or did not load.
+ * @param {string} name The run's backend.
+ * @param {string | null} state Its record's state at the frame; null if it did not run it.
+ * @param {number | null} map The map shown; null for none.
+ * @param {"loading" | "loaded" | "failed"} status Where the run's map stands (`Held`).
+ * @returns {string} "cpp · tracking · map 0", say.
+ */
+export function mapLabel(name, state, map, status) {
+  const parts = [name];
+  if (state !== null) {
+    parts.push(state);
+  }
+  if (map !== null) {
+    parts.push(`map ${map}`);
+  }
+  if (status === "loading") {
+    parts.push("loading keyframes and points");
+  } else if (status === "failed") {
+    parts.push("keyframes and points did not load");
+  }
+  return parts.join(" · ");
 }
 
 /**

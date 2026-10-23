@@ -3,10 +3,12 @@
 // backends' beside it, the truth if the map is placed on it (over the frames its trajectory is
 // drawn over, or whole), its keyframes and points alive at the frame, the covisibility graph if
 // asked (each keyframe's line to its parent, the strong links, the loops closed and the merges
-// made, each in its own colour), and the camera. Every point and keyframe sits in one buffer
-// with the frames of its life and its map; a shader hides each outside them, so scrubbing
-// changes two numbers and rebuilds nothing. A loop closed can be drawn over it all, bright and
-// thick, for the loop effect (`highlightLoop`).
+// made, each in its own colour), and the camera. The trajectories and the camera are drawn from
+// the tracks, as soon as they are in; the keyframes, points and graph once the run's map is
+// (`setMap`). Every point and keyframe sits in one buffer with the frames of its life and its
+// map; a shader hides each outside them, so scrubbing changes two numbers and rebuilds nothing.
+// A loop closed can be drawn over it all, bright and thick, for the loop effect
+// (`highlightLoop`).
 
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -99,14 +101,14 @@ function livingMaterial(token, size) {
 
 /**
  * The lines of some of the covisibility graph's edges, each alive while both its keyframes are.
- * @param {import("./bundle.js").Backend} run The run.
+ * @param {import("./bundle.js").RunMap} map The run's map.
  * @param {Int32Array} pairs The keyframes each line joins, two ids a line.
  * @param {THREE.ShaderMaterial} material Its material (`livingMaterial`).
  * @param {boolean} visible Whether it is drawn at first.
  * @returns {THREE.LineSegments} The lines.
  */
-function graphLine(run, pairs, material, visible) {
-  const segments = keyframeSegments(run.keyframePoses, run.keyframeLives, run.keyframeMaps, pairs);
+function graphLine(map, pairs, material, visible) {
+  const segments = keyframeSegments(map.keyframePoses, map.keyframeLives, map.keyframeMaps, pairs);
   const line = new THREE.LineSegments(
     livingGeometry(segments.positions, segments.lives, segments.maps, 2),
     material,
@@ -228,8 +230,12 @@ export class SceneView {
     this.trajectory.frustumCulled = false;
     this.current.frustumCulled = false;
     this.scene.add(this.trajectory, this.current);
-    /** @type {import("./bundle.js").Backend | null} */
-    this.run = null;
+    /** @type {import("./bundle.js").Track | null} The run's track. */
+    this.track = null;
+    /** @type {import("./bundle.js").RunMap | null} Its map; null until it is in. */
+    this.map = null;
+    /** The frame last shown. */
+    this.frame = 0;
     /**
      * The other backends' trajectories: each one's track, line, maps shown, and the map its line
      * is indexed for, with the runs of that map's poses' rows.
@@ -266,23 +272,53 @@ export class SceneView {
   }
 
   /**
-   * Show a backend's run: its trajectory, keyframes and points, built once; the map shown is
-   * chosen at the next frame shown.
-   * @param {import("./bundle.js").Backend} run The run.
+   * Show a backend's run from its track: its trajectory and camera, at once; its keyframes and
+   * points follow with its map (`setMap`). Until then each map's frustums are as deep as its
+   * trajectory alone makes them. The map shown is chosen at the next frame shown.
+   * @param {import("./bundle.js").Track} track The run's track.
    */
-  setRun(run) {
+  setTrack(track) {
     for (const object of this.runObjects) {
       this.scene.remove(object);
     }
-    this.run = run;
-    this.shown = mapsShown(run.records);
+    this.runObjects = [];
+    this.graphObjects = [];
+    this.living = [];
+    this.pointMaterial = null;
+    this.keyframeGeometry = null;
+    this.track = track;
+    this.map = null;
+    this.shown = mapsShown(track.records);
     this.shownMap = undefined;
     /** @type {THREE.LineBasicMaterial} */ (this.trajectory.material).color = colour(
-      `--backend-${run.name}`,
+      `--backend-${track.name}`,
     );
-    this.path = centres(run.poses);
+    this.path = centres(track.poses);
     this.trajectory.geometry.setAttribute("position", new THREE.BufferAttribute(this.path, 3));
-    this.depths = mapDepths(this.path, run.poseMaps, centres(run.keyframePoses), run.keyframeMaps);
+    this.depths = mapDepths(this.path, track.poseMaps, new Float32Array(0), new Int32Array(0));
+  }
+
+  /**
+   * Show the run's map once it is in: its keyframes, points and graph, built once, at the frame
+   * and map shown; each map's frustums as deep as its keyframes' spacing allows. Nothing
+   * before a track is shown (`setTrack`).
+   * @param {import("./bundle.js").RunMap} map The map of the track shown.
+   */
+  setMap(map) {
+    const track = this.track;
+    if (track === null) {
+      return;
+    }
+    this.map = map;
+    this.depths = mapDepths(
+      this.path,
+      track.poseMaps,
+      centres(map.keyframePoses),
+      map.keyframeMaps,
+    );
+    if (this.shownMap !== undefined) {
+      this.depth = this.depthOf(this.shownMap);
+    }
     const keyframes = livingMaterial("--keyframe", 1);
     const points = livingMaterial("--point", 2);
     const tree = livingMaterial("--graph-tree", 1);
@@ -292,36 +328,49 @@ export class SceneView {
     this.living = [keyframes, points, tree, links, loops, merges];
     this.pointMaterial = points;
     this.setPointOpacity(this.pointOpacity);
+    for (const material of this.living) {
+      material.uniforms.frame.value = this.frame;
+      material.uniforms.shownMap.value = this.shownMap ?? -1;
+    }
     this.keyframeGeometry = livingGeometry(
-      this.keyframeFrustums(run),
-      run.keyframeLives,
-      run.keyframeMaps,
+      this.keyframeFrustums(map),
+      map.keyframeLives,
+      map.keyframeMaps,
       FRUSTUM_SEGMENTS * 2,
     );
     this.runObjects = [
       new THREE.LineSegments(this.keyframeGeometry, keyframes),
-      new THREE.Points(livingGeometry(run.points, run.pointLives, run.pointMaps, 1), points),
+      new THREE.Points(livingGeometry(map.points, map.pointLives, map.pointMaps, 1), points),
     ];
     this.graphObjects = [
-      graphLine(run, treePairs(run.keyframeParents), tree, this.graph),
-      graphLine(run, linkPairs(run.keyframeLinks), links, this.graph),
-      graphLine(run, run.keyframeLoops, loops, this.graph),
-      graphLine(run, run.keyframeMerges, merges, this.graph),
+      graphLine(map, treePairs(map.keyframeParents), tree, this.graph),
+      graphLine(map, linkPairs(map.keyframeLinks), links, this.graph),
+      graphLine(map, map.keyframeLoops, loops, this.graph),
+      graphLine(map, map.keyframeMerges, merges, this.graph),
     ];
     this.runObjects.push(...this.graphObjects);
     this.scene.add(...this.runObjects);
   }
 
   /**
+   * A map's frustum depth, before the size factor.
+   * @param {number | null} map The map; null for none.
+   * @returns {number} Its depth (`mapDepths`), or the default.
+   */
+  depthOf(map) {
+    return map === null ? DEFAULT_DEPTH : (this.depths.get(map) ?? DEFAULT_DEPTH);
+  }
+
+  /**
    * A run's keyframes' frustums, each as deep as its map's depth times the size factor.
-   * @param {import("./bundle.js").Backend} run The run.
+   * @param {import("./bundle.js").RunMap} map The run's map.
    * @returns {Float32Array} Their vertices (`mapFrustums`).
    */
-  keyframeFrustums(run) {
-    const depths = new Map([...this.depths].map(([map, depth]) => [map, depth * this.size]));
+  keyframeFrustums(map) {
+    const depths = new Map([...this.depths].map(([id, depth]) => [id, depth * this.size]));
     return mapFrustums(
-      run.keyframePoses,
-      run.keyframeMaps,
+      map.keyframePoses,
+      map.keyframeMaps,
       this.bundle.info.camera,
       depths,
       DEFAULT_DEPTH * this.size,
@@ -335,13 +384,13 @@ export class SceneView {
    */
   setKeyframeSize(factor) {
     this.size = factor;
-    if (this.run === null || this.keyframeGeometry === null) {
+    if (this.map === null || this.keyframeGeometry === null) {
       return;
     }
     const position = /** @type {THREE.BufferAttribute} */ (
       this.keyframeGeometry.getAttribute("position")
     );
-    position.copyArray(this.keyframeFrustums(this.run));
+    position.copyArray(this.keyframeFrustums(this.map));
     position.needsUpdate = true;
     this.keyframeGeometry.computeBoundingSphere(); // three.js culls the lines by it
   }
@@ -383,17 +432,17 @@ export class SceneView {
    * Show one of the run's maps: its keyframes, points and trajectory, the truth only if the map
    * is placed on it. A map left in its own frame is in its first camera's world, not the
    * truth's: while it is shown, the truth is hidden and the view is the camera's way up.
-   * @param {import("./bundle.js").Backend} run The run.
+   * @param {import("./bundle.js").Track} track The run's track.
    * @param {number | null} map The map; null for none.
    */
-  showMap(run, map) {
+  showMap(track, map) {
     this.shownMap = map;
     for (const material of this.living) {
       material.uniforms.shownMap.value = map ?? -1;
     }
-    this.runs = map === null ? [] : runsOf(run.poseMaps, map);
+    this.runs = map === null ? [] : runsOf(track.poseMaps, map);
     this.trajectory.geometry.setIndex(new THREE.BufferAttribute(runSegments(this.runs), 1));
-    this.aligned = placed(run.info, map);
+    this.aligned = placed(track.info, map);
     if (this.truth !== null) {
       this.truth.visible = this.aligned;
     }
@@ -403,7 +452,7 @@ export class SceneView {
       this.controls.dispose();
       this.controls = this.orbit(); // the controls take the camera's up when made
     }
-    this.depth = map === null ? DEFAULT_DEPTH : (this.depths.get(map) ?? DEFAULT_DEPTH);
+    this.depth = this.depthOf(map);
     this.fit();
   }
 
@@ -473,18 +522,20 @@ export class SceneView {
    * @returns {number | null} The map shown; null before the run's first.
    */
   show(frame) {
+    this.frame = frame;
     for (const material of this.living) {
       material.uniforms.frame.value = frame;
     }
-    if (this.run !== null) {
-      const map = mapAt(this.shown, this.run.records, frame);
+    const track = this.track;
+    if (track !== null) {
+      const map = mapAt(this.shown, track.records, frame);
       if (map !== this.shownMap) {
-        this.showMap(this.run, map);
+        this.showMap(track, map);
       }
-      const upTo = posesUpTo(this.run.poseFrames, frame);
+      const upTo = posesUpTo(track.poseFrames, frame);
       this.trajectory.geometry.setDrawRange(0, 2 * runSegmentsBefore(this.runs, upTo));
-      this.showTruth(this.run.poseFrames, this.runs, upTo);
-      const at = cameraAt(this.run.poses, this.run.poseFrames, frame, this.runs);
+      this.showTruth(track.poseFrames, this.runs, upTo);
+      const at = cameraAt(track.poses, track.poseFrames, frame, this.runs);
       this.current.visible = at !== null;
       if (at !== null) {
         const depth = this.depth * 1.5 * this.size;
@@ -516,11 +567,11 @@ export class SceneView {
    */
   highlightLoop(loop) {
     this.clearLoop();
-    const run = this.run;
-    if (run === null) {
+    const { track, map } = this;
+    if (track === null || map === null) {
       return;
     }
-    for (const [start, end] of cycleRuns(loop, run.poseFrames, run.poseMaps)) {
+    for (const [start, end] of cycleRuns(loop, track.poseFrames, track.poseMaps)) {
       if (end - start >= 2) {
         const cycle = new LineGeometry();
         cycle.setPositions(this.path.subarray(start * 3, end * 3));
@@ -528,8 +579,8 @@ export class SceneView {
       }
     }
     const poses = new Float32Array(24);
-    poses.set(run.keyframePoses.subarray(loop.older * 12, loop.older * 12 + 12));
-    poses.set(run.keyframePoses.subarray(loop.newer * 12, loop.newer * 12 + 12), 12);
+    poses.set(map.keyframePoses.subarray(loop.older * 12, loop.older * 12 + 12));
+    poses.set(map.keyframePoses.subarray(loop.newer * 12, loop.newer * 12 + 12), 12);
     const depth = (this.depths.get(loop.map) ?? DEFAULT_DEPTH) * this.size;
     const edge = new LineSegmentsGeometry();
     edge.setPositions(

@@ -410,6 +410,81 @@ select {
 .tag:empty {
   display: none;
 }
+/* A panel's loading mark (page_view.LoadingMark): a spinner over the panel's box until what it
+   shows is drawn, or a small one in its corner while the rest loads; still text under reduced
+   motion. Its status is read out, not shown. */
+.loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.loading[data-mark="corner"] {
+  place-items: start end;
+  padding: 10px;
+}
+.loading[data-mark="none"] {
+  display: none;
+}
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+.loading[data-mark="corner"] .spinner {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+  box-shadow: 0 0 0 3px var(--surface);
+}
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .loading[data-mark="corner"] .spinner {
+    width: auto;
+    height: auto;
+    padding: 2px 7px;
+    border: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--surface);
+    animation: none;
+  }
+  .spinner::after {
+    content: "Loading…";
+    font-family: var(--mono);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+  }
+}
+/* While the frame shown waits late for its image, the frame drawn before it and its fates'
+   counts are dimmed, so neither passes for the frame asked for. */
+.image-panel.stale #image,
+.image-panel.stale .legend b {
+  opacity: 0.35;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 /* The "seen before" inset: around a loop closed, the earlier pass at the same place, in the
    frame's bottom-right corner, clear of its tag (top left), its label above it; twice as tall on
    a click. */

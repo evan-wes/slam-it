@@ -5,18 +5,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { loadBackend, loadBundle, loadTrack } from "../src/bundle.js";
+import { loadBundle, loadMap, loadTrack } from "../src/bundle.js";
 import { cameraAt, mapAt, mapsShown } from "../src/frames.js";
 import { centres, mapDepths, runsOf } from "../src/geometry.js";
 import { fetchMerge, fetchRevisit } from "./golden.js";
 
 /**
- * A golden bundle's C++ run.
+ * A golden bundle's C++ run: its track and map.
  * @param {import("../src/bundle.js").Fetch} fetch How to fetch its files.
+ * @returns {Promise<import("../src/bundle.js").Backend>} The run.
  */
 async function cppRun(fetch) {
-  const bundle = await loadBundle(fetch);
-  return loadBackend(fetch, await loadTrack(fetch, bundle, "cpp"));
+  const track = await loadTrack(fetch, await loadBundle(fetch), "cpp");
+  return { ...track, ...(await loadMap(fetch, track)) };
 }
 
 /**

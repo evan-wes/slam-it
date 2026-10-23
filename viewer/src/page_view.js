@@ -1,5 +1,5 @@
-// What every page's DOM code shares: finding the page's elements by id, and remembering a
-// viewer's settings in their browser.
+// What every page's DOM code shares: finding the page's elements by id, remembering a viewer's
+// settings in their browser, and a panel's loading mark.
 
 /**
  * An element of the page, by id.
@@ -40,5 +40,54 @@ export function remember(key, value) {
     localStorage.setItem(key, value);
   } catch {
     // storage refused or full: the setting holds until the page is left, and is not remembered
+  }
+}
+
+/**
+ * A panel's loading mark: its `.loading` element, a spinner over the panel's box or a small one
+ * in its corner (its `data-mark`, styled by app.css: still text under reduced motion); its
+ * visually hidden status (`role="status"`), which says "Loading…" while the mark shows; and the
+ * panel, busy (`aria-busy`) meanwhile.
+ */
+export class LoadingMark {
+  /**
+   * @param {HTMLElement} panel The panel: its first `.loading` and `[role="status"]` are its
+   *     mark's.
+   * @throws {Error} If the panel has either missing.
+   */
+  constructor(panel) {
+    const mark = panel.querySelector(".loading");
+    const status = panel.querySelector('[role="status"]');
+    if (!(mark instanceof HTMLElement) || !(status instanceof HTMLElement)) {
+      throw new Error(`the panel ${panel.id} has no loading mark`);
+    }
+    this.panel = panel;
+    this.mark = mark;
+    this.status = status;
+  }
+
+  /**
+   * Show a mark, or none.
+   * @param {import("./loading.js").Mark} mark The mark.
+   */
+  set(mark) {
+    this.mark.dataset.mark = mark;
+    this.panel.setAttribute("aria-busy", String(mark !== "none"));
+    const text = mark === "none" ? "" : "Loading…";
+    if (this.status.textContent !== text) {
+      this.status.textContent = text;
+    }
+  }
+}
+
+/**
+ * Take down every panel's loading mark: on a failure that stops the page, its message says what
+ * failed.
+ */
+export function stopLoading() {
+  for (const panel of document.querySelectorAll(".panel[aria-busy]")) {
+    if (panel instanceof HTMLElement) {
+      new LoadingMark(panel).set("none");
+    }
   }
 }

@@ -1,9 +1,12 @@
 // The image panel: the frame as the pipeline saw it, its keypoints drawn over it in the colour of
 // their fate. Frames are decoded once and kept while near the playhead (`FrameImages`, which the
-// "seen before" inset loads its own frames through).
+// "seen before" inset loads its own frames through). While the frame shown waits for its image,
+// a spinner says so, and the frame drawn before it is dimmed once the wait is late
+// (`imageLoading`).
 
 import { FATES, FATE_HINTS } from "./frames.js";
 import { ChunkCache, chunkOf, chunksAround, frameBytes, onCanvas } from "./images.js";
+import { imageLoading } from "./loading.js";
 
 /** Decoded frames kept: a few seconds either side of the playhead. */
 const DECODED = 120;
@@ -84,20 +87,27 @@ export class FrameImages {
 }
 
 /** The frame as the pipeline saw it, its keypoints in their fates' colours, and the fates'
- *  counts in the legend. */
+ *  counts in the legend; while the frame shown waits for its image, the panel's loading mark,
+ *  and the frame drawn before it and its counts dimmed (the panel's `stale` class). */
 export class ImageView {
   /**
    * @param {HTMLCanvasElement} canvas Where the frame is drawn.
    * @param {HTMLElement} legend Where the fates' colours are listed.
    * @param {HTMLElement} tag The label over the frame.
+   * @param {import("./page_view.js").LoadingMark} loading The panel's loading mark.
    * @param {import("./bundle.js").Bundle} bundle The bundle.
    * @param {import("./bundle.js").Fetch} fetch How to fetch one of its files.
    */
-  constructor(canvas, legend, tag, bundle, fetch) {
+  constructor(canvas, legend, tag, loading, bundle, fetch) {
     this.canvas = canvas;
     this.tag = tag;
+    this.loading = loading;
     this.images = new FrameImages(bundle, fetch, CHUNKS, DECODED);
     this.shown = -1; // the frame last asked for: an older one's late decode is not drawn
+    this.drawn = -1; // the frame whose image is drawn
+    this.failed = false; // whether the frame shown's image failed to load
+    this.waiting = 0; // when the frame drawn stopped being the frame shown (performance.now)
+    this.recheck = 0; // the timer that looks again once the wait would be late
     canvas.width = bundle.info.camera.width;
     canvas.height = bundle.info.camera.height;
     /** @type {HTMLElement[]} */
@@ -122,9 +132,26 @@ export class ImageView {
    * @returns {Promise<void>} Once drawn.
    */
   async show(frame, keypoints, note) {
-    this.shown = frame;
+    if (frame !== this.shown) {
+      if (this.shown === this.drawn) {
+        this.waiting = performance.now(); // the frame drawn stands in from now on
+      }
+      this.shown = frame;
+    }
+    this.failed = false;
+    this.mark();
     this.images.ahead(frame);
-    const bitmap = await this.images.image(frame);
+    /** @type {ImageBitmap} */
+    let bitmap;
+    try {
+      bitmap = await this.images.image(frame);
+    } catch (error) {
+      if (this.shown === frame) {
+        this.failed = true; // the page's message says why; the next frame shown tries again
+        this.mark();
+      }
+      throw error;
+    }
     if (this.shown !== frame) {
       return;
     }
@@ -134,6 +161,8 @@ export class ImageView {
     this.counts.forEach((count, code) => {
       count.textContent = keypoints === null ? "–" : String(keypoints.counts[code]);
     });
+    this.drawn = frame;
+    this.mark();
     if (keypoints === null) {
       return;
     }
@@ -145,6 +174,25 @@ export class ImageView {
       context.arc(x, y, radius, 0, 2 * Math.PI);
       context.fillStyle = colours[keypoints.fate[i]];
       context.fill();
+    }
+  }
+
+  /**
+   * Show the panel's loading mark as the frame's image stands (`imageLoading`), dim the frame
+   * drawn while it stands in late, and look again when the wait would turn late.
+   */
+  mark() {
+    clearTimeout(this.recheck);
+    const { mark, stale, recheck } = imageLoading({
+      drawn: this.drawn,
+      shown: this.shown,
+      failed: this.failed,
+      waited: performance.now() - this.waiting,
+    });
+    this.loading.set(mark);
+    this.loading.panel.classList.toggle("stale", stale);
+    if (recheck !== null) {
+      this.recheck = setTimeout(() => this.mark(), recheck);
     }
   }
 }
