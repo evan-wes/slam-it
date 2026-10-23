@@ -208,6 +208,33 @@ function gated(fetch) {
 /** @returns {Promise<void>} Once every callback already due has run. */
 const settled = () => new Promise((resolve) => setImmediate(resolve));
 
+test("a track's four files are all asked for before any arrives, and checked once all are in", async () => {
+  const bundle = await loadBundle(fetchGolden);
+  const gate = gated(fetchGolden);
+  const loading = loadTrack(gate.fetch, bundle, "cpp");
+  await settled();
+  assert.deepEqual(
+    [...gate.asked].sort(),
+    ["records.json", "pose_frames.npy", "poses.npy", "pose_maps.npy"]
+      .map((file) => `cpp/${file}`)
+      .sort(),
+  );
+  gate.release();
+  const track = await loading;
+  assert.equal(track.poseFrames.length, track.info.tracked);
+  assert.equal(track.poses.length, track.info.tracked * 12);
+  assert.equal(track.poseMaps.length, track.info.tracked);
+  // A pose short of the frames: refused once all four are in.
+  const rows = track.poseFrames.length;
+  const short = npy("<f4", `${rows - 1}, 3, 4`, new Float32Array((rows - 1) * 12));
+  /** @param {string} path */
+  const misshaped = async (path) => (path === "cpp/poses.npy" ? short : await fetchGolden(path));
+  await assert.rejects(
+    loadTrack(misshaped, bundle, "cpp"),
+    new RegExp(`cpp/poses.npy: expected \\(${rows}, 3, 4\\), got \\(${rows - 1}, 3, 4\\)`),
+  );
+});
+
 test("a map's arrays are all asked for before any arrives, and none of its features", async () => {
   const bundle = await loadBundle(fetchGolden);
   const track = await loadTrack(fetchGolden, bundle, "cpp");

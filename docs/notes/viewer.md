@@ -126,10 +126,11 @@ BUNDLE` serves it with a bundle on this machine. The page reads a bundle from it
   relocalisation found again marked in green.
 
 **Loading** (since 0.3.17.1, 2026-10-22). The page draws what it has as soon as it has it. Once
-`bundle.json` and every backend's track (its records and poses) are in, it draws the header,
-the timeline, the solver panel, the frame's image and the trajectory, with the camera. Then it
-loads the chosen backend's map and its features, each apart (`bundle.loadMap`,
-`bundle.loadFeatures`), each one's files requested side by side, and draws each as it arrives.
+`bundle.json` and every backend's track (its records and poses, its four files requested side by
+side) are in, it draws the header, the timeline, the solver panel, the frame's image and the
+trajectory, with the camera. Then it loads the chosen backend's map and its features, each apart
+(`bundle.loadMap`, `bundle.loadFeatures`), each one's files requested side by side, and draws
+each as it arrives.
 
 - **The map**: its keyframes, points, graph and loops are drawn when its ten arrays are in.
   Until then the map panel's label says they are loading, a small spinner turns in its corner,

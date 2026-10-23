@@ -15,7 +15,10 @@ features each as it arrives, with spinners while the frame and the map load.
   keyframes', graph's and points' ten arrays) and `loadFeatures` (the two feature arrays; null,
   fetching nothing, for a run that recorded none), each requesting its files side by side. A file
   that fails, or is mis-shaped, rejects only its own load; the shape and keyframe-id checks are
-  kept. `loadTrack` is unchanged.
+  kept. `loadTrack` requests its four files side by side too, their rows checked once all are
+  in. Through a local proxy holding each track file 3 s, each map file 5 s and each feature file
+  20 s, a demo bundle in headless Chrome, the trajectory was drawn at 3,451 and 3,404 ms after
+  navigation in two runs, against 12,533 and 12,489 with the four requested one after another.
 - **The page draws progressively** (`viewer/src/main.js`, `scene_view.js`, `loop_view.js`): once
   the tracks are in, the header, the timeline, the solver panel, the frame and the trajectory
   with the camera; the keyframes, points, graph and loops when the map is in, the map panel's
@@ -26,7 +29,7 @@ features each as it arrives, with spinners while the frame and the map load.
   backend's track at once; each backend's map and features load the first time it is shown, and
   are kept. Through a local proxy holding each map file 5 s and each feature file 20 s, a demo
   bundle (one backend, features recorded) in headless Chrome, ms since navigation: the
-  trajectory at 473, the frame at 549, the map at 10,677, the keypoints at 25,879; 0.3.17.0's
+  trajectory at 371, the frame at 431, the map at 10,592, the keypoints at 25,790; 0.3.17.0's
   page, under the same proxy, drew them all at 91,273 to 91,343, once its files had come one
   after another.
 - **Spinners while the frame and the map load** (`viewer/src/loading.js`, `page_view.js`,
@@ -43,13 +46,15 @@ features each as it arrives, with spinners while the frame and the map load.
 
 ### Tests
 
-- **The loader**: every map array is requested before any is answered, and no feature file;
-  both feature arrays are requested together, and none for a run that recorded none; a feature
-  file that fails, or is a row short, rejects `loadFeatures` alone while `loadMap` resolves.
+- **The loader**: a track's four files are requested before any is answered, and a pose row
+  short is refused once all are in; every map array is requested before any is answered, and no
+  feature file; both feature arrays are requested together, and none for a run that recorded
+  none; a feature file that fails, or is a row short, rejects `loadFeatures` alone while
+  `loadMap` resolves.
 - **What the page shows while parts load**: the frame panel's note for each state of the
   features (`frames.frameKeypoints`), the map label (`frames.mapLabel`), a load settled as loaded
   or failed (`bundle.settle`), and the spinners' decisions (`loading.imageLoading`,
-  `loading.mapLoading`). The viewer's Node tests number 99, from 89.
+  `loading.mapLoading`). The viewer's Node tests number 100, from 89.
 
 ## [0.3.17.0] - 2026-10-19
 

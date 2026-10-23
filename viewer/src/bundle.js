@@ -1,8 +1,8 @@
 // Loading a bundle (slam_it.orchestration.bundles, whose docstring states its files): its
 // description and frames first; every backend's track (its records and poses), to compare them,
 // which the page draws as soon as it is in; and, when the page first shows a backend, its map
-// and its features, each loaded apart, its files fetched side by side, so that neither waits for
-// the other and the page draws each as it arrives.
+// and its features, each loaded apart, so that neither waits for the other and the page draws
+// each as it arrives. A track's, a map's or features' files are fetched side by side.
 //
 // The loader is given how to fetch a file, so the page fetches over HTTP and the tests read the
 // golden bundle from disk.
@@ -332,31 +332,8 @@ function readers(fetch, name) {
   };
 }
 
-/**
- * Load a backend's track: its records and poses.
- * @param {Fetch} fetch How to fetch one of the bundle's files.
- * @param {Bundle} bundle The bundle.
- * @param {string} name The backend.
- * @returns {Promise<Track>} Its track.
- * @throws {Error} If the bundle has no such backend, or an array is mis-shaped.
- */
-export async function loadTrack(fetch, bundle, name) {
-  const info = bundle.info.backends[name];
-  if (info === undefined) {
-    throw new Error(`the bundle has no ${name} run`);
-  }
-  const { float32, int32 } = readers(fetch, name);
-  const records = /** @type {Records} */ (json(await fetch(`${name}/records.json`)));
-  const poseFrames = await int32("pose_frames.npy", []);
-  return {
-    name,
-    info,
-    records,
-    poses: await float32("poses.npy", [3, 4], poseFrames.length),
-    poseFrames,
-    poseMaps: await int32("pose_maps.npy", [], poseFrames.length),
-  };
-}
+/** A backend's track's files: its records and its final poses' arrays. */
+const TRACK_FILES = ["records.json", "pose_frames.npy", "poses.npy", "pose_maps.npy"];
 
 /** A backend's map's files: its keyframes', their graph's and its points' arrays. */
 const MAP_FILES = [
@@ -394,6 +371,35 @@ async function fetchTogether(fetch, name, files) {
       throw new Error(`${path}: not among the files fetched together`);
     }
     return buffer;
+  };
+}
+
+/**
+ * Load a backend's track: its records and poses, its files fetched side by side, their rows
+ * checked once all are in.
+ * @param {Fetch} fetch How to fetch one of the bundle's files.
+ * @param {Bundle} bundle The bundle.
+ * @param {string} name The backend.
+ * @returns {Promise<Track>} Its track.
+ * @throws {Error} If the bundle has no such backend, a file did not load, or an array is
+ *     mis-shaped.
+ */
+export async function loadTrack(fetch, bundle, name) {
+  const info = bundle.info.backends[name];
+  if (info === undefined) {
+    throw new Error(`the bundle has no ${name} run`);
+  }
+  const fetched = await fetchTogether(fetch, name, TRACK_FILES);
+  const { float32, int32 } = readers(fetched, name);
+  const records = /** @type {Records} */ (json(await fetched(`${name}/records.json`)));
+  const poseFrames = await int32("pose_frames.npy", []);
+  return {
+    name,
+    info,
+    records,
+    poses: await float32("poses.npy", [3, 4], poseFrames.length),
+    poseFrames,
+    poseMaps: await int32("pose_maps.npy", [], poseFrames.length),
   };
 }
 
