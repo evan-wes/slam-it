@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { loadBackend, loadBundle, loadTrack } from "../src/bundle.js";
+import { loadBundle } from "../src/bundle.js";
 import {
   FATES,
   alive,
@@ -20,7 +20,7 @@ import {
   sharesFrame,
   truthRange,
 } from "../src/frames.js";
-import { fetchGolden } from "./golden.js";
+import { fetchGolden, loadRun } from "./golden.js";
 
 const [UNMATCHED, , TRACKED, MADE] = [0, 1, 2, 3];
 
@@ -29,7 +29,7 @@ async function golden(name) {
   const bundle = await loadBundle(fetchGolden);
   return {
     bundle,
-    run: await loadBackend(fetchGolden, await loadTrack(fetchGolden, bundle, name)),
+    run: await loadRun(fetchGolden, bundle, name),
   };
 }
 

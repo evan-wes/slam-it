@@ -3,7 +3,7 @@
 // beside the other backends' trajectories and step times, the frames where they decided
 // differently marked. This module only wires the views and controls to the page.
 
-import { BACKENDS, bundleAddress, loadBackend, loadBundle, loadTrack } from "./bundle.js";
+import { BACKENDS, bundleAddress, loadBundle, loadFeatures, loadMap, loadTrack } from "./bundle.js";
 import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { keypointsAt, recordIndex } from "./frames.js";
@@ -348,9 +348,14 @@ async function main() {
    * @returns {import("./bundle.js").Track} Its track.
    */
   const trackOf = (name) => tracks[present.indexOf(name ?? "")];
-  /** @type {Map<string, Promise<import("./bundle.js").Backend>>} */
+  /**
+   * A backend's whole run: its track, map and features.
+   * @typedef {import("./bundle.js").Backend & {features: import("./bundle.js").Features | null}}
+   *     Run
+   */
+  /** @type {Map<string, Promise<Run>>} */
   const loaded = new Map();
-  /** @type {import("./bundle.js").Backend | null} */
+  /** @type {Run | null} */
   let run = null;
   let chosen = ""; // the backend last asked for, which a slower earlier load must not replace
   const playhead = new Playhead(bundle.times, (frame, played) => {
@@ -419,7 +424,9 @@ async function main() {
     let held = loaded.get(name);
     const track = tracks[present.indexOf(name)];
     if (held === undefined) {
-      held = loadBackend(fetchFile, track);
+      held = Promise.all([loadMap(fetchFile, track), loadFeatures(fetchFile, track)]).then(
+        ([map, features]) => ({ ...track, ...map, features }),
+      );
       loaded.set(name, held);
     }
     const ready = await held;
