@@ -4,15 +4,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { loadBackend, loadBundle, loadTrack } from "../src/bundle.js";
+import { loadBundle } from "../src/bundle.js";
 import {
   FATES,
   alive,
   cameraAt,
   countAlive,
+  frameKeypoints,
   keypointRows,
   keypointsAt,
   mapAt,
+  mapLabel,
   mapsShown,
   placed,
   posesUpTo,
@@ -20,7 +22,7 @@ import {
   sharesFrame,
   truthRange,
 } from "../src/frames.js";
-import { fetchGolden } from "./golden.js";
+import { fetchGolden, loadRun } from "./golden.js";
 
 const [UNMATCHED, , TRACKED, MADE] = [0, 1, 2, 3];
 
@@ -29,7 +31,7 @@ async function golden(name) {
   const bundle = await loadBundle(fetchGolden);
   return {
     bundle,
-    run: await loadBackend(fetchGolden, await loadTrack(fetchGolden, bundle, name)),
+    run: await loadRun(fetchGolden, bundle, name),
   };
 }
 
@@ -77,6 +79,53 @@ test("each frame's keypoints are its rows; their fates count what its record say
   }
   assert.equal(next, run.features.records.length / 4);
   assert.equal(FATES[UNMATCHED], "unmatched");
+});
+
+test("a frame's keypoints are drawn once its features are in; until then its note says why not", async () => {
+  const { run } = await golden("cpp");
+  assert.ok(run.features !== null);
+  const frame = run.records.frame[1];
+  const k = recordIndex(run.records, frame);
+  /** @type {import("../src/bundle.js").Held<import("../src/bundle.js").Features | null>[]} */
+  const missing = [
+    { status: "loading" },
+    { status: "failed", reason: "cpp/feature_pixels.npy: 503 Service Unavailable" },
+    { status: "loaded", value: null },
+  ];
+  assert.deepEqual(
+    missing.map((features) => frameKeypoints("cpp", k, frame, features)),
+    [
+      { keypoints: null, note: "loading feature records" },
+      {
+        keypoints: null,
+        note: "feature records did not load: cpp/feature_pixels.npy: 503 Service Unavailable",
+      },
+      { keypoints: null, note: "no feature records" },
+    ],
+  );
+  /** @type {import("../src/bundle.js").Held<import("../src/bundle.js").Features | null>} */
+  const loaded = { status: "loaded", value: run.features };
+  assert.deepEqual(frameKeypoints("cpp", k, frame, loaded), {
+    keypoints: keypointsAt(run.features, frame),
+    note: "",
+  });
+  // A frame the run did not run says so, whatever its features.
+  for (const features of [...missing, loaded]) {
+    assert.deepEqual(frameKeypoints("cpp", -1, frame, features), {
+      keypoints: null,
+      note: "cpp did not run this frame",
+    });
+  }
+});
+
+test("the map's label says its keyframes and points are loading until they are in", () => {
+  assert.equal(mapLabel("cpp", "tracking", 0, "loaded"), "cpp · tracking · map 0");
+  assert.equal(
+    mapLabel("cpp", "tracking", 0, "loading"),
+    "cpp · tracking · map 0 · loading keyframes and points",
+  );
+  assert.equal(mapLabel("rust", null, null, "failed"), "rust · keyframes and points did not load");
+  assert.equal(mapLabel("python", "lost", null, "loaded"), "python · lost");
 });
 
 test("a frame outside a run's span has no record", async () => {

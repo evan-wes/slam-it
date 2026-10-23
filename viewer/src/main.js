@@ -1,15 +1,27 @@
 // The run viewer's page: loads a bundle (the URL's `bundle` on this site, else `bundle/` beside it),
 // and shows one frame at a time in the image, map and solver panels, for the backend chosen,
 // beside the other backends' trajectories and step times, the frames where they decided
-// differently marked. This module only wires the views and controls to the page.
+// differently marked. It draws what it has as soon as it has it: the timeline, the solver
+// panel, the frame and the trajectory from the tracks; the keyframes and points once the run's
+// map is in, and the keypoints once its features are, each loaded apart (`bundle.js`). This
+// module only wires the views and controls to the page.
 
-import { BACKENDS, bundleAddress, loadBackend, loadBundle, loadTrack } from "./bundle.js";
+import {
+  BACKENDS,
+  bundleAddress,
+  loadBundle,
+  loadFeatures,
+  loadMap,
+  loadTrack,
+  settle,
+} from "./bundle.js";
 import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
-import { keypointsAt, recordIndex } from "./frames.js";
+import { frameKeypoints, mapLabel, recordIndex } from "./frames.js";
 import { ImageView } from "./image_view.js";
+import { mapLoading } from "./loading.js";
 import { LoopView } from "./loop_view.js";
-import { element, remember, remembered } from "./page_view.js";
+import { LoadingMark, element, remember, remembered, stopLoading } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { OPACITY_RANGE, SIZE_RANGE, opacityPercent, sizeFactor, sizeStep } from "./settings.js";
@@ -48,13 +60,34 @@ const OPACITY_KEY = "slam-it.point-opacity";
  */
 
 /**
+ * A backend's map and features, each loading apart: asked for when the page first shows the
+ * backend, and kept.
+ * @typedef {object} Loads
+ * @property {Promise<import("./bundle.js").RunMap>} map Its map.
+ * @property {Promise<import("./bundle.js").Features | null>} features Its feature records; null
+ *     if it recorded none.
+ */
+
+/**
+ * The run shown: its track, drawn at once, and its map and features, each taken in as it
+ * arrives.
+ * @typedef {object} Shown
+ * @property {import("./bundle.js").Track} track Its track.
+ * @property {import("./bundle.js").Held<import("./bundle.js").RunMap>} map Its map.
+ * @property {import("./bundle.js").Held<import("./bundle.js").Features | null>} features Its
+ *     feature records: null once in if it recorded none.
+ */
+
+/**
  * How to fetch a bundle's files, from where it is served.
  * @param {string} base The bundle's URL, ending in "/".
+ * @param {RequestPriority} [priority] Its requests' priority: "low" for files that must hold up
+ *     no other (the browser gives them a connection only when no request above them waits).
  * @returns {import("./bundle.js").Fetch} The fetcher.
  */
-function fetcher(base) {
+function fetcher(base, priority = "auto") {
   return async (path) => {
-    const response = await fetch(new URL(path, base));
+    const response = await fetch(new URL(path, base), { priority });
     if (!response.ok) {
       throw new Error(`${path}: ${response.status} ${response.statusText}`);
     }
@@ -307,12 +340,16 @@ function bindSlider({ id, key, range, read, text, apply }, redraw) {
 
 /**
  * Load the bundle and run the page: its views, the backends' buttons and playback.
- * @returns {Promise<void>} Once the first backend is shown.
+ * @returns {Promise<void>} Once the first backend's track is shown: its map and features follow.
  */
 async function main() {
   const message = element("message", HTMLParagraphElement);
   const given = new URLSearchParams(location.search).get("bundle");
-  const fetchFile = fetcher(bundleAddress(given, location.href));
+  const address = bundleAddress(given, location.href);
+  const fetchFile = fetcher(address);
+  // The features, by far the largest files, yield to every other request: over HTTP/1.1 a
+  // browser opens 6 connections to a host, and they would hold 2 while the map waited.
+  const fetchFeatures = fetcher(address, "low");
   const bundle = await loadBundle(fetchFile);
   const info = bundle.info;
   element("sequence", HTMLElement).textContent =
@@ -325,10 +362,12 @@ async function main() {
     element("image", HTMLCanvasElement),
     element("legend", HTMLElement),
     element("image-tag", HTMLElement),
+    new LoadingMark(element("image-panel", HTMLElement)),
     bundle,
     fetchFile,
   );
   const scene = new SceneView(element("scene", HTMLElement), bundle);
+  const sceneLoading = new LoadingMark(element("scene-panel", HTMLElement));
   const solver = new SolverView(
     element("summary", HTMLElement),
     element("steps", HTMLElement),
@@ -348,11 +387,10 @@ async function main() {
    * @returns {import("./bundle.js").Track} Its track.
    */
   const trackOf = (name) => tracks[present.indexOf(name ?? "")];
-  /** @type {Map<string, Promise<import("./bundle.js").Backend>>} */
+  /** @type {Map<string, Loads>} */
   const loaded = new Map();
-  /** @type {import("./bundle.js").Backend | null} */
+  /** @type {Shown | null} */
   let run = null;
-  let chosen = ""; // the backend last asked for, which a slower earlier load must not replace
   const playhead = new Playhead(bundle.times, (frame, played) => {
     loops.moved(frame, played); // before the frame is shown: arriving at a loop sets off its effect
     show();
@@ -387,60 +425,92 @@ async function main() {
     if (run === null) {
       return;
     }
-    // A backend that did not run this frame gives way to the first that did, once loaded.
-    const shown = shownAt(tracks, run.name, frame);
-    if (shown !== run.name) {
-      if (chosen !== shown) {
-        choose(shown).catch((error) => fail(error));
-      }
+    const { track } = run;
+    // A backend that did not run this frame gives way to the first that did.
+    const shown = shownAt(tracks, track.name, frame);
+    if (shown !== track.name) {
+      choose(shown); // which shows the frame
       return;
     }
-    const k = recordIndex(run.records, frame);
-    let note = k < 0 ? `${run.name} did not run this frame` : "";
-    let keypoints = null;
-    if (k >= 0 && run.features !== null) {
-      keypoints = keypointsAt(run.features, frame);
-    } else if (k >= 0) {
-      note = "no feature records";
-    }
+    const k = recordIndex(track.records, frame);
+    const { keypoints, note } = frameKeypoints(track.name, k, frame, run.features);
     image.show(frame, keypoints, note).catch((error) => fail(error));
     const map = scene.show(frame);
     solver.show(frame, k);
-    const state = k < 0 ? "" : ` · ${String(run.records.state[k])}`;
-    mapCounts.textContent = `${run.name}${state}${map === null ? "" : ` · map ${map}`}`;
+    const state = k < 0 ? null : String(track.records.state[k]);
+    mapCounts.textContent = mapLabel(track.name, state, map, run.map.status);
+    sceneLoading.set(mapLoading(true, run.map.status));
   }
 
   /**
-   * Show a backend's run.
+   * Show a backend's run: at once all its track shows (the frame, the trajectory, the solver
+   * panel); then, as each arrives, its map (the keyframes, points and loops) and its features
+   * (the keypoints), each loaded the first time the backend is shown and kept. A failure is
+   * shown on the page.
    * @param {string} name The backend.
    */
-  async function choose(name) {
-    chosen = name;
-    let held = loaded.get(name);
-    const track = tracks[present.indexOf(name)];
-    if (held === undefined) {
-      held = loadBackend(fetchFile, track);
-      loaded.set(name, held);
-    }
-    const ready = await held;
-    if (chosen !== name) {
-      return;
-    }
-    run = ready;
-    for (const button of backends.querySelectorAll("button")) {
-      button.setAttribute("aria-pressed", String(button.dataset.backend === name));
-    }
-    showNumbers(numbers, run.info, info.truth);
-    scene.setRun(run);
-    // Each shown beside the run's map where its map shares that map's frame (SceneView.show).
-    scene.setOthers(tracks.filter((o) => o.name !== name));
-    solver.setRun(run, tracks, info.frames, differ);
+  function choose(name) {
     try {
-      loops.setRun(run);
+      const track = trackOf(name);
+      /** @type {Shown} */
+      const shown = { track, map: { status: "loading" }, features: { status: "loading" } };
+      run = shown;
+      for (const button of backends.querySelectorAll("button")) {
+        button.setAttribute("aria-pressed", String(button.dataset.backend === name));
+      }
+      showNumbers(numbers, track.info, info.truth);
+      scene.setTrack(track);
+      // Each shown beside the run's map where its map shares that map's frame (SceneView.show).
+      scene.setOthers(tracks.filter((o) => o.name !== name));
+      solver.setRun(track, tracks, info.frames, differ);
+      loops.setRun(null); // its loops are worked out once its map is in
+      show(); // first, so the frame's image is asked for before the map's and features' files
+      if (run !== shown) {
+        return; // it did not run the frame, and gave way to a backend that did
+      }
+      let loads = loaded.get(name);
+      if (loads === undefined) {
+        loads = { map: loadMap(fetchFile, track), features: loadFeatures(fetchFeatures, track) };
+        loaded.set(name, loads);
+      }
+      arrive(shown, loads.map, (map) => {
+        shown.map = map;
+        if (map.status === "loaded") {
+          scene.setMap(map.value);
+          try {
+            loops.setRun({ ...track, ...map.value });
+          } catch (error) {
+            fail(error); // the run is shown without its loops
+          }
+        } else if (map.status === "failed") {
+          fail(`${name}'s map did not load: ${map.reason}`); // its track stays shown
+        }
+      });
+      arrive(shown, loads.features, (features) => {
+        shown.features = features; // the frame's keypoints, or why there are none
+      });
     } catch (error) {
-      fail(error); // the run is shown without its loops
+      fail(error);
     }
-    show();
+  }
+
+  /**
+   * Take in a part of a run that loads apart once it arrives, or fails, and show the frame again;
+   * nothing if another run is shown by then (choosing this one again takes the part in then).
+   * @template T
+   * @param {Shown} shown The run it is a part of.
+   * @param {Promise<T>} load Its load.
+   * @param {(part: import("./bundle.js").Held<T>) => void} take What the page does with it.
+   */
+  function arrive(shown, load, take) {
+    settle(load)
+      .then((part) => {
+        if (run === shown) {
+          take(part);
+          show();
+        }
+      })
+      .catch((error) => fail(error));
   }
 
   const backends = element("backends", HTMLElement);
@@ -451,7 +521,7 @@ async function main() {
     button.style.setProperty("--swatch", `var(--backend-${name})`);
     button.dataset.backend = name;
     button.title = spanText(trackOf(name));
-    button.addEventListener("click", () => choose(name).catch((error) => fail(error)));
+    button.addEventListener("click", () => choose(name));
     backends.append(button);
   }
   bindPlayback(playhead, scrubber);
@@ -509,13 +579,15 @@ async function main() {
   }
   message.hidden = true;
   if (present.length === 0) {
+    stopLoading();
     fail("the bundle holds no runs");
     return;
   }
-  await choose(present[0]);
+  choose(present[0]);
 }
 
 main().catch((error) => {
+  stopLoading();
   const message = document.getElementById("message");
   if (message !== null) {
     message.hidden = false;

@@ -106,8 +106,9 @@ export class LoopView {
   }
 
   /**
-   * Show a run's loops: its ticks and the inset's windows, worked out once.
-   * @param {import("./bundle.js").Backend} run The run.
+   * Show a run's loops: its ticks and the inset's windows, worked out once its map is in.
+   * @param {import("./bundle.js").Backend | null} run The run, its track and map; null for none,
+   *     as while its map loads.
    * @throws {Error} If its records name a loop its map does not hold (`loopsOf`): it is then
    *     shown with none.
    */
@@ -116,8 +117,10 @@ export class LoopView {
     this.loops = [];
     this.windows = [];
     try {
-      this.loops = loopsOf(run);
-      this.windows = insets(this.loops, this.bundle.times, run);
+      if (run !== null) {
+        this.loops = loopsOf(run);
+        this.windows = insets(this.loops, this.bundle.times, run);
+      }
     } finally {
       this.mark();
     }

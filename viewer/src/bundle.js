@@ -1,6 +1,8 @@
 // Loading a bundle (slam_it.orchestration.bundles, whose docstring states its files): its
-// description and frames first; every backend's track (its records and poses), to compare them;
-// and a backend's map and features when the page first shows it.
+// description and frames first; every backend's track (its records and poses), to compare them,
+// which the page draws as soon as it is in; and, when the page first shows a backend, its map
+// and its features, each loaded apart, so that neither waits for the other and the page draws
+// each as it arrives. A track's, a map's or features' files are fetched side by side.
 //
 // The loader is given how to fetch a file, so the page fetches over HTTP and the tests read the
 // golden bundle from disk.
@@ -126,16 +128,9 @@ import { readFloat32, readInt32 } from "./npy.js";
  */
 
 /**
- * A backend's whole run, as the bundle holds it: its track, maps and features.
- * @typedef {object} Backend
- * @property {string} name The backend.
- * @property {BackendInfo} info Its header.
- * @property {Records} records Its per-frame records.
- * @property {Float32Array} poses Each tracked frame's final `T_world_cam` (the run format's
- *     final trajectory), its top three rows, (T, 3, 4).
- * @property {Int32Array} poseFrames Their frames, (T,).
- * @property {Int32Array} poseMaps Their maps, (T,): the map each ends in. A map's poses may
- *     come in several runs of rows, another map's between (a kept map taken up again).
+ * A backend's map: every keyframe and point it made, by id, each with its life and map, and the
+ * covisibility graph between the keyframes.
+ * @typedef {object} RunMap
  * @property {Float32Array} keyframePoses Every keyframe's last pose, (K, 3, 4).
  * @property {Int32Array} keyframeLives Their lives, (K, 3): made, removed (-1 if never), why.
  * @property {Int32Array} keyframeMaps Their maps, (K,).
@@ -149,8 +144,26 @@ import { readFloat32, readInt32 } from "./npy.js";
  * @property {Float32Array} points Every point's last position, (N, 3).
  * @property {Int32Array} pointLives Their lives, (N, 3).
  * @property {Int32Array} pointMaps Their maps, (N,).
- * @property {{pixels: Float32Array, records: Int32Array} | null} features Each frame's
- *     keypoints (pixels (M, 2); frame, level, fate and point (M, 4)), if recorded.
+ */
+
+/**
+ * A backend's feature records: each frame's keypoints, in frame order.
+ * @typedef {object} Features
+ * @property {Float32Array} pixels Their pixels, (M, 2).
+ * @property {Int32Array} records Their frame, pyramid level, fate and point, (M, 4).
+ */
+
+/**
+ * A backend's track and map together; its features load apart (`loadFeatures`).
+ * @typedef {Track & RunMap} Backend
+ */
+
+/**
+ * Where a part of a backend's run that the page loads apart stands: loading, in, or failed,
+ * with why.
+ * @template T
+ * @typedef {{status: "loading"} | {status: "loaded", value: T} |
+ *     {status: "failed", reason: string}} Held
  */
 
 /**
@@ -319,21 +332,66 @@ function readers(fetch, name) {
   };
 }
 
+/** A backend's track's files: its records and its final poses' arrays. */
+const TRACK_FILES = ["records.json", "pose_frames.npy", "poses.npy", "pose_maps.npy"];
+
+/** A backend's map's files: its keyframes', their graph's and its points' arrays. */
+const MAP_FILES = [
+  "keyframe_lives.npy",
+  "keyframe_poses.npy",
+  "keyframe_maps.npy",
+  "keyframe_parents.npy",
+  "keyframe_links.npy",
+  "keyframe_loops.npy",
+  "keyframe_merges.npy",
+  "point_lives.npy",
+  "points.npy",
+  "point_maps.npy",
+];
+
+/** A backend's feature records' files. */
+const FEATURE_FILES = ["feature_records.npy", "feature_pixels.npy"];
+
 /**
- * Load a backend's track: its records and poses.
+ * Fetch some of a backend's files side by side, every request made at once: storage serves each
+ * connection at its own pace, so the files take as long as the slowest, not as all together.
+ * @param {Fetch} fetch How to fetch one of the bundle's files.
+ * @param {string} name The backend.
+ * @param {string[]} files The files.
+ * @returns {Promise<Fetch>} Once every file is in: a fetcher of those files, from what came.
+ * @throws {Error} If a file did not come, the first to fail's error.
+ */
+async function fetchTogether(fetch, name, files) {
+  const paths = files.map((file) => `${name}/${file}`);
+  const buffers = await Promise.all(paths.map((path) => fetch(path)));
+  const came = new Map(paths.map((path, i) => [path, buffers[i]]));
+  return async (path) => {
+    const buffer = came.get(path);
+    if (buffer === undefined) {
+      throw new Error(`${path}: not among the files fetched together`);
+    }
+    return buffer;
+  };
+}
+
+/**
+ * Load a backend's track: its records and poses, its files fetched side by side, their rows
+ * checked once all are in.
  * @param {Fetch} fetch How to fetch one of the bundle's files.
  * @param {Bundle} bundle The bundle.
  * @param {string} name The backend.
  * @returns {Promise<Track>} Its track.
- * @throws {Error} If the bundle has no such backend, or an array is mis-shaped.
+ * @throws {Error} If the bundle has no such backend, a file did not load, or an array is
+ *     mis-shaped.
  */
 export async function loadTrack(fetch, bundle, name) {
   const info = bundle.info.backends[name];
   if (info === undefined) {
     throw new Error(`the bundle has no ${name} run`);
   }
-  const { float32, int32 } = readers(fetch, name);
-  const records = /** @type {Records} */ (json(await fetch(`${name}/records.json`)));
+  const fetched = await fetchTogether(fetch, name, TRACK_FILES);
+  const { float32, int32 } = readers(fetched, name);
+  const records = /** @type {Records} */ (json(await fetched(`${name}/records.json`)));
   const poseFrames = await int32("pose_frames.npy", []);
   return {
     name,
@@ -346,24 +404,20 @@ export async function loadTrack(fetch, bundle, name) {
 }
 
 /**
- * Load the rest of a backend's run: its map and, if recorded, its features.
+ * Load a backend's map: its keyframes, their graph and its points, its arrays fetched side by
+ * side, never its features.
  * @param {Fetch} fetch How to fetch one of the bundle's files.
  * @param {Track} track Its track.
- * @returns {Promise<Backend>} Its whole run.
- * @throws {Error} If an array is mis-shaped, or the graph names a keyframe the run has not.
+ * @returns {Promise<RunMap>} Its map.
+ * @throws {Error} If an array did not load or is mis-shaped, or the graph names a keyframe the
+ *     run has not.
  */
-export async function loadBackend(fetch, track) {
-  const { float32, int32 } = readers(fetch, track.name);
+export async function loadMap(fetch, track) {
+  const { float32, int32 } = readers(await fetchTogether(fetch, track.name, MAP_FILES), track.name);
   const keyframeLives = await int32("keyframe_lives.npy", [3]);
   const keyframes = keyframeLives.length / 3;
   const pointLives = await int32("point_lives.npy", [3]);
-  let features = null;
-  if (track.info.features) {
-    const records = await int32("feature_records.npy", [4]);
-    features = { pixels: await float32("feature_pixels.npy", [2], records.length / 4), records };
-  }
   return {
-    ...track,
     keyframePoses: await float32("keyframe_poses.npy", [3, 4], keyframes),
     keyframeLives,
     keyframeMaps: await int32("keyframe_maps.npy", [], keyframes),
@@ -394,6 +448,38 @@ export async function loadBackend(fetch, track) {
     points: await float32("points.npy", [3], pointLives.length / 3),
     pointLives,
     pointMaps: await int32("point_maps.npy", [], pointLives.length / 3),
-    features,
   };
+}
+
+/**
+ * Load a backend's feature records, if it recorded them: their two arrays fetched side by side.
+ * @param {Fetch} fetch How to fetch one of the bundle's files.
+ * @param {Track} track Its track.
+ * @returns {Promise<Features | null>} Its features; null, fetching nothing, if it recorded none.
+ * @throws {Error} If an array did not load or is mis-shaped.
+ */
+export async function loadFeatures(fetch, track) {
+  if (!track.info.features) {
+    return null;
+  }
+  const { float32, int32 } = readers(
+    await fetchTogether(fetch, track.name, FEATURE_FILES),
+    track.name,
+  );
+  const records = await int32("feature_records.npy", [4]);
+  return { pixels: await float32("feature_pixels.npy", [2], records.length / 4), records };
+}
+
+/**
+ * Where a part's load ends up: never rejected, a failure held with its message.
+ * @template T
+ * @param {Promise<T>} load The part's load.
+ * @returns {Promise<Held<T>>} Once the load settles: loaded with its value, or failed with why.
+ */
+export async function settle(load) {
+  try {
+    return { status: "loaded", value: await load };
+  } catch (error) {
+    return { status: "failed", reason: error instanceof Error ? error.message : String(error) };
+  }
 }

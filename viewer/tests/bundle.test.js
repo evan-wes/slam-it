@@ -3,9 +3,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { bundleAddress, loadBackend, loadBundle, loadTrack } from "../src/bundle.js";
+import {
+  bundleAddress,
+  loadBundle,
+  loadFeatures,
+  loadMap,
+  loadTrack,
+  settle,
+} from "../src/bundle.js";
 import { readFloat32, readHeader, readInt32 } from "../src/npy.js";
-import { fetchGolden } from "./golden.js";
+import { fetchGolden, fetchMerge, loadRun } from "./golden.js";
 
 /**
  * A .npy file's bytes, written as numpy writes a version-1 header.
@@ -65,7 +72,7 @@ test("the golden bundle's frames, images and truth agree in count", async () => 
 test("each golden backend's arrays agree with its header", async () => {
   const bundle = await loadBundle(fetchGolden);
   for (const [name, info] of Object.entries(bundle.info.backends)) {
-    const run = await loadBackend(fetchGolden, await loadTrack(fetchGolden, bundle, name));
+    const run = await loadRun(fetchGolden, bundle, name);
     assert.equal(run.poseFrames.length, info.tracked, name);
     assert.equal(run.poseMaps.length, info.tracked, name);
     assert.equal(run.keyframeLives.length / 3, info.made.keyframes, name);
@@ -121,24 +128,24 @@ test("the loader refuses another format, a mis-shaped array, an unknown backend 
   const past = npy("<i4", `${k},`, parents);
   const track = await loadTrack(fetchGolden, bundle, name);
   await assert.rejects(
-    loadBackend(over({ [`${name}/keyframe_parents.npy`]: past }), track),
+    loadMap(over({ [`${name}/keyframe_parents.npy`]: past }), track),
     new RegExp(`keyframe_parents.npy: ${k} names none of the run's ${k} keyframes`),
   );
   const link = npy("<i4", "1, 3", new Int32Array([0, k, 120]));
   await assert.rejects(
-    loadBackend(over({ [`${name}/keyframe_links.npy`]: link }), track),
+    loadMap(over({ [`${name}/keyframe_links.npy`]: link }), track),
     /keyframe_links.npy: \d+ names none/,
   );
   // Below the least id: a parent under -1 (none), a link's keyframe under 0.
   parents[k - 1] = -2;
   const below = npy("<i4", `${k},`, parents);
   await assert.rejects(
-    loadBackend(over({ [`${name}/keyframe_parents.npy`]: below }), track),
+    loadMap(over({ [`${name}/keyframe_parents.npy`]: below }), track),
     /keyframe_parents.npy: -2 names none/,
   );
   const unnamed = npy("<i4", "1, 3", new Int32Array([-1, 0, 120]));
   await assert.rejects(
-    loadBackend(over({ [`${name}/keyframe_links.npy`]: unnamed }), track),
+    loadMap(over({ [`${name}/keyframe_links.npy`]: unnamed }), track),
     /keyframe_links.npy: -1 names none/,
   );
   // A loop's or a merge's two keyframes are both ids: one past the last, or under 0, names none.
@@ -149,15 +156,160 @@ test("the loader refuses another format, a mis-shaped array, an unknown backend 
     ]) {
       const pair = npy("<i4", "1, 2", new Int32Array(ends));
       await assert.rejects(
-        loadBackend(over({ [`${name}/${file}`]: pair }), track),
+        loadMap(over({ [`${name}/${file}`]: pair }), track),
         new RegExp(`${file}: ${ends[0] < 0 ? -1 : k} names none`),
       );
     }
   }
   // A merge of two of the run's keyframes is read as baked.
   const merge = npy("<i4", "1, 2", new Int32Array([0, k - 1]));
-  const merged = await loadBackend(over({ [`${name}/keyframe_merges.npy`]: merge }), track);
+  const merged = await loadMap(over({ [`${name}/keyframe_merges.npy`]: merge }), track);
   assert.deepEqual(Array.from(merged.keyframeMerges), [0, k - 1]);
+});
+
+/** A map's files, as the page asks for them: its keyframes', their graph's and its points'. */
+const MAP_FILES = [
+  "keyframe_lives.npy",
+  "keyframe_poses.npy",
+  "keyframe_maps.npy",
+  "keyframe_parents.npy",
+  "keyframe_links.npy",
+  "keyframe_loops.npy",
+  "keyframe_merges.npy",
+  "point_lives.npy",
+  "points.npy",
+  "point_maps.npy",
+];
+
+/**
+ * A fetcher of a bundle's files that answers no request until released, and records each asked
+ * for: a loader that waited for one file before asking for the next would ask for one alone.
+ * @param {(path: string) => Promise<ArrayBuffer>} fetch The bundle's fetcher, which answers.
+ * @returns {{fetch: (path: string) => Promise<ArrayBuffer>, asked: string[],
+ *     release: () => void}} The fetcher, the paths asked for in order, and what answers them.
+ */
+function gated(fetch) {
+  /** @type {string[]} */
+  const asked = [];
+  /** @type {(() => void)[]} */
+  const waiting = [];
+  return {
+    asked,
+    fetch: (path) => {
+      asked.push(path);
+      return new Promise((resolve, reject) => {
+        waiting.push(() => fetch(path).then(resolve, reject));
+      });
+    },
+    release: () => waiting.splice(0).forEach((answer) => answer()),
+  };
+}
+
+/** @returns {Promise<void>} Once every callback already due has run. */
+const settled = () => new Promise((resolve) => setImmediate(resolve));
+
+test("a track's four files are all asked for before any arrives, and checked once all are in", async () => {
+  const bundle = await loadBundle(fetchGolden);
+  const gate = gated(fetchGolden);
+  const loading = loadTrack(gate.fetch, bundle, "cpp");
+  await settled();
+  assert.deepEqual(
+    [...gate.asked].sort(),
+    ["records.json", "pose_frames.npy", "poses.npy", "pose_maps.npy"]
+      .map((file) => `cpp/${file}`)
+      .sort(),
+  );
+  gate.release();
+  const track = await loading;
+  assert.equal(track.poseFrames.length, track.info.tracked);
+  assert.equal(track.poses.length, track.info.tracked * 12);
+  assert.equal(track.poseMaps.length, track.info.tracked);
+  // A pose short of the frames: refused once all four are in.
+  const rows = track.poseFrames.length;
+  const short = npy("<f4", `${rows - 1}, 3, 4`, new Float32Array((rows - 1) * 12));
+  /** @param {string} path */
+  const misshaped = async (path) => (path === "cpp/poses.npy" ? short : await fetchGolden(path));
+  await assert.rejects(
+    loadTrack(misshaped, bundle, "cpp"),
+    new RegExp(`cpp/poses.npy: expected \\(${rows}, 3, 4\\), got \\(${rows - 1}, 3, 4\\)`),
+  );
+});
+
+test("a map's arrays are all asked for before any arrives, and none of its features", async () => {
+  const bundle = await loadBundle(fetchGolden);
+  const track = await loadTrack(fetchGolden, bundle, "cpp");
+  assert.ok(track.info.features, "the run recorded features, which its map must not fetch");
+  const gate = gated(fetchGolden);
+  const loading = loadMap(gate.fetch, track);
+  await settled();
+  assert.deepEqual([...gate.asked].sort(), MAP_FILES.map((file) => `cpp/${file}`).sort());
+  gate.release();
+  const map = await loading;
+  assert.equal(map.keyframeLives.length / 3, track.info.made.keyframes);
+  assert.equal(map.pointLives.length / 3, track.info.made.points);
+  assert.equal(gate.asked.length, MAP_FILES.length);
+});
+
+test("a run's two feature arrays are asked for together; a run that recorded none, never", async () => {
+  const bundle = await loadBundle(fetchGolden);
+  const track = await loadTrack(fetchGolden, bundle, "cpp");
+  const gate = gated(fetchGolden);
+  const loading = loadFeatures(gate.fetch, track);
+  await settled();
+  assert.deepEqual([...gate.asked].sort(), ["cpp/feature_pixels.npy", "cpp/feature_records.npy"]);
+  gate.release();
+  const features = await loading;
+  assert.ok(features !== null);
+  assert.ok(features.records.length > 0);
+  assert.equal(features.pixels.length / 2, features.records.length / 4);
+  // The merge room's run recorded none: its features are null, and nothing is fetched.
+  const merge = await loadTrack(fetchMerge, await loadBundle(fetchMerge), "cpp");
+  assert.equal(merge.info.features, false);
+  const none = gated(fetchMerge);
+  assert.equal(await loadFeatures(none.fetch, merge), null);
+  assert.deepEqual(none.asked, []);
+});
+
+test("features that fail to load, or are mis-shaped, fail their own load alone", async () => {
+  const bundle = await loadBundle(fetchGolden);
+  /** @param {string} path */
+  const failing = async (path) => {
+    if (path.includes("/feature_")) {
+      throw new Error(`${path}: 503 Service Unavailable`);
+    }
+    return fetchGolden(path);
+  };
+  const track = await loadTrack(failing, bundle, "cpp");
+  const [map, features] = await Promise.allSettled([
+    loadMap(failing, track),
+    loadFeatures(failing, track),
+  ]);
+  assert.equal(map.status, "fulfilled");
+  assert.ok(features.status === "rejected");
+  assert.match(String(features.reason), /cpp\/feature_\w+\.npy: 503 Service Unavailable/);
+  // A pixel short of the records: refused by the features' load, the map's untouched.
+  const rows = (await loadFeatures(fetchGolden, track))?.records.length ?? 0;
+  const short = npy("<f4", `${rows / 4 - 1}, 2`, new Float32Array(rows / 2 - 2));
+  /** @param {string} path */
+  const misshaped = async (path) =>
+    path === "cpp/feature_pixels.npy" ? short : await fetchGolden(path);
+  await assert.rejects(
+    loadFeatures(misshaped, track),
+    new RegExp(`cpp/feature_pixels.npy: expected \\(${rows / 4}, 2\\)`),
+  );
+  await loadMap(misshaped, track);
+});
+
+test("a part's load settles as where it stands: loaded with its value, or failed with why", async () => {
+  assert.deepEqual(await settle(Promise.resolve(7)), { status: "loaded", value: 7 });
+  assert.deepEqual(await settle(Promise.reject(new Error("cpp/points.npy: 404 Not Found"))), {
+    status: "failed",
+    reason: "cpp/points.npy: 404 Not Found",
+  });
+  assert.deepEqual(await settle(Promise.reject("refused")), {
+    status: "failed",
+    reason: "refused",
+  });
 });
 
 /**
