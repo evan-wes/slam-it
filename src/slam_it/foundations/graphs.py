@@ -641,8 +641,9 @@ def _held_end(
     """Return a pose graph's edge with one end held at `value`: a factor on its `free` end alone.
 
     The edge's own ``BetweenFactor`` is linearised with the held end at its value, so the
-    residual and the free end's Jacobian are GTSAM's own (unit information whitens nothing).
-    GTSAM's Python wrapper has no unary form of the between factor.
+    residual and the free end's Jacobian are GTSAM's own, whitened by the edge's noise; they are
+    wrapped in unit noise, which whitens them no further. GTSAM's Python wrapper has no unary
+    form of the between factor.
     """
     dimension = SIMILARITY_DIM if similarity else POSE_DIM
     columns = slice(0, dimension) if edge.keys()[0] == free else slice(dimension, 2 * dimension)
@@ -654,7 +655,7 @@ def _held_end(
         jacobian, rhs = edge.linearize(ends).jacobian()
         return -rhs, [jacobian[:, columns]]
 
-    return _custom(edge.noiseModel(), [free], evaluate)
+    return _custom(gtsam.noiseModel.Unit.Create(dimension), [free], evaluate)
 
 
 def _held_edges(residuals: Array, free: int, similarity: bool) -> gtsam.CustomFactor:
