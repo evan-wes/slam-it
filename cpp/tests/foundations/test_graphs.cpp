@@ -294,6 +294,29 @@ void test_held_poses(int& failures) {
   }
 }
 
+/// @brief An edge between two held poses costs its error inside GTSAM's own rules too: with a
+///        free pose in no edge, the one iteration lowers nothing and the solve converges, as when
+///        the held poses were variables (0.3.17.2's review panel, L1), not at the damping's limit.
+/// @param failures The running failure count.
+void test_held_edge_alone(int& failures) {
+  const std::vector<Eigen::Matrix4d> truth = {pose({0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}),
+                                              pose({1.0, 0.2, 0.0}, {0.0, 0.0, 2.0}),
+                                              pose({2.0, -0.2, 0.0}, {0.0, 0.0, 4.0})};
+  graphs::IndexPairs edges(1, 2);
+  edges << 0, 1;
+  const std::vector<Eigen::Matrix4d> relatives = {truth[0].inverse() * truth[1] *
+                                                  pose({0.1, 0.0, 0.0}, {0.0, 0.0, 0.05})};
+  const std::array<std::int64_t, 2> fixed = {0, 1};
+  const auto result = graphs::optimize_pose_graph(truth, edges, relatives, fixed, false,
+                                                  graphs::Options{.max_iterations = 10});
+  expect(result.has_value() && result->summary.iterations == 1 &&
+             result->summary.termination == graphs::Termination::kFunction &&
+             result->summary.converged && result->summary.initial_error > 1e-3 &&
+             result->summary.final_error == result->summary.initial_error,
+         "a free pose in no edge, the held edge's error seen: converged after one iteration",
+         failures);
+}
+
 /// @brief ORB-SLAM's two rounds: a wrong match stands out; without it the motion is exact.
 /// @param failures The running failure count.
 void test_refine_similarity(int& failures) {
@@ -600,6 +623,7 @@ int run() {
   test_behind_the_camera(failures);
   test_pose_graph(failures);
   test_held_poses(failures);
+  test_held_edge_alone(failures);
   test_refine_similarity(failures);
   test_bundle_adjust(failures);
   test_held_cameras(failures);

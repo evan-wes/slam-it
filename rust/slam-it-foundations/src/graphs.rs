@@ -14,8 +14,9 @@
 //!
 //! A held camera or pose is a constant, never a variable, as g2o's fixed vertices hold
 //! ORB-SLAM's (`slam_it.foundations.graphs` says why): a held camera's observation is a factor
-//! on its point alone, a pose graph's edge with one held end a factor on its other end, and one
-//! with both ends held a constant error, added to the errors the solve reads and reports.
+//! on its point alone, a pose graph's edge with one held end a factor on its other end, and the
+//! edges with both ends held, whose error is a constant, one factor with a zero Jacobian, so that
+//! every error GTSAM reads is the whole graph's.
 //!
 //! The bridge is the one place in the crate that writes `unsafe`: `cxx` declares the C++ side
 //! of a bridge in an `unsafe extern "C++"` block, the promise that its signatures are true.
@@ -528,6 +529,12 @@ enum Factor {
         /// Whether the motion is rigid.
         fixed_scale: bool,
     },
+    /// A pose graph's edges whose ends are both held: their residuals, stacked, a constant; its
+    /// one variable a free pose (or similarity), which they do not depend on (a zero Jacobian).
+    HeldEdges {
+        /// The residuals.
+        residuals: Vec<f64>,
+    },
 }
 
 /// The Rust factors of a problem and their camera, which GTSAM calls back into.
@@ -639,6 +646,11 @@ fn evaluate(
             residual.copy_from_slice(error.as_slice());
             write_rows(&d_motion, jacobian);
         }
+        Some(Factor::HeldEdges { residuals })
+            if values.len() == MATRIX_VALUES && residuals.len() == residual.len() =>
+        {
+            residual.copy_from_slice(residuals); // its Jacobian stays zero
+        }
         _ => {}
     }
 }
@@ -709,14 +721,20 @@ mod ffi {
             held: &[f64],
             first_held: bool,
         ) -> Result<()>;
-        /// GTSAM's error of its between factor on two poses at given values.
-        fn between_error_poses(first: &[f64], second: &[f64], relative: &[f64]) -> Result<f64>;
-        /// GTSAM's error of its between factor on two similarities at given values.
-        fn between_error_similarities(
+        /// GTSAM's residual of its between factor on two poses at given values.
+        fn between_residual_poses(
             first: &[f64],
             second: &[f64],
             relative: &[f64],
-        ) -> Result<f64>;
+            out: &mut [f64],
+        ) -> Result<()>;
+        /// GTSAM's residual of its between factor on two similarities at given values.
+        fn between_residual_similarities(
+            first: &[f64],
+            second: &[f64],
+            relative: &[f64],
+            out: &mut [f64],
+        ) -> Result<()>;
         /// Adds a factor Rust evaluates.
         fn add_rust_factor(
             problem: Pin<&mut Problem>,
@@ -852,9 +870,6 @@ fn key(index: usize) -> u64 {
 /// * `problem` - The problem.
 /// * `evaluator` - Its Rust factors.
 /// * `options` - How the solve runs, checked.
-/// * `constant` - The error of the factors left out of the problem because every variable they
-///   join is held (a pose graph's edges between two held poses): added to every error the rule
-///   reads and the summary reports, so both are the whole problem's.
 ///
 /// # Returns
 ///
@@ -867,7 +882,6 @@ fn solve(
     problem: &ffi::Problem,
     evaluator: &Evaluator,
     options: &Options,
-    constant: f64,
 ) -> Result<(UniquePtr<ffi::Optimizer>, Summary)> {
     let mut optimizer = ffi::new_optimizer(
         problem,
@@ -877,7 +891,7 @@ fn solve(
         options.absolute_tolerance,
     )
     .map_err(|e| gtsam_failed(&e))?;
-    let initial = ffi::error(&optimizer) + constant;
+    let initial = ffi::error(&optimizer);
     let mut current = initial;
     let mut termination = Termination::MaxIterations;
     let mut iterations = 0;
@@ -888,7 +902,7 @@ fn solve(
         }
         ffi::iterate(optimizer.pin_mut(), evaluator).map_err(|e| gtsam_failed(&e))?;
         iterations += 1;
-        let error = ffi::error(&optimizer) + constant;
+        let error = ffi::error(&optimizer);
         if error >= current && ffi::damping(&optimizer) >= ffi::damping_limit(&optimizer) {
             termination = Termination::DampingLimit;
             break;
@@ -1228,9 +1242,11 @@ fn held_flags(fixed: &[usize], count: usize) -> Vec<bool> {
 ///
 /// ORB-SLAM's `OptimizeEssentialGraph` on GTSAM: edge `(i, j)` measures `T_i_j = T_world_i^-1
 /// T_world_j` (`BetweenFactor`); the poses in `fixed` are held as constants, as g2o's fixed
-/// vertices hold ORB-SLAM's: an edge with one held end is a factor on its other end, and one with
-/// both ends held a constant error, counted in the summary's errors. With every pose held,
-/// nothing is solved: the poses come back as given, after no iteration.
+/// vertices hold ORB-SLAM's: an edge with one held end is a factor on its other end, and the
+/// edges with both ends held, whose error is a constant, one factor on a free pose with a zero
+/// Jacobian (`Factor::HeldEdges`), so that every error GTSAM reads, its search over dampings'
+/// included, is the whole graph's. With every pose held, nothing is solved: the poses come back
+/// as given, after no iteration.
 ///
 /// # Arguments
 ///
@@ -1290,27 +1306,43 @@ pub fn optimize_pose_graph(
         }
         .map_err(|e| gtsam_failed(&e))?;
     }
-    let mut constant = 0.0;
+    let mut residuals = Vec::new();
     for (&[i, j], relative) in edges.iter().zip(relatives) {
-        constant += add_edge(
+        residuals.extend(add_edge(
             problem.pin_mut(),
             [i, j],
             relative,
             [held[i].then_some(&poses[i]), held[j].then_some(&poses[j])],
             similarity,
-        )?;
+        )?);
     }
-    if held.iter().all(|&h| h) {
+    let Some(free) = held.iter().position(|&h| !h) else {
+        // Every pose held: nothing is solved, the error the held edges' (as their factor's).
+        let error = 0.5 * residuals.iter().map(|r| r * r).sum::<f64>();
         return Ok(PoseGraph {
             poses: poses.to_vec(),
             summary: Summary {
-                initial_error: constant,
-                final_error: constant,
+                initial_error: error,
+                final_error: error,
                 iterations: 0,
                 termination: Termination::Function,
                 converged: true,
             },
         });
+    };
+    let mut factors = Vec::new();
+    if !residuals.is_empty() {
+        ffi::add_rust_factor(
+            problem.pin_mut(),
+            &[key(free)],
+            &[if similarity { SIMILARITY } else { POSE }],
+            residuals.len(),
+            1.0, // unit information
+            0.0, // the bridge's 0: no robust loss
+            factors.len(),
+        )
+        .map_err(|e| gtsam_failed(&e))?;
+        factors.push(Factor::HeldEdges { residuals });
     }
     let evaluator = Evaluator {
         lens: Lens {
@@ -1318,9 +1350,9 @@ pub fn optimize_pose_graph(
             intrinsics: Vec::new(),
             bf: 0.0,
         },
-        factors: Vec::new(),
+        factors,
     };
-    let (optimizer, summary) = solve(&problem, &evaluator, options, constant)?;
+    let (optimizer, summary) = solve(&problem, &evaluator, options)?;
     let poses = poses
         .iter()
         .enumerate()
@@ -1335,9 +1367,9 @@ pub fn optimize_pose_graph(
     Ok(PoseGraph { poses, summary })
 }
 
-/// Adds a pose graph's edge to its problem: GTSAM's between factor on its two ends, a factor on
-/// its free end alone if the other is held, or, with both ends held, nothing (its error is then
-/// a constant).
+/// Adds a pose graph's edge to its problem: GTSAM's between factor on its two ends, or a factor
+/// on its free end alone if the other is held; with both ends held, nothing (its residual is a
+/// constant, which the caller gathers into one factor).
 ///
 /// # Arguments
 ///
@@ -1349,7 +1381,7 @@ pub fn optimize_pose_graph(
 ///
 /// # Returns
 ///
-/// The edge's error with both ends held, a constant; 0 otherwise.
+/// The edge's residual with both ends held (GTSAM's, 6 or 7 long); empty otherwise.
 ///
 /// # Errors
 ///
@@ -1360,7 +1392,7 @@ fn add_edge(
     relative: &Matrix4<f64>,
     held: [Option<&Matrix4<f64>>; 2],
     similarity: bool,
-) -> Result<f64> {
+) -> Result<Vec<f64>> {
     // A pose or similarity as the bridge takes it: GTSAM's own matrix for a similarity.
     let crossing = |matrix: &Matrix4<f64>| {
         if similarity {
@@ -1372,12 +1404,14 @@ fn add_edge(
     let (first, second, measured) = (key(ends[0]), key(ends[1]), crossing(relative));
     if let [Some(one), Some(two)] = held {
         let (one, two) = (crossing(one), crossing(two));
-        return if similarity {
-            ffi::between_error_similarities(&one, &two, &measured)
+        let mut residual = vec![0.0; if similarity { SIMILARITY_DIM } else { POSE_DIM }];
+        if similarity {
+            ffi::between_residual_similarities(&one, &two, &measured, &mut residual)
         } else {
-            ffi::between_error_poses(&one, &two, &measured)
+            ffi::between_residual_poses(&one, &two, &measured, &mut residual)
         }
-        .map_err(|e| gtsam_failed(&e));
+        .map_err(|e| gtsam_failed(&e))?;
+        return Ok(residual);
     }
     let added = match held {
         [Some(value), None] | [None, Some(value)] => {
@@ -1394,7 +1428,7 @@ fn add_edge(
         _ => ffi::add_between_poses(problem, first, second, &measured),
     };
     added.map_err(|e| gtsam_failed(&e))?;
-    Ok(0.0)
+    Ok(Vec::new())
 }
 
 /// Refines the similarity carrying one keyframe's matched points into another's images
@@ -1487,7 +1521,7 @@ pub fn refine_similarity(
         }
     }
     let evaluator = Evaluator { lens, factors };
-    let (optimizer, summary) = solve(&problem, &evaluator, options, 0.0)?;
+    let (optimizer, summary) = solve(&problem, &evaluator, options)?;
     let motion = matrix_at(&optimizer, 0, !fixed_scale)?;
     let chi2 = (0..count)
         .map(|k| {
@@ -1615,7 +1649,7 @@ pub fn bundle_adjust(
         lens: lens.clone(),
         factors,
     };
-    let (optimizer, summary) = solve(&problem, &evaluator, options, 0.0)?;
+    let (optimizer, summary) = solve(&problem, &evaluator, options)?;
     let poses = poses
         .iter()
         .enumerate()
@@ -2169,6 +2203,34 @@ mod tests {
             assert!((result.summary.final_error - constant).abs() <= 1e-9 * constant);
             assert!(result.summary.initial_error > result.summary.final_error);
         }
+    }
+
+    #[test]
+    fn an_edge_between_held_poses_costs_its_error_inside_gtsam_too() {
+        // A free pose in no edge: the one iteration lowers nothing, and the solve converges, as
+        // when the held poses were variables (0.3.17.2's review panel, L1), not at the damping's
+        // limit.
+        let truth = vec![
+            pose([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+            pose([1.0, 0.2, 0.0], [0.0, 0.0, 2.0]),
+            pose([2.0, -0.2, 0.0], [0.0, 0.0, 4.0]),
+        ];
+        let relatives =
+            vec![inverse(&truth[0]) * truth[1] * pose([0.1, 0.0, 0.0], [0.0, 0.0, 0.05])];
+        let options = Options {
+            max_iterations: 10,
+            ..Options::default()
+        };
+        let result =
+            optimize_pose_graph(&truth, &[[0, 1]], &relatives, &[0, 1], false, &options).unwrap();
+        assert_eq!(
+            (result.summary.iterations, result.summary.termination),
+            (1, Termination::Function)
+        );
+        assert!(result.summary.converged && result.summary.initial_error > 1e-3);
+        #[allow(clippy::float_cmp)] // nothing could move: the very number
+        let unchanged = result.summary.final_error == result.summary.initial_error;
+        assert!(unchanged);
     }
 
     #[test]

@@ -276,6 +276,40 @@ class HeldBetweenFactor final : public gtsam::NoiseModelFactorN<Motion> {
   bool held_first_;
 };
 
+/// @brief A pose graph's edges whose ends are both held: their stacked residuals, a constant,
+///        as one factor on a free pose with a zero Jacobian. It moves nothing, but every error
+///        GTSAM reads, its search over dampings' included, holds their error, as when the held
+///        poses were variables.
+/// @tparam Motion `gtsam::Pose3` (rigid) or `gtsam::Similarity3`.
+template <typename Motion>
+class HeldEdgesFactor final : public gtsam::NoiseModelFactorN<Motion> {
+ public:
+  /// @brief The factor's base.
+  using Base = gtsam::NoiseModelFactorN<Motion>;
+  using Base::evaluateError;
+
+  /// @brief Build the factor, with unit information.
+  /// @param key A free pose's key, which the residuals do not depend on.
+  /// @param residuals The edges' residuals, stacked.
+  HeldEdgesFactor(gtsam::Key key, const Eigen::VectorXd& residuals)
+      : Base(gtsam::noiseModel::Unit::Create(residuals.size()), key), residuals_(residuals) {}
+
+  /// @brief The stacked residuals and, where asked, their Jacobian on the free pose: zero.
+  /// @param d_free Where to write the Jacobian, if asked.
+  /// @return The residuals.
+  gtsam::Vector evaluateError(const Motion& /*free*/,
+                              gtsam::OptionalMatrixType d_free) const override {
+    if (d_free != nullptr) {
+      *d_free = gtsam::Matrix::Zero(residuals_.size(), gtsam::traits<Motion>::dimension);
+    }
+    return residuals_;
+  }
+
+ private:
+  /// @brief The edges' residuals, stacked.
+  Eigen::VectorXd residuals_;
+};
+
 /// @brief One side of a match carried through the motion: a unary factor on the motion.
 /// @tparam Motion `gtsam::Pose3` (a rigid motion) or `gtsam::Similarity3`.
 template <typename Motion>
@@ -348,19 +382,16 @@ struct Solved {
 /// @param graph The factor graph.
 /// @param values The starting values.
 /// @param options How the solve runs, checked.
-/// @param constant The error of the factors left out of the graph because every variable they
-///        join is held (a pose graph's edges between two held poses): added to every error the
-///        rule reads and the summary reports, so both are the whole problem's.
 /// @return The values and summary, or `NotConverged` if GTSAM throws.
 Result<Solved> solve(const gtsam::NonlinearFactorGraph& graph, const gtsam::Values& values,
-                     const Options& options, double constant = 0.0) {
+                     const Options& options) {
   try {
     gtsam::LevenbergMarquardtParams params;
     params.setlambdaInitial(options.initial_damping);
     params.setRelativeErrorTol(options.relative_tolerance);
     params.setAbsoluteErrorTol(options.absolute_tolerance);
     gtsam::LevenbergMarquardtOptimizer optimizer(graph, values, params);
-    const double initial = optimizer.error() + constant;
+    const double initial = optimizer.error();
     double current = initial;
     Termination termination = Termination::kMaxIterations;
     int iterations = 0;
@@ -371,7 +402,7 @@ Result<Solved> solve(const gtsam::NonlinearFactorGraph& graph, const gtsam::Valu
       }
       optimizer.iterate();
       ++iterations;
-      const double error = optimizer.error() + constant;
+      const double error = optimizer.error();
       if (error >= current && optimizer.lambda() >= params.getlambdaUpperBound()) {
         termination = Termination::kDampingLimit;
         break;
@@ -513,9 +544,9 @@ std::vector<bool> held_flags(std::span<const std::int64_t> fixed, std::size_t co
 /// @brief Solve a pose graph whose poses are all of one kind (`optimize_pose_graph`'s solve).
 ///
 /// The held poses are constants, not variables (g2o's fixed vertices, as ORB-SLAM holds them):
-/// an edge with one held end is a factor on its free end, and an edge with both ends held a
-/// constant error, left out of the graph and added to the solve's errors. With every pose held,
-/// nothing is solved.
+/// an edge with one held end is a factor on its free end, and the edges with both ends held,
+/// whose error is a constant, one factor with a zero Jacobian (`HeldEdgesFactor`), so that the
+/// solve's errors are the whole graph's. With every pose held, nothing is solved.
 /// @tparam Motion `gtsam::Pose3` (rigid) or `gtsam::Similarity3`.
 /// @param poses The starting poses, checked.
 /// @param edges The edges, checked.
@@ -538,17 +569,15 @@ Result<PoseGraph> solve_pose_graph(std::span<const Eigen::Matrix4d> poses,
   }
   const auto unit = gtsam::noiseModel::Unit::Create(
       std::is_same_v<Motion, gtsam::Pose3> ? kPoseDim : kSimilarityDim);
-  double constant = 0.0;
+  std::vector<gtsam::Vector> parts;
   for (Eigen::Index e = 0; e < edges.rows(); ++e) {
     const auto first = static_cast<std::size_t>(edges(e, 0));
     const auto second = static_cast<std::size_t>(edges(e, 1));
     const gtsam::BetweenFactor<Motion> edge(
         first, second, to_motion<Motion>(relatives[static_cast<std::size_t>(e)]), unit);
     if (held[first] && held[second]) {
-      gtsam::Values ends;
-      ends.insert(first, to_motion<Motion>(poses[first]));
-      ends.insert(second, to_motion<Motion>(poses[second]));
-      constant += edge.error(ends);
+      parts.emplace_back(edge.evaluateError(to_motion<Motion>(poses[first]),
+                                            to_motion<Motion>(poses[second]), nullptr, nullptr));
     } else if (held[first] || held[second]) {
       graph.emplace_shared<HeldBetweenFactor<Motion>>(edge, poses[held[first] ? first : second],
                                                       held[first]);
@@ -556,16 +585,27 @@ Result<PoseGraph> solve_pose_graph(std::span<const Eigen::Matrix4d> poses,
       graph.emplace_shared<gtsam::BetweenFactor<Motion>>(edge);
     }
   }
+  constexpr Eigen::Index kDimension = gtsam::traits<Motion>::dimension;
+  Eigen::VectorXd residuals(static_cast<Eigen::Index>(parts.size()) * kDimension);
+  for (std::size_t k = 0; k < parts.size(); ++k) {
+    residuals.segment(static_cast<Eigen::Index>(k) * kDimension, kDimension) = parts[k];
+  }
+  // With every pose held nothing is solved: the error is the held edges', as the factor's.
+  const double held_error = 0.5 * residuals.squaredNorm();
   PoseGraph out{.poses = {poses.begin(), poses.end()},
-                .summary = Summary{.initial_error = constant,
-                                   .final_error = constant,
+                .summary = Summary{.initial_error = held_error,
+                                   .final_error = held_error,
                                    .iterations = 0,
                                    .termination = Termination::kFunction,
                                    .converged = true}};
   if (values.empty()) {
     return out;
   }
-  auto solved = solve(graph, values, options, constant);
+  if (residuals.size() > 0) {
+    const auto free = static_cast<gtsam::Key>(std::ranges::find(held, false) - held.begin());
+    graph.emplace_shared<HeldEdgesFactor<Motion>>(free, residuals);
+  }
+  auto solved = solve(graph, values, options);
   if (!solved) {
     return std::unexpected(solved.error());
   }

@@ -51,9 +51,10 @@ ORB-SLAM's (``setFixed``): a held camera's observation is a factor on its point 
 pinhole camera, GTSAM's ``TriangulationFactorCal3_S2``, or with a right column a custom factor
 through its ``StereoCamera``, each projecting as the camera's own factor does); a pose graph's
 edge with one end held is a factor on its other end (the edge's ``BetweenFactor`` evaluated with
-that end at its value); and one with both ends held costs a constant, left out of the graph and
-added to every error the solve reads and reports, so that the errors stay the whole problem's.
-Each held one comes back exactly as given. Until 0.3.17.2 they were GTSAM's
+that end at its value); and the edges with both ends held, whose error is a constant, are one
+factor on a free pose with a zero Jacobian, so that every error GTSAM reads, its search over
+dampings' included, is the whole graph's, as when the held poses were variables. Each held one
+comes back exactly as given. Until 0.3.17.2 they were GTSAM's
 ``NonlinearEquality``, a hard constraint whose ``Constrained`` noise model makes GTSAM's
 ``EliminatePreferCholesky`` eliminate every clique holding one by dense QR: zju-B6's merge, 52
 cameras held in its welding BA, took 658 s so and its run peaked at 2,509 MiB, against 1.4 s
@@ -506,14 +507,10 @@ def _solve(
     values: gtsam.Values,
     options: Options,
     stop: Callable[[], bool] | None = None,
-    constant: float = 0.0,
 ) -> tuple[gtsam.Values, Summary]:
     """Run Levenberg-Marquardt by :class:`Termination`'s rule; return the values and summary.
 
     `stop`, if given, is asked before each iteration whether to end the solve there.
-    `constant` is the error of the factors left out of the graph because every variable they
-    join is held (a pose graph's edges between two held poses): it is added to every error the
-    rule reads and the summary reports, so that both are the whole problem's.
     """
     params = gtsam.LevenbergMarquardtParams()
     params.setlambdaInitial(options.initial_damping)
@@ -524,7 +521,7 @@ def _solve(
     # and Rust cores catch every exception GTSAM throws: so a broad catch, here alone.
     try:
         optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, params)
-        initial = current = float(optimizer.error()) + constant
+        initial = current = float(optimizer.error())
     except Exception as failure:
         raise NotConvergedError(f"GTSAM failed: {failure}") from failure
     termination = Termination.MAX_ITERATIONS
@@ -538,7 +535,7 @@ def _solve(
         except Exception as failure:
             raise NotConvergedError(f"GTSAM failed: {failure}") from failure
         iterations += 1
-        error = float(optimizer.error()) + constant
+        error = float(optimizer.error())
         if error >= current and optimizer.lambda_() >= params.getlambdaUpperBound():
             termination = Termination.DAMPING_LIMIT
             break
@@ -660,6 +657,20 @@ def _held_end(
     return _custom(edge.noiseModel(), [free], evaluate)
 
 
+def _held_edges(residuals: Array, free: int, similarity: bool) -> gtsam.CustomFactor:
+    """Return a pose graph's edges with both ends held as one factor on a `free` pose.
+
+    Their stacked `residuals`, a constant, with unit noise and a zero Jacobian: the factor moves
+    nothing, but every error GTSAM reads, its search over dampings' included, holds theirs.
+    """
+    jacobian = np.zeros((residuals.shape[0], SIMILARITY_DIM if similarity else POSE_DIM))
+
+    def evaluate(_: gtsam.Values) -> tuple[Array, list[Array]]:
+        return residuals, [jacobian]
+
+    return _custom(gtsam.noiseModel.Unit.Create(residuals.shape[0]), [free], evaluate)
+
+
 def _pose_graph(  # noqa: PLR0913, PLR0917 -- the graph, its kind and the options
     poses: Array,
     edges: IntArray,
@@ -680,29 +691,34 @@ def _pose_graph(  # noqa: PLR0913, PLR0917 -- the graph, its kind and the option
     for k, pose in enumerate(poses):
         if k not in held:
             values.insert(k, value_of(pose))
-    constant = 0.0
+    parts: list[Array] = []
     for (i, j), relative in zip(edges.tolist(), relatives, strict=True):
         edge = between(i, j, value_of(relative), unit)
         if i in held and j in held:
             ends = gtsam.Values()
             ends.insert(i, value_of(poses[i]))
             ends.insert(j, value_of(poses[j]))
-            constant += float(edge.error(ends))
+            parts.append(np.asarray(edge.unwhitenedError(ends), dtype=np.float64))
         elif i in held or j in held:
             end, other = (i, j) if i in held else (j, i)
             graph.add(_held_end(edge, end, value_of(poses[end]), other, similarity))
         else:
             graph.add(edge)
-    if values.size() == 0:
+    residuals = np.concatenate(parts) if parts else np.zeros(0)
+    free = next((k for k in range(poses.shape[0]) if k not in held), None)
+    if free is None:  # every pose held: nothing is solved, the error the held edges'
+        error = 0.5 * float(residuals @ residuals)
         nothing = Summary(
-            initial_error=constant,
-            final_error=constant,
+            initial_error=error,
+            final_error=error,
             iterations=0,
             termination=Termination.FUNCTION,
             converged=True,
         )
         return PoseGraph(poses=poses.copy(), summary=nothing)
-    solved, summary = _solve(graph, values, options, constant=constant)
+    if parts:
+        graph.add(_held_edges(residuals, free, similarity))
+    solved, summary = _solve(graph, values, options)
     out = poses.copy()
     for k in range(poses.shape[0]):
         if k not in held:
@@ -730,9 +746,10 @@ def optimize_pose_graph(  # noqa: PLR0913 -- the graph, its kind, options, backe
     ``j`` in ``i``'s frame, ``T_i_j = T_world_i⁻¹ T_world_j`` (GTSAM's ``BetweenFactor``),
     with unit information, as ORB-SLAM's edges have; the poses in `fixed` are held as
     constants, and at least one must be, for the graph's gauge. An edge with one end held is a
-    factor on its other end; one with both ends held costs a constant, counted in the summary's
-    errors. With every pose held, nothing is solved: the poses come back as given, after no
-    iteration.
+    factor on its other end; the edges with both ends held, whose error is a constant, are one
+    factor on a free pose with a zero Jacobian, so that every error GTSAM reads, and the
+    summary's, holds theirs. With every pose held, nothing is solved: the poses come back as
+    given, after no iteration.
 
     Parameters
     ----------

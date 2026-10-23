@@ -128,23 +128,25 @@ void add_held_between_similarities(Problem& problem, std::uint64_t first, std::u
                                    rust::Slice<const double> relative,
                                    rust::Slice<const double> held, bool first_held);
 
-/// @brief GTSAM's error of its between factor on two poses at given values, unit information:
-///        what an edge between two held poses costs, a constant.
+/// @brief GTSAM's residual of its between factor on two poses at given values: what an edge
+///        between two held poses gives, a constant.
 /// @param first The first pose, 16 row-major.
 /// @param second The second.
 /// @param relative The measured `T_first_second`, 16 row-major.
-/// @return The error, `1/2 |Local(relative, first^-1 second)|^2`.
-double between_error_poses(rust::Slice<const double> first, rust::Slice<const double> second,
-                           rust::Slice<const double> relative);
+/// @param out Where to write the residual, `Local(relative, first^-1 second)`, 6 long.
+/// @throws std::invalid_argument for room of another length.
+void between_residual_poses(rust::Slice<const double> first, rust::Slice<const double> second,
+                            rust::Slice<const double> relative, rust::Slice<double> out);
 
-/// @brief GTSAM's error of its between factor on two similarities at given values, unit
-///        information.
+/// @brief GTSAM's residual of its between factor on two similarities at given values.
 /// @param first The first similarity, 16 row-major (GTSAM's matrix).
 /// @param second The second.
 /// @param relative The measured relative similarity, 16 row-major (GTSAM's matrix).
-/// @return The error.
-double between_error_similarities(rust::Slice<const double> first, rust::Slice<const double> second,
-                                  rust::Slice<const double> relative);
+/// @param out Where to write the residual, 7 long.
+/// @throws std::invalid_argument for room of another length.
+void between_residual_similarities(rust::Slice<const double> first,
+                                   rust::Slice<const double> second,
+                                   rust::Slice<const double> relative, rust::Slice<double> out);
 
 /// @brief Add a factor Rust evaluates.
 /// @param problem The problem.

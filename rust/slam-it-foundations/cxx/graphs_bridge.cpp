@@ -216,18 +216,22 @@ gtsam::BetweenFactor<Motion> unit_between(std::uint64_t first, std::uint64_t sec
           gtsam::noiseModel::Unit::Create(gtsam::traits<Motion>::dimension)};
 }
 
-/// @brief GTSAM's error of a between factor with unit information at two values.
+/// @brief GTSAM's residual of a between factor at two values.
 /// @tparam Motion `gtsam::Pose3` or `gtsam::Similarity3`.
 /// @param first The first value.
 /// @param second The second.
 /// @param relative The measured relative value.
-/// @return The error.
+/// @param out Where to write the residual, its tangent dimension long.
+/// @throws std::invalid_argument for room of another length.
 template <typename Motion>
-double between_error(const Motion& first, const Motion& second, const Motion& relative) {
-  gtsam::Values at;
-  at.insert(0, first);
-  at.insert(1, second);
-  return unit_between<Motion>(0, 1, relative).error(at);
+void between_residual(const Motion& first, const Motion& second, const Motion& relative,
+                      rust::Slice<double> out) {
+  const gtsam::Vector residual =
+      unit_between<Motion>(0, 1, relative).evaluateError(first, second, nullptr, nullptr);
+  if (out.size() != static_cast<std::size_t>(residual.size())) {
+    throw std::invalid_argument("graphs bridge: expected room for the residual");
+  }
+  Eigen::Map<Eigen::VectorXd>(out.data(), residual.size()) = residual;
 }
 
 /// @brief Hold an evaluator in a slot for the length of a call.
@@ -332,16 +336,17 @@ void add_held_between_similarities(Problem& problem, std::uint64_t first, std::u
       gtsam::Similarity3(matrix_of(held)), first_held);
 }
 
-double between_error_poses(rust::Slice<const double> first, rust::Slice<const double> second,
-                           rust::Slice<const double> relative) {
-  return between_error(gtsam::Pose3(matrix_of(first)), gtsam::Pose3(matrix_of(second)),
-                       gtsam::Pose3(matrix_of(relative)));
+void between_residual_poses(rust::Slice<const double> first, rust::Slice<const double> second,
+                            rust::Slice<const double> relative, rust::Slice<double> out) {
+  between_residual(gtsam::Pose3(matrix_of(first)), gtsam::Pose3(matrix_of(second)),
+                   gtsam::Pose3(matrix_of(relative)), out);
 }
 
-double between_error_similarities(rust::Slice<const double> first, rust::Slice<const double> second,
-                                  rust::Slice<const double> relative) {
-  return between_error(gtsam::Similarity3(matrix_of(first)), gtsam::Similarity3(matrix_of(second)),
-                       gtsam::Similarity3(matrix_of(relative)));
+void between_residual_similarities(rust::Slice<const double> first,
+                                   rust::Slice<const double> second,
+                                   rust::Slice<const double> relative, rust::Slice<double> out) {
+  between_residual(gtsam::Similarity3(matrix_of(first)), gtsam::Similarity3(matrix_of(second)),
+                   gtsam::Similarity3(matrix_of(relative)), out);
 }
 
 void add_rust_factor(Problem& problem, rust::Slice<const std::uint64_t> keys,

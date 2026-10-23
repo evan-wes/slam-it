@@ -229,6 +229,28 @@ def test_held_poses_are_constants_and_an_edge_between_two_costs_a_constant(
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_an_edge_between_held_poses_costs_its_error_inside_gtsam_too(backend: str) -> None:
+    """A free pose in no edge: the one iteration lowers nothing, and the solve converges.
+
+    GTSAM's own search over dampings stops when a failed step changes the error by less than its
+    relative tolerance times the error, which must hold the held edge's (0.3.17.2's review panel,
+    L1): left out, the search went on to the damping's limit, not converged.
+    """
+    chosen = require_function(backend, graphs.__name__, "optimize_pose_graph")
+    truth = np.stack(
+        [se3.exp([1.0 * k, 0.2 * np.sin(k), 0, 0, 0, 2 * np.pi * k / 3]) for k in range(3)]
+    )
+    relative = np.linalg.inv(truth[0]) @ truth[1] @ se3.exp([0.1, 0, 0, 0, 0, 0.05])
+    result = graphs.optimize_pose_graph(
+        truth, [[0, 1]], relative[None], [0, 1], similarity=False,
+        options=graphs.Options(max_iterations=10), backend=chosen,
+    )  # fmt: skip
+    summary = result.summary
+    assert (summary.iterations, summary.termination, summary.converged) == (1, "function", True)
+    assert summary.final_error == summary.initial_error > 1e-3
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("fixed_scale", [False, True])
 def test_a_similarity_is_refined_its_outlier_dropped_and_refined_again(
     backend: str, fixed_scale: bool
