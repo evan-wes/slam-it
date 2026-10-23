@@ -19,8 +19,9 @@ import { differences, ran, shownAt, spanText } from "./compare.js";
 import * as format from "./format.js";
 import { frameKeypoints, mapLabel, recordIndex } from "./frames.js";
 import { ImageView } from "./image_view.js";
+import { mapLoading } from "./loading.js";
 import { LoopView } from "./loop_view.js";
-import { element, remember, remembered } from "./page_view.js";
+import { LoadingMark, element, remember, remembered, stopLoading } from "./page_view.js";
 import { Playhead } from "./playback.js";
 import { SceneView } from "./scene_view.js";
 import { OPACITY_RANGE, SIZE_RANGE, opacityPercent, sizeFactor, sizeStep } from "./settings.js";
@@ -361,10 +362,12 @@ async function main() {
     element("image", HTMLCanvasElement),
     element("legend", HTMLElement),
     element("image-tag", HTMLElement),
+    new LoadingMark(element("image-panel", HTMLElement)),
     bundle,
     fetchFile,
   );
   const scene = new SceneView(element("scene", HTMLElement), bundle);
+  const sceneLoading = new LoadingMark(element("scene-panel", HTMLElement));
   const solver = new SolverView(
     element("summary", HTMLElement),
     element("steps", HTMLElement),
@@ -436,6 +439,7 @@ async function main() {
     solver.show(frame, k);
     const state = k < 0 ? null : String(track.records.state[k]);
     mapCounts.textContent = mapLabel(track.name, state, map, run.map.status);
+    sceneLoading.set(mapLoading(true, run.map.status));
   }
 
   /**
@@ -575,6 +579,7 @@ async function main() {
   }
   message.hidden = true;
   if (present.length === 0) {
+    stopLoading();
     fail("the bundle holds no runs");
     return;
   }
@@ -582,6 +587,7 @@ async function main() {
 }
 
 main().catch((error) => {
+  stopLoading();
   const message = document.getElementById("message");
   if (message !== null) {
     message.hidden = false;
