@@ -109,12 +109,14 @@ struct PoseGraph {
 /// @brief Optimise a pose graph, each edge's measured relative pose with unit information.
 ///
 /// ORB-SLAM's `OptimizeEssentialGraph` on GTSAM: edge `(i, j)` measures `T_i_j =
-/// T_world_i^-1 T_world_j` (`BetweenFactor`); the poses in `fixed` are held exactly
-/// (`NonlinearEquality`).
+/// T_world_i^-1 T_world_j` (`BetweenFactor`); the poses in `fixed` are held as constants, as
+/// g2o's fixed vertices hold ORB-SLAM's: an edge with one held end is a factor on its other end,
+/// and one with both ends held a constant error, counted in the summary's errors. With every
+/// pose held, nothing is solved: the poses come back as given, after no iteration.
 /// @param poses Each pose's start, camera-to-world: rigid, or a similarity with `similarity`.
 /// @param edges Each edge's two poses `(i, j)`, `i != j`.
 /// @param relatives Each edge's measured `T_i_j`, of the poses' kind.
-/// @param fixed The poses held fixed, at least one.
+/// @param fixed The poses held fixed, at least one; each comes back exactly as given.
 /// @param similarity Optimise Sim(3) rather than SE(3).
 /// @param options How the solve runs.
 /// @return The poses and summary; `InvalidInput` for a pose or relative not of the kind,
@@ -197,7 +199,9 @@ struct Observations {
 ///
 /// ORB-SLAM's `GlobalBundleAdjustemnt` as loop closing calls it (`bRobust` false), on GTSAM; with
 /// the observations' `huber`, each whitened error through a Huber loss at its threshold, as
-/// ORB-SLAM's local and welding BAs weigh theirs.
+/// ORB-SLAM's local and welding BAs weigh theirs. The cameras in `fixed` are held as constants,
+/// as g2o's fixed vertices hold ORB-SLAM's: each of their observations is a factor on its point
+/// alone.
 /// @param poses Each camera's starting `T_world_cam`.
 /// @param points Each point's start, in the world (P x 3), P >= 1.
 /// @param observations The observations; every point must be observed.
@@ -205,7 +209,7 @@ struct Observations {
 /// @param intrinsics Its intrinsics.
 /// @param bf The baseline times the focal length, positive if any observation has a right
 ///        column.
-/// @param fixed The cameras held fixed.
+/// @param fixed The cameras held fixed; each comes back exactly as given.
 /// @param options How the solve runs.
 /// @return The poses, points and summary; `InvalidInput` for a pose not rigid, mismatched
 ///         sizes, an index out of range, an unobserved point, a non-positive information or
