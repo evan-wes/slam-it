@@ -193,6 +193,42 @@ def test_a_pose_graph_closes_its_ring(backend: str, similarity: bool) -> None:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("similarity", [False, True])
+def test_held_poses_are_constants_and_an_edge_between_two_costs_a_constant(
+    backend: str, similarity: bool
+) -> None:
+    """Held poses are constants: each comes back bit for bit, the free ones to the truth.
+
+    An edge with a held end pulls its free end alone, from either side; one joining two held
+    poses costs a constant, counted in the errors; with every pose held, nothing is solved.
+    """
+    chosen = require_function(backend, graphs.__name__, "optimize_pose_graph")
+    truth, _, _ = _ring(4, similarity)
+    edges = np.array([[0, 1], [1, 2], [3, 1], [2, 3]])  # both held; held first; second; free
+    relatives = np.stack([np.linalg.inv(truth[i]) @ truth[j] for i, j in edges])
+    relatives[0] = relatives[0] @ se3.exp([0.1, 0.0, 0.0, 0.0, 0.0, 0.05])  # costs a constant
+    start = truth.copy()
+    start[2] = start[2] @ se3.exp([0.05, -0.03, 0.02, 0.01, 0.0, -0.02])
+    start[3] = start[3] @ se3.exp([-0.04, 0.02, 0.01, 0.0, 0.02, 0.01])
+
+    def solve(poses: Array, fixed: list[int]) -> graphs.PoseGraph:
+        return graphs.optimize_pose_graph(
+            poses, edges, relatives, fixed, similarity=similarity,
+            options=graphs.Options(max_iterations=30), backend=chosen,
+        )  # fmt: skip
+
+    result, every = solve(start, [0, 1]), solve(truth, [0, 1, 2, 3])
+    np.testing.assert_array_equal(result.poses[:2], start[:2])
+    np.testing.assert_allclose(result.poses[2:], truth[2:], rtol=0, atol=1e-8)
+    np.testing.assert_array_equal(every.poses, truth)
+    held = every.summary
+    assert (held.iterations, held.termination, held.converged) == (0, "function", True)
+    assert held.final_error == held.initial_error > 1e-4
+    assert result.summary.final_error == pytest.approx(held.initial_error, rel=1e-9)
+    assert result.summary.initial_error > result.summary.final_error
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("fixed_scale", [False, True])
 def test_a_similarity_is_refined_its_outlier_dropped_and_refined_again(
     backend: str, fixed_scale: bool
@@ -295,10 +331,16 @@ def _observed(
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("lens", [RADTAN, PINHOLE], ids=["radtan", "pinhole"])
-def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str, Array]) -> None:
+@pytest.mark.parametrize("held", [1, 3, 5], ids=["one-held", "three-held", "every-one-held"])
+def test_bundle_adjustment_recovers_a_stereo_scene(
+    backend: str, lens: tuple[str, Array], held: int
+) -> None:
     """Stereo observations fix the scale: perturbed cameras and points return to the truth.
 
-    Through radtan, Python's factors are its own; through a pinhole camera, GTSAM's.
+    Through radtan, Python's factors are its own; through a pinhole camera, GTSAM's. The held
+    cameras are constants, through every factor a held camera's observation makes (monocular and
+    stereo, pinhole and radtan): each comes back bit for bit as given, with one, three or all
+    five held, when the points alone are adjusted.
     """
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     name, intrinsics = lens
@@ -308,13 +350,14 @@ def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str
     start_poses = np.stack(
         [poses[0]] + [pose @ se3.exp(rng.normal(scale=0.02, size=6)) for pose in poses[1:]]
     )
+    start_poses[:held] = poses[:held]
     start_points = points + rng.normal(scale=0.05, size=points.shape)
     result = graphs.bundle_adjust(
         start_poses, start_points, cameras, ids, pixels, right, np.ones(len(cameras)),
-        model=name, intrinsics=intrinsics, bf=BF, fixed=[0],
+        model=name, intrinsics=intrinsics, bf=BF, fixed=list(range(held)),
         options=graphs.Options(max_iterations=20), backend=chosen,
     )  # fmt: skip
-    np.testing.assert_array_equal(result.poses[0], poses[0])
+    np.testing.assert_array_equal(result.poses[:held], poses[:held])
     np.testing.assert_allclose(result.poses, poses, rtol=0, atol=1e-7)
     np.testing.assert_allclose(result.points, points, rtol=0, atol=1e-6)
     assert result.summary.converged or result.summary.final_error < 1e-12
