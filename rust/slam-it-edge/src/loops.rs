@@ -2709,6 +2709,7 @@ fn adjust(
             bf: camera.focal() * camera.baseline,
         },
         fixed,
+        0.0,
         &graphs::Options {
             max_iterations: iterations,
             stop: stop.clone(),

@@ -41,10 +41,23 @@ cameras until nothing was left to cost, and the map collapsed (the loop room, 20
 **Solves.** Levenberg-Marquardt, GTSAM's, driven here one ``iterate()`` at a time so that
 every language stops by the same rule (:class:`Termination`), and a ``stop`` check between
 iterations can end it, as g2o's ``setForceStopFlag`` ends ORB-SLAM's. Each ``iterate()`` linearises,
-then raises its damping ``λ`` until a step lowers the error, or gives up at GTSAM's upper
-bound (``1e5``); a step that lowers the error divides ``λ`` by 10 (GTSAM's defaults). An
-error GTSAM raises while solving is :class:`~slam_it.foundations.errors.NotConvergedError`,
-as the compiled backends report it.
+then raises its damping ``λ`` until a step lowers the error, or gives up at its upper bound.
+By default the damping is GTSAM's own: ``λ`` from an absolute 1e-5, divided by 10 after a step
+that lowers the error, multiplied by 10 after one that does not, up to 1e5. With
+:attr:`Options.scaled_damping` it is g2o's, as ORB-SLAM3's BAs run it: ``λ`` from ``τ`` times
+the largest diagonal entry of the normal equations, by Nielsen's schedule; and
+:attr:`Options.small_steps` adds ORB-SLAM3's own stop, three iterations in a row each lowering
+the error by under 0.1% (since 0.3.18.0: loop closing's global BA takes both, its welding BA
+neither). An error GTSAM raises while solving is
+:class:`~slam_it.foundations.errors.NotConvergedError`, as the compiled backends report it.
+
+**Bundle adjustment can leave out observations near a camera's plane** (``near``, since
+0.3.18.0): each whose point, at the start, is behind its camera or in front of it nearer than
+``near`` times the median depth of every observation. Real maps hold a few points 1e-9 to 1e-4
+of the median depth in front of a camera, whose ``(f/z)²`` makes the Hessian's largest diagonal
+entry 1e13 to 1e23: each damping then either stalls the solve or, scaled to that entry, takes no
+step. ORB-SLAM3's global BA has no such filter; its local and welding BAs drop an observation
+behind its camera only after a solve (``isDepthPositive``).
 
 **Held cameras and poses are constants,** never variables, as g2o's fixed vertices hold
 ORB-SLAM's (``setFixed``): a held camera's observation is a factor on its point alone (through a
@@ -97,6 +110,31 @@ SIMILARITY_DIM = 7
 STEREO_DIMENSION = 3
 """A stereo observation's length: ``(u, v, u_r)``, the right column after the pixel."""
 
+ABSOLUTE_DAMPING_FACTOR = 10.0
+"""GTSAM's own damping's factor (``LevenbergMarquardtParams``' default ``lambdaFactor``): ``λ`` is
+divided by it after a step that lowers the error and multiplied by it after one that does not."""
+
+ABSOLUTE_DAMPING_LIMIT = 1e5
+"""GTSAM's own damping's upper bound (``LevenbergMarquardtParams``' default ``lambdaUpperBound``):
+a search that reaches it gives up, the iteration accepting no step."""
+
+SCALED_DAMPING_FACTOR = 2.0
+"""Nielsen's first factor, ``ν``: the scaled damping's first failed trial in an iteration doubles
+``λ``, and each further one doubles the factor (``λ`` times 2, 4, 8, ...), as g2o's ``_ni`` does.
+An accepted step multiplies ``λ`` by ``max(1/3, 1 - (2ρ - 1)³)``, ``ρ`` its gain ratio (the
+error's decrease over the linearised model's), and resets the factor. GTSAM's
+``useFixedLambdaFactor = false`` policy, which this uses, takes that formula as Nielsen gave it
+(Madsen, Nielsen and Tingleff, "Methods for non-linear least squares problems", 2004, (2.21));
+g2o caps it at 2/3 as well, so a poor step it accepts always lowers ``λ`` there, and accepts any
+step with ``ρ > 0`` where GTSAM asks ``ρ > 10⁻³`` (its ``minModelFidelity``)."""
+
+SCALED_DAMPING_LIMIT = 1e32
+"""The scaled damping's upper bound, GTSAM's own for its Ceres-like parameters
+(``LevenbergMarquardtParams::CeresDefaults``): far past any BA's Hessian, so in practice no
+bound, as g2o has none. g2o instead ends a solve after 10 failed trials in an iteration
+(``maxTrialsAfterFailure``), which multiply ``λ`` by 2^55; GTSAM has no such cap, and from a
+first ``λ`` of 1e-5 times a diagonal of 1e11, 13 failed trials (2^91) reach this bound."""
+
 
 class Termination(enum.StrEnum):
     """Why a solve stopped."""
@@ -136,12 +174,33 @@ class Options:
         ORB-SLAM's solves run on, keeps iterating to its count without changing anything that
         matters; at 0, no step can lower the error there, and the solve ends at the damping's
         limit, not converged.
+    scaled_damping : bool
+        Which damping the solve follows. False, GTSAM's own: ``λ`` starts at
+        ``initial_damping``, is divided by :data:`ABSOLUTE_DAMPING_FACTOR` after a step that
+        lowers the error and multiplied by it after one that does not, up to
+        :data:`ABSOLUTE_DAMPING_LIMIT`. True, g2o's
+        (``OptimizationAlgorithmLevenberg``, which ORB-SLAM3's BAs run): ``λ`` starts at
+        ``initial_damping`` times the largest diagonal entry of the normal equations at the start
+        (g2o's ``computeLambdaInit``, ``initial_damping`` its ``τ``) and follows Nielsen's
+        schedule (:data:`SCALED_DAMPING_FACTOR`) up to :data:`SCALED_DAMPING_LIMIT`. A BA's
+        Hessian holds up to 1e11 on its diagonal (advio-20's global BA: 4e8 to 2.5e11 on its
+        cameras' translations), so GTSAM's absolute ``λ`` neither holds a monocular BA's free
+        scale nor, at its bound, turns a step towards the gradient.
+    small_steps : int
+        End the solve as converged once this many iterations in a row have each lowered the
+        error by less than ``small_decrease`` times it (ORB-SLAM3's g2o, 3; Mur-Artal's "stop
+        criterium", ``optimization_algorithm_levenberg.cpp``); 0, never. Non-negative.
+    small_decrease : float
+        See ``small_steps`` (ORB-SLAM3's 1e-3). Positive.
     """
 
     max_iterations: int = 10
     initial_damping: float = 1e-5
     relative_tolerance: float = 1e-10
     absolute_tolerance: float = 0.0
+    scaled_damping: bool = False
+    small_steps: int = 0
+    small_decrease: float = 1e-3
 
     def __post_init__(self) -> None:
         """Check the options.
@@ -151,12 +210,20 @@ class Options:
         slam_it.foundations.errors.InvalidInputError
             If an option is out of its range.
         """
-        if isinstance(self.max_iterations, bool) or not isinstance(self.max_iterations, int):
-            raise InvalidInputError("max_iterations: expected an int")
+        for name in ("max_iterations", "small_steps"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise InvalidInputError(f"{name}: expected an int")
         if self.max_iterations < 1:
             raise InvalidInputError(f"max_iterations: expected >= 1, got {self.max_iterations}")
-        if not (math.isfinite(self.initial_damping) and self.initial_damping > 0.0):
-            raise InvalidInputError(f"initial_damping: expected > 0, got {self.initial_damping}")
+        if self.small_steps < 0:
+            raise InvalidInputError(f"small_steps: expected >= 0, got {self.small_steps}")
+        if not isinstance(self.scaled_damping, bool):
+            raise InvalidInputError("scaled_damping: expected a bool")
+        for name in ("initial_damping", "small_decrease"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and value > 0.0):
+                raise InvalidInputError(f"{name}: expected > 0, got {value}")
         for name in ("relative_tolerance", "absolute_tolerance"):
             value = getattr(self, name)
             if not (math.isfinite(value) and value >= 0.0):
@@ -299,6 +366,7 @@ class Implementation(Protocol):
         bf: float,
         fixed: IntArray,
         huber: Array | None,
+        near: float,
         options: dict[str, Any],
     ) -> dict[str, Any]:
         """Adjust a bundle; return ``poses``, ``points`` and the summary's fields."""
@@ -502,6 +570,64 @@ def similarity_residuals(  # noqa: PLR0913, PLR0917 -- the match, its camera, th
 # --- the solve ----------------------------------------------------------------------------
 
 
+def largest_hessian_diagonal(graph: gtsam.NonlinearFactorGraph, values: gtsam.Values) -> float:
+    """Return the largest diagonal entry of a graph's normal equations ``JᵀJ`` at `values`.
+
+    Each factor linearised as GTSAM linearises it (whitened, a robust loss's weight applied), each
+    variable's column of ``J`` squared and summed over the factors: the diagonal GTSAM's
+    ``GaussianFactorGraph::hessianDiagonal`` gives, which its Python wrapper lacks. It is g2o's
+    ``computeLambdaInit``'s maximum, taken over the free vertices, as here over the variables.
+
+    Parameters
+    ----------
+    graph : gtsam.NonlinearFactorGraph
+        The graph.
+    values : gtsam.Values
+        Its variables' values.
+
+    Returns
+    -------
+    float
+        The largest entry, or 0 for a graph with no factor.
+    """
+    zero = values.zeroVectors()
+    variables = values.keys()  # GTSAM's KeyVector
+    dimension = {key: zero.at(key).shape[0] for key in variables}
+    diagonal: dict[int, Array] = {key: np.zeros(size) for key, size in dimension.items()}
+    linear = graph.linearize(values)
+    for k in range(linear.size()):
+        factor = linear.at(k)
+        jacobian, _ = factor.jacobian()
+        column = 0
+        keys = factor.keys()  # GTSAM's KeyVector, in the jacobian's column order
+        for key in keys:
+            size = dimension[key]
+            diagonal[key] += np.sum(jacobian[:, column : column + size] ** 2, axis=0)
+            column += size
+    return max((float(np.max(np.abs(d))) for d in diagonal.values() if d.size), default=0.0)
+
+
+def _params(
+    graph: gtsam.NonlinearFactorGraph, values: gtsam.Values, options: Options
+) -> gtsam.LevenbergMarquardtParams:
+    """Return GTSAM's parameters for a solve: its damping (:attr:`Options.scaled_damping`)."""
+    params = gtsam.LevenbergMarquardtParams()
+    params.setRelativeErrorTol(options.relative_tolerance)
+    params.setAbsoluteErrorTol(options.absolute_tolerance)
+    if not options.scaled_damping:
+        params.setlambdaInitial(options.initial_damping)
+        params.setlambdaFactor(ABSOLUTE_DAMPING_FACTOR)
+        params.setlambdaUpperBound(ABSOLUTE_DAMPING_LIMIT)
+        return params
+    largest = largest_hessian_diagonal(graph, values)
+    # With no gradient anywhere (every Jacobian zero), λ cannot be scaled to it: its τ alone.
+    params.setlambdaInitial(options.initial_damping * (largest if largest > 0.0 else 1.0))
+    params.setlambdaFactor(SCALED_DAMPING_FACTOR)
+    params.setUseFixedLambdaFactor(False)
+    params.setlambdaUpperBound(SCALED_DAMPING_LIMIT)
+    return params
+
+
 def _solve(
     graph: gtsam.NonlinearFactorGraph,
     values: gtsam.Values,
@@ -512,20 +638,18 @@ def _solve(
 
     `stop`, if given, is asked before each iteration whether to end the solve there.
     """
-    params = gtsam.LevenbergMarquardtParams()
-    params.setlambdaInitial(options.initial_damping)
-    params.setRelativeErrorTol(options.relative_tolerance)
-    params.setAbsoluteErrorTol(options.absolute_tolerance)
     # Whatever GTSAM raises (its wrapper's RuntimeError, an index or a key it cannot find, an
     # error inside a custom factor's callback) ends the solve as NotConvergedError, as the C++
     # and Rust cores catch every exception GTSAM throws: so a broad catch, here alone.
     try:
+        params = _params(graph, values, options)
         optimizer = gtsam.LevenbergMarquardtOptimizer(graph, values, params)
         initial = current = float(optimizer.error())
     except Exception as failure:
         raise NotConvergedError(f"GTSAM failed: {failure}") from failure
     termination = Termination.MAX_ITERATIONS
     iterations = 0
+    small = 0  # iterations in a row each lowering the error by under small_decrease of it
     while current > 0.0 and iterations < options.max_iterations:
         if stop is not None and stop():
             termination = Termination.STOPPED
@@ -540,10 +664,15 @@ def _solve(
             termination = Termination.DAMPING_LIMIT
             break
         decrease = current - error
+        previous = current
         current = error
         if decrease <= options.absolute_tolerance or decrease <= options.relative_tolerance * (
             current + decrease
         ):
+            termination = Termination.FUNCTION
+            break
+        small = small + 1 if decrease < options.small_decrease * previous else 0
+        if options.small_steps and small >= options.small_steps:
             termination = Termination.FUNCTION
             break
     if current == 0.0:
@@ -1076,6 +1205,47 @@ def _pinhole_factors(
     return build
 
 
+def kept_observations(
+    poses: Array, points: Array, cameras: IntArray, point_ids: IntArray, near: float
+) -> NDArray[np.bool_]:
+    """Return which observations a bundle adjustment keeps (:func:`bundle_adjust`'s `near`).
+
+    With `near` 0, every one. Otherwise those whose point, at the start, is in front of its
+    camera and no nearer than `near` times the median of every observation's depth: the
+    ``⌊M/2⌋``-th smallest of the M, counting from 0, as every language takes it. Each depth is
+    ``R[0, 2] dx + R[1, 2] dy + R[2, 2] dz``, summed in that order, ``(dx, dy, dz)`` the point less
+    the camera's centre, so that every language finds the same median.
+
+    Parameters
+    ----------
+    poses : ndarray of float64, shape (C, 4, 4)
+        Each camera's ``T_world_cam``.
+    points : ndarray of float64, shape (P, 3)
+        Each point, in the world.
+    cameras, point_ids : ndarray of int64, shape (M,)
+        Each observation's camera and point, M >= 1.
+    near : float
+        The fraction of the median depth, non-negative.
+
+    Returns
+    -------
+    ndarray of bool, shape (M,)
+        Whether each observation is kept.
+    """
+    if near == 0.0:
+        return np.ones(cameras.shape[0], dtype=np.bool_)
+    rotation = poses[cameras, :3, :3]
+    offset = points[point_ids] - poses[cameras, :3, 3]
+    depth = (
+        rotation[:, 0, 2] * offset[:, 0]
+        + rotation[:, 1, 2] * offset[:, 1]
+        + rotation[:, 2, 2] * offset[:, 2]
+    )
+    middle = depth.shape[0] // 2
+    median = float(np.partition(depth, middle)[middle])
+    return np.asarray((depth > 0.0) & ~(depth < near * median), dtype=np.bool_)
+
+
 def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
     poses: Array,
     points: Array,
@@ -1089,21 +1259,37 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
     bf: float,
     fixed: IntArray,
     huber: Array | None,
+    near: float,
     options: Options,
     stop: Callable[[], bool] | None = None,
 ) -> Adjustment:
-    """Adjust a bundle (reference); the held cameras are constants (the module docstring)."""
+    """Adjust a bundle (reference); the held cameras are constants (the module docstring).
+
+    Only the observations `near` keeps take part, and only the points and free cameras they
+    reach are solved; the rest come back as given.
+    """
+    kept = kept_observations(poses, points, cameras, point_ids, near)
     held = {int(c) for c in fixed}
+    solved_cameras = {int(c) for c in cameras[kept]} - held
+    solved_points = {int(p) for p in point_ids[kept]}
+    if not kept.any():  # nothing left to solve: the input as given, no error counted
+        nothing = Summary(
+            initial_error=0.0,
+            final_error=0.0,
+            iterations=0,
+            termination=Termination.FUNCTION,
+            converged=True,
+        )
+        return Adjustment(poses=poses.copy(), points=points.copy(), summary=nothing)
     graph = gtsam.NonlinearFactorGraph()
     values = gtsam.Values()
     first_point = poses.shape[0]
-    for c, pose in enumerate(poses):
-        if c not in held:
-            values.insert(c, gtsam.Pose3(pose))
-    for p, point in enumerate(points):
-        values.insert(first_point + p, np.asarray(point, dtype=np.float64))
+    for c in sorted(solved_cameras):
+        values.insert(c, gtsam.Pose3(poses[c]))
+    for p in sorted(solved_points):
+        values.insert(first_point + p, np.asarray(points[p], dtype=np.float64))
     builtin = _pinhole_factors(intrinsics, bf) if model == "pinhole" else None
-    for m in range(cameras.shape[0]):
+    for m in np.flatnonzero(kept).tolist():
         stereo = not math.isnan(right[m])
         measured = np.append(pixels[m], right[m]) if stereo else pixels[m]
         c, p = int(cameras[m]), int(point_ids[m])
@@ -1133,21 +1319,12 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
         keys = [first_point + p] if c in held else [c, first_point + p]
         graph.add(_custom(noise, keys, evaluate))
     solved, summary = _solve(graph, values, options, stop)
-    return Adjustment(
-        poses=np.stack(
-            [
-                poses[c] if c in held else np.asarray(solved.atPose3(c).matrix(), np.float64)
-                for c in range(len(poses))
-            ]
-        ),
-        points=np.stack(
-            [
-                np.asarray(solved.atPoint3(first_point + p), dtype=np.float64)
-                for p in range(len(points))
-            ]
-        ).reshape(-1, 3),
-        summary=summary,
-    )
+    out_poses, out_points = poses.copy(), points.copy()
+    for c in solved_cameras:
+        out_poses[c] = np.asarray(solved.atPose3(c).matrix(), np.float64)
+    for p in solved_points:
+        out_points[p] = np.asarray(solved.atPoint3(first_point + p), dtype=np.float64)
+    return Adjustment(poses=out_poses, points=out_points, summary=summary)
 
 
 def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options, backend
@@ -1164,6 +1341,7 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     bf: float,
     fixed: ArrayLike,
     huber: ArrayLike | None = None,
+    near: float = 0.0,
     options: Options | None = None,
     stop: Callable[[], bool] | None = None,
     backend: str = "python",
@@ -1177,7 +1355,11 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     alone. Every point must be seen; one seen once is free along its ray and constrained across
     it, and the damping holds it along the ray. With `huber`, each observation's whitened error
     passes through a Huber loss at its threshold (GTSAM's ``mEstimator::Huber``), as ORB-SLAM's
-    local and welding BAs weigh theirs (``RobustKernelHuber``).
+    local and welding BAs weigh theirs (``RobustKernelHuber``). With `near`, the observations
+    near their camera's plane are left out (the module docstring; :func:`kept_observations`):
+    only the points and free cameras the others reach are solved, the rest coming back as
+    given, and the summary's errors are the kept observations'; with none kept, nothing is
+    solved, and the summary is 0 iterations, converged, with errors of 0.
 
     Parameters
     ----------
@@ -1204,6 +1386,10 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     huber : array_like, shape (M,), optional
         Each observation's Huber threshold on its whitened error's norm, positive (default:
         no robust loss).
+    near : float, optional
+        Leave out each observation whose point, at the start, is behind its camera or nearer
+        than this fraction of the median depth, finite and non-negative (default 0: none left
+        out; loop closing's global and welding BAs pass ``loops.near_fraction``, 1e-3).
     options : Options, optional
         How the solve runs (default: :class:`Options`'s).
     stop : callable, optional
@@ -1222,7 +1408,8 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     slam_it.foundations.errors.InvalidInputError
         If a pose is not rigid, the shapes disagree, an index is out of range, a point is not
         observed, an information or a Huber threshold is not positive, a right column is given
-        with ``bf <= 0``, the camera is invalid, or a ``stop`` is given to a compiled backend.
+        with ``bf <= 0``, `near` is negative or not finite, the camera is invalid, or a
+        ``stop`` is given to a compiled backend.
     slam_it.foundations.errors.NotConvergedError
         If GTSAM fails while solving.
     """
@@ -1249,6 +1436,8 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     held = np.unique(_indices(fixed, checked.shape[0], "fixed"))
     code, params = camera.as_model(model, intrinsics)
     robust = None if huber is None else _information(huber, which.shape[0], "huber")
+    if not (math.isfinite(near) and near >= 0.0):
+        raise InvalidInputError(f"near: expected >= 0, got {near}")
 
     def decode(raw: dict[str, Any], codes: dict[str, list[str]]) -> Adjustment:
         return Adjustment(
@@ -1274,6 +1463,7 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
             bf,
             held,
             robust,
+            near,
             chosen,
             stop,
         ),
@@ -1290,6 +1480,7 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
             "bf": bf,
             "fixed": held,
             "huber": robust,
+            "near": near,
             "options": chosen.as_dict(),
         },
         decode=decode,

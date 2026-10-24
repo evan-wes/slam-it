@@ -34,8 +34,9 @@ using IndexPairsIn =
     nb::ndarray<const std::int64_t, nb::shape<-1, 2>, nb::c_contig, nb::device::cpu>;
 
 /// @brief `graphs::Options`' fields, as `graphs.Options.as_dict` names them.
-constexpr std::array<const char*, 4> kOptionKeys = {"max_iterations", "initial_damping",
-                                                    "relative_tolerance", "absolute_tolerance"};
+constexpr std::array<const char*, 7> kOptionKeys = {
+    "max_iterations", "initial_damping", "relative_tolerance", "absolute_tolerance",
+    "scaled_damping", "small_steps",     "small_decrease"};
 
 /// @brief Read a solve's options from `graphs.Options.as_dict`.
 /// @param options The dict.
@@ -46,7 +47,10 @@ graphs::Options read_options(const nb::dict& options) {
   return graphs::Options{.max_iterations = nb::cast<int>(options["max_iterations"]),
                          .initial_damping = nb::cast<double>(options["initial_damping"]),
                          .relative_tolerance = nb::cast<double>(options["relative_tolerance"]),
-                         .absolute_tolerance = nb::cast<double>(options["absolute_tolerance"])};
+                         .absolute_tolerance = nb::cast<double>(options["absolute_tolerance"]),
+                         .scaled_damping = nb::cast<bool>(options["scaled_damping"]),
+                         .small_steps = nb::cast<int>(options["small_steps"]),
+                         .small_decrease = nb::cast<double>(options["small_decrease"])};
 }
 
 /// @brief Write a summary's fields into a result dict.
@@ -153,6 +157,7 @@ nb::dict refine_similarity(const Matrix4In& similarity, const BatchIn<3>& points
 /// @param bf The baseline times the focal length.
 /// @param fixed The cameras held fixed.
 /// @param huber Each observation's Huber threshold, or None for no robust loss.
+/// @param near The fraction of the median depth nearer than which an observation is left out.
 /// @param options `graphs.Options.as_dict()`.
 /// @return `{"poses", "points", "initial_error", "final_error", "iterations", "termination"}`.
 /// @throws CoreError for an invalid bundle or a failed solve; std::invalid_argument for an
@@ -164,7 +169,8 @@ nb::dict bundle_adjust(const BatchIn<4, 4>& poses, const BatchIn<3>& points,
                        const VectorIn<double>& right, const VectorIn<double>& information,
                        int model, const VectorIn<double>& intrinsics, double bf,
                        const VectorIn<std::int64_t>& fixed,
-                       const std::optional<VectorIn<double>>& huber, const nb::dict& options) {
+                       const std::optional<VectorIn<double>>& huber, double near,
+                       const nb::dict& options) {
   const std::vector<Eigen::Matrix4d> starts = copy_poses(poses);
   const Eigen::VectorXd params = copy_vector<Eigen::VectorXd>(intrinsics);
   const auto seen = rows2(pixels);
@@ -177,7 +183,7 @@ nb::dict bundle_adjust(const BatchIn<4, 4>& poses, const BatchIn<3>& points,
       .huber = huber ? span_of(*huber) : std::span<const double>{}};
   const graphs::Adjustment result = unwrap(graphs::bundle_adjust(
       starts, rows3(points), observations, enum_code<camera::Model>(model, "model"), params, bf,
-      span_of(fixed), read_options(options)));
+      span_of(fixed), near, read_options(options)));
   nb::dict out;
   out["poses"] = poses_array(result.poses);
   out["points"] = matrix_array(result.points);
@@ -204,7 +210,7 @@ void bind_graphs(nb::module_& m) {
         nb::arg("point_ids").noconvert(), nb::arg("pixels").noconvert(),
         nb::arg("right").noconvert(), nb::arg("information").noconvert(), nb::arg("model"),
         nb::arg("intrinsics").noconvert(), nb::arg("bf"), nb::arg("fixed").noconvert(),
-        nb::arg("huber").noconvert().none(), nb::arg("options"),
+        nb::arg("huber").noconvert().none(), nb::arg("near"), nb::arg("options"),
         "Adjust a bundle; return its poses, points and the summary's fields.");
 }
 

@@ -14,6 +14,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "slam_it/foundations/camera.hpp"
@@ -422,12 +423,15 @@ Scene stereo_scene() {
   return scene;
 }
 
-/// @brief Adjust the scene from its start, the cameras in `fixed` held, for 20 iterations.
+/// @brief Adjust the scene from its start, the cameras in `fixed` held, by default for 20
+///        iterations.
 /// @param scene The scene.
 /// @param fixed The cameras held.
+/// @param options How the solve runs.
 /// @return The adjustment.
-slam_it::foundations::Result<graphs::Adjustment> adjust(const Scene& scene,
-                                                        std::span<const std::int64_t> fixed) {
+slam_it::foundations::Result<graphs::Adjustment> adjust(
+    const Scene& scene, std::span<const std::int64_t> fixed,
+    const graphs::Options& options = graphs::Options{.max_iterations = 20}) {
   return graphs::bundle_adjust(scene.start, scene.start_points,
                                graphs::Observations{.cameras = scene.cameras,
                                                     .point_ids = scene.ids,
@@ -435,8 +439,7 @@ slam_it::foundations::Result<graphs::Adjustment> adjust(const Scene& scene,
                                                     .right = scene.right,
                                                     .information = scene.information,
                                                     .huber = {}},
-                               camera::Model::kRadTan, radtan(), kBf, fixed,
-                               graphs::Options{.max_iterations = 20});
+                               camera::Model::kRadTan, radtan(), kBf, fixed, 0.0, options);
 }
 
 /// @brief Whether an adjustment returned the held cameras exactly as they started, and every
@@ -557,6 +560,12 @@ void test_bad_input(int& failures) {
   expect(is_invalid_input(graphs::optimize_pose_graph(truth, edges, relatives, fixed, false,
                                                       graphs::Options{.max_iterations = 0})),
          "max_iterations below 1 is refused", failures);
+  expect(is_invalid_input(graphs::optimize_pose_graph(truth, edges, relatives, fixed, false,
+                                                      graphs::Options{.small_steps = -1})),
+         "small_steps below 0 is refused", failures);
+  expect(is_invalid_input(graphs::optimize_pose_graph(truth, edges, relatives, fixed, false,
+                                                      graphs::Options{.small_decrease = 0.0})),
+         "a small_decrease of 0 is refused", failures);
   graphs::Points points(2, 3);
   points << 0.0, 0.0, 3.0, 1.0, 0.0, 3.0;
   const std::array<std::int64_t, 1> one_camera = {0};
@@ -564,27 +573,27 @@ void test_bad_input(int& failures) {
   const graphs::Pairs pixel = graphs::Pairs::Constant(1, 2, 1.0);
   const std::array<double, 1> mono = {std::numeric_limits<double>::quiet_NaN()};
   const std::array<double, 1> info = {1.0};
-  expect(
-      is_invalid_input(graphs::bundle_adjust(truth, points,
-                                             graphs::Observations{.cameras = one_camera,
-                                                                  .point_ids = one_point,
-                                                                  .pixels = pixel,
-                                                                  .right = mono,
-                                                                  .information = info,
-                                                                  .huber = {}},
-                                             camera::Model::kPinhole, pinhole(), kBf, fixed, {})),
-      "an unobserved point is refused", failures);
+  expect(is_invalid_input(graphs::bundle_adjust(truth, points,
+                                                graphs::Observations{.cameras = one_camera,
+                                                                     .point_ids = one_point,
+                                                                     .pixels = pixel,
+                                                                     .right = mono,
+                                                                     .information = info,
+                                                                     .huber = {}},
+                                                camera::Model::kPinhole, pinhole(), kBf, fixed, 0.0,
+                                                {})),
+         "an unobserved point is refused", failures);
   const std::array<double, 1> stereo = {3.0};
-  expect(
-      is_invalid_input(graphs::bundle_adjust(truth, points.topRows(1),
-                                             graphs::Observations{.cameras = one_camera,
-                                                                  .point_ids = one_point,
-                                                                  .pixels = pixel,
-                                                                  .right = stereo,
-                                                                  .information = info,
-                                                                  .huber = {}},
-                                             camera::Model::kPinhole, pinhole(), 0.0, fixed, {})),
-      "a right column without bf is refused", failures);
+  expect(is_invalid_input(graphs::bundle_adjust(truth, points.topRows(1),
+                                                graphs::Observations{.cameras = one_camera,
+                                                                     .point_ids = one_point,
+                                                                     .pixels = pixel,
+                                                                     .right = stereo,
+                                                                     .information = info,
+                                                                     .huber = {}},
+                                                camera::Model::kPinhole, pinhole(), 0.0, fixed, 0.0,
+                                                {})),
+         "a right column without bf is refused", failures);
   // A row of pixels2 is finite, or wholly NaN (unseen): anything else is refused (H1, L1).
   graphs::Points same(3, 3);
   same << 0.0, 0.0, 3.0, 0.1, 0.0, 3.0, 0.2, 0.1, 3.0;
@@ -614,6 +623,315 @@ void test_bad_input(int& failures) {
   expect(refine(unseen).has_value(), "a wholly unseen pixels2 row is taken", failures);
 }
 
+/// @brief Two held cameras 0.3 m apart along x, looking down +z: a point alone is solved.
+/// @return Their `T_world_cam`.
+std::vector<Eigen::Matrix4d> held_pair() {
+  return {Eigen::Matrix4d::Identity(), pose({0.3, 0.0, 0.0}, {0.0, 0.0, 0.0})};
+}
+
+/// @brief The point the held pair sees, 4 m ahead.
+/// @return The point.
+Eigen::Vector3d far_truth() { return {0.2, -0.1, 4.0}; }
+
+/// @brief Its start, three times as far: GTSAM's first trial steps fail there.
+/// @return The point.
+Eigen::Vector3d far_start() { return {0.2, -0.1, 12.0}; }
+
+/// @brief Where the held pair's cameras see `far_truth`.
+/// @return Their pixels (2 x 2).
+graphs::Pairs held_pair_pixels() {
+  graphs::Pairs out(2, 2);
+  const std::vector<Eigen::Matrix4d> cameras = held_pair();
+  for (std::size_t c = 0; c < 2; ++c) {
+    const Eigen::Vector3d local = cameras[c].topLeftCorner<3, 3>().transpose() *
+                                  (far_truth() - cameras[c].topRightCorner<3, 1>());
+    out.row(static_cast<Eigen::Index>(c)) =
+        camera::project(camera::Model::kPinhole, pinhole(), local)->transpose();
+  }
+  return out;
+}
+
+/// @brief A point's damped search, emulated: where it is, its damping and the damping's factor.
+struct Damped {
+  /// @brief The point.
+  Eigen::Vector3d point;
+  /// @brief The damping.
+  double damping;
+  /// @brief The damping's factor.
+  double factor;
+};
+
+/// @brief The held pair's residuals at a point (unit information), stacked, and their Jacobian.
+/// @param point The point.
+/// @return The residuals (4) and the Jacobian (4 x 3).
+std::pair<Eigen::VectorXd, Eigen::MatrixXd> pair_residuals(const Eigen::Vector3d& point) {
+  Eigen::VectorXd residual(4);
+  Eigen::MatrixXd jacobian(4, 3);
+  const std::vector<Eigen::Matrix4d> cameras = held_pair();
+  const graphs::Pairs pixels = held_pair_pixels();
+  for (std::size_t c = 0; c < 2; ++c) {
+    const auto row = static_cast<Eigen::Index>(c);
+    const Eigen::VectorXd seen = pixels.row(row).transpose();
+    const auto at = graphs::projection_residual(cameras[c], point, seen, camera::Model::kPinhole,
+                                                pinhole(), kBf);
+    residual.segment<2>(2 * row) = at->residual;
+    jacobian.middleRows<2>(2 * row) = at->d_point;
+  }
+  return {residual, jacobian};
+}
+
+/// @brief One of GTSAM's Levenberg-Marquardt iterations on the held pair's point, emulated
+///        (`tests/foundations/test_graphs.py`'s `_gtsam_iteration`): trials of
+///        `(H + lambda I) delta = -g` until the gain ratio passes GTSAM's `minModelFidelity`,
+///        1e-3; a failed one multiplies the damping by the factor, which Nielsen's schedule
+///        doubles; an accepted one divides it by the factor, or with Nielsen's schedule scales it
+///        by `max(1/3, 1 - (2 rho - 1)^3)` and resets the factor to 2.
+/// @param at The point, damping and factor before the iteration.
+/// @param nielsen Whether Nielsen's schedule moves the damping.
+/// @param limit The damping's upper bound.
+/// @return The point, damping and factor after it.
+Damped gtsam_iteration(Damped at, bool nielsen, double limit) {
+  constexpr double kMinFidelity = 1e-3;
+  const auto [residual, jacobian] = pair_residuals(at.point);
+  const double error = 0.5 * residual.squaredNorm();
+  const Eigen::Matrix3d hessian = jacobian.transpose() * jacobian;
+  const Eigen::Vector3d gradient = jacobian.transpose() * residual;
+  while (at.damping < limit) {
+    const Eigen::Vector3d step =
+        -(hessian + (at.damping * Eigen::Matrix3d::Identity())).ldlt().solve(gradient);
+    const double predicted = error - (0.5 * (residual + (jacobian * step)).squaredNorm());
+    const double ratio =
+        (error - (0.5 * pair_residuals(at.point + step).first.squaredNorm())) / predicted;
+    if (ratio > kMinFidelity) {
+      if (nielsen) {
+        const double scale = std::max(1.0 / 3.0, 1.0 - std::pow((2.0 * ratio) - 1.0, 3));
+        return {.point = at.point + step, .damping = at.damping * scale, .factor = 2.0};
+      }
+      return {.point = at.point + step, .damping = at.damping / at.factor, .factor = at.factor};
+    }
+    at.damping *= at.factor;
+    at.factor *= nielsen ? 2.0 : 1.0;
+  }
+  return at;
+}
+
+/// @brief The scaled damping starts at tau times the largest diagonal entry and follows
+///        Nielsen's schedule (its first iteration fails at 1, 2 and 8 times its start before 64
+///        times steps); GTSAM's own starts at tau and moves by 10. Each of the first three
+///        iterations lands where the emulated search does.
+/// @param failures The running failure count.
+void test_damping_schedules(int& failures) {
+  constexpr double kTau = 1e-5;
+  const std::array<std::int64_t, 2> cameras = {0, 1};
+  const std::array<std::int64_t, 2> ids = {0, 0};
+  const std::array<double, 2> right = {std::numeric_limits<double>::quiet_NaN(),
+                                       std::numeric_limits<double>::quiet_NaN()};
+  const std::array<double, 2> information = {1.0, 1.0};
+  const graphs::Pairs pixels = held_pair_pixels();
+  graphs::Points start(1, 3);
+  start.row(0) = far_start().transpose();
+  const Eigen::MatrixXd jacobian = pair_residuals(far_start()).second;
+  const double largest = (jacobian.transpose() * jacobian).diagonal().maxCoeff();
+  for (const bool scaled : {true, false}) {
+    Damped expected{
+        .point = far_start(),
+        .damping = scaled ? kTau * largest : kTau,
+        .factor = scaled ? graphs::kScaledDampingFactor : graphs::kAbsoluteDampingFactor};
+    for (int iterations = 1; iterations <= 3; ++iterations) {
+      expected = gtsam_iteration(
+          expected, scaled, scaled ? graphs::kScaledDampingLimit : graphs::kAbsoluteDampingLimit);
+      const auto result = graphs::bundle_adjust(
+          held_pair(), start,
+          graphs::Observations{.cameras = cameras,
+                               .point_ids = ids,
+                               .pixels = pixels,
+                               .right = right,
+                               .information = information,
+                               .huber = {}},
+          camera::Model::kPinhole, pinhole(), kBf, cameras, 0.0,
+          graphs::Options{
+              .max_iterations = iterations, .initial_damping = kTau, .scaled_damping = scaled});
+      expect(result.has_value() && result->summary.iterations == iterations &&
+                 close(result->points.row(0).transpose(), expected.point, 0.0, 1e-9),
+             scaled ? "the scaled damping follows Nielsen's schedule from tau max diag(H)"
+                    : "GTSAM's own damping starts at tau and moves by 10",
+             failures);
+    }
+  }
+}
+
+/// @brief ORB-SLAM3's stop: from a heavily damped start (tau 3000) on the stereo scene, its
+///        pixels perturbed, the decreases grow from small through large, then shrink. With the
+///        small decrease set between the second and the third, the two first count as small and
+///        the third resets them: the solve ends at the third small one in a row after it,
+///        converged; with every decrease small, after three iterations.
+/// @param failures The running failure count.
+void test_small_steps(int& failures) {
+  constexpr int kMost = 30;
+  Scene scene = stereo_scene();
+  for (Eigen::Index m = 0; m < scene.pixels.rows(); ++m) {
+    const auto k = static_cast<double>(m);
+    scene.pixels.row(m) += Eigen::RowVector2d(0.5 * std::sin(1.7 * k), 0.5 * std::cos(2.3 * k));
+  }
+  const std::array<std::int64_t, 1> fixed = {0};
+  const auto solve = [&](graphs::Options options) {
+    options.initial_damping = 3000.0;
+    options.scaled_damping = true;
+    return adjust(scene, fixed, options);
+  };
+  std::vector<double> errors{solve({.max_iterations = 1})->summary.initial_error};
+  for (int k = 1; k <= kMost; ++k) {
+    errors.push_back(solve({.max_iterations = k})->summary.final_error);
+  }
+  std::vector<double> decrease;
+  for (std::size_t k = 1; k < errors.size(); ++k) {
+    decrease.push_back((errors[k - 1] - errors[k]) / errors[k - 1]);
+  }
+  const double threshold = std::sqrt(decrease[1] * decrease[2]);
+  std::vector<bool> small;
+  small.reserve(decrease.size());
+  for (const double d : decrease) {
+    small.push_back(d < threshold);
+  }
+  expect(small[0] && small[1] && !small[2], "two small decreases, then one that resets them",
+         failures);
+  std::size_t ends = 0;
+  for (std::size_t k = 3; k < small.size() && ends == 0; ++k) {
+    ends = small[k] && small[k - 1] && small[k - 2] ? k + 1 : 0;
+  }
+  const auto stopped =
+      solve({.max_iterations = kMost, .small_steps = 3, .small_decrease = threshold});
+  expect(ends > 6 && stopped.has_value() && std::cmp_equal(stopped->summary.iterations, ends) &&
+             stopped->summary.termination == graphs::Termination::kFunction,
+         "the third small decrease in a row after the large ones ends the solve, converged",
+         failures);
+  const auto three = solve({.max_iterations = kMost, .small_steps = 3, .small_decrease = 0.9});
+  expect(three.has_value() && three->summary.iterations == 3 && three->summary.converged,
+         "with every decrease small, three iterations end the solve", failures);
+}
+
+/// @brief Whether the near-plane scene keeps an observation: all but the extra six's first,
+///        fourth, fifth and sixth (`test_near_filter`).
+/// @param from_end The observation's place counted from the last, 1 for the last.
+/// @return Whether it is kept.
+bool near_scene_keeps(std::size_t from_end) {
+  constexpr std::array<bool, 6> kExtraKept = {false, true, true, false, false, false};
+  constexpr std::size_t kExtra = kExtraKept.size();
+  return from_end > kExtra || kExtraKept.at(kExtra - from_end);
+}
+
+/// @brief The near-plane filter leaves out exactly the observations near or behind their
+///        cameras: the stereo scene, camera 0 held, a sixth camera 2 m ahead, point 60 1 mm in
+///        front of it (seen too by cameras 0 and 4), point 61 behind cameras 0, 1 and 5 (seen by
+///        them). The starting error is the kept observations'; point 61 and camera 5, every
+///        observation of which is left out, and the held camera come back exactly as given;
+///        with near 0, every observation counts.
+/// @param failures The running failure count.
+void test_near_filter(int& failures) {
+  Scene scene = stereo_scene();
+  std::vector<Eigen::Matrix4d> poses = scene.start;
+  poses.push_back(pose({0.8, 0.0, 2.0}, {0.0, 0.0, 0.0}));
+  const Eigen::Index count = scene.start_points.rows();
+  graphs::Points points(count + 2, 3);
+  points.topRows(count) = scene.start_points;
+  points.row(count) = ((poses[5].topLeftCorner<3, 3>() * Eigen::Vector3d(0.0, 0.0, 1e-3)) +
+                       poses[5].topRightCorner<3, 1>())
+                          .transpose();
+  points.row(count + 1) = ((poses[0].topLeftCorner<3, 3>() * Eigen::Vector3d(0.1, 0.0, -1.0)) +
+                           poses[0].topRightCorner<3, 1>())
+                              .transpose();
+  const std::array<std::array<std::int64_t, 2>, 6> extra = {
+      {{5, count}, {0, count}, {4, count}, {0, count + 1}, {1, count + 1}, {5, count + 1}}};
+  graphs::Pairs pixels(scene.pixels.rows() + 6, 2);
+  pixels.topRows(scene.pixels.rows()) = scene.pixels;
+  pixels.bottomRows(6).setConstant(300.0);
+  for (const auto& [c, p] : extra) {
+    scene.cameras.push_back(c);
+    scene.ids.push_back(p);
+    scene.right.push_back(std::numeric_limits<double>::quiet_NaN());
+    scene.information.push_back(1.0);
+  }
+  double every = 0.0;
+  double kept = 0.0;
+  for (std::size_t m = 0; m < scene.cameras.size(); ++m) {
+    const auto row = static_cast<Eigen::Index>(m);
+    Eigen::VectorXd measured(std::isnan(scene.right[m]) ? 2 : 3);
+    measured.head<2>() = pixels.row(row).transpose();
+    if (measured.size() == 3) {
+      measured(2) = scene.right[m];
+    }
+    const double cost =
+        0.5 * graphs::projection_residual(poses[static_cast<std::size_t>(scene.cameras[m])],
+                                          points.row(scene.ids[m]).transpose(), measured,
+                                          camera::Model::kRadTan, radtan(), kBf)
+                  ->residual.squaredNorm();
+    every += cost;
+    kept += near_scene_keeps(scene.cameras.size() - m) ? cost : 0.0;
+  }
+  const graphs::Observations observations{.cameras = scene.cameras,
+                                          .point_ids = scene.ids,
+                                          .pixels = pixels,
+                                          .right = scene.right,
+                                          .information = scene.information,
+                                          .huber = {}};
+  const std::array<std::int64_t, 1> fixed = {0};
+  const auto adjust_near = [&](double near) {
+    return graphs::bundle_adjust(poses, points, observations, camera::Model::kRadTan, radtan(), kBf,
+                                 fixed, near, graphs::Options{.max_iterations = 5});
+  };
+  const std::vector<bool> flags = graphs::kept_observations(poses, points, observations, 1e-3);
+  bool flags_right = true;
+  for (std::size_t m = 0; m < flags.size(); ++m) {
+    flags_right = flags_right && flags[m] == near_scene_keeps(flags.size() - m);
+  }
+  const auto filtered = adjust_near(1e-3);
+  expect(flags_right && filtered.has_value() &&
+             std::abs(filtered->summary.initial_error - kept) <= 1e-12 * kept &&
+             filtered->points.row(count + 1) == points.row(count + 1) &&
+             filtered->poses[0] == poses[0] && filtered->poses[5] == poses[5] &&
+             filtered->points.row(count) != points.row(count),
+         "exactly the near and behind observations are left out; what they alone reach stays",
+         failures);
+  const auto all = adjust_near(0.0);
+  expect(all.has_value() && std::abs(all->summary.initial_error - every) <= 1e-12 * every,
+         "with near 0 every observation counts", failures);
+  for (const double bad :
+       {-1e-3, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
+    expect(is_invalid_input(adjust_near(bad)), "a negative or infinite near fraction is refused",
+           failures);
+  }
+}
+
+/// @brief A bundle whose every observation is behind its camera comes back as given, after no
+///        iteration, converged, with no error counted.
+/// @param failures The running failure count.
+void test_everything_left_out(int& failures) {
+  const std::vector<Eigen::Matrix4d> two = {Eigen::Matrix4d::Identity(),
+                                            pose({0.2, 0.0, 0.0}, {0.0, 0.0, 0.0})};
+  graphs::Points behind(2, 3);
+  behind << 0.1, 0.2, -1.0, 0.0, -0.1, -2.0;
+  const std::array<std::int64_t, 3> which = {0, 1, 1};
+  const std::array<std::int64_t, 3> whose = {0, 0, 1};
+  const std::array<std::int64_t, 1> fixed = {0};
+  const graphs::Pairs seen = graphs::Pairs::Constant(3, 2, 300.0);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const std::array<double, 3> mono = {nan, nan, nan};
+  const std::array<double, 3> unit = {1.0, 1.0, 1.0};
+  const auto none = graphs::bundle_adjust(two, behind,
+                                          graphs::Observations{.cameras = which,
+                                                               .point_ids = whose,
+                                                               .pixels = seen,
+                                                               .right = mono,
+                                                               .information = unit,
+                                                               .huber = {}},
+                                          camera::Model::kPinhole, pinhole(), kBf, fixed, 1e-3,
+                                          graphs::Options{});
+  expect(none.has_value() && none->poses == two && none->points == behind &&
+             none->summary.iterations == 0 && none->summary.converged &&
+             none->summary.initial_error == 0.0 && none->summary.final_error == 0.0,
+         "a bundle whose every observation is left out comes back as given", failures);
+}
+
 /// @brief The test body.
 /// @return The exit code.
 int run() {
@@ -628,6 +946,10 @@ int run() {
   test_bundle_adjust(failures);
   test_held_cameras(failures);
   test_termination(failures);
+  test_damping_schedules(failures);
+  test_small_steps(failures);
+  test_near_filter(failures);
+  test_everything_left_out(failures);
   test_bad_input(failures);
   expect(std::string(graphs::name(graphs::Termination::kDampingLimit)) == "damping_limit",
          "the terminations are named as Python names them", failures);

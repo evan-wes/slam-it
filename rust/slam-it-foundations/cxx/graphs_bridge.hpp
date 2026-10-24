@@ -160,17 +160,31 @@ void add_rust_factor(Problem& problem, rust::Slice<const std::uint64_t> keys,
                      rust::Slice<const std::uint8_t> kinds, std::size_t dimension,
                      double information, double huber, std::size_t index);
 
+/// @brief The largest diagonal entry of a problem's normal equations at its values: g2o's
+///        `computeLambdaInit`'s maximum, over the variables as g2o's over its free vertices.
+/// @param problem The problem.
+/// @param evaluator The Rust factors' evaluator.
+/// @return The largest entry, 0 for a problem with no factor.
+/// @throws std::exception (a Rust `cxx::Exception`) if GTSAM fails to linearise it.
+double largest_hessian_diagonal(const Problem& problem, const Evaluator& evaluator);
+
 /// @brief Start Levenberg-Marquardt on a problem; its starting error is evaluated here.
 /// @param problem The problem.
 /// @param evaluator The Rust factors' evaluator.
 /// @param initial_damping The first damping.
+/// @param damping_factor The damping's factor (`lambdaFactor`): the fixed one, or with `nielsen`
+///        the first.
+/// @param nielsen Nielsen's schedule (GTSAM's `useFixedLambdaFactor` false): each further failed
+///        trial doubles the factor, and an accepted step scales the damping by its gain ratio.
+/// @param damping_limit The damping at which a search gives up (`lambdaUpperBound`).
 /// @param relative_tolerance GTSAM's relative error tolerance.
 /// @param absolute_tolerance GTSAM's absolute error tolerance.
 /// @return The optimizer.
 /// @throws std::exception (a Rust `cxx::Exception`) if GTSAM fails.
 std::unique_ptr<Optimizer> new_optimizer(const Problem& problem, const Evaluator& evaluator,
-                                         double initial_damping, double relative_tolerance,
-                                         double absolute_tolerance);
+                                         double initial_damping, double damping_factor,
+                                         bool nielsen, double damping_limit,
+                                         double relative_tolerance, double absolute_tolerance);
 
 /// @brief Run one Levenberg-Marquardt iteration.
 /// @param optimizer The optimizer.

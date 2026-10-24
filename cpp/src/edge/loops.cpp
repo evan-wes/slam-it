@@ -1933,7 +1933,7 @@ Result<graphs::Summary> weld_solve(const Weld& problem, const Camera& camera, We
                                           .information = information,
                                           .huber = huber};
   auto adjusted = graphs::bundle_adjust(poses, start, observations, camera.model, camera.intrinsics,
-                                        focal(camera) * camera.baseline, fixed,
+                                        focal(camera) * camera.baseline, fixed, 0.0,
                                         {.max_iterations = static_cast<int>(iterations)});
   if (!adjusted) {
     return std::unexpected(std::move(adjusted.error()));
@@ -2302,7 +2302,8 @@ Result<graphs::Summary> global_bundle_adjust(Map& m, const Camera& camera, const
                                           .huber = {}};
   auto adjusted = graphs::bundle_adjust(
       poses, points, observations, camera.model, camera.intrinsics, focal(camera) * camera.baseline,
-      fixed, {.max_iterations = static_cast<int>(options.loops.global_iterations), .stop = stop});
+      fixed, 0.0,
+      {.max_iterations = static_cast<int>(options.loops.global_iterations), .stop = stop});
   if (!adjusted) {
     return std::unexpected(std::move(adjusted.error()));
   }

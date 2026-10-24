@@ -37,6 +37,22 @@ pub const POSE_DIM: usize = 6;
 /// A similarity's tangent dimension, `(w, v, lambda)`.
 pub const SIMILARITY_DIM: usize = 7;
 
+/// GTSAM's own damping's factor, its `lambdaFactor` default (`graphs.ABSOLUTE_DAMPING_FACTOR`):
+/// the damping divided by it after a step that lowers the error, multiplied by it after one that
+/// does not.
+pub const ABSOLUTE_DAMPING_FACTOR: f64 = 10.0;
+/// GTSAM's own damping's upper bound, its `lambdaUpperBound` default
+/// (`graphs.ABSOLUTE_DAMPING_LIMIT`): a search that reaches it gives up.
+pub const ABSOLUTE_DAMPING_LIMIT: f64 = 1e5;
+/// Nielsen's first factor for the scaled damping (`graphs.SCALED_DAMPING_FACTOR`): a failed trial
+/// multiplies the damping by 2, 4, 8, ..., as g2o's `_ni`; an accepted step by
+/// `max(1/3, 1 - (2 rho - 1)^3)` (GTSAM's `useFixedLambdaFactor = false`, without g2o's cap at
+/// 2/3).
+pub const SCALED_DAMPING_FACTOR: f64 = 2.0;
+/// The scaled damping's upper bound, GTSAM's own for its Ceres-like parameters
+/// (`graphs.SCALED_DAMPING_LIMIT`): in practice none, as g2o has none.
+pub const SCALED_DAMPING_LIMIT: f64 = 1e32;
+
 /// Why a solve stopped (`slam_it.foundations.graphs.Termination`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Termination {
@@ -101,6 +117,18 @@ pub struct Options {
     /// An iteration lowering the error by at most this ends the solve as converged;
     /// non-negative.
     pub absolute_tolerance: f64,
+    /// Follow g2o's damping (`OptimizationAlgorithmLevenberg`, which ORB-SLAM3's BAs run)
+    /// rather than GTSAM's own: the first damping `initial_damping` times the largest diagonal
+    /// entry of the normal equations at the start (g2o's `tau`), then Nielsen's schedule
+    /// (`SCALED_DAMPING_FACTOR`) up to `SCALED_DAMPING_LIMIT`; GTSAM's own starts at
+    /// `initial_damping`, divides it by 10 after a step that lowers the error and multiplies it
+    /// by 10 after one that does not, up to `ABSOLUTE_DAMPING_LIMIT`.
+    pub scaled_damping: bool,
+    /// End the solve as converged once this many iterations in a row have each lowered the
+    /// error by less than `small_decrease` of it (ORB-SLAM3's g2o: 3); 0, never.
+    pub small_steps: usize,
+    /// See `small_steps` (ORB-SLAM3's 1e-3); positive.
+    pub small_decrease: f64,
     /// Stops the solve before its next iteration when another thread sets it (a global BA
     /// superseded, ORB-SLAM's `mbStopGBA`).
     pub stop: Stop,
@@ -112,13 +140,16 @@ impl Default for Options {
     /// # Returns
     ///
     /// Ten iterations, a first damping of 1e-5, a relative tolerance of 1e-10 and no absolute
-    /// one.
+    /// one; GTSAM's own damping, and no stop by small steps.
     fn default() -> Self {
         Self {
             max_iterations: 10,
             initial_damping: 1e-5,
             relative_tolerance: 1e-10,
             absolute_tolerance: 0.0,
+            scaled_damping: false,
+            small_steps: 0,
+            small_decrease: 1e-3,
             stop: Stop::never(),
         }
     }
@@ -150,6 +181,9 @@ impl Options {
                 "expected >= 0",
                 self.absolute_tolerance,
             );
+        }
+        if !(self.small_decrease.is_finite() && self.small_decrease > 0.0) {
+            return fail_setting("small_decrease", "expected > 0", self.small_decrease);
         }
         Ok(())
     }
@@ -658,6 +692,10 @@ fn evaluate(
 /// The bridge to GTSAM (`cxx/graphs_bridge.hpp`).
 #[cxx::bridge(namespace = "slam_it::rust_bridge")]
 #[allow(unsafe_code, clippy::missing_errors_doc, clippy::needless_lifetimes)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "new_optimizer takes GTSAM's parameters one by one, as its C++ side declares them"
+)]
 mod ffi {
     extern "Rust" {
         /// The Rust factors of a problem.
@@ -745,11 +783,18 @@ mod ffi {
             huber: f64,
             index: usize,
         ) -> Result<()>;
-        /// Starts Levenberg-Marquardt, evaluating the starting error.
+        /// The largest diagonal entry of the problem's normal equations at its values.
+        fn largest_hessian_diagonal(problem: &Problem, evaluator: &Evaluator) -> Result<f64>;
+        /// Starts Levenberg-Marquardt, evaluating the starting error: its first damping, its
+        /// factor, whether Nielsen's schedule moves it (or the factor alone), its upper bound
+        /// and its tolerances.
         fn new_optimizer(
             problem: &Problem,
             evaluator: &Evaluator,
             initial_damping: f64,
+            damping_factor: f64,
+            nielsen: bool,
+            damping_limit: f64,
             relative_tolerance: f64,
             absolute_tolerance: f64,
         ) -> Result<UniquePtr<Optimizer>>;
@@ -883,10 +928,31 @@ fn solve(
     evaluator: &Evaluator,
     options: &Options,
 ) -> Result<(UniquePtr<ffi::Optimizer>, Summary)> {
+    let (initial_damping, factor, limit) = if options.scaled_damping {
+        let largest =
+            ffi::largest_hessian_diagonal(problem, evaluator).map_err(|e| gtsam_failed(&e))?;
+        // With no gradient anywhere (every Jacobian zero), the damping cannot be scaled to it:
+        // tau alone.
+        let scale = if largest > 0.0 { largest } else { 1.0 };
+        (
+            options.initial_damping * scale,
+            SCALED_DAMPING_FACTOR,
+            SCALED_DAMPING_LIMIT,
+        )
+    } else {
+        (
+            options.initial_damping,
+            ABSOLUTE_DAMPING_FACTOR,
+            ABSOLUTE_DAMPING_LIMIT,
+        )
+    };
     let mut optimizer = ffi::new_optimizer(
         problem,
         evaluator,
-        options.initial_damping,
+        initial_damping,
+        factor,
+        options.scaled_damping,
+        limit,
         options.relative_tolerance,
         options.absolute_tolerance,
     )
@@ -895,6 +961,8 @@ fn solve(
     let mut current = initial;
     let mut termination = Termination::MaxIterations;
     let mut iterations = 0;
+    // Iterations in a row each lowering the error by under `small_decrease` of it.
+    let mut small = 0;
     while current > 0.0 && iterations < options.max_iterations {
         if options.stop.is_set() {
             termination = Termination::Stopped;
@@ -913,6 +981,15 @@ fn solve(
         if decrease <= options.absolute_tolerance
             || decrease <= options.relative_tolerance * previous
         {
+            termination = Termination::Function;
+            break;
+        }
+        small = if decrease < options.small_decrease * previous {
+            small + 1
+        } else {
+            0
+        };
+        if options.small_steps > 0 && small >= options.small_steps {
             termination = Termination::Function;
             break;
         }
@@ -1558,6 +1635,51 @@ pub fn refine_similarity(
     })
 }
 
+/// Which observations a bundle adjustment keeps (`graphs.kept_observations`).
+///
+/// With `near` 0, every one. Otherwise those whose point, at the start, is in front of its camera
+/// and no nearer than `near` times the median of every observation's depth, the `floor(M/2)`-th
+/// smallest of the M counting from 0; each depth `R(0,2) dx + R(1,2) dy + R(2,2) dz`, summed in
+/// that order, `(dx, dy, dz)` the point less the camera's centre, as every language takes it.
+///
+/// # Arguments
+///
+/// * `poses` - Each camera's `T_world_cam`, checked.
+/// * `points` - Each point, checked.
+/// * `observations` - The observations, checked.
+/// * `near` - The fraction of the median depth, non-negative.
+///
+/// # Returns
+///
+/// A flag per observation.
+#[must_use]
+pub fn kept_observations(
+    poses: &[Matrix4<f64>],
+    points: &[Vector3<f64>],
+    observations: &Observations<'_>,
+    near: f64,
+) -> Vec<bool> {
+    let count = observations.cameras.len();
+    if near == 0.0 || count == 0 {
+        return vec![true; count];
+    }
+    let depth: Vec<f64> = observations
+        .cameras
+        .iter()
+        .zip(observations.point_ids)
+        .map(|(&c, &p)| {
+            let pose = &poses[c];
+            let offset = points[p] - pose.fixed_view::<3, 1>(0, 3);
+            pose[(0, 2)] * offset.x + pose[(1, 2)] * offset.y + pose[(2, 2)] * offset.z
+        })
+        .collect();
+    let mut sorted = depth.clone();
+    let middle = count / 2;
+    let (_, median, _) = sorted.select_nth_unstable_by(middle, f64::total_cmp);
+    let limit = near * *median;
+    depth.iter().map(|&z| z > 0.0 && z >= limit).collect()
+}
+
 /// Adjusts every pose and point against every observation, with no robust loss or Huber's
 /// (`graphs.bundle_adjust`).
 ///
@@ -1565,7 +1687,10 @@ pub fn refine_similarity(
 /// the observations' `huber`, each whitened error through a Huber loss at its threshold, as
 /// ORB-SLAM's local and welding BAs weigh theirs. The cameras in `fixed` are held as constants,
 /// as g2o's fixed vertices hold ORB-SLAM's: each of their observations is a factor on its point
-/// alone.
+/// alone. With `near`, the observations near their camera's plane are left out
+/// (`kept_observations`): only the points and free cameras the others reach are solved, the rest
+/// coming back as given, and the summary's errors are the kept observations'; with none kept,
+/// nothing is solved: 0 iterations, converged, errors of 0.
 ///
 /// # Arguments
 ///
@@ -1574,6 +1699,8 @@ pub fn refine_similarity(
 /// * `observations` - The observations; every point must be observed.
 /// * `lens` - The camera; its `bf` positive if any observation has a right column.
 /// * `fixed` - The cameras held fixed; each comes back exactly as given.
+/// * `near` - Leave out each observation whose point, at the start, is behind its camera or
+///   nearer than this fraction of the median depth, non-negative; 0 leaves none out.
 /// * `options` - How the solve runs.
 ///
 /// # Returns
@@ -1584,36 +1711,149 @@ pub fn refine_similarity(
 ///
 /// `InvalidInput` for a pose not rigid, mismatched sizes, an index out of range, an
 /// unobserved point, a non-positive information or Huber threshold, a right column without
-/// `bf`, a bad camera or bad options; `NotConverged` if GTSAM fails.
+/// `bf`, a negative `near`, a bad camera or bad options; `NotConverged` if GTSAM fails.
 pub fn bundle_adjust(
     poses: &[Matrix4<f64>],
     points: &[Vector3<f64>],
     observations: &Observations<'_>,
     lens: &Lens,
     fixed: &[usize],
+    near: f64,
     options: &Options,
 ) -> Result<Adjustment> {
     check_bundle(poses, points, observations, lens, fixed, options)?;
-    let count = observations.cameras.len();
-    // The held cameras are constants, not variables: each of their observations is a factor on
-    // its point alone.
+    if !(near.is_finite() && near >= 0.0) {
+        return fail_setting("near", "expected >= 0", near);
+    }
+    // Only the kept observations take part, and only the points and free cameras they reach are
+    // solved. The held cameras are constants, not variables: each of their observations is a
+    // factor on its point alone.
+    let kept = kept_observations(poses, points, observations, near);
     let held = held_flags(fixed, poses.len());
+    let (solved_camera, solved_point) = reached(observations, &kept, &held, points.len());
+    if !kept.iter().any(|&k| k) {
+        // Nothing left to solve: the input as given, no error counted.
+        return Ok(Adjustment {
+            poses: poses.to_vec(),
+            points: points.to_vec(),
+            summary: Summary {
+                initial_error: 0.0,
+                final_error: 0.0,
+                iterations: 0,
+                termination: Termination::Function,
+                converged: true,
+            },
+        });
+    }
     let mut problem = ffi::new_problem();
     let gtsam =
         |result: std::result::Result<(), cxx::Exception>| result.map_err(|e| gtsam_failed(&e));
     let first_point = poses.len();
-    for (c, pose) in poses.iter().enumerate().filter(|(c, _)| !held[*c]) {
+    for (c, pose) in poses.iter().enumerate().filter(|(c, _)| solved_camera[*c]) {
         gtsam(ffi::add_pose(problem.pin_mut(), key(c), &rows_of(pose)))?;
     }
-    for (p, point) in points.iter().enumerate() {
+    for (p, point) in points.iter().enumerate().filter(|(p, _)| solved_point[*p]) {
         gtsam(ffi::add_point(
             problem.pin_mut(),
             key(first_point + p),
             point.as_slice(),
         ))?;
     }
-    let mut factors = Vec::with_capacity(count);
-    for m in 0..count {
+    let factors = add_observations(problem.pin_mut(), poses, &held, observations, &kept)?;
+    let evaluator = Evaluator {
+        lens: lens.clone(),
+        factors,
+    };
+    let (optimizer, summary) = solve(&problem, &evaluator, options)?;
+    let poses = poses
+        .iter()
+        .enumerate()
+        .map(|(c, pose)| {
+            if solved_camera[c] {
+                matrix_at(&optimizer, c, false)
+            } else {
+                Ok(*pose)
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let points = points
+        .iter()
+        .enumerate()
+        .map(|(p, point)| {
+            if !solved_point[p] {
+                return Ok(*point);
+            }
+            let mut out = [0.0; 3];
+            ffi::point_at(&optimizer, key(first_point + p), &mut out)
+                .map_err(|e| gtsam_failed(&e))?;
+            Ok(Vector3::from(out))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Adjustment {
+        poses,
+        points,
+        summary,
+    })
+}
+
+/// The free cameras and the points a bundle adjustment's kept observations reach: those it
+/// solves.
+///
+/// # Arguments
+///
+/// * `observations` - The observations, checked.
+/// * `kept` - Which are kept.
+/// * `held` - Which cameras are held.
+/// * `point_count` - The points.
+///
+/// # Returns
+///
+/// A flag per camera, the held ones never, and a flag per point.
+fn reached(
+    observations: &Observations<'_>,
+    kept: &[bool],
+    held: &[bool],
+    point_count: usize,
+) -> (Vec<bool>, Vec<bool>) {
+    let mut cameras = vec![false; held.len()];
+    let mut points = vec![false; point_count];
+    for m in (0..kept.len()).filter(|&m| kept[m]) {
+        let c = observations.cameras[m];
+        cameras[c] = !held[c];
+        points[observations.point_ids[m]] = true;
+    }
+    (cameras, points)
+}
+
+/// Adds a bundle adjustment's factors to its problem: one per kept observation, on its camera
+/// and point, or on its point alone through a held camera (g2o's fixed vertex, as ORB-SLAM holds
+/// one), the points keyed from `poses.len()`.
+///
+/// # Arguments
+///
+/// * `problem` - The problem.
+/// * `poses` - The cameras' `T_world_cam`, checked.
+/// * `held` - Which cameras are held.
+/// * `observations` - The observations, checked.
+/// * `kept` - Which are kept.
+///
+/// # Returns
+///
+/// The Rust factors, by the index each was added with.
+///
+/// # Errors
+///
+/// `NotConverged` if GTSAM fails.
+fn add_observations(
+    mut problem: Pin<&mut ffi::Problem>,
+    poses: &[Matrix4<f64>],
+    held: &[bool],
+    observations: &Observations<'_>,
+    kept: &[bool],
+) -> Result<Vec<Factor>> {
+    let first_point = poses.len();
+    let mut factors = Vec::with_capacity(kept.len());
+    for m in (0..kept.len()).filter(|&m| kept[m]) {
         let pixel = observations.pixels[m];
         let measured = if observations.right[m].is_nan() {
             vec![pixel.x, pixel.y]
@@ -1634,46 +1874,19 @@ pub fn bundle_adjust(
                 Factor::Projection { measured },
             )
         };
-        gtsam(ffi::add_rust_factor(
-            problem.pin_mut(),
+        ffi::add_rust_factor(
+            problem.as_mut(),
             keys,
             kinds,
             dimension,
             observations.information[m],
             observations.huber.get(m).copied().unwrap_or(0.0), // the bridge's 0: no robust loss
             factors.len(),
-        ))?;
+        )
+        .map_err(|e| gtsam_failed(&e))?;
         factors.push(factor);
     }
-    let evaluator = Evaluator {
-        lens: lens.clone(),
-        factors,
-    };
-    let (optimizer, summary) = solve(&problem, &evaluator, options)?;
-    let poses = poses
-        .iter()
-        .enumerate()
-        .map(|(c, pose)| {
-            if held[c] {
-                Ok(*pose)
-            } else {
-                matrix_at(&optimizer, c, false)
-            }
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let points = (0..points.len())
-        .map(|p| {
-            let mut out = [0.0; 3];
-            ffi::point_at(&optimizer, key(first_point + p), &mut out)
-                .map_err(|e| gtsam_failed(&e))?;
-            Ok(Vector3::from(out))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Adjustment {
-        poses,
-        points,
-        summary,
-    })
+    Ok(factors)
 }
 
 #[cfg(test)]
@@ -2101,16 +2314,11 @@ mod tests {
         }
     }
 
-    /// Adjusts the scene from its start for 20 iterations, the cameras in `fixed` held, and
-    /// checks that the held ones come back exactly as they started, the others and every point
-    /// to the truth.
-    fn adjust_and_check(scene: &Scene, fixed: &[usize]) -> Adjustment {
+    /// Adjusts the scene from its start, the cameras in `fixed` held, through the radtan camera
+    /// with unit information.
+    fn adjust_scene(scene: &Scene, fixed: &[usize], options: &Options) -> Adjustment {
         let information = vec![1.0; scene.cameras.len()];
-        let options = Options {
-            max_iterations: 20,
-            ..Options::default()
-        };
-        let result = bundle_adjust(
+        bundle_adjust(
             &scene.start,
             &scene.start_points,
             &Observations {
@@ -2123,9 +2331,21 @@ mod tests {
             },
             &radtan(),
             fixed,
-            &options,
+            0.0,
+            options,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    /// Adjusts the scene from its start for 20 iterations, the cameras in `fixed` held, and
+    /// checks that the held ones come back exactly as they started, the others and every point
+    /// to the truth.
+    fn adjust_and_check(scene: &Scene, fixed: &[usize]) -> Adjustment {
+        let options = Options {
+            max_iterations: 20,
+            ..Options::default()
+        };
+        let result = adjust_scene(scene, fixed, &options);
         for (c, got) in result.poses.iter().enumerate() {
             if fixed.contains(&c) {
                 assert_eq!(*got, scene.start[c]);
@@ -2231,6 +2451,309 @@ mod tests {
         #[allow(clippy::float_cmp)] // nothing could move: the very number
         let unchanged = result.summary.final_error == result.summary.initial_error;
         assert!(unchanged);
+    }
+
+    /// Two held cameras 0.3 m apart along x, looking down +z: a point alone is solved.
+    fn held_pair() -> Vec<Matrix4<f64>> {
+        vec![Matrix4::identity(), pose([0.3, 0.0, 0.0], [0.0, 0.0, 0.0])]
+    }
+
+    /// The point the held pair sees, 4 m ahead, and its start, three times as far: GTSAM's first
+    /// trial steps fail there.
+    const FAR_POINT: ([f64; 3], [f64; 3]) = ([0.2, -0.1, 4.0], [0.2, -0.1, 12.0]);
+
+    /// Where the held pair's cameras see `FAR_POINT`'s truth.
+    fn held_pair_pixels() -> Vec<Vector2<f64>> {
+        let lens = pinhole();
+        held_pair()
+            .iter()
+            .map(|camera_pose| {
+                let rotation: Matrix3<f64> = camera_pose.fixed_view::<3, 3>(0, 0).into();
+                let local = rotation.transpose()
+                    * (Vector3::from(FAR_POINT.0) - camera_pose.fixed_view::<3, 1>(0, 3));
+                camera::project(lens.model, &lens.intrinsics, &local).unwrap()
+            })
+            .collect()
+    }
+
+    /// The held pair's residuals at a point (unit information), stacked, and their Jacobian.
+    fn pair_residuals(point: &Vector3<f64>) -> (DVector<f64>, DMatrix<f64>) {
+        let mut residual = DVector::zeros(4);
+        let mut jacobian = DMatrix::zeros(4, 3);
+        for (c, (camera_pose, seen)) in held_pair().iter().zip(held_pair_pixels()).enumerate() {
+            let at =
+                projection_residual(camera_pose, point, &[seen.x, seen.y], &pinhole()).unwrap();
+            residual.rows_mut(2 * c, 2).copy_from(&at.residual);
+            jacobian.rows_mut(2 * c, 2).copy_from(&at.d_point);
+        }
+        (residual, jacobian)
+    }
+
+    /// One of GTSAM's Levenberg-Marquardt iterations on the held pair's point, emulated
+    /// (`tests/foundations/test_graphs.py`'s `_gtsam_iteration`): trials of
+    /// `(H + lambda I) delta = -g` until the gain ratio passes GTSAM's `minModelFidelity`, 1e-3; a
+    /// failed one multiplies the damping by the factor, which Nielsen's schedule doubles; an
+    /// accepted one divides it by the factor, or with Nielsen's schedule scales it by
+    /// `max(1/3, 1 - (2 rho - 1)^3)` and resets the factor to 2. Takes and returns the point, the
+    /// damping and the factor.
+    fn gtsam_iteration(
+        (point, mut damping, mut factor): (Vector3<f64>, f64, f64),
+        nielsen: bool,
+        limit: f64,
+    ) -> (Vector3<f64>, f64, f64) {
+        let (residual, jacobian) = pair_residuals(&point);
+        let error = 0.5 * residual.norm_squared();
+        let hessian = jacobian.transpose() * &jacobian;
+        let gradient = jacobian.transpose() * &residual;
+        while damping < limit {
+            let damped = &hessian + DMatrix::identity(3, 3) * damping;
+            let step = -damped.lu().solve(&gradient).unwrap();
+            let predicted = error - 0.5 * (&residual + &jacobian * &step).norm_squared();
+            let moved = point + Vector3::new(step[0], step[1], step[2]);
+            let ratio = (error - 0.5 * pair_residuals(&moved).0.norm_squared()) / predicted;
+            if ratio > 1e-3 {
+                if nielsen {
+                    let scale = (1.0 - (2.0 * ratio - 1.0).powi(3)).max(1.0 / 3.0);
+                    return (moved, damping * scale, 2.0);
+                }
+                return (moved, damping / factor, factor);
+            }
+            damping *= factor;
+            if nielsen {
+                factor *= 2.0;
+            }
+        }
+        (point, damping, factor)
+    }
+
+    #[test]
+    fn the_damping_starts_and_moves_as_its_schedule_says() {
+        const TAU: f64 = 1e-5;
+        let start = Vector3::from(FAR_POINT.1);
+        let pixels = held_pair_pixels();
+        let (_, jacobian) = pair_residuals(&start);
+        let largest = (jacobian.transpose() * &jacobian).diagonal().max();
+        for scaled in [true, false] {
+            let mut expected = if scaled {
+                (start, TAU * largest, SCALED_DAMPING_FACTOR)
+            } else {
+                (start, TAU, ABSOLUTE_DAMPING_FACTOR)
+            };
+            let limit = if scaled {
+                SCALED_DAMPING_LIMIT
+            } else {
+                ABSOLUTE_DAMPING_LIMIT
+            };
+            for iterations in 1..=3 {
+                expected = gtsam_iteration(expected, scaled, limit);
+                let result = bundle_adjust(
+                    &held_pair(),
+                    &[start],
+                    &Observations {
+                        cameras: &[0, 1],
+                        point_ids: &[0, 0],
+                        pixels: &pixels,
+                        right: &[f64::NAN, f64::NAN],
+                        information: &[1.0, 1.0],
+                        huber: &[],
+                    },
+                    &pinhole(),
+                    &[0, 1],
+                    0.0,
+                    &Options {
+                        max_iterations: iterations,
+                        initial_damping: TAU,
+                        scaled_damping: scaled,
+                        ..Options::default()
+                    },
+                )
+                .unwrap();
+                assert_eq!(result.summary.iterations, iterations);
+                assert!((result.points[0] - expected.0).abs().max() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    fn small_steps_in_a_row_end_a_solve_and_a_large_one_resets_their_count() {
+        const MOST: usize = 30;
+        let mut scene = stereo_scene();
+        #[allow(clippy::cast_precision_loss)] // a few hundred observations
+        for (m, pixel) in scene.pixels.iter_mut().enumerate() {
+            let k = m as f64;
+            *pixel += Vector2::new(0.5 * (1.7 * k).sin(), 0.5 * (2.3 * k).cos());
+        }
+        let solve = |options: Options| {
+            adjust_scene(
+                &scene,
+                &[0],
+                &Options {
+                    initial_damping: 3000.0,
+                    scaled_damping: true,
+                    ..options
+                },
+            )
+        };
+        let capped = |iterations| {
+            solve(Options {
+                max_iterations: iterations,
+                ..Options::default()
+            })
+        };
+        let mut errors = vec![capped(1).summary.initial_error];
+        errors.extend((1..=MOST).map(|k| capped(k).summary.final_error));
+        let decrease: Vec<f64> = errors.windows(2).map(|e| (e[0] - e[1]) / e[0]).collect();
+        let threshold = (decrease[1] * decrease[2]).sqrt();
+        let small: Vec<bool> = decrease.iter().map(|&d| d < threshold).collect();
+        assert_eq!(small[..3], [true, true, false]); // two small, then one that resets them
+        let ends = (3..small.len())
+            .find(|&k| small[k] && small[k - 1] && small[k - 2])
+            .unwrap()
+            + 1;
+        assert!(ends > 6);
+        let stopped = solve(Options {
+            max_iterations: MOST,
+            small_steps: 3,
+            small_decrease: threshold,
+            ..Options::default()
+        });
+        assert_eq!(stopped.summary.iterations, ends);
+        assert_eq!(stopped.summary.termination, Termination::Function);
+        let three = solve(Options {
+            max_iterations: MOST,
+            small_steps: 3,
+            small_decrease: 0.9,
+            ..Options::default()
+        });
+        assert_eq!(three.summary.iterations, 3);
+        assert!(three.summary.converged);
+    }
+
+    #[test]
+    fn the_near_filter_leaves_out_exactly_the_near_and_behind_observations() {
+        // The stereo scene, camera 0 held, a sixth camera 2 m ahead, point 60 1 mm in front of
+        // it (seen too by cameras 0 and 4), point 61 behind cameras 0, 1 and 5 (seen by them).
+        let mut scene = stereo_scene();
+        let mut poses = scene.start.clone();
+        poses.push(pose([0.8, 0.0, 2.0], [0.0, 0.0, 0.0]));
+        let ahead = |c: usize, local: Vector3<f64>| {
+            poses[c].fixed_view::<3, 3>(0, 0) * local + poses[c].fixed_view::<3, 1>(0, 3)
+        };
+        let count = scene.start_points.len();
+        let mut points = scene.start_points.clone();
+        points.push(ahead(5, Vector3::new(0.0, 0.0, 1e-3)));
+        points.push(ahead(0, Vector3::new(0.1, 0.0, -1.0)));
+        let extra = [
+            (5, count, false),
+            (0, count, true),
+            (4, count, true),
+            (0, count + 1, false),
+            (1, count + 1, false),
+            (5, count + 1, false),
+        ];
+        let mut expected = vec![true; scene.cameras.len()];
+        for &(c, p, kept) in &extra {
+            scene.cameras.push(c);
+            scene.ids.push(p);
+            scene.pixels.push(Vector2::new(300.0, 300.0));
+            scene.right.push(f64::NAN);
+            expected.push(kept);
+        }
+        let information = vec![1.0; scene.cameras.len()];
+        let observations = Observations {
+            cameras: &scene.cameras,
+            point_ids: &scene.ids,
+            pixels: &scene.pixels,
+            right: &scene.right,
+            information: &information,
+            huber: &[],
+        };
+        let costs: Vec<f64> = (0..scene.cameras.len())
+            .map(|m| {
+                let pixel = scene.pixels[m];
+                let measured = if scene.right[m].is_nan() {
+                    vec![pixel.x, pixel.y]
+                } else {
+                    vec![pixel.x, pixel.y, scene.right[m]]
+                };
+                let at = projection_residual(
+                    &poses[scene.cameras[m]],
+                    &points[scene.ids[m]],
+                    &measured,
+                    &radtan(),
+                )
+                .unwrap();
+                0.5 * at.residual.norm_squared()
+            })
+            .collect();
+        let every: f64 = costs.iter().sum();
+        let kept: f64 = costs
+            .iter()
+            .zip(&expected)
+            .filter(|(_, k)| **k)
+            .map(|(c, _)| c)
+            .sum();
+        assert_eq!(
+            kept_observations(&poses, &points, &observations, 1e-3),
+            expected
+        );
+        let adjust = |near| {
+            bundle_adjust(
+                &poses,
+                &points,
+                &observations,
+                &radtan(),
+                &[0],
+                near,
+                &Options {
+                    max_iterations: 5,
+                    ..Options::default()
+                },
+            )
+        };
+        let filtered = adjust(1e-3).unwrap();
+        assert!((filtered.summary.initial_error - kept).abs() <= 1e-12 * kept);
+        assert_eq!(filtered.points[count + 1], points[count + 1]);
+        assert_eq!(filtered.poses[0], poses[0]);
+        assert_eq!(filtered.poses[5], poses[5]);
+        assert_ne!(filtered.points[count], points[count]); // seen by cameras 0 and 4 still
+        let all = adjust(0.0).unwrap();
+        assert!((all.summary.initial_error - every).abs() <= 1e-12 * every);
+        for bad in [-1e-3, f64::INFINITY, f64::NAN] {
+            assert_eq!(adjust(bad).unwrap_err().kind, ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn a_bundle_whose_observations_are_all_left_out_comes_back_as_given() {
+        let poses = vec![Matrix4::identity(), pose([0.2, 0.0, 0.0], [0.0, 0.0, 0.0])];
+        let points = vec![Vector3::new(0.1, 0.2, -1.0), Vector3::new(0.0, -0.1, -2.0)];
+        let result = bundle_adjust(
+            &poses,
+            &points,
+            &Observations {
+                cameras: &[0, 1, 1],
+                point_ids: &[0, 0, 1],
+                pixels: &[Vector2::new(300.0, 300.0); 3],
+                right: &[f64::NAN; 3],
+                information: &[1.0; 3],
+                huber: &[],
+            },
+            &pinhole(),
+            &[0],
+            1e-3,
+            &Options::default(),
+        )
+        .unwrap();
+        assert_eq!(result.poses, poses);
+        assert_eq!(result.points, points);
+        assert_eq!(result.summary.iterations, 0);
+        assert!(result.summary.converged);
+        assert_eq!(result.summary.termination, Termination::Function);
+        assert_eq!(
+            (result.summary.initial_error, result.summary.final_error),
+            (0.0, 0.0)
+        );
     }
 
     #[test]
@@ -2341,6 +2864,16 @@ mod tests {
             .check()
             .is_err()
         );
+        for small_decrease in [0.0, f64::INFINITY] {
+            assert!(
+                Options {
+                    small_decrease,
+                    ..Options::default()
+                }
+                .check()
+                .is_err()
+            );
+        }
         assert_eq!(Termination::DampingLimit.name(), "damping_limit");
         // A row of pixels2 is finite, or wholly NaN (unseen): anything else is refused (H1, L1).
         let lens = pinhole();

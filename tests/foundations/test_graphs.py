@@ -511,6 +511,253 @@ def test_a_solve_stops_by_its_iterations_its_tolerances_or_its_damping(backend: 
     )
 
 
+HELD_PAIR = np.stack([np.eye(4), se3.exp([0.3, 0.0, 0.0, 0.0, 0.0, 0.0])])
+"""Two held cameras 0.3 m apart along x, looking down +z: a point alone is solved."""
+
+FAR_POINT = (np.array([0.2, -0.1, 4.0]), np.array([0.2, -0.1, 12.0]))
+"""A point 4 m ahead and a start three times as far: GTSAM's first trial steps fail there."""
+
+
+def _seen_from_held_pair() -> Array:
+    """Return where the held pair's cameras see FAR_POINT's truth."""
+    name, intrinsics = PINHOLE
+    truth = FAR_POINT[0]
+    return np.stack(
+        [
+            camera.project(name, intrinsics, ((truth - pose[:3, 3]) @ pose[:3, :3])[None])[0]
+            for pose in HELD_PAIR
+        ]
+    )
+
+
+def _point_residuals(point: Array) -> tuple[Array, Array]:
+    """Return the held pair's residuals at `point` (unit information) and their Jacobian."""
+    rows, blocks = [], []
+    for pose, seen in zip(HELD_PAIR, _seen_from_held_pair(), strict=True):
+        at = graphs.projection_residual(pose, point, seen, *PINHOLE, BF)
+        rows.append(at.residual)
+        blocks.append(at.d_point)
+    return np.concatenate(rows), np.vstack(blocks)
+
+
+def _gtsam_iteration(
+    point: Array, damping: float, factor: float, *, nielsen: bool, limit: float
+) -> tuple[Array, float, float]:
+    """One of GTSAM's Levenberg-Marquardt iterations on the held pair's point, emulated.
+
+    ``LevenbergMarquardtOptimizer::tryLambda``'s search: each trial solves ``(H + λI) δ = -g``,
+    and is accepted when the error falls with a gain ratio over ``minModelFidelity`` (1e-3); a
+    failed trial multiplies ``λ`` by the factor, which Nielsen's schedule then doubles; an
+    accepted one divides ``λ`` by the factor, or with Nielsen's schedule multiplies it by
+    ``max(1/3, 1 - (2ρ - 1)³)`` and resets the factor to 2. Returns the point, ``λ`` and the
+    factor after the iteration.
+    """
+    residual, jacobian = _point_residuals(point)
+    error = 0.5 * residual @ residual
+    hessian, gradient = jacobian.T @ jacobian, jacobian.T @ residual
+    while damping < limit:
+        step = -np.linalg.solve(hessian + damping * np.eye(3), gradient)
+        linear = residual + jacobian @ step
+        predicted = error - 0.5 * linear @ linear
+        moved, _ = _point_residuals(point + step)
+        ratio = float((error - 0.5 * moved @ moved) / predicted)
+        if ratio > 1e-3:
+            if nielsen:
+                return point + step, damping * max(1 / 3, 1 - (2 * ratio - 1) ** 3), 2.0
+            return point + step, damping / factor, factor
+        damping *= factor
+        factor *= 2.0 if nielsen else 1.0
+    return point, damping, factor
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("scaled", [True, False], ids=["scaled", "absolute"])
+def test_the_damping_starts_and_moves_as_its_schedule_says(backend: str, scaled: bool) -> None:
+    """Scaled: ``λ`` from ``τ`` times the largest diagonal entry, by Nielsen's schedule; or GTSAM's.
+
+    One point, two held cameras, the point started three times too far: each iteration's result,
+    one to four, is the emulated search's (:func:`_gtsam_iteration`). The scaled damping's first
+    iteration fails three trials, at ``λ0``, ``2 λ0`` and ``8 λ0``, before ``64 λ0`` steps, and its
+    later ones follow the gain ratio; GTSAM's own starts at ``τ`` and moves by 10.
+    """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    start = FAR_POINT[1]
+    tau = 1e-5
+    _, jacobian = _point_residuals(start)
+    largest = float(np.max(np.diag(jacobian.T @ jacobian)))
+    damping, factor = (tau * largest, 2.0) if scaled else (tau, graphs.ABSOLUTE_DAMPING_FACTOR)
+    limit = graphs.SCALED_DAMPING_LIMIT if scaled else graphs.ABSOLUTE_DAMPING_LIMIT
+    expected = start
+    for iterations in range(1, 5):
+        expected, damping, factor = _gtsam_iteration(
+            expected, damping, factor, nielsen=scaled, limit=limit
+        )
+        result = graphs.bundle_adjust(
+            HELD_PAIR, start[None], [0, 1], [0, 0], _seen_from_held_pair(), [np.nan, np.nan],
+            [1.0, 1.0], model=PINHOLE[0], intrinsics=PINHOLE[1], bf=BF, fixed=[0, 1],
+            options=graphs.Options(
+                max_iterations=iterations, initial_damping=tau, scaled_damping=scaled
+            ),
+            backend=chosen,
+        )  # fmt: skip
+        np.testing.assert_allclose(result.points[0], expected, rtol=0, atol=1e-9)
+        assert result.summary.iterations == iterations
+
+
+def _stereo_start() -> dict[str, Any]:
+    """Return the stereo scene's bundle from a perturbed start, its pixels noisy."""
+    name, intrinsics = PINHOLE
+    poses, points = _scene(5)
+    cameras, ids, pixels, right = _observed(name, intrinsics, poses, points, stereo=True)
+    rng = np.random.default_rng(6)
+    start = np.stack(
+        [poses[0]] + [pose @ se3.exp(rng.normal(scale=0.02, size=6)) for pose in poses[1:]]
+    )
+    return {
+        "poses": start, "points": points + rng.normal(scale=0.05, size=points.shape),
+        "cameras": cameras, "point_ids": ids,
+        "pixels": pixels + rng.normal(scale=0.5, size=pixels.shape), "right": right,
+        "information": np.ones(len(cameras)), "model": name, "intrinsics": intrinsics, "bf": BF,
+        "fixed": [0],
+    }  # fmt: skip
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_small_steps_in_a_row_end_a_solve_and_a_large_one_resets_their_count(
+    backend: str,
+) -> None:
+    """ORB-SLAM3's stop: ``small_steps`` decreases in a row under ``small_decrease`` end it.
+
+    A heavily damped start (``τ`` = 3000) makes the decreases grow from small, through large,
+    then shrink as the solve converges. Each iteration's error is read from solves capped there;
+    ``small_decrease`` is set between the second decrease and the third, so the first two count
+    as small and the third resets them: the solve ends at the third small decrease in a row after
+    it, converged, its error the capped solve's; without the reset it would end at the first.
+    With every decrease small, it ends after three iterations.
+    """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    bundle = _stereo_start()
+
+    def solve(**changes: Any) -> graphs.Adjustment:  # noqa: ANN401 -- Options' fields
+        options = graphs.Options(scaled_damping=True, initial_damping=3000.0, **changes)
+        return graphs.bundle_adjust(**bundle, options=options, backend=chosen)
+
+    errors = [solve(max_iterations=1).summary.initial_error]
+    errors += [solve(max_iterations=k).summary.final_error for k in range(1, 31)]
+    decrease = [(errors[k - 1] - errors[k]) / errors[k - 1] for k in range(1, len(errors))]
+    threshold = float(np.sqrt(decrease[1] * decrease[2]))
+    small = [d < threshold for d in decrease]
+    assert small[:3] == [True, True, False]  # two small, then one that resets them
+    ends = next(k for k in range(3, len(small)) if all(small[k - 2 : k + 1])) + 1
+    assert ends > 6
+    stopped = solve(max_iterations=30, small_steps=3, small_decrease=threshold)
+    assert (stopped.summary.iterations, stopped.summary.termination) == (ends, "function")
+    assert stopped.summary.final_error == pytest.approx(errors[ends], rel=1e-12)
+    three = solve(max_iterations=30, small_steps=3, small_decrease=0.9)
+    assert (three.summary.iterations, three.summary.converged) == (3, True)
+
+
+def _near_and_behind() -> tuple[dict[str, Any], NDArray[np.bool_]]:
+    """Return a bundle with observations near and behind their cameras, and which are kept.
+
+    The stereo scene's five cameras and 60 points, monocular, camera 0 held, a sixth camera 2 m
+    ahead of them, and two more points: point 60, 1 mm in front of camera 5 (under 1e-3 of the
+    median depth) and seen also by cameras 0 and 4, 2 m from them; point 61, 1 m behind camera 0,
+    seen by it, camera 1 and camera 5, behind each. Every observation of point 61 and camera 5
+    is left out, so neither is solved.
+    """
+    name, intrinsics = PINHOLE
+    poses, points = _scene(5)
+    poses = np.concatenate([poses, se3.exp([0.8, 0.0, 2.0, 0.0, 0.0, 0.0])[None]])
+    near = poses[5][:3, :3] @ np.array([0.0, 0.0, 1e-3]) + poses[5][:3, 3]
+    behind = poses[0][:3, :3] @ np.array([0.1, 0.0, -1.0]) + poses[0][:3, 3]
+    points = np.concatenate([points, near[None], behind[None]])
+    cameras, ids, pixels, _ = _observed(name, intrinsics, poses[:5], points[:60], stereo=False)
+    extra = [(5, 60), (0, 60), (4, 60), (0, 61), (1, 61), (5, 61)]
+    cameras += [c for c, _ in extra]
+    ids += [p for _, p in extra]
+    pixels = np.concatenate([pixels, np.full((len(extra), 2), 300.0)])
+    kept = np.ones(len(cameras), dtype=bool)
+    kept[[len(cameras) - 6, len(cameras) - 3, len(cameras) - 2, len(cameras) - 1]] = False
+    rng = np.random.default_rng(8)
+    bundle: dict[str, Any] = {
+        "poses": np.stack([poses[0]] + [p @ se3.exp(rng.normal(0, 0.01, 6)) for p in poses[1:]]),
+        "points": points, "cameras": cameras, "point_ids": ids, "pixels": pixels,
+        "right": np.full(len(cameras), np.nan), "information": np.ones(len(cameras)),
+        "model": name, "intrinsics": intrinsics, "bf": BF, "fixed": [0],
+    }  # fmt: skip
+    return bundle, kept
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_the_near_filter_leaves_out_exactly_the_near_and_behind_observations(
+    backend: str,
+) -> None:
+    """With ``near``, the solve's starting error is the kept observations' alone.
+
+    The point and the camera every one of whose observations is left out come back bit for bit
+    as given, as does the held camera; without ``near`` every observation counts.
+    """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    bundle, kept = _near_and_behind()
+    np.testing.assert_array_equal(
+        graphs.kept_observations(
+            bundle["poses"], bundle["points"], np.array(bundle["cameras"]),
+            np.array(bundle["point_ids"]), 1e-3,
+        ),
+        kept,
+    )  # fmt: skip
+    costs = np.array(
+        [
+            0.5
+            * np.sum(
+                graphs.projection_residual(
+                    bundle["poses"][c], bundle["points"][p], bundle["pixels"][m], *PINHOLE, BF
+                ).residual
+                ** 2
+            )
+            for m, (c, p) in enumerate(zip(bundle["cameras"], bundle["point_ids"], strict=True))
+        ]
+    )
+    options = graphs.Options(max_iterations=5)
+    filtered = graphs.bundle_adjust(**bundle, near=1e-3, options=options, backend=chosen)
+    assert filtered.summary.initial_error == pytest.approx(float(costs[kept].sum()), rel=1e-12)
+    np.testing.assert_array_equal(filtered.points[61], bundle["points"][61])
+    np.testing.assert_array_equal(filtered.poses[[0, 5]], bundle["poses"][[0, 5]])
+    assert not np.array_equal(filtered.points[60], bundle["points"][60])  # seen by 0 and 4 still
+    every = graphs.bundle_adjust(**bundle, options=options, backend=chosen)
+    assert every.summary.initial_error == pytest.approx(float(costs.sum()), rel=1e-12)
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_bundle_whose_observations_are_all_left_out_comes_back_as_given(backend: str) -> None:
+    """Every point behind its cameras: nothing is solved, 0 iterations, converged, no error."""
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    poses = np.stack([np.eye(4), se3.exp([0.2, 0.0, 0.0, 0.0, 0.0, 0.0])])
+    points = np.array([[0.1, 0.2, -1.0], [0.0, -0.1, -2.0]])
+    result = graphs.bundle_adjust(
+        poses, points, [0, 1, 1], [0, 0, 1], np.full((3, 2), 300.0), np.full(3, np.nan),
+        np.ones(3), model=PINHOLE[0], intrinsics=PINHOLE[1], bf=BF, fixed=[0], near=1e-3,
+        backend=chosen,
+    )  # fmt: skip
+    np.testing.assert_array_equal(result.poses, poses)
+    np.testing.assert_array_equal(result.points, points)
+    summary = result.summary
+    assert (summary.iterations, summary.termination, summary.converged) == (0, "function", True)
+    assert (summary.initial_error, summary.final_error) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize("near", [-1e-3, np.inf, np.nan])
+def test_a_negative_or_infinite_near_fraction_is_refused(near: float) -> None:
+    """``near`` is a fraction of the median depth, finite and non-negative."""
+    with pytest.raises(InvalidInputError, match="near"):
+        graphs.bundle_adjust(
+            HELD_PAIR, FAR_POINT[1][None], [0, 1], [0, 0], _seen_from_held_pair(),
+            [np.nan, np.nan], [1.0, 1.0], model=PINHOLE[0], intrinsics=PINHOLE[1], bf=BF,
+            fixed=[0, 1], near=near,
+        )  # fmt: skip
+
+
 def test_bad_graphs_are_refused() -> None:
     """Every input is checked before GTSAM sees it."""
     truth, edges, relatives = _ring(4, False)
@@ -614,6 +861,11 @@ def test_bad_refinements_are_refused(changes: dict[str, object], named: str) -> 
         ("initial_damping", np.inf),
         ("relative_tolerance", -1.0),
         ("absolute_tolerance", np.nan),
+        ("scaled_damping", 1),
+        ("small_steps", -1),
+        ("small_steps", 2.0),
+        ("small_decrease", 0.0),
+        ("small_decrease", np.inf),
     ],
 )
 def test_bad_options_are_refused(field: str, value: object) -> None:

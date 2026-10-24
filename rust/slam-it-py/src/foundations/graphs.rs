@@ -32,6 +32,12 @@ struct OptionsIn {
     relative_tolerance: f64,
     /// The absolute tolerance.
     absolute_tolerance: f64,
+    /// g2o's damping rather than GTSAM's own.
+    scaled_damping: bool,
+    /// Iterations in a row of small decrease that end the solve; 0, never.
+    small_steps: usize,
+    /// What counts as a small decrease, a fraction of the error.
+    small_decrease: f64,
 }
 
 /// Reads a solve's options from `graphs.Options.as_dict()`.
@@ -55,6 +61,9 @@ fn read_options(options: &Bound<'_, PyDict>) -> PyResult<core::Options> {
         initial_damping: raw.initial_damping,
         relative_tolerance: raw.relative_tolerance,
         absolute_tolerance: raw.absolute_tolerance,
+        scaled_damping: raw.scaled_damping,
+        small_steps: raw.small_steps,
+        small_decrease: raw.small_decrease,
         stop: Stop::never(), // a compiled core's stop is its own threads'
     })
 }
@@ -280,6 +289,7 @@ fn refine_similarity<'py>(
 ///   the focal length.
 /// * `fixed` - int64, the cameras held fixed.
 /// * `huber` - Each observation's Huber threshold, or None for no robust loss.
+/// * `near` - The fraction of the median depth nearer than which an observation is left out.
 /// * `options` - `graphs.Options.as_dict()`.
 ///
 /// # Returns
@@ -293,7 +303,7 @@ fn refine_similarity<'py>(
 #[pyfunction]
 #[pyo3(signature = (
     *, poses, points, cameras, point_ids, pixels, right, information, model, intrinsics, bf,
-    fixed, huber, options
+    fixed, huber, near, options
 ))]
 #[allow(
     clippy::too_many_arguments,
@@ -313,6 +323,7 @@ fn bundle_adjust<'py>(
     bf: f64,
     fixed: PyReadonlyArray1<'py, i64>,
     huber: Option<PyReadonlyArray1<'py, f64>>,
+    near: f64,
     options: Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let thresholds = match &huber {
@@ -349,6 +360,7 @@ fn bundle_adjust<'py>(
                 },
                 &lens,
                 &held,
+                near,
                 &options,
             )
         }),

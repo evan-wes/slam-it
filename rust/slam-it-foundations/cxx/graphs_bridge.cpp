@@ -5,8 +5,10 @@
 #include <gtsam/geometry/Point3.h>
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/geometry/Similarity3.h>
+#include <gtsam/linear/GaussianFactorGraph.h>
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/linear/NoiseModel.h>
+#include <gtsam/linear/VectorValues.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/NoiseModelFactorN.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
@@ -15,6 +17,7 @@
 #include <gtsam/slam/BetweenFactor.h>
 
 #include <Eigen/Core>
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -372,11 +375,27 @@ void add_rust_factor(Problem& problem, rust::Slice<const std::uint64_t> keys,
                                                   std::move(variables), index, problem.state->slot);
 }
 
+double largest_hessian_diagonal(const Problem& problem, const Evaluator& evaluator) {
+  const Holding holding(problem.state->slot, evaluator);
+  double largest = 0.0;
+  for (const auto& [key, entries] :
+       problem.state->graph.linearize(problem.state->values)->hessianDiagonal()) {
+    if (entries.size() > 0) {
+      largest = std::max(largest, entries.cwiseAbs().maxCoeff());
+    }
+  }
+  return largest;
+}
+
 std::unique_ptr<Optimizer> new_optimizer(const Problem& problem, const Evaluator& evaluator,
-                                         double initial_damping, double relative_tolerance,
-                                         double absolute_tolerance) {
+                                         double initial_damping, double damping_factor,
+                                         bool nielsen, double damping_limit,
+                                         double relative_tolerance, double absolute_tolerance) {
   gtsam::LevenbergMarquardtParams params;
   params.setlambdaInitial(initial_damping);
+  params.setlambdaFactor(damping_factor);
+  params.setUseFixedLambdaFactor(!nielsen);
+  params.setlambdaUpperBound(damping_limit);
   params.setRelativeErrorTol(relative_tolerance);
   params.setAbsoluteErrorTol(absolute_tolerance);
   const Holding holding(problem.state->slot, evaluator);
