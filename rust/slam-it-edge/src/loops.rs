@@ -2670,6 +2670,50 @@ pub fn essential_graph(
     })
 }
 
+/// Global BA's solve (`slam_it.edge.loops.global_ba_options`): `loops.global_iterations`, g2o's
+/// damping from `loops.global_damping`, as ORB-SLAM3's every BA runs it, and ORB-SLAM3's stop
+/// after `loops.global_small_steps` decreases in a row under `loops.global_small_decrease`.
+///
+/// # Arguments
+///
+/// * `options` - The settings.
+/// * `stop` - Stops the solve before its next iteration.
+///
+/// # Returns
+///
+/// The solve's options.
+#[must_use]
+pub fn global_ba_options(options: &Options, stop: &Stop) -> graphs::Options {
+    graphs::Options {
+        max_iterations: options.loops.global_iterations,
+        initial_damping: options.loops.global_damping,
+        scaled_damping: true,
+        small_steps: options.loops.global_small_steps,
+        small_decrease: options.loops.global_small_decrease,
+        stop: stop.clone(),
+        ..graphs::Options::default()
+    }
+}
+
+/// A welding BA's solve (`slam_it.edge.loops.weld_options`): GTSAM's own damping and no stop by
+/// small steps, by the owner's decision (g2o's left its first solve 0.2% to 1.7% above GTSAM's
+/// cost on the test set's welds).
+///
+/// # Arguments
+///
+/// * `iterations` - The solve's iterations.
+///
+/// # Returns
+///
+/// The solve's options.
+#[must_use]
+pub fn weld_options(iterations: usize) -> graphs::Options {
+    graphs::Options {
+        max_iterations: iterations,
+        ..graphs::Options::default()
+    }
+}
+
 /// Bundle-adjusts cameras and points through the camera (`graphs::bundle_adjust`): global BA's
 /// and the welding BA's solve.
 ///
@@ -2680,8 +2724,9 @@ pub fn essential_graph(
 /// * `observations` - The observations.
 /// * `camera` - The camera.
 /// * `fixed` - The cameras held.
-/// * `iterations` - The solve's iterations.
-/// * `stop` - Stops it before its next iteration (global BA in a thread of its own).
+/// * `near` - The fraction of the median depth nearer than which an observation is left out
+///   (`loops.near_fraction`).
+/// * `solve` - How the solve runs (`global_ba_options` or `weld_options`).
 ///
 /// # Returns
 ///
@@ -2696,8 +2741,8 @@ fn adjust(
     observations: &graphs::Observations<'_>,
     camera: &Camera,
     fixed: &[usize],
-    iterations: usize,
-    stop: &Stop,
+    near: f64,
+    solve: &graphs::Options,
 ) -> Result<graphs::Adjustment> {
     graphs::bundle_adjust(
         poses,
@@ -2709,25 +2754,23 @@ fn adjust(
             bf: camera.focal() * camera.baseline,
         },
         fixed,
-        0.0,
-        &graphs::Options {
-            max_iterations: iterations,
-            stop: stop.clone(),
-            ..graphs::Options::default()
-        },
+        near,
+        solve,
     )
 }
 
 /// Bundle-adjusts every keyframe and point (`slam_it.edge.loops.global_bundle_adjust`,
 /// `GlobalBundleAdjustemnt` as loop closing runs it): every observation, weighed by its
-/// level's information, with its right column where it has one; no robust loss; the map's
-/// first keyframe (id 0) held fixed; `loops.global_iterations`. Every point is refreshed after.
+/// level's information, with its right column where it has one, but those near their camera's
+/// plane (`loops.near_fraction`); no robust loss; the map's first keyframe (id 0) held fixed;
+/// solved as `global_ba_options` says. Every point is refreshed after.
 ///
 /// # Arguments
 ///
 /// * `m` - The map, changed in place, with its first keyframe.
 /// * `camera` - The camera.
-/// * `options` - `loops.global_iterations`.
+/// * `options` - `loops.global_iterations`, `loops.global_damping`, `loops.global_small_steps`,
+///   `loops.global_small_decrease` and `loops.near_fraction`.
 /// * `stop` - Stops it before its next iteration (a global BA in a thread of its own,
 ///   superseded: ORB-SLAM's `mbStopGBA`).
 ///
@@ -2786,8 +2829,8 @@ pub fn global_bundle_adjust(
         },
         camera,
         &fixed,
-        options.loops.global_iterations,
-        stop,
+        options.loops.near_fraction,
+        &global_ba_options(options, stop),
     )?;
     m.kf_pose = adjusted.poses.iter().map(sim3::inverse).collect();
     m.pt_xyz = adjusted.points;
@@ -3477,7 +3520,9 @@ struct WeldState {
 /// * `state` - The state, updated in place.
 /// * `used` - Which observations take part.
 /// * `robust` - With a Huber loss at each one's threshold's root.
-/// * `iterations` - The solve's iterations.
+/// * `iterations` - The solve's iterations (`weld_options`).
+/// * `near` - The fraction of the median depth nearer than which an observation is left out
+///   (`loops.near_fraction`).
 ///
 /// # Returns
 ///
@@ -3486,6 +3531,10 @@ struct WeldState {
 /// # Errors
 ///
 /// GTSAM's.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the problem, its state, which observations, and the solve's three settings"
+)]
 fn weld_solve(
     problem: &Weld,
     camera: &Camera,
@@ -3493,6 +3542,7 @@ fn weld_solve(
     used: &[bool],
     robust: bool,
     iterations: usize,
+    near: f64,
 ) -> Result<graphs::Summary> {
     let mut cameras: BTreeSet<usize> = problem.fixed.iter().copied().collect();
     let mut points = BTreeSet::new();
@@ -3540,8 +3590,8 @@ fn weld_solve(
         },
         camera,
         &fixed,
-        iterations,
-        &Stop::never(),
+        near,
+        &weld_options(iterations),
     )?;
     for (c, pose) in used_cameras.iter().zip(&adjusted.poses) {
         state.poses[*c] = *pose;
@@ -3619,6 +3669,7 @@ fn weld(
         xyz: problem.points.iter().map(|&p| m.pt_xyz[p]).collect(),
     };
     let everything = vec![true; problem.rows.len()];
+    let near = options.loops.near_fraction;
     let first = weld_solve(
         &problem,
         camera,
@@ -3626,6 +3677,7 @@ fn weld(
         &everything,
         true,
         options.adjustment.iterations,
+        near,
     )?;
     let inliers: Vec<bool> = weld_errors(&problem, camera, &state)?
         .iter()
@@ -3640,6 +3692,7 @@ fn weld(
             &inliers,
             false,
             options.adjustment.refine_iterations,
+            near,
         )?)
     } else {
         None

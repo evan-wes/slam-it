@@ -350,8 +350,20 @@ struct LoopOptions {
   double essential_damping{1e-16};
   /// @brief Bundle-adjust the whole map after each loop.
   bool global_ba{true};
-  /// @brief Its iterations.
+  /// @brief Its iterations...
   std::int64_t global_iterations{10};
+  /// @brief ...from this damping, a fraction of the largest diagonal entry of its normal
+  ///        equations, by Nielsen's schedule (g2o's `tau`, which ORB-SLAM3's global BA leaves at
+  ///        its default)...
+  double global_damping{1e-5};
+  /// @brief ...ending once this many iterations in a row have each lowered its error by less
+  ///        than `global_small_decrease` of it (ORB-SLAM3's g2o stop); 0, never...
+  std::int64_t global_small_steps{3};
+  /// @brief ...that fraction.
+  double global_small_decrease{1e-3};
+  /// @brief Global and welding BA leave out each observation whose point is behind its camera
+  ///        or nearer than this fraction of every observation's median depth; 0 leaves none out.
+  double near_fraction{1e-3};
   /// @brief The best links of the merge's keyframe a welding window starts with, and the
   ///        keyframes it is widened to while it holds fewer (`numTemporalKFs`).
   std::int64_t weld_neighbours{25};
@@ -561,6 +573,10 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("loops.essential_damping", options.loops.essential_damping);
   visit("loops.global_ba", options.loops.global_ba);
   visit("loops.global_iterations", options.loops.global_iterations);
+  visit("loops.global_damping", options.loops.global_damping);
+  visit("loops.global_small_steps", options.loops.global_small_steps);
+  visit("loops.global_small_decrease", options.loops.global_small_decrease);
+  visit("loops.near_fraction", options.loops.near_fraction);
   visit("loops.weld_neighbours", options.loops.weld_neighbours);
   visit("loops.weld_widen", options.loops.weld_widen);
   visit("loops.weld_rounds", options.loops.weld_rounds);

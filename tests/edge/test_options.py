@@ -25,6 +25,21 @@ def test_the_defaults_are_orb_slams() -> None:
     assert (options.keyframes.busy_ref_ratio, options.mapping.max_queued) == (0.25, 3)
 
 
+def test_global_ba_damps_from_g2o_s_tau_and_stops_as_orb_slam3() -> None:
+    """Global BA damps from g2o's ``τ`` and stops after three decreases under 0.1%.
+
+    Global and welding BA leave out the observations nearer than 1e-3 of the median depth.
+    """
+    options = Options()
+    loops = options.loops
+    assert (loops.global_damping, loops.global_small_steps, loops.global_small_decrease) == (
+        1e-5,
+        3,
+        1e-3,
+    )
+    assert loops.near_fraction == 1e-3
+
+
 def test_extraction_doubles_the_features_while_initializing() -> None:
     """A monocular frame before the map has ``features.init_factor`` times the features."""
     options = Options().with_settings({"features.n_features": 700})
@@ -82,6 +97,10 @@ def test_the_settings_cross_as_groups_of_scalars() -> None:
         ({"loops.confidence": 1.0}, r"loops.confidence: must be in \(0, 1\), got 1.0"),
         ({"loops.fine_distance": 257}, "loops.fine_distance: must be from 1 to 256"),
         ({"loops.essential_damping": 0.0}, "loops.essential_damping: must be finite and positive"),
+        ({"loops.global_damping": 0.0}, "loops.global_damping: must be finite and positive"),
+        ({"loops.global_small_steps": -1}, "loops.global_small_steps: must be from 0"),
+        ({"loops.global_small_decrease": 1.5}, r"loops.global_small_decrease: must be in \(0, 1\]"),
+        ({"loops.near_fraction": -1e-3}, "loops.near_fraction: must be finite and not negative"),
         ({"loss.relocalize_seconds": -1.0}, "loss.relocalize_seconds: must be finite and not neg"),
         ({"features.n_features": "a"}, "features.n_features: must be an integer"),
         ({"features.n_features": None}, "features.n_features: must be an integer"),
@@ -120,9 +139,9 @@ def test_an_unknown_setting_or_group_is_refused() -> None:
 
 
 def test_the_settings_are_named_by_group_and_field() -> None:
-    """settings() lists all 138, each ``group.field`` but ``seed``, and with_settings reads them."""
+    """settings() lists all 142, each ``group.field`` but ``seed``, and with_settings reads them."""
     settings = Options().settings()
-    assert len(settings) == 138
+    assert len(settings) == 142
     assert [name for name in settings if "." not in name] == ["seed"]
     changed = Options().with_settings({"relocalization.min_inliers": 12, "seed": 3})
     assert (changed.relocalization.min_inliers, changed.seed) == (12, 3)

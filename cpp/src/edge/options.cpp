@@ -66,6 +66,97 @@ foundations::stereo::MatchOptions stereo_matching(const Options& options) {
           .outlier_factor = options.stereo.outlier_factor};
 }
 
+namespace {
+
+/// @brief Check the real settings: those that must be finite and positive, those that may be 0,
+///        the fractions in (0, 1], and the confidences below 1 (`slam_it.edge.options._checked`).
+/// @param options The settings.
+/// @return Nothing, or `InvalidInput` naming the first one out of range.
+foundations::Result<void> check_reals(const Options& options) {
+  const std::array<RealSetting, 28> positive{{
+      {"features.scale_factor", options.features.scale_factor},
+      {"stereo.close_depth", options.stereo.close_depth},
+      {"initialization.window", options.initialization.window},
+      {"tracking.motion_window", options.tracking.motion_window},
+      {"tracking.stereo_motion_window", options.tracking.stereo_motion_window},
+      {"tracking.local_window", options.tracking.local_window},
+      {"tracking.rgbd_local_window", options.tracking.rgbd_local_window},
+      {"tracking.recovery_local_window", options.tracking.recovery_local_window},
+      {"adjustment.chi2_mono", options.adjustment.chi2_mono},
+      {"adjustment.chi2_stereo", options.adjustment.chi2_stereo},
+      {"mapping.scale_ratio", options.mapping.scale_ratio},
+      {"mapping.fuse_window", options.mapping.fuse_window},
+      {"tracking.pnp_threshold", options.tracking.pnp_threshold},
+      {"tracking.aligned_view_radius", options.tracking.aligned_view_radius},
+      {"tracking.oblique_view_radius", options.tracking.oblique_view_radius},
+      {"tracking.max_distance_margin", options.tracking.max_distance_margin},
+      {"mapping.epipolar_chi2", options.mapping.epipolar_chi2},
+      {"mapping.min_epipole_distance2", options.mapping.min_epipole_distance2},
+      {"relocalization.window", options.relocalization.window},
+      {"relocalization.narrow_window", options.relocalization.narrow_window},
+      {"loops.chi2", options.loops.chi2},
+      {"loops.coarse_window", options.loops.coarse_window},
+      {"loops.huber_chi2", options.loops.huber_chi2},
+      {"loops.fine_window", options.loops.fine_window},
+      {"loops.confirm_window", options.loops.confirm_window},
+      {"loops.fuse_window", options.loops.fuse_window},
+      {"loops.essential_damping", options.loops.essential_damping},
+      {"loops.global_damping", options.loops.global_damping},
+  }};
+  for (const auto& [setting, value] : positive) {
+    if (!std::isfinite(value) || value <= 0.0) {
+      return foundations::fail_setting(setting, "must be finite and positive", value);
+    }
+  }
+  for (const auto& [setting, value] :
+       {RealSetting{"loss.relocalize_seconds", options.loss.relocalize_seconds},
+        RealSetting{"loops.near_fraction", options.loops.near_fraction}}) {
+    if (!std::isfinite(value) || value < 0.0) {
+      return foundations::fail_setting(setting, "must be finite and not negative", value);
+    }
+  }
+  const std::array<RealSetting, 23> fractions{{
+      {"initialization.ratio", options.initialization.ratio},
+      {"initialization.parallax_cos", options.initialization.parallax_cos},
+      {"keyframes.ref_ratio", options.keyframes.ref_ratio},
+      {"keyframes.mono_ref_ratio", options.keyframes.mono_ref_ratio},
+      {"mapping.found_ratio", options.mapping.found_ratio},
+      {"mapping.redundant_fraction", options.mapping.redundant_fraction},
+      {"tracking.view_cos_limit", options.tracking.view_cos_limit},
+      {"mapping.max_parallax_cos", options.mapping.max_parallax_cos},
+      {"tracking.aligned_view_cos", options.tracking.aligned_view_cos},
+      {"tracking.local_map_ratio", options.tracking.local_map_ratio},
+      {"tracking.min_distance_margin", options.tracking.min_distance_margin},
+      {"keyframes.first_ref_ratio", options.keyframes.first_ref_ratio},
+      {"keyframes.busy_ref_ratio", options.keyframes.busy_ref_ratio},
+      {"mapping.min_baseline_depth", options.mapping.min_baseline_depth},
+      {"relocalization.ratio", options.relocalization.ratio},
+      {"relocalization.common_words", options.relocalization.common_words},
+      {"relocalization.group_score", options.relocalization.group_score},
+      {"relocalization.inlier_ratio", options.relocalization.inlier_ratio},
+      {"relocalization.confidence", options.relocalization.confidence},
+      {"loops.common_words", options.loops.common_words},
+      {"loops.ratio", options.loops.ratio},
+      {"loops.confidence", options.loops.confidence},
+      {"loops.global_small_decrease", options.loops.global_small_decrease},
+  }};
+  for (const auto& [setting, value] : fractions) {
+    if (!std::isfinite(value) || value <= 0.0 || value > 1.0) {
+      return foundations::fail_setting(setting, "must be in (0, 1]", value);
+    }
+  }
+  for (const auto& [setting, value] :
+       {RealSetting{"relocalization.confidence", options.relocalization.confidence},
+        RealSetting{"loops.confidence", options.loops.confidence}}) {
+    if (value >= 1.0) {
+      return foundations::fail_setting(setting, "must be in (0, 1)", value);
+    }
+  }
+  return {};
+}
+
+}  // namespace
+
 foundations::Result<void> check_options(const Options& options) {
   if (auto ok = foundations::orb::check_options(extraction(options)); !ok) {
     return in_group("features", ok.error());
@@ -86,13 +177,14 @@ foundations::Result<void> check_options(const Options& options) {
     }
   }
   // Settings that may be 0, then those that must be at least 1.
-  const std::array<IntSetting, 6> may_be_zero{
+  const std::array<IntSetting, 7> may_be_zero{
       {{"seed", options.seed},
        {"initialization.min_features", options.initialization.min_features},
        {"initialization.min_features_depth", options.initialization.min_features_depth},
        {"loss.reset_keyframes", options.loss.reset_keyframes},
        {"loss.session_keyframes", options.loss.session_keyframes},
-       {"loops.weld_rounds", options.loops.weld_rounds}}};
+       {"loops.weld_rounds", options.loops.weld_rounds},
+       {"loops.global_small_steps", options.loops.global_small_steps}}};
   for (const auto& [setting, value] : may_be_zero) {
     if (auto ok = foundations::check_range(setting, value, 0, kMaxSetting); !ok) {
       return ok;
@@ -173,82 +265,7 @@ foundations::Result<void> check_options(const Options& options) {
       return ok;
     }
   }
-  const std::array<RealSetting, 27> positive{{
-      {"features.scale_factor", options.features.scale_factor},
-      {"stereo.close_depth", options.stereo.close_depth},
-      {"initialization.window", options.initialization.window},
-      {"tracking.motion_window", options.tracking.motion_window},
-      {"tracking.stereo_motion_window", options.tracking.stereo_motion_window},
-      {"tracking.local_window", options.tracking.local_window},
-      {"tracking.rgbd_local_window", options.tracking.rgbd_local_window},
-      {"tracking.recovery_local_window", options.tracking.recovery_local_window},
-      {"adjustment.chi2_mono", options.adjustment.chi2_mono},
-      {"adjustment.chi2_stereo", options.adjustment.chi2_stereo},
-      {"mapping.scale_ratio", options.mapping.scale_ratio},
-      {"mapping.fuse_window", options.mapping.fuse_window},
-      {"tracking.pnp_threshold", options.tracking.pnp_threshold},
-      {"tracking.aligned_view_radius", options.tracking.aligned_view_radius},
-      {"tracking.oblique_view_radius", options.tracking.oblique_view_radius},
-      {"tracking.max_distance_margin", options.tracking.max_distance_margin},
-      {"mapping.epipolar_chi2", options.mapping.epipolar_chi2},
-      {"mapping.min_epipole_distance2", options.mapping.min_epipole_distance2},
-      {"relocalization.window", options.relocalization.window},
-      {"relocalization.narrow_window", options.relocalization.narrow_window},
-      {"loops.chi2", options.loops.chi2},
-      {"loops.coarse_window", options.loops.coarse_window},
-      {"loops.huber_chi2", options.loops.huber_chi2},
-      {"loops.fine_window", options.loops.fine_window},
-      {"loops.confirm_window", options.loops.confirm_window},
-      {"loops.fuse_window", options.loops.fuse_window},
-      {"loops.essential_damping", options.loops.essential_damping},
-  }};
-  for (const auto& [setting, value] : positive) {
-    if (!std::isfinite(value) || value <= 0.0) {
-      return foundations::fail_setting(setting, "must be finite and positive", value);
-    }
-  }
-  if (const double seconds = options.loss.relocalize_seconds;
-      !std::isfinite(seconds) || seconds < 0.0) {
-    return foundations::fail_setting("loss.relocalize_seconds", "must be finite and not negative",
-                                     seconds);
-  }
-  const std::array<RealSetting, 22> fractions{{
-      {"initialization.ratio", options.initialization.ratio},
-      {"initialization.parallax_cos", options.initialization.parallax_cos},
-      {"keyframes.ref_ratio", options.keyframes.ref_ratio},
-      {"keyframes.mono_ref_ratio", options.keyframes.mono_ref_ratio},
-      {"mapping.found_ratio", options.mapping.found_ratio},
-      {"mapping.redundant_fraction", options.mapping.redundant_fraction},
-      {"tracking.view_cos_limit", options.tracking.view_cos_limit},
-      {"mapping.max_parallax_cos", options.mapping.max_parallax_cos},
-      {"tracking.aligned_view_cos", options.tracking.aligned_view_cos},
-      {"tracking.local_map_ratio", options.tracking.local_map_ratio},
-      {"tracking.min_distance_margin", options.tracking.min_distance_margin},
-      {"keyframes.first_ref_ratio", options.keyframes.first_ref_ratio},
-      {"keyframes.busy_ref_ratio", options.keyframes.busy_ref_ratio},
-      {"mapping.min_baseline_depth", options.mapping.min_baseline_depth},
-      {"relocalization.ratio", options.relocalization.ratio},
-      {"relocalization.common_words", options.relocalization.common_words},
-      {"relocalization.group_score", options.relocalization.group_score},
-      {"relocalization.inlier_ratio", options.relocalization.inlier_ratio},
-      {"relocalization.confidence", options.relocalization.confidence},
-      {"loops.common_words", options.loops.common_words},
-      {"loops.ratio", options.loops.ratio},
-      {"loops.confidence", options.loops.confidence},
-  }};
-  for (const auto& [setting, value] : fractions) {
-    if (!std::isfinite(value) || value <= 0.0 || value > 1.0) {
-      return foundations::fail_setting(setting, "must be in (0, 1]", value);
-    }
-  }
-  for (const auto& [setting, value] :
-       {RealSetting{"relocalization.confidence", options.relocalization.confidence},
-        RealSetting{"loops.confidence", options.loops.confidence}}) {
-    if (value >= 1.0) {
-      return foundations::fail_setting(setting, "must be in (0, 1)", value);
-    }
-  }
-  return {};
+  return check_reals(options);
 }
 
 }  // namespace slam_it::edge

@@ -583,7 +583,22 @@ class LoopOptions:
         Bundle-adjust the whole map after each loop (on, as visual-only ORB-SLAM3 always does;
         off measures what it adds).
     global_iterations : int
-        Its iterations (``GlobalBundleAdjustemnt``'s 10).
+        Its iterations (``GlobalBundleAdjustemnt``'s 10)...
+    global_damping : float
+        ...from this damping, a fraction of the largest diagonal entry of its normal equations,
+        then Nielsen's schedule: g2o's damping, its ``τ`` 1e-5, which ORB-SLAM3's global BA
+        leaves at its default (:attr:`slam_it.foundations.graphs.Options.scaled_damping`)...
+    global_small_steps : int
+        ...ending once this many iterations in a row have each lowered its error by less than
+        ``loops.global_small_decrease`` of it (ORB-SLAM3's g2o stop, 3); 0, never...
+    global_small_decrease : float
+        ...that fraction (0.1%).
+    near_fraction : float
+        Global and welding BA leave out each observation whose point is behind its camera or
+        in front of it nearer than this fraction of every observation's median depth
+        (:func:`slam_it.foundations.graphs.bundle_adjust`'s ``near``, 1e-3; 0 leaves none out):
+        real maps hold points 1e-9 to 1e-4 of the median depth in front of a camera, whose
+        ``(f/z)²`` stalls every damping. ORB-SLAM3 has no such filter.
     weld_neighbours : int
         The best links of the merge's keyframe a welding window starts with, and the keyframes
         it is widened to while it holds fewer (ORB-SLAM3's ``numTemporalKFs``, 25, which
@@ -630,6 +645,10 @@ class LoopOptions:
     essential_damping: float = 1e-16
     global_ba: bool = True
     global_iterations: int = 10
+    global_damping: float = 1e-5
+    global_small_steps: int = 3
+    global_small_decrease: float = 1e-3
+    near_fraction: float = 1e-3
     weld_neighbours: int = 25
     weld_widen: int = 12
     weld_rounds: int = 5
@@ -907,10 +926,12 @@ _MAY_BE_ZERO = frozenset(
         "loss.reset_keyframes",
         "loss.session_keyframes",
         "loops.weld_rounds",
+        "loops.global_small_steps",
         "loss.relocalize_seconds",
+        "loops.near_fraction",
     }
 )
-"""The settings that may be 0: integers, and one real."""
+"""The settings that may be 0: integers, and two reals."""
 
 _FRACTIONS = frozenset(
     {
@@ -936,6 +957,7 @@ _FRACTIONS = frozenset(
         "loops.common_words",
         "loops.ratio",
         "loops.confidence",
+        "loops.global_small_decrease",
     }
 )
 """The real settings in (0, 1]."""

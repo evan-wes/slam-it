@@ -288,12 +288,32 @@ struct Detection {
     Map& m, const Camera& camera, std::int64_t k, const Eigen::Matrix4d& similarity,
     std::span<const std::int64_t> point_ids, const Options& options);
 
+/// @brief Global BA's solve (`slam_it.edge.loops.global_ba_options`): `loops.global_iterations`,
+///        g2o's damping from `loops.global_damping`, as ORB-SLAM3's every BA runs it, and
+///        ORB-SLAM3's stop after `loops.global_small_steps` decreases in a row under
+///        `loops.global_small_decrease`.
+/// @param options The settings.
+/// @param stop A flag that stops the solve before its next iteration; not owned, null for never.
+/// @return The solve's options.
+[[nodiscard]] foundations::graphs::Options global_ba_options(const Options& options,
+                                                             const std::atomic<bool>* stop);
+
+/// @brief A welding BA's solve (`slam_it.edge.loops.weld_options`): GTSAM's own damping and no
+///        stop by small steps, by the owner's decision (g2o's left its first solve 0.2% to 1.7%
+///        above GTSAM's cost on the test set's welds).
+/// @param iterations The solve's iterations.
+/// @return The solve's options.
+[[nodiscard]] foundations::graphs::Options weld_options(std::int64_t iterations);
+
 /// @brief Bundle-adjust every keyframe and point (`slam_it.edge.loops.global_bundle_adjust`,
 ///        `GlobalBundleAdjustemnt` as loop closing runs it): no robust loss, the map's first
-///        keyframe held fixed; every point refreshed after.
+///        keyframe held fixed, the observations near their camera's plane left out
+///        (`loops.near_fraction`), solved as `global_ba_options` says; every point refreshed
+///        after.
 /// @param m The map, changed in place.
 /// @param camera The camera.
-/// @param options `loops.global_iterations`.
+/// @param options `loops.global_iterations`, `loops.global_damping`, `loops.global_small_steps`,
+///        `loops.global_small_decrease` and `loops.near_fraction`.
 /// @param stop A flag that stops it before its next iteration (a global BA in a thread of its
 ///        own, superseded: ORB-SLAM's `mbStopGBA`); not owned, null for never.
 /// @return The solve's summary; `InvalidInput` for a map without its first keyframe;

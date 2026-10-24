@@ -526,8 +526,19 @@ pub struct LoopOptions {
     pub essential_damping: f64,
     /// Bundle-adjust the whole map after each loop.
     pub global_ba: bool,
-    /// Its iterations.
+    /// Its iterations...
     pub global_iterations: usize,
+    /// ...from this damping, a fraction of the largest diagonal entry of its normal equations,
+    /// by Nielsen's schedule (g2o's `tau`, which ORB-SLAM3's global BA leaves at its default)...
+    pub global_damping: f64,
+    /// ...ending once this many iterations in a row have each lowered its error by less than
+    /// `global_small_decrease` of it (ORB-SLAM3's g2o stop); 0, never...
+    pub global_small_steps: usize,
+    /// ...that fraction.
+    pub global_small_decrease: f64,
+    /// Global and welding BA leave out each observation whose point is behind its camera or
+    /// nearer than this fraction of every observation's median depth; 0 leaves none out.
+    pub near_fraction: f64,
     /// The best links of the merge's keyframe a welding window starts with, and the keyframes it
     /// is widened to while it holds fewer (`numTemporalKFs`).
     pub weld_neighbours: usize,
@@ -576,6 +587,10 @@ impl Default for LoopOptions {
             essential_damping: 1e-16,
             global_ba: true,
             global_iterations: 10,
+            global_damping: 1e-5,
+            global_small_steps: 3,
+            global_small_decrease: 1e-3,
+            near_fraction: 1e-3,
             weld_neighbours: 25,
             weld_widen: 12,
             weld_rounds: 5,
@@ -818,7 +833,7 @@ named_settings!(
         strong_points: Integer,
     },
     relocalization: RelocalizationOptions { enabled: Flag, ratio: Real, common_words: Real, neighbours: Integer, group_score: Real, min_matches: Integer, inlier_ratio: Real, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, window: Real, narrow_inliers: Integer, narrow_window: Real, narrow_distance: Integer },
-    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer, weld_neighbours: Integer, weld_widen: Integer, weld_rounds: Integer },
+    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer, global_damping: Real, global_small_steps: Integer, global_small_decrease: Real, near_fraction: Real, weld_neighbours: Integer, weld_widen: Integer, weld_rounds: Integer },
     loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer, session_keyframes: Integer },
 );
 
@@ -873,6 +888,7 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("loss.reset_keyframes", options.loss.reset_keyframes),
         ("loss.session_keyframes", options.loss.session_keyframes),
         ("loops.weld_rounds", options.loops.weld_rounds),
+        ("loops.global_small_steps", options.loops.global_small_steps),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
     }
@@ -1107,18 +1123,19 @@ fn check_positive(options: &Options) -> Result<()> {
         ("loops.confirm_window", options.loops.confirm_window),
         ("loops.fuse_window", options.loops.fuse_window),
         ("loops.essential_damping", options.loops.essential_damping),
+        ("loops.global_damping", options.loops.global_damping),
     ] {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
         }
     }
-    let seconds = options.loss.relocalize_seconds;
-    if !(seconds.is_finite() && seconds >= 0.0) {
-        return fail_setting(
-            "loss.relocalize_seconds",
-            "must be finite and not negative",
-            seconds,
-        );
+    for (name, value) in [
+        ("loss.relocalize_seconds", options.loss.relocalize_seconds),
+        ("loops.near_fraction", options.loops.near_fraction),
+    ] {
+        if !(value.is_finite() && value >= 0.0) {
+            return fail_setting(name, "must be finite and not negative", value);
+        }
     }
     Ok(())
 }
@@ -1184,6 +1201,10 @@ fn check_reals(options: &Options) -> Result<()> {
         ("loops.common_words", options.loops.common_words),
         ("loops.ratio", options.loops.ratio),
         ("loops.confidence", options.loops.confidence),
+        (
+            "loops.global_small_decrease",
+            options.loops.global_small_decrease,
+        ),
     ] {
         if !(value.is_finite() && value > 0.0 && value <= 1.0) {
             return fail_setting(name, "must be in (0, 1]", value);
@@ -1215,7 +1236,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 138);
+        assert_eq!(settings.len(), 142);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
         options

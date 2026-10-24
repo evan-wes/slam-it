@@ -23,7 +23,7 @@ from slam_it.edge.database import Indexed
 from slam_it.edge.loops import Merge, MergeDetection, Merging, Outcome, Pending
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
-from slam_it.foundations import sim3, vocabulary
+from slam_it.foundations import graphs, sim3, vocabulary
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import MERGE_SCALE, SPLIT, TwoMaps, keyframe_database
@@ -343,6 +343,32 @@ def test_global_ba_follows_the_merge(two: TwoMaps) -> None:
     np.testing.assert_allclose(
         adjusted.map.kf_pose[0], graph_only.map.kf_pose[0], rtol=0, atol=1e-12
     )
+
+
+def test_the_weld_keeps_gtsam_s_damping_and_global_ba_takes_g2o_s(
+    two: TwoMaps, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge's welding BA solves by GTSAM's own damping, no stop; its global BA by g2o's.
+
+    The weld's two solves take :func:`slam_it.edge.loops.weld_options`, the global BA after the
+    merge :func:`slam_it.edge.loops.global_ba_options` (decided with evan-wes on 2026-10-23);
+    each leaves out the observations nearer than ``loops.near_fraction`` of the median depth.
+    """
+    solves: list[tuple[graphs.Options, float]] = []
+    adjust = graphs.bundle_adjust
+
+    def recorded(*args: Any, **kwargs: Any) -> graphs.Adjustment:  # noqa: ANN401 -- passed on
+        solves.append((kwargs["options"], kwargs["near"]))
+        return adjust(*args, **kwargs)
+
+    monkeypatch.setattr(graphs, "bundle_adjust", recorded)
+    loops.merge(two.active, two.matched, CAMERA, _found(two), mode=_mode(two), options=OPTIONS)
+    assert [options for options, _ in solves] == [
+        loops.weld_options(OPTIONS.adjustment.iterations),
+        loops.weld_options(OPTIONS.adjustment.refine_iterations),
+        loops.global_ba_options(OPTIONS),
+    ]
+    assert {near for _, near in solves} == {OPTIONS.loops.near_fraction}
 
 
 def test_the_merge_refuses_what_it_cannot_join(two_rigid: TwoMaps) -> None:

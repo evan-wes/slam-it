@@ -14,6 +14,8 @@ use slam_it_edge::loops::{self, Outcome, Search};
 use slam_it_edge::map::{self, Map};
 use slam_it_edge::options::{Mode, Options};
 use slam_it_foundations::error::ErrorKind;
+use slam_it_foundations::graphs;
+use slam_it_foundations::nls::Stop;
 use slam_it_foundations::so3;
 
 use scene::{KEYFRAMES, POINTS, camera, frame_at, one_word, points, pose};
@@ -169,6 +171,32 @@ fn a_similarity_has_a_scale_and_a_rigid_part() {
 }
 
 /// The RANSAC budget: `SetRansacParameters(0.99, 15, 300)`.
+#[test]
+fn global_ba_damps_as_g2o_and_stops_as_orb_slam3_and_the_weld_keeps_gtsam_s_damping() {
+    let options = Options::default();
+    let stop = Stop::never();
+    let global = loops::global_ba_options(&options, &stop);
+    assert_eq!(global.max_iterations, 10);
+    assert!(global.scaled_damping);
+    assert_eq!(
+        (
+            global.initial_damping,
+            global.small_steps,
+            global.small_decrease
+        ),
+        (1e-5, 3, 1e-3)
+    );
+    let weld = loops::weld_options(5);
+    let gtsam = graphs::Options::default();
+    assert_eq!(weld.max_iterations, 5);
+    assert!(!weld.scaled_damping);
+    assert_eq!(
+        (weld.initial_damping, weld.small_steps),
+        (gtsam.initial_damping, 0)
+    );
+    assert_eq!(options.loops.near_fraction, 1e-3);
+}
+
 #[test]
 fn the_ransac_budget_is_orb_slams() {
     let options = Options::default();
