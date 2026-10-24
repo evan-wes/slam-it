@@ -896,7 +896,9 @@ def _inputs(raw: dict[str, object]) -> dict[str, object]:
     """Return a fixture case's inputs as the functions take them: lists as arrays, null as NaN."""
     out: dict[str, object] = {}
     for key, value in raw.items():
-        if isinstance(value, list):
+        if key == "options":
+            out[key] = graphs.Options(**value)  # type: ignore[arg-type]
+        elif isinstance(value, list):
             array = np.array(value, dtype=np.float64)
             out[key] = array.astype(np.int64) if key in INDEX_INPUTS else array
         else:
