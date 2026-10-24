@@ -4,6 +4,105 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.17.2] - 2026-10-23
+
+Bundle adjustment and the pose graph hold their fixed cameras and poses as constants, never
+variables, as g2o's fixed vertices hold ORB-SLAM's (`setFixed`), in the three languages. They
+were GTSAM's `NonlinearEquality`, a hard constraint whose `Constrained` noise model makes GTSAM's
+`EliminatePreferCholesky` eliminate every clique holding one by dense QR: zju-B6's merge, 52
+cameras held in its welding BA, took 658 s, and merges under ORB-SLAM3's culling rule, with more
+cameras held, ran out of memory (the merge-cost investigation of 2026-10-22). Local BA is
+unchanged: it runs on rung 0's own bundle adjustment (`slam_it.foundations.ba`), whose fixed
+poses were never variables.
+
+### Changed
+
+- **Held cameras in bundle adjustment** (`graphs.bundle_adjust`: global BA and the merge's welding
+  BA): a held camera is no variable, and each of its observations is a factor on its point alone.
+  C++ and Rust evaluate their projection factor with the pose a constant
+  (`HeldProjectionFactor`, `Factor::HeldProjection`); Python takes GTSAM's
+  `TriangulationFactorCal3_S2` through a pinhole camera, a custom factor through GTSAM's
+  `StereoCamera` with a right column (each giving the factor it replaces bit for bit, a point
+  behind the camera included), and its own custom factor through radtan.
+- **Held poses in the pose graph** (`graphs.optimize_pose_graph`: the essential graph): an edge
+  with one end held is GTSAM's `BetweenFactor` evaluated with that end at its value, a factor on
+  the other end; the edges with both ends held, whose residuals are constants, are stacked into
+  one factor on a free pose with unit noise and a zero Jacobian (C++ `HeldEdgesFactor`, Rust
+  `Factor::HeldEdges`, Python `_held_edges`), so that every error GTSAM reads, its own search
+  over dampings' included, and every error the summaries report hold theirs, as before. With
+  every pose held nothing is solved: the poses come back as given, after 0 iterations,
+  termination `function` (GTSAM ran 1 before, where the edges cost anything).
+- **Each held camera and pose comes back exactly as given:** a held Sim(3) pose came back through
+  GTSAM's `Similarity3`, its last bits changed.
+- **The Rust bridge** (`rust/slam-it-foundations/cxx/`) drops `fix_pose` and `fix_similarity`,
+  and gains `add_held_between_poses`, `add_held_between_similarities`, `between_residual_poses`
+  and `between_residual_similarities`.
+- **Python's one-end-held edge** (`_held_end`) wraps the edge's whitened Jacobian and residual
+  in unit noise, right for any Gaussian noise, where it wrapped them in the edge's own noise,
+  which whitened them twice unless it was unit (the essential graph's is).
+- **Measured**, develop (dfdc511a) against this version, each run on one P-core beside another
+  agent's four programs on four other P-cores:
+  - zju-B6, its first 1,070 frames, monocular, inline: the merge 657.9 s -> 1.41 s in C++ and
+    668.5 s -> 1.64 s in Rust; the run's peak RSS 2,509 -> 300 MiB and 2,515 -> 308 MiB; the
+    whole run 710.6 s -> 53.1 s and 709.5 s -> 42.3 s. The weld's and global BA's costs agree to
+    1.8e-14 (C++) and 5.6e-13 (Rust) relative, the essential graph's to 1.1e-12 and 3.1e-11:
+    from the poses it starts from (its initial error differs as much), not from how its held
+    edges' error is summed (carrying that error inside GTSAM's graph instead of adding it to the
+    solve's moved them by 4.4e-16 at most). The final ATE is 0.7390 -> 0.7235
+    cm in C++ and 0.7238 -> 0.7235 cm in Rust, and the two languages' final trajectories agree
+    to 9.2e-7, where they differed by 4.1e-3. These figures were measured before the held
+    edges' error was carried inside GTSAM's graph; run again after it (on a machine without the
+    other agent's programs), the trajectories are the same bit for bit, and the merges took
+    1.28 s (C++) and 1.56 s (Rust).
+  - Per call, through the bindings (the median of 3 calls where one took under 5 s): advio-20's
+    dumped global BA (84 cameras, camera 0 held, 51,626 observations) 360.7 s -> 1.07 s in C++
+    and 313.7 s -> 1.21 s in Rust, though neither version accepts a step there (1 iteration,
+    `damping_limit`, the cost unchanged); the same with cameras 0 to 41 held and a Huber loss,
+    112.0 s -> 0.51 s and 112.3 s -> 0.62 s; the loop room's dumped global BA 2.35 s -> 0.53 s
+    (C++), 2.52 s -> 0.64 s (Rust) and 2.02 s -> 0.50 s (Python).
+- **What changes in the answers:** the costs agree to roundoff, and so do the solutions where
+  the held cameras fix the gauge: graphs.json's pose-graph and BA cases, the constrained solves'
+  results, are matched in every language within 3.8e-11 in a pose and 1.9e-10 in a point, its
+  policy 1e-8. Where global BA holds one camera of a monocular map, the map's scale is free and
+  the solve slides along it at the same cost. Develop's constrained QR let roundoff move the
+  solve along that scale; with the cameras constants it stops at the same point in every
+  language: in the loop room's monocular run, the three agree to 2.2e-8 in a final position,
+  where develop's differed in scale by up to 35%. The scale is still not held (a later PR adds
+  g2o-style damping to the global BA). That run's map now comes out 7.4% larger in C++, and 5.5%
+  and 21% smaller in Rust and Python; its global BA's own cost is the same as develop's to
+  1.6e-10 relative (Python's 1.55e-10 the largest), the later solves', which run at the new
+  scale, to 2.2e-7 (C++'s local BA at frame 243). Its final ATE (the RMSE of the recorded
+  positions aligned to the truth by a similarity), 1.32, 1.34 and 1.14 cm in Python, C++ and
+  Rust, is 1.19 cm in each (the bar, 2 cm, holds in every language). The advio-20 weld-like
+  solve, capped at 5 iterations, ends 6.9e-5 (C++) and 1.9e-6 (Rust) relative higher; 10 of its
+  5,540 points moved more than 1e-3 in C++ and 3 in Rust (map units: half its points lie within
+  0.16 of their median), the most by 3.0, a point 9.9 from the median, as develop's C++ and Rust
+  solutions of it differed by 2.9.
+
+### Tests
+
+- **Held-heavy cases in graphs.json,** generated by the constrained solves on develop: the ring
+  in SE(3) and Sim(3) with poses 0 to 3 held (edges joining two held poses, a held pose to a free
+  one, and a free one to a held one), the monocular radtan and pinhole BAs with cameras 0 to 2 of
+  6 held, and the stereo BA with every camera held. Every language matches them within 6.2e-15.
+- **Held cameras and poses, in every language:** the stereo scene with one, three and all five
+  cameras held, the held ones back bit for bit; the pose graph with edges of each kind, its held
+  poses back bit for bit, its free ones on the truth, its final error the held edge's constant,
+  which the graph with every pose held reports after 0 iterations; and an edge between two held
+  poses beside a free pose in no edge, whose one iteration lowers nothing: the solve converges
+  (`function`), as develop's did. Before the held edges' error was carried inside GTSAM's graph,
+  it ended at `damping_limit`, not converged (0.3.17.2's review panel, L1): on the reviewer's
+  probe, that case and 150 random Sim(3) graphs of 30 poses, 15 held, now end as develop's
+  emulated form does, after as many iterations, in every language, where in the Python
+  reference 2 of the graphs ended at `damping_limit` and 2 ran one more iteration.
+- **Python's held stereo factor against GTSAM's:** at a point behind the camera, its error,
+  right-hand side and Jacobian on the point equal `GenericStereoFactor3D`'s with the pose a
+  variable, bit for bit.
+- **The rooms' golden records** are regenerated: the decisions are the same but for Rust's
+  loop room in monocular, whose global BA (frame 235) ends by the relative tolerance after its
+  10 iterations rather than at the cap; the loop room's monocular poses moved as above, its RGB-D
+  and stereo ones within 9.3e-10, the other 24 cases not at all.
+
 ## [0.3.17.1] - 2026-10-22
 
 The run viewer draws what it has as soon as it has it: a run's track at once, its map and its

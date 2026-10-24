@@ -3,6 +3,7 @@
 ///        Jacobians against central differences, each solve recovering a known answer, how a
 ///        solve stops, and bad input.
 #include <Eigen/Dense>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -11,6 +12,7 @@
 #include <limits>
 #include <numbers>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -248,6 +250,73 @@ void test_pose_graph(int& failures) {
   }
 }
 
+/// @brief Held poses are constants: an edge with a held end pulls its free end alone, from either
+///        side; one between two held poses costs a constant, counted in the errors; and with
+///        every pose held nothing is solved.
+/// @param failures The running failure count.
+void test_held_poses(int& failures) {
+  for (const bool with_scale : {false, true}) {
+    const std::vector<Eigen::Matrix4d> truth = ring(4, with_scale);
+    graphs::IndexPairs edges(4, 2);
+    edges << 0, 1, 1, 2, 3, 1, 2, 3;  // both held; held first; held second; free
+    std::vector<Eigen::Matrix4d> relatives;
+    relatives.reserve(edges.rows());
+    for (Eigen::Index e = 0; e < edges.rows(); ++e) {
+      relatives.emplace_back(truth[edges(e, 0)].inverse() * truth[edges(e, 1)]);
+    }
+    relatives[0] = relatives[0] * pose({0.1, 0.0, 0.0}, {0.0, 0.0, 0.05});  // costs a constant
+    std::vector<Eigen::Matrix4d> start = truth;
+    start[2] = start[2] * pose({0.05, -0.03, 0.02}, {0.01, 0.0, -0.02});
+    start[3] = start[3] * pose({-0.04, 0.02, 0.01}, {0.0, 0.02, 0.01});
+    const std::array<std::int64_t, 2> fixed = {0, 1};
+    const auto result = graphs::optimize_pose_graph(start, edges, relatives, fixed, with_scale,
+                                                    graphs::Options{.max_iterations = 30});
+    const std::array<std::int64_t, 4> every = {0, 1, 2, 3};
+    const auto held = graphs::optimize_pose_graph(truth, edges, relatives, every, with_scale, {});
+    expect(result.has_value() && held.has_value(), "both graphs solve", failures);
+    if (!result || !held) {
+      continue;
+    }
+    expect(result->poses[0] == start[0] && result->poses[1] == start[1] &&
+               close(result->poses[2], truth[2], 0.0, 1e-8) &&
+               close(result->poses[3], truth[3], 0.0, 1e-8),
+           "the held poses come back exactly, the free ones to the truth", failures);
+    expect(held->poses == truth && held->summary.iterations == 0 &&
+               held->summary.termination == graphs::Termination::kFunction &&
+               held->summary.converged &&
+               held->summary.initial_error == held->summary.final_error &&
+               held->summary.initial_error > 1e-4,
+           "every pose held: nothing solved, the held edge's cost reported", failures);
+    const double constant = held->summary.initial_error;
+    expect(std::abs(result->summary.final_error - constant) <= 1e-9 * constant &&
+               result->summary.initial_error > result->summary.final_error,
+           "the edge between the held poses costs its constant in the errors", failures);
+  }
+}
+
+/// @brief An edge between two held poses costs its error inside GTSAM's own rules too: with a
+///        free pose in no edge, the one iteration lowers nothing and the solve converges, as when
+///        the held poses were variables (0.3.17.2's review panel, L1), not at the damping's limit.
+/// @param failures The running failure count.
+void test_held_edge_alone(int& failures) {
+  const std::vector<Eigen::Matrix4d> truth = {pose({0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}),
+                                              pose({1.0, 0.2, 0.0}, {0.0, 0.0, 2.0}),
+                                              pose({2.0, -0.2, 0.0}, {0.0, 0.0, 4.0})};
+  graphs::IndexPairs edges(1, 2);
+  edges << 0, 1;
+  const std::vector<Eigen::Matrix4d> relatives = {truth[0].inverse() * truth[1] *
+                                                  pose({0.1, 0.0, 0.0}, {0.0, 0.0, 0.05})};
+  const std::array<std::int64_t, 2> fixed = {0, 1};
+  const auto result = graphs::optimize_pose_graph(truth, edges, relatives, fixed, false,
+                                                  graphs::Options{.max_iterations = 10});
+  expect(result.has_value() && result->summary.iterations == 1 &&
+             result->summary.termination == graphs::Termination::kFunction &&
+             result->summary.converged && result->summary.initial_error > 1e-3 &&
+             result->summary.final_error == result->summary.initial_error,
+         "a free pose in no edge, the held edge's error seen: converged after one iteration",
+         failures);
+}
+
 /// @brief ORB-SLAM's two rounds: a wrong match stands out; without it the motion is exact.
 /// @param failures The running failure count.
 void test_refine_similarity(int& failures) {
@@ -290,65 +359,129 @@ void test_refine_similarity(int& failures) {
   }
 }
 
+/// @brief A stereo scene: five cameras along x looking down +z, 60 points in front of them,
+///        every camera's view of every point (every second one with its right column), and a
+///        start with the cameras after the first and every point perturbed.
+struct Scene {
+  /// @brief Each camera's true `T_world_cam`.
+  std::vector<Eigen::Matrix4d> truth;
+  /// @brief Each point's true position.
+  graphs::Points points;
+  /// @brief Each observation's camera.
+  std::vector<std::int64_t> cameras;
+  /// @brief Each observation's point.
+  std::vector<std::int64_t> ids;
+  /// @brief Each observation's pixel.
+  graphs::Pairs pixels;
+  /// @brief Each observation's right column, NaN for none.
+  std::vector<double> right;
+  /// @brief Each observation's information.
+  std::vector<double> information;
+  /// @brief Each camera's starting pose.
+  std::vector<Eigen::Matrix4d> start;
+  /// @brief Each point's start.
+  graphs::Points start_points;
+};
+
+/// @brief The stereo scene, seen through the radtan camera.
+/// @return The scene.
+Scene stereo_scene() {
+  constexpr int kCameras = 5;
+  constexpr int kPoints = 60;
+  Scene scene;
+  for (int c = 0; c < kCameras; ++c) {
+    scene.truth.push_back(pose({0.4 * c, 0.0, 0.0}, {0.0, 0.05 * c, 0.0}));
+  }
+  scene.points.resize(kPoints, 3);
+  for (int p = 0; p < kPoints; ++p) {
+    scene.points.row(p) << -1.0 + (0.065 * p), std::sin(p) * 0.9, 3.0 + (0.05 * p);
+  }
+  scene.pixels.resize(static_cast<Eigen::Index>(kCameras) * kPoints, 2);
+  for (int c = 0; c < kCameras; ++c) {
+    for (int p = 0; p < kPoints; ++p) {
+      const Eigen::Matrix4d& at = scene.truth[c];
+      const Eigen::Vector3d local = at.topLeftCorner<3, 3>().transpose() *
+                                    (scene.points.row(p).transpose() - at.topRightCorner<3, 1>());
+      const Eigen::Vector2d seen = *camera::project(camera::Model::kRadTan, radtan(), local);
+      scene.pixels.row(static_cast<Eigen::Index>(scene.cameras.size())) = seen.transpose();
+      scene.right.push_back(p % 2 == 1 ? seen.x() - (kBf / local.z())
+                                       : std::numeric_limits<double>::quiet_NaN());
+      scene.cameras.push_back(c);
+      scene.ids.push_back(p);
+    }
+  }
+  scene.information.assign(scene.cameras.size(), 1.0);
+  scene.start = scene.truth;
+  for (int c = 1; c < kCameras; ++c) {
+    scene.start[c] = scene.start[c] * pose({0.01 * c, -0.02, 0.015}, {0.01, -0.005 * c, 0.02});
+  }
+  scene.start_points = scene.points;
+  for (int p = 0; p < kPoints; ++p) {
+    scene.start_points.row(p) += Eigen::RowVector3d(0.03, -0.02, 0.04) * std::cos(p);
+  }
+  return scene;
+}
+
+/// @brief Adjust the scene from its start, the cameras in `fixed` held, for 20 iterations.
+/// @param scene The scene.
+/// @param fixed The cameras held.
+/// @return The adjustment.
+slam_it::foundations::Result<graphs::Adjustment> adjust(const Scene& scene,
+                                                        std::span<const std::int64_t> fixed) {
+  return graphs::bundle_adjust(scene.start, scene.start_points,
+                               graphs::Observations{.cameras = scene.cameras,
+                                                    .point_ids = scene.ids,
+                                                    .pixels = scene.pixels,
+                                                    .right = scene.right,
+                                                    .information = scene.information,
+                                                    .huber = {}},
+                               camera::Model::kRadTan, radtan(), kBf, fixed,
+                               graphs::Options{.max_iterations = 20});
+}
+
+/// @brief Whether an adjustment returned the held cameras exactly as they started, and every
+///        other camera and every point to the truth.
+/// @param result The adjustment.
+/// @param scene Its scene.
+/// @param fixed The cameras held.
+/// @return Whether it did.
+bool recovered(const graphs::Adjustment& result, const Scene& scene,
+               std::span<const std::int64_t> fixed) {
+  bool out = close(result.points, scene.points, 0.0, 1e-6);
+  for (std::size_t c = 0; c < scene.truth.size(); ++c) {
+    out = out && (std::ranges::contains(fixed, static_cast<std::int64_t>(c))
+                      ? result.poses[c] == scene.start[c]
+                      : close(result.poses[c], scene.truth[c], 0.0, 1e-7));
+  }
+  return out;
+}
+
 /// @brief Stereo observations fix the scale: perturbed cameras and points return to the truth.
 /// @param failures The running failure count.
 void test_bundle_adjust(int& failures) {
-  constexpr int kCameras = 5;
-  constexpr int kPoints = 60;
-  std::vector<Eigen::Matrix4d> truth;
-  truth.reserve(kCameras);
-  for (int c = 0; c < kCameras; ++c) {
-    truth.push_back(pose({0.4 * c, 0.0, 0.0}, {0.0, 0.05 * c, 0.0}));
-  }
-  graphs::Points points(kPoints, 3);
-  for (int p = 0; p < kPoints; ++p) {
-    points.row(p) << -1.0 + (0.065 * p), std::sin(p) * 0.9, 3.0 + (0.05 * p);
-  }
-  std::vector<std::int64_t> cameras;
-  std::vector<std::int64_t> ids;
-  std::vector<double> right;
-  graphs::Pairs pixels(kCameras * kPoints, 2);
-  for (int c = 0; c < kCameras; ++c) {
-    for (int p = 0; p < kPoints; ++p) {
-      const Eigen::Vector3d local = truth[c].topLeftCorner<3, 3>().transpose() *
-                                    (points.row(p).transpose() - truth[c].topRightCorner<3, 1>());
-      const Eigen::Vector2d seen = *camera::project(camera::Model::kRadTan, radtan(), local);
-      pixels.row(static_cast<Eigen::Index>(cameras.size())) = seen.transpose();
-      right.push_back(p % 2 == 1 ? seen.x() - (kBf / local.z())
-                                 : std::numeric_limits<double>::quiet_NaN());
-      cameras.push_back(c);
-      ids.push_back(p);
-    }
-  }
-  std::vector<Eigen::Matrix4d> start = truth;
-  for (int c = 1; c < kCameras; ++c) {
-    start[c] = start[c] * pose({0.01 * c, -0.02, 0.015}, {0.01, -0.005 * c, 0.02});
-  }
-  graphs::Points start_points = points;
-  for (int p = 0; p < kPoints; ++p) {
-    start_points.row(p) += Eigen::RowVector3d(0.03, -0.02, 0.04) * std::cos(p);
-  }
-  const std::vector<double> information(cameras.size(), 1.0);
+  const Scene scene = stereo_scene();
   const std::array<std::int64_t, 1> fixed = {0};
-  const auto result = graphs::bundle_adjust(start, start_points,
-                                            graphs::Observations{.cameras = cameras,
-                                                                 .point_ids = ids,
-                                                                 .pixels = pixels,
-                                                                 .right = right,
-                                                                 .information = information,
-                                                                 .huber = {}},
-                                            camera::Model::kRadTan, radtan(), kBf, fixed,
-                                            graphs::Options{.max_iterations = 20});
-  expect(result.has_value(), "the bundle solves", failures);
-  if (!result) {
-    return;
-  }
-  bool recovered = result->poses[0] == truth[0];
-  for (int c = 0; c < kCameras; ++c) {
-    recovered = recovered && close(result->poses[c], truth[c], 0.0, 1e-7);
-  }
-  expect(recovered && close(result->points, points, 0.0, 1e-6),
+  const auto result = adjust(scene, fixed);
+  expect(result.has_value() && recovered(*result, scene, fixed),
          "cameras and points return to the truth, the fixed camera exactly", failures);
+}
+
+/// @brief Held cameras are constants: each comes back bit for bit as it was given, with three of
+///        five held, and with every one held, the points alone adjusted.
+/// @param failures The running failure count.
+void test_held_cameras(int& failures) {
+  Scene scene = stereo_scene();
+  scene.start = scene.truth;
+  scene.start[4] = scene.start[4] * pose({0.02, -0.02, 0.01}, {0.01, 0.0, -0.01});
+  const std::array<std::int64_t, 3> three = {0, 1, 2};
+  const auto some = adjust(scene, three);
+  expect(some.has_value() && recovered(*some, scene, three),
+         "three held come back exactly, the free ones and the points to the truth", failures);
+  scene.start[4] = scene.truth[4];
+  const std::array<std::int64_t, 5> every = {0, 1, 2, 3, 4};
+  const auto all = adjust(scene, every);
+  expect(all.has_value() && recovered(*all, scene, every) && all->summary.iterations > 0,
+         "every camera held: the points alone return to the truth", failures);
 }
 
 /// @brief Capped; converged by the relative tolerance; and, at a minimum, no step lowers it.
@@ -489,8 +622,11 @@ int run() {
   test_similarity_jacobians(failures);
   test_behind_the_camera(failures);
   test_pose_graph(failures);
+  test_held_poses(failures);
+  test_held_edge_alone(failures);
   test_refine_similarity(failures);
   test_bundle_adjust(failures);
+  test_held_cameras(failures);
   test_termination(failures);
   test_bad_input(failures);
   expect(std::string(graphs::name(graphs::Termination::kDampingLimit)) == "damping_limit",

@@ -46,6 +46,20 @@ bound (``1e5``); a step that lowers the error divides ``λ`` by 10 (GTSAM's defa
 error GTSAM raises while solving is :class:`~slam_it.foundations.errors.NotConvergedError`,
 as the compiled backends report it.
 
+**Held cameras and poses are constants,** never variables, as g2o's fixed vertices hold
+ORB-SLAM's (``setFixed``): a held camera's observation is a factor on its point alone (through a
+pinhole camera, GTSAM's ``TriangulationFactorCal3_S2``, or with a right column a custom factor
+through its ``StereoCamera``, each projecting as the camera's own factor does); a pose graph's
+edge with one end held is a factor on its other end (the edge's ``BetweenFactor`` evaluated with
+that end at its value); and the edges with both ends held, whose error is a constant, are one
+factor on a free pose with a zero Jacobian, so that every error GTSAM reads, its search over
+dampings' included, is the whole graph's, as when the held poses were variables. Each held one
+comes back exactly as given. Until 0.3.17.2 they were GTSAM's
+``NonlinearEquality``, a hard constraint whose ``Constrained`` noise model makes GTSAM's
+``EliminatePreferCholesky`` eliminate every clique holding one by dense QR: zju-B6's merge, 52
+cameras held in its welding BA, took 658 s so and its run peaked at 2,509 MiB, against 1.4 s
+and 300 MiB with them constants (C++, its first 1,070 frames, one core, 2026-10-23).
+
 **A Sim(3) pose graph's edges are linearised to first order.** GTSAM 4.3's ``Similarity3``
 has no Jacobian of its chart's ``Local``, so ``BetweenFactor<Similarity3>`` uses the plain
 between-Jacobians, exact only at a zero error (``Pose3``'s are exact); g2o's ``EdgeSim3``, as
@@ -617,6 +631,47 @@ def _information(values: ArrayLike, count: int, name: str) -> Array:
 # --- the pose graph -----------------------------------------------------------------------
 
 
+def _held_end(
+    edge: gtsam.NonlinearFactor,
+    held: int,
+    value: gtsam.Pose3 | gtsam.Similarity3,
+    free: int,
+    similarity: bool,
+) -> gtsam.CustomFactor:
+    """Return a pose graph's edge with one end held at `value`: a factor on its `free` end alone.
+
+    The edge's own ``BetweenFactor`` is linearised with the held end at its value, so the
+    residual and the free end's Jacobian are GTSAM's own, whitened by the edge's noise; they are
+    wrapped in unit noise, which whitens them no further. GTSAM's Python wrapper has no unary
+    form of the between factor.
+    """
+    dimension = SIMILARITY_DIM if similarity else POSE_DIM
+    columns = slice(0, dimension) if edge.keys()[0] == free else slice(dimension, 2 * dimension)
+
+    def evaluate(values: gtsam.Values) -> tuple[Array, list[Array]]:
+        ends = gtsam.Values()
+        ends.insert(held, value)
+        ends.insert(free, values.atSimilarity3(free) if similarity else values.atPose3(free))
+        jacobian, rhs = edge.linearize(ends).jacobian()
+        return -rhs, [jacobian[:, columns]]
+
+    return _custom(gtsam.noiseModel.Unit.Create(dimension), [free], evaluate)
+
+
+def _held_edges(residuals: Array, free: int, similarity: bool) -> gtsam.CustomFactor:
+    """Return a pose graph's edges with both ends held as one factor on a `free` pose.
+
+    Their stacked `residuals`, a constant, with unit noise and a zero Jacobian: the factor moves
+    nothing, but every error GTSAM reads, its search over dampings' included, holds theirs.
+    """
+    jacobian = np.zeros((residuals.shape[0], SIMILARITY_DIM if similarity else POSE_DIM))
+
+    def evaluate(_: gtsam.Values) -> tuple[Array, list[Array]]:
+        return residuals, [jacobian]
+
+    return _custom(gtsam.noiseModel.Unit.Create(residuals.shape[0]), [free], evaluate)
+
+
 def _pose_graph(  # noqa: PLR0913, PLR0917 -- the graph, its kind and the options
     poses: Array,
     edges: IntArray,
@@ -625,36 +680,54 @@ def _pose_graph(  # noqa: PLR0913, PLR0917 -- the graph, its kind and the option
     similarity: bool,
     options: Options,
 ) -> PoseGraph:
-    """Solve a pose graph (reference)."""
+    """Solve a pose graph (reference); the held poses are constants (the module docstring)."""
+    held = {int(k) for k in fixed}
+    value_of: Callable[[Array], gtsam.Pose3 | gtsam.Similarity3] = (
+        _to_similarity3 if similarity else gtsam.Pose3
+    )
+    between = gtsam.BetweenFactorSimilarity3 if similarity else gtsam.BetweenFactorPose3
+    unit = gtsam.noiseModel.Unit.Create(SIMILARITY_DIM if similarity else POSE_DIM)
     graph = gtsam.NonlinearFactorGraph()
     values = gtsam.Values()
-    if similarity:
-        unit = gtsam.noiseModel.Unit.Create(SIMILARITY_DIM)
-        for k, pose in enumerate(poses):
-            values.insert(k, _to_similarity3(pose))
-        for (i, j), relative in zip(edges, relatives, strict=True):
-            graph.add(
-                gtsam.BetweenFactorSimilarity3(int(i), int(j), _to_similarity3(relative), unit)
-            )
-        for k in fixed:
-            graph.add(gtsam.NonlinearEqualitySimilarity3(int(k), _to_similarity3(poses[k])))
-    else:
-        unit = gtsam.noiseModel.Unit.Create(POSE_DIM)
-        for k, pose in enumerate(poses):
-            values.insert(k, gtsam.Pose3(pose))
-        for (i, j), relative in zip(edges, relatives, strict=True):
-            graph.add(gtsam.BetweenFactorPose3(int(i), int(j), gtsam.Pose3(relative), unit))
-        for k in fixed:
-            graph.add(gtsam.NonlinearEqualityPose3(int(k), gtsam.Pose3(poses[k])))
+    for k, pose in enumerate(poses):
+        if k not in held:
+            values.insert(k, value_of(pose))
+    parts: list[Array] = []
+    for (i, j), relative in zip(edges.tolist(), relatives, strict=True):
+        edge = between(i, j, value_of(relative), unit)
+        if i in held and j in held:
+            ends = gtsam.Values()
+            ends.insert(i, value_of(poses[i]))
+            ends.insert(j, value_of(poses[j]))
+            parts.append(np.asarray(edge.unwhitenedError(ends), dtype=np.float64))
+        elif i in held or j in held:
+            end, other = (i, j) if i in held else (j, i)
+            graph.add(_held_end(edge, end, value_of(poses[end]), other, similarity))
+        else:
+            graph.add(edge)
+    residuals = np.concatenate(parts) if parts else np.zeros(0)
+    free = next((k for k in range(poses.shape[0]) if k not in held), None)
+    if free is None:  # every pose held: nothing is solved, the error the held edges'
+        error = 0.5 * float(residuals @ residuals)
+        nothing = Summary(
+            initial_error=error,
+            final_error=error,
+            iterations=0,
+            termination=Termination.FUNCTION,
+            converged=True,
+        )
+        return PoseGraph(poses=poses.copy(), summary=nothing)
+    if parts:
+        graph.add(_held_edges(residuals, free, similarity))
     solved, summary = _solve(graph, values, options)
-    out = np.stack(
-        [
-            _from_similarity3(solved.atSimilarity3(k))
-            if similarity
-            else np.asarray(solved.atPose3(k).matrix(), dtype=np.float64)
-            for k in range(poses.shape[0])
-        ]
-    )
+    out = poses.copy()
+    for k in range(poses.shape[0]):
+        if k not in held:
+            out[k] = (
+                _from_similarity3(solved.atSimilarity3(k))
+                if similarity
+                else np.asarray(solved.atPose3(k).matrix(), dtype=np.float64)
+            )
     return PoseGraph(poses=out, summary=summary)
 
 
@@ -672,8 +745,12 @@ def optimize_pose_graph(  # noqa: PLR0913 -- the graph, its kind, options, backe
 
     ORB-SLAM's ``OptimizeEssentialGraph`` on GTSAM: each edge ``(i, j)`` measures the pose of
     ``j`` in ``i``'s frame, ``T_i_j = T_world_i⁻¹ T_world_j`` (GTSAM's ``BetweenFactor``),
-    with unit information, as ORB-SLAM's edges have; the poses in `fixed` are held exactly
-    (``NonlinearEquality``), and at least one must be, for the graph's gauge.
+    with unit information, as ORB-SLAM's edges have; the poses in `fixed` are held as
+    constants, and at least one must be, for the graph's gauge. An edge with one end held is a
+    factor on its other end; the edges with both ends held, whose error is a constant, are one
+    factor on a free pose with a zero Jacobian, so that every error GTSAM reads, and the
+    summary's, holds theirs. With every pose held, nothing is solved: the poses come back as
+    given, after no iteration.
 
     Parameters
     ----------
@@ -685,7 +762,7 @@ def optimize_pose_graph(  # noqa: PLR0913 -- the graph, its kind, options, backe
     relatives : array_like, shape (E, 4, 4)
         Each edge's measured ``T_i_j``, of the poses' kind.
     fixed : array_like of int, shape (F,)
-        The poses held fixed, F >= 1.
+        The poses held fixed, F >= 1; each comes back exactly as given.
     similarity : bool
         Optimise Sim(3), as a monocular map's drift needs, rather than SE(3).
     options : Options, optional
@@ -953,24 +1030,48 @@ def refine_similarity(  # noqa: PLR0913, PLR0917 -- the matches, their camera an
 
 def _pinhole_factors(
     intrinsics: Array, bf: float
-) -> Callable[[Array, gtsam.noiseModel.Base, int, int], gtsam.NonlinearFactor]:
+) -> Callable[[Array, gtsam.noiseModel.Base, int | Array, int], gtsam.NonlinearFactor]:
     """Return a builder of GTSAM's own projection factors for a pinhole camera.
 
     A measurement ``(u, v)`` makes a ``GenericProjectionFactorCal3_S2``; ``(u, v, u_r)`` a
-    ``GenericStereoFactor3D``, its baseline ``bf / fx``.
+    ``GenericStereoFactor3D``, its baseline ``bf / fx``. A held camera, given by its pose rather
+    than its key, makes a factor on the point alone that projects as those do:
+    ``TriangulationFactorCal3_S2``, and with a right column a custom factor through GTSAM's
+    ``StereoCamera`` (its wrapper has no stereo triangulation factor), costing a point behind
+    the camera what ``GenericStereoFactor3D`` costs it.
     """
     fx, fy, cx, cy = (float(x) for x in intrinsics)
     mono = gtsam.Cal3_S2(fx, fy, 0.0, cx, cy)
     stereo = gtsam.Cal3_S2Stereo(fx, fy, 0.0, cx, cy, bf / fx) if bf > 0.0 else None
 
+    def held_stereo(
+        observed: gtsam.StereoPoint2, noise: gtsam.noiseModel.Base, pose: Array, point: int
+    ) -> gtsam.NonlinearFactor:
+        rig = gtsam.StereoCamera(gtsam.Pose3(pose), stereo)
+
+        def evaluate(values: gtsam.Values) -> tuple[Array, list[Array]]:
+            at = values.atPoint3(point)
+            if rig.pose().transformTo(at)[2] <= 0.0:  # GTSAM's StereoCheiralityException
+                return np.full(STEREO_DIMENSION, 2.0 * fx), [np.zeros((STEREO_DIMENSION, 3))]
+            d_point = np.zeros((STEREO_DIMENSION, 3))
+            predicted = rig.project2(at, None, d_point)
+            return predicted.vector() - observed.vector(), [d_point]
+
+        return _custom(noise, [point], evaluate)
+
     def build(
-        measured: Array, noise: gtsam.noiseModel.Base, pose: int, point: int
+        measured: Array, noise: gtsam.noiseModel.Base, pose: int | Array, point: int
     ) -> gtsam.NonlinearFactor:
         if measured.shape[0] == STEREO_DIMENSION:
             u, v, u_right = (float(x) for x in measured)
             observed = gtsam.StereoPoint2(u, u_right, v)
-            return gtsam.GenericStereoFactor3D(observed, noise, pose, point, stereo)
-        return gtsam.GenericProjectionFactorCal3_S2(measured, noise, pose, point, mono)
+            if isinstance(pose, int):
+                return gtsam.GenericStereoFactor3D(observed, noise, pose, point, stereo)
+            return held_stereo(observed, noise, pose, point)
+        if isinstance(pose, int):
+            return gtsam.GenericProjectionFactorCal3_S2(measured, noise, pose, point, mono)
+        lens = gtsam.PinholeCameraCal3_S2(gtsam.Pose3(pose), mono)
+        return gtsam.TriangulationFactorCal3_S2(lens, measured, noise, point)
 
     return build
 
@@ -991,16 +1092,16 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
     options: Options,
     stop: Callable[[], bool] | None = None,
 ) -> Adjustment:
-    """Adjust a bundle (reference)."""
+    """Adjust a bundle (reference); the held cameras are constants (the module docstring)."""
+    held = {int(c) for c in fixed}
     graph = gtsam.NonlinearFactorGraph()
     values = gtsam.Values()
     first_point = poses.shape[0]
     for c, pose in enumerate(poses):
-        values.insert(c, gtsam.Pose3(pose))
+        if c not in held:
+            values.insert(c, gtsam.Pose3(pose))
     for p, point in enumerate(points):
         values.insert(first_point + p, np.asarray(point, dtype=np.float64))
-    for c in fixed:
-        graph.add(gtsam.NonlinearEqualityPose3(int(c), gtsam.Pose3(poses[c])))
     builtin = _pinhole_factors(intrinsics, bf) if model == "pinhole" else None
     for m in range(cameras.shape[0]):
         stereo = not math.isnan(right[m])
@@ -1011,27 +1112,33 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
             loss = gtsam.noiseModel.mEstimator.Huber.Create(float(huber[m]))
             noise = gtsam.noiseModel.Robust.Create(loss, noise)
         if builtin is not None:
-            graph.add(builtin(measured, noise, c, first_point + p))
+            graph.add(builtin(measured, noise, poses[c] if c in held else c, first_point + p))
             continue
 
         def evaluate(
             values: gtsam.Values, c: int = c, p: int = p, measured: Array = measured
         ) -> tuple[Array, list[Array]]:
             projected = projection_residual(
-                np.asarray(values.atPose3(c).matrix(), dtype=np.float64),
+                poses[c] if c in held else np.asarray(values.atPose3(c).matrix(), np.float64),
                 np.asarray(values.atPoint3(first_point + p), dtype=np.float64),
                 measured,
                 model,
                 intrinsics,
                 bf,
             )
+            if c in held:
+                return projected.residual, [projected.d_point]
             return projected.residual, [projected.d_pose, projected.d_point]
 
-        graph.add(_custom(noise, [c, first_point + p], evaluate))
+        keys = [first_point + p] if c in held else [c, first_point + p]
+        graph.add(_custom(noise, keys, evaluate))
     solved, summary = _solve(graph, values, options, stop)
     return Adjustment(
         poses=np.stack(
-            [np.asarray(solved.atPose3(c).matrix(), dtype=np.float64) for c in range(len(poses))]
+            [
+                poses[c] if c in held else np.asarray(solved.atPose3(c).matrix(), np.float64)
+                for c in range(len(poses))
+            ]
         ),
         points=np.stack(
             [
@@ -1066,11 +1173,11 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     ORB-SLAM's ``GlobalBundleAdjustemnt`` as loop closing calls it (``bRobust`` false), on
     GTSAM: each observation's reprojection through the camera model, with a right column
     ``u - bf / z`` where it has one (ORB-SLAM's stereo edge), weighted by its information; the
-    cameras in `fixed` held exactly. Every point must be seen; one seen once is free along its
-    ray and constrained across it, and the damping holds it along the ray. With `huber`, each
-    observation's whitened error passes through a Huber loss at its threshold (GTSAM's
-    ``mEstimator::Huber``), as ORB-SLAM's local and welding BAs weigh theirs
-    (``RobustKernelHuber``).
+    cameras in `fixed` held as constants, each of their observations a factor on its point
+    alone. Every point must be seen; one seen once is free along its ray and constrained across
+    it, and the damping holds it along the ray. With `huber`, each observation's whitened error
+    passes through a Huber loss at its threshold (GTSAM's ``mEstimator::Huber``), as ORB-SLAM's
+    local and welding BAs weigh theirs (``RobustKernelHuber``).
 
     Parameters
     ----------
@@ -1093,7 +1200,7 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     bf : float
         The baseline times the focal length, > 0 if any observation has a right column.
     fixed : array_like of int, shape (F,)
-        The cameras held fixed.
+        The cameras held fixed; each comes back exactly as given.
     huber : array_like, shape (M,), optional
         Each observation's Huber threshold on its whitened error's norm, positive (default:
         no robust loss).

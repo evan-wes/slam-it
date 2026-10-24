@@ -193,6 +193,64 @@ def test_a_pose_graph_closes_its_ring(backend: str, similarity: bool) -> None:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("similarity", [False, True])
+def test_held_poses_are_constants_and_an_edge_between_two_costs_a_constant(
+    backend: str, similarity: bool
+) -> None:
+    """Held poses are constants: each comes back bit for bit, the free ones to the truth.
+
+    An edge with a held end pulls its free end alone, from either side; one joining two held
+    poses costs a constant, counted in the errors; with every pose held, nothing is solved.
+    """
+    chosen = require_function(backend, graphs.__name__, "optimize_pose_graph")
+    truth, _, _ = _ring(4, similarity)
+    edges = np.array([[0, 1], [1, 2], [3, 1], [2, 3]])  # both held; held first; second; free
+    relatives = np.stack([np.linalg.inv(truth[i]) @ truth[j] for i, j in edges])
+    relatives[0] = relatives[0] @ se3.exp([0.1, 0.0, 0.0, 0.0, 0.0, 0.05])  # costs a constant
+    start = truth.copy()
+    start[2] = start[2] @ se3.exp([0.05, -0.03, 0.02, 0.01, 0.0, -0.02])
+    start[3] = start[3] @ se3.exp([-0.04, 0.02, 0.01, 0.0, 0.02, 0.01])
+
+    def solve(poses: Array, fixed: list[int]) -> graphs.PoseGraph:
+        return graphs.optimize_pose_graph(
+            poses, edges, relatives, fixed, similarity=similarity,
+            options=graphs.Options(max_iterations=30), backend=chosen,
+        )  # fmt: skip
+
+    result, every = solve(start, [0, 1]), solve(truth, [0, 1, 2, 3])
+    np.testing.assert_array_equal(result.poses[:2], start[:2])
+    np.testing.assert_allclose(result.poses[2:], truth[2:], rtol=0, atol=1e-8)
+    np.testing.assert_array_equal(every.poses, truth)
+    held = every.summary
+    assert (held.iterations, held.termination, held.converged) == (0, "function", True)
+    assert held.final_error == held.initial_error > 1e-4
+    assert result.summary.final_error == pytest.approx(held.initial_error, rel=1e-9)
+    assert result.summary.initial_error > result.summary.final_error
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_an_edge_between_held_poses_costs_its_error_inside_gtsam_too(backend: str) -> None:
+    """A free pose in no edge: the one iteration lowers nothing, and the solve converges.
+
+    GTSAM's own search over dampings stops when a failed step changes the error by less than its
+    relative tolerance times the error, which must hold the held edge's (0.3.17.2's review panel,
+    L1): left out, the search went on to the damping's limit, not converged.
+    """
+    chosen = require_function(backend, graphs.__name__, "optimize_pose_graph")
+    truth = np.stack(
+        [se3.exp([1.0 * k, 0.2 * np.sin(k), 0, 0, 0, 2 * np.pi * k / 3]) for k in range(3)]
+    )
+    relative = np.linalg.inv(truth[0]) @ truth[1] @ se3.exp([0.1, 0, 0, 0, 0, 0.05])
+    result = graphs.optimize_pose_graph(
+        truth, [[0, 1]], relative[None], [0, 1], similarity=False,
+        options=graphs.Options(max_iterations=10), backend=chosen,
+    )  # fmt: skip
+    summary = result.summary
+    assert (summary.iterations, summary.termination, summary.converged) == (1, "function", True)
+    assert summary.final_error == summary.initial_error > 1e-3
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("fixed_scale", [False, True])
 def test_a_similarity_is_refined_its_outlier_dropped_and_refined_again(
     backend: str, fixed_scale: bool
@@ -295,10 +353,16 @@ def _observed(
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("lens", [RADTAN, PINHOLE], ids=["radtan", "pinhole"])
-def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str, Array]) -> None:
+@pytest.mark.parametrize("held", [1, 3, 5], ids=["one-held", "three-held", "every-one-held"])
+def test_bundle_adjustment_recovers_a_stereo_scene(
+    backend: str, lens: tuple[str, Array], held: int
+) -> None:
     """Stereo observations fix the scale: perturbed cameras and points return to the truth.
 
-    Through radtan, Python's factors are its own; through a pinhole camera, GTSAM's.
+    Through radtan, Python's factors are its own; through a pinhole camera, GTSAM's. The held
+    cameras are constants, through every factor a held camera's observation makes (monocular and
+    stereo, pinhole and radtan): each comes back bit for bit as given, with one, three or all
+    five held, when the points alone are adjusted.
     """
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     name, intrinsics = lens
@@ -308,13 +372,14 @@ def test_bundle_adjustment_recovers_a_stereo_scene(backend: str, lens: tuple[str
     start_poses = np.stack(
         [poses[0]] + [pose @ se3.exp(rng.normal(scale=0.02, size=6)) for pose in poses[1:]]
     )
+    start_poses[:held] = poses[:held]
     start_points = points + rng.normal(scale=0.05, size=points.shape)
     result = graphs.bundle_adjust(
         start_poses, start_points, cameras, ids, pixels, right, np.ones(len(cameras)),
-        model=name, intrinsics=intrinsics, bf=BF, fixed=[0],
+        model=name, intrinsics=intrinsics, bf=BF, fixed=list(range(held)),
         options=graphs.Options(max_iterations=20), backend=chosen,
     )  # fmt: skip
-    np.testing.assert_array_equal(result.poses[0], poses[0])
+    np.testing.assert_array_equal(result.poses[:held], poses[:held])
     np.testing.assert_allclose(result.poses, poses, rtol=0, atol=1e-7)
     np.testing.assert_allclose(result.points, points, rtol=0, atol=1e-6)
     assert result.summary.converged or result.summary.final_error < 1e-12
@@ -343,6 +408,27 @@ def test_bundle_adjustment_charges_a_point_behind_its_camera(
     assert result.summary.initial_error == pytest.approx(cost, rel=1e-12)
     assert result.summary.final_error == pytest.approx(cost, rel=1e-12)
     np.testing.assert_array_equal(result.points, [[0.1, 0.2, -1.0]])
+
+
+def test_a_held_stereo_camera_charges_a_point_behind_it_as_gtsam_s_stereo_factor() -> None:
+    """Python's held stereo factor copies GTSAM's cheirality convention: pinned to the factor.
+
+    At a point behind the camera, its error, its right-hand side and its Jacobian on the point
+    equal ``GenericStereoFactor3D``'s with the pose a variable (0.3.17.2's review panel, L7).
+    """
+    build = graphs._pinhole_factors(PINHOLE[1], BF)
+    pose = se3.exp([0.1, 0.2, 0.3, 0.0, 0.1, 0.0])
+    noise = gtsam.noiseModel.Isotropic.Precision(3, 0.7)
+    measured = np.array([300.0, 290.0, 250.0])
+    held, free = build(measured, noise, pose, 1), build(measured, noise, 0, 1)
+    values = gtsam.Values()
+    values.insert(0, gtsam.Pose3(pose))
+    values.insert(1, pose[:3, :3] @ np.array([0.1, -0.2, -1.0]) + pose[:3, 3])  # behind it
+    assert held.error(values) == free.error(values) > 0.0
+    a_held, b_held = held.linearize(values).jacobian()
+    a_free, b_free = free.linearize(values).jacobian()
+    np.testing.assert_array_equal(b_held, b_free)
+    np.testing.assert_array_equal(a_held, a_free[:, graphs.POSE_DIM :])
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
