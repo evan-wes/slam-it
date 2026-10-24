@@ -171,17 +171,27 @@ void check_culling_and_process(int& failures) {
     return;
   }
   edge::Map m = *built;
-  const auto culled = [&] {
+  // A fourth keyframe seeing every point: each is seen by three keyframes besides keyframe 1.
+  const auto culled = [&](std::int64_t observers) {
     edge::Map copy = m;
+    edge::Options options;
+    options.mapping.redundant_observers = observers;
     if (!edge::insert_keyframe(copy, scene::frame(2, true), scene::pose(2), ids(0, 60)) ||
-        !edge::cull_keyframes(copy, scene::camera(), edge::Mode::kRgbd, edge::Options{}) ||
+        !edge::cull_keyframes(copy, scene::camera(), edge::Mode::kRgbd, options) ||
         !edge::check_map(copy)) {
       return std::vector<std::int64_t>{};
     }
     return copy.kf_id;
-  }();
-  expect(culled == std::vector<std::int64_t>{0, 2, 3},
-         "the first redundant keyframe goes, the first keyframe stays, the index kept", failures);
+  };
+  expect(culled(3) == std::vector<std::int64_t>{0, 2, 3},
+         "at ORB-SLAM2's 3 observers the first redundant keyframe goes, the first keyframe stays, "
+         "the index kept",
+         failures);
+  expect(edge::Options{}.mapping.redundant_observers == 4 &&
+             culled(edge::Options{}.mapping.redundant_observers) ==
+                 std::vector<std::int64_t>{0, 1, 2, 3},
+         "at ORB-SLAM3's rule, more than 3 other observers, the default, every keyframe stays",
+         failures);
   edge::Map none = edge::empty_map(8, 1.2);
   expect(is_invalid_input(
              edge::cull_keyframes(none, scene::camera(), edge::Mode::kRgbd, edge::Options{})),

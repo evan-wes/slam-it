@@ -222,8 +222,9 @@ struct MappingOptions {
   std::int64_t min_point_observations_depth{3};
   /// @brief A keyframe is redundant when this fraction of its points are seen elsewhere.
   double redundant_fraction{0.9};
-  /// @brief By at least this many other keyframes.
-  std::int64_t redundant_observers{3};
+  /// @brief By at least this many other keyframes: ORB-SLAM3's `nObs > 3`, where ORB-SLAM2 has
+  ///        `>= 3` (`slam_it.edge.options.MappingOptions`).
+  std::int64_t redundant_observers{4};
   /// @brief With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is
   ///        queued only while fewer than this many wait (`KeyframesInQueue() < 3`).
   std::int64_t max_queued{3};

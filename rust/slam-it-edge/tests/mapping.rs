@@ -160,11 +160,22 @@ fn fusion_merges_duplicates() {
 #[test]
 fn culling_and_a_whole_step_keep_the_map_valid() {
     let built = scene_map();
-    let mut copy = built.clone();
-    map::insert_keyframe(&mut copy, &frame(2, true), &pose(2), &ids(0, 60)).unwrap();
-    cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &Options::default(), &[]).unwrap();
+    // A fourth keyframe seeing every point: each is seen by three keyframes besides keyframe 1.
+    let culled = |observers: usize| {
+        let mut copy = built.clone();
+        map::insert_keyframe(&mut copy, &frame(2, true), &pose(2), &ids(0, 60)).unwrap();
+        let mut options = Options::default();
+        options.mapping.redundant_observers = observers;
+        cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &options, &[]).unwrap();
+        check_map(&copy).unwrap();
+        copy
+    };
+    // At ORB-SLAM2's 3 the first redundant keyframe goes; at ORB-SLAM3's rule, more than 3 other
+    // observers (`nObs > 3`), the default, every keyframe stays.
+    let copy = culled(3);
     assert_eq!(copy.kf_id, vec![0, 2, 3]);
-    check_map(&copy).unwrap();
+    assert_eq!(Options::default().mapping.redundant_observers, 4);
+    assert_eq!(culled(4).kf_id, vec![0, 1, 2, 3]);
     let mut none = Map::empty(8, 1.2);
     assert!(
         cull_keyframes(&mut none, &camera(), Mode::Rgbd, &Options::default(), &[]).is_err(),

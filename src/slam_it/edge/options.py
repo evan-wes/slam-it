@@ -363,9 +363,14 @@ class MappingOptions:
         ...3 for stereo and RGB-D.
     redundant_fraction : float
         A keyframe is culled when this fraction of its points are seen by
-        ``mapping.redundant_observers`` other keyframes at the same or a finer scale (0.9, 3).
+        ``mapping.redundant_observers`` other keyframes at the same, a finer or the next coarser
+        scale (0.9)...
     redundant_observers : int
-        See ``mapping.redundant_fraction``.
+        ...this many (4): ORB-SLAM3's ``nObs > 3`` (``KeyFrameCulling``), where ORB-SLAM2 has
+        ``>= 3``. The point must also weigh more than this (``Observations() > 3`` there), which
+        so many other keyframes and its own already make it. Until 0.3.18.0, ORB-SLAM2's 3:
+        culling then thinned a monocular map so far that one keyframe deferred while mapping
+        was busy starved its tracking (the revisit room's map lost, 2026-10-21).
     max_queued : int
         With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is queued
         only while fewer than this many wait (``NeedNewKeyFrame``'s ``KeyframesInQueue() < 3``).
@@ -389,7 +394,7 @@ class MappingOptions:
     min_point_observations: int = 2
     min_point_observations_depth: int = 3
     redundant_fraction: float = 0.9
-    redundant_observers: int = 3
+    redundant_observers: int = 4
     max_queued: int = 3
 
 

@@ -25,6 +25,11 @@ def test_the_defaults_are_orb_slams() -> None:
     assert (options.keyframes.busy_ref_ratio, options.mapping.max_queued) == (0.25, 3)
 
 
+def test_culling_takes_orb_slam3_s_rule() -> None:
+    """A point counts as seen elsewhere by more than 3 others: ORB-SLAM3's ``nObs > 3``."""
+    assert Options().mapping.redundant_observers == 4
+
+
 def test_global_ba_damps_from_g2o_s_tau_and_stops_as_orb_slam3() -> None:
     """Global BA damps from g2o's ``τ`` and stops after three decreases under 0.1%.
 
