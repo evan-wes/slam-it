@@ -282,7 +282,8 @@ Each gets its own section here before its PR, its forks put to the owner then.
   before the merge.
 - **Global BA's damping** (after B3, its own PR; B3's review panel, L2, section 11): scaled
   Levenberg-Marquardt damping in the three languages, measured on the loop sequences and the
-  test set, the records regenerated.
+  test set, the records regenerated. *As built* (0.3.18.0, with ORB-SLAM3's culling rule): see
+  section 11's L2.
 - **B3b** (0.3.13.0 -> 0.3.14.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
@@ -464,6 +465,22 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
      not linked to it; those sharing more than 80% of the most words any shares are scored; each
      score accumulated over the keyframe's 10 best neighbours that were scored, the best-scored
      standing for the group; the `loop.candidates` (3) best groups, best first, ties by id.
+     *As built (0.3.18.0; decided by evan-wes on 2026-10-24):* the keyframes left out are every
+     one sharing a point with the new one, however few (`covisibility.connected`), as ORB-SLAM3
+     leaves out `GetConnectedKeyFrames` (`KeyFrameDatabase.cc:613`; `KeyFrame.cc:461`, every
+     keyframe sharing a point), not its links of 15 or more alone. Under ORB-SLAM3's culling
+     rule (section 11, L2), which keeps more keyframes each sharing fewer of a new keyframe's
+     points, keyframes a few seconds older sharing 1 to 14 points became candidates, and
+     monocular runs closed loops at a wrong place, perceptual aliasing along one viewing
+     direction (advio-16, -13 and -17, C++ and Rust inline, before this change). **The
+     remaining departure:** the near check (a candidate whose group holds one of the new
+     keyframe's links is not tried), the group's widening and the correction's new loop links
+     still read its links (`loops._linked`, C++ `linked_rows`, Rust `linked`), where ORB-SLAM3
+     reads the connected keyframes in all three (`LoopClosing.cc:587` and 628-637, 922 and 932,
+     1152). With them there too, arkitscenes-42446137 loses its right-place loop, its final ATE
+     rising from 29.6 to 90.7 cm (C++ inline, a probe of 2026-10-24): its candidate shares no
+     point with the new keyframe, but its group holds one that shares exactly one, so the near
+     check passes it over. zju-A1's would fall from 24.9 to 18.9 cm.
    - **Each candidate,** with its 10 best neighbours, unless one of them is linked to the new
      keyframe: features matched by word against each (a ratio of 0.9), at least 20 in all; the
      loop's Sim(3) (item 3); the group's points projected through it (8 pixels, a ratio of 1.5),
@@ -631,6 +648,17 @@ alone, and runs on real data only when asked.
     the records (section 7). It measures B4's merges' welding BAs too, which solve on the same
     damping and apply their result whatever its termination (B4's review panel, L7; decided by
     evan-wes on 2026-10-19).
+    *As built (0.3.18.0; design "G", decided by evan-wes on 2026-10-23):* global BA runs g2o's
+    damping, `λ0` = 1e-5 times the Hessian's largest diagonal entry, by Nielsen's schedule with
+    no practical bound, and ORB-SLAM3's stop after three iterations in a row each lowering the
+    error by under 0.1% (`loops.global_damping`, `loops.global_small_steps`,
+    `loops.global_small_decrease`); the welding BA keeps GTSAM's own damping and no stop, g2o's
+    having left its first solve 0.2% to 1.7% above GTSAM's cost; both leave out each
+    observation behind its camera or nearer than 1e-3 of the median depth
+    (`loops.near_fraction`), which no damping could solve past. With them keyframe culling
+    takes ORB-SLAM3's rule (`mapping.redundant_observers` 4), and loop closing's candidates
+    leave out every keyframe sharing a point with the new one (section 10, item 2). Local BA's
+    near-plane guard is a later PR.
 
 ## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
@@ -1042,7 +1070,8 @@ the ladder's open items):
     beside an ORB-SLAM3-faithful staged merge;
   - section 15 measures, with its runs, the relocalisation candidates per failed frame and how
     often the track leaves a healthy map (L5);
-  - the damping PR from B3's review panel (section 11, L2) measures the welds too (L7);
+  - the damping PR from B3's review panel (section 11, L2) measures the welds too (L7; built in
+    0.3.18.0, the welds keeping GTSAM's damping);
   - Python's run-id tables, rebuilt per call (H9), a minor open item.
 
 **Known gaps, for B4's review panel** (noted, not fixed in this PR):

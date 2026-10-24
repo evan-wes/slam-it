@@ -90,7 +90,9 @@ has a compiled twin that the tests call on the same state.
    that should have seen them; triangulate its free keypoints against the window's other
    keyframes; fuse duplicates; once the map holds three keyframes, run local BA over the
    window with the first keyframe fixed (ORB-SLAM's `KeyFramesInMap() > 2`); and cull
-   keyframes 90% of whose points three others see at the same or a finer scale.
+   keyframes 90% of whose points three others see at the same, a finer or the next coarser
+   scale (ORB-SLAM2's rule; since 0.3.18.0, ORB-SLAM3's: more than three others,
+   `mapping.redundant_observers` 4).
 
 The **chi-square test** is one function for every stage: a keypoint on pyramid level `l` is
 located to `s^l` pixels, so an observation is an outlier when its squared reprojection error
