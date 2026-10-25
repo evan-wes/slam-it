@@ -1,9 +1,9 @@
 """The covisibility graph and the spanning tree, held to the brute-force fixture.
 
 ``tests/fixtures/edge/covisibility.json`` (``generate_covisibility.py``) gives, for small maps
-of hand-picked and seeded points, each keyframe's links, tracking's local map for some frames,
-the parent :func:`~slam_it.edge.covisibility.adopt` gives, the parents
-:func:`~slam_it.edge.covisibility.reparent` leaves (and so what
+of hand-picked and seeded points, each keyframe's links and connected keyframes, tracking's
+local map for some frames, the parent :func:`~slam_it.edge.covisibility.adopt` gives, the
+parents :func:`~slam_it.edge.covisibility.reparent` leaves (and so what
 :func:`~slam_it.edge.covisibility.cull` leaves), the strong links, and the keyframes fusion and
 local BA take (:func:`~slam_it.edge.mapping.fuse_targets`,
 :func:`~slam_it.edge.mapping.local_ba_keyframes`), computed from point sets by the rules
@@ -86,12 +86,20 @@ def fixture_options(case: dict[str, Any]) -> Options:
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("case", CASES, ids=NAMES)
 def test_links_rank_the_shared_points(case: dict[str, Any], backend: str) -> None:
-    """Each keyframe's links: at least min_points, or its best, most shared first, ties by id."""
+    """Each keyframe's links, and its connected keyframes, most shared first, ties by id.
+
+    Its links: those sharing at least min_points, or its best; connected: every one sharing a
+    point, however few.
+    """
     chosen = require_function(backend, covisibility.__name__, "links")
+    joined = require_function(backend, covisibility.__name__, "connected")
     m, options = fixture_map(case), fixture_options(case)
-    for k, (rows, weights) in enumerate(case["links"]):
-        got = covisibility.links(m, k, options, backend=chosen)
-        assert (got[0].tolist(), got[1].tolist()) == (rows, weights), f"keyframe row {k}"
+    for k in range(m.keyframes):
+        for got, expected in (
+            (covisibility.links(m, k, options, backend=chosen), case["links"][k]),
+            (covisibility.connected(m, k, backend=joined), case["connected"][k]),
+        ):
+            assert [got[0].tolist(), got[1].tolist()] == expected, f"keyframe row {k}"
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -319,6 +327,8 @@ def test_a_bad_row_or_point_is_refused(backend: str) -> None:
     m, options = fixture_map(CASES[0]), fixture_options(CASES[0])
     with pytest.raises(InvalidInputError, match="k: "):
         covisibility.links(m, m.keyframes, options, backend=chosen)
+    with pytest.raises(InvalidInputError, match="k: "):
+        covisibility.connected(m, -1, backend=chosen)
     with pytest.raises(InvalidInputError, match="points: "):
         covisibility.local_map(m, np.array([3, -2]), options, backend=chosen)
 

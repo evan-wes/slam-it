@@ -156,6 +156,26 @@ pub fn links(m: &Map, k: usize, options: &Options) -> Result<Vec<Link>> {
     ))
 }
 
+/// A keyframe's connected keyframes (`slam_it.edge.covisibility.connected`, ORB-SLAM's
+/// `GetConnectedKeyFrames`): every keyframe sharing a point with it, however few.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `k` - The keyframe's row.
+///
+/// # Returns
+///
+/// Them, most shared first, ties by the lower id.
+///
+/// # Errors
+///
+/// `InvalidInput` for a row out of range.
+pub fn connected(m: &Map, k: usize) -> Result<Vec<Link>> {
+    check_row(m, k)?;
+    Ok(links_of(m, &shared_points(m, k), 1)) // links of one point
+}
+
 /// Tracking's local map, ORB-SLAM's K1 and K2 (`slam_it.edge.covisibility.local_map`).
 ///
 /// # Arguments

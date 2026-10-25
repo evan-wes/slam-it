@@ -10,6 +10,7 @@ Each case is a map given as its keyframes, each with its id, the point each keyp
 and none of the module's code:
 
 - each keyframe's links and their weights;
+- each keyframe's connected keyframes (every one sharing a point) and their weights;
 - tracking's local map for some frames' matched points;
 - each keyframe's parent from :func:`~slam_it.edge.covisibility.adopt`, with its own unset;
 - each keyframe's children given new parents by :func:`~slam_it.edge.covisibility.reparent`;
@@ -192,6 +193,7 @@ def _case(
         "keyframes": keyframes,
         "settings": settings,
         "links": [_links(keyframes, a, settings["min_points"]) for a in rows],
+        "connected": [_links(keyframes, a, 1) for a in rows],  # links of one point: all sharing
         "local_maps": [
             {"points": points, **_local_map(keyframes, points, settings)} for points in frames
         ],
@@ -274,6 +276,7 @@ def main() -> None:
         ]
         assert moved, f"fusion's {name} binds on no case"
     assert any(c["fuse_targets"]["monocular"] != c["fuse_targets"]["other"] for c in cases)
+    assert any(c["connected"] != c["links"] for c in cases), "no keyframe shares too few to link"
     doc = {
         "description": "The covisibility graph, by brute force (generate_covisibility.py).",
         "oracle": "brute force over each keyframe's point set, by the rules alone",

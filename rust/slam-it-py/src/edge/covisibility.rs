@@ -1,8 +1,9 @@
 //! Bindings for `slam_it.edge.covisibility` (`slam_it_rs.edge.covisibility`).
 //!
-//! A map crosses as `Map.as_dict()`'s dict, the settings as `Options.as_dict()`'s. Links return
-//! as a pair of int64 arrays (rows, weights); the local map as a dict of `keyframes` and
-//! `reference`; the strong links as an (L, 3) int64 array; a changed map as its dict.
+//! A map crosses as `Map.as_dict()`'s dict, the settings as `Options.as_dict()`'s. Links and the
+//! connected keyframes return as a pair of int64 arrays (rows, weights); the local map as a dict
+//! of `keyframes` and `reference`; the strong links as an (L, 3) int64 array; a changed map as
+//! its dict.
 
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
@@ -38,7 +39,51 @@ fn links<'py>(
     k: usize,
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyTuple>> {
-    let found = unwrap(py, core::links(&map_in(py, m)?, k, &options_in(options)?))?;
+    links_out(
+        py,
+        &unwrap(py, core::links(&map_in(py, m)?, k, &options_in(options)?))?,
+    )
+}
+
+/// A keyframe's connected keyframes.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `m` - The map, as a dict.
+/// * `k` - The keyframe's row.
+///
+/// # Returns
+///
+/// The rows of the keyframes sharing a point with it, and their weights.
+///
+/// # Errors
+///
+/// `ValueError` for a malformed argument; `InvalidInputError` from the core.
+#[pyfunction]
+fn connected<'py>(
+    py: Python<'py>,
+    m: &Bound<'py, PyDict>,
+    k: usize,
+) -> PyResult<Bound<'py, PyTuple>> {
+    links_out(py, &unwrap(py, core::connected(&map_in(py, m)?, k))?)
+}
+
+/// Links as Python takes them.
+///
+/// # Arguments
+///
+/// * `py` - The Python token.
+/// * `found` - The links.
+///
+/// # Returns
+///
+/// Their rows and their weights, as int64 arrays.
+///
+/// # Errors
+///
+/// Returns a Python error if the tuple cannot be made.
+fn links_out<'py>(py: Python<'py>, found: &[core::Link]) -> PyResult<Bound<'py, PyTuple>> {
     let rows: Vec<usize> = found.iter().map(|link| link.row).collect();
     let weights: Vec<usize> = found.iter().map(|link| link.weight).collect();
     PyTuple::new(py, [indices_array(py, &rows), indices_array(py, &weights)])
@@ -253,6 +298,7 @@ fn strong_links<'py>(
 /// Returns a Python error if a function cannot be added.
 #[pymodule]
 pub fn covisibility(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    add_functions!(m; links, local_map, view_keyframes, adopt, reparent, cull, strong_links);
+    add_functions!(m; links, connected, local_map, view_keyframes, adopt, reparent, cull,
+        strong_links);
     Ok(())
 }

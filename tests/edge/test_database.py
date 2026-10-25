@@ -1,6 +1,7 @@
 """The keyframe database's tests: its index, covisibility, and relocalisation's candidates.
 
-On the room's truth map, its keyframes' words those of the committed vocabulary.
+On the room's truth map, its keyframes' words those of the committed vocabulary; loop closing's
+candidates on the loop room's map too, whose keyframes far apart share no point.
 """
 
 from __future__ import annotations
@@ -9,8 +10,10 @@ import numpy as np
 import pytest
 
 from slam_it import backends
-from slam_it.edge import covisibility, database
+from slam_it.edge import covisibility, database, frames
+from slam_it.edge import map as maps
 from slam_it.edge.database import Database, Indexed
+from slam_it.edge.map import Map
 from slam_it.edge.options import Options
 from slam_it.foundations import vocabulary
 from slam_it.foundations.errors import InvalidInputError
@@ -183,34 +186,80 @@ def test_a_database_with_a_key_missing_or_extra_is_refused(
 # --- loop closing's candidates ------------------------------------------------------------
 
 BEST_LINK_ONLY = OPTIONS.with_settings({"covisibility.min_points": 1 << 20})
-"""Each keyframe linked to the one it shares most with alone, so others are left to search."""
+"""Each keyframe linked to the one it shares most with alone: groups of one."""
+
+LoopKeyframes = tuple[list[frames.Frame], list[np.ndarray], Map]
+
+
+def _first_sharing(m: Map, n: int) -> Map:
+    """Return the room's truth map, its first keyframe seeing only `n` of the points the last sees.
+
+    Its other observations of them forgotten; the last keyframe's links are the two between,
+    which share 61 and 100 points with it, more than ``covisibility.min_points`` (15).
+    """
+    seen = m.kp_point[m.keypoint_rows(m.keyframes - 1)]
+    first = np.arange(m.kf_start[0], m.kf_start[1])
+    shared = first[np.isin(m.kp_point[first], seen[seen >= 0])]
+    return maps.forget_observations(m, shared[n:])
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_keyframe_sharing_a_point_is_never_a_loop_candidate(
+    backend: str, truth: Truth, room_database: Database
+) -> None:
+    """A keyframe sharing 1 to 14 points, so not linked, is never a candidate; sharing none, it is.
+
+    The truth map's first keyframe and its last (ORB-SLAM3's ``GetConnectedKeyFrames``).
+    """
+    chosen = require_function(backend, database.__name__, "loop_candidates")
+    last = truth.map.keyframes - 1
+    for n in range(15):
+        m = _first_sharing(truth.map, n)
+        rows, weights = covisibility.connected(m, last)
+        assert dict(zip(rows.tolist(), weights.tolist(), strict=True)).get(0, 0) == n
+        assert covisibility.links(m, last, OPTIONS)[0].tolist() == [2, 1]
+        found = database.loop_candidates(
+            room_database, m, int(m.kf_id[last]), OPTIONS, backend=chosen
+        )
+        assert found.keyframes.tolist() == ([0] if n == 0 else []), f"sharing {n}"
 
 
 @pytest.mark.parametrize("settings", [OPTIONS, BEST_LINK_ONLY], ids=["defaults", "best link only"])
-def test_a_keyframe_s_loop_candidates_are_outside_its_links(
-    truth: Truth, room_database: Database, settings: Options
+def test_a_keyframe_s_loop_candidates_share_no_point_with_it(
+    loop_keyframes: LoopKeyframes, loop_database: Database, settings: Options
 ) -> None:
-    """Never the keyframe or one linked to it; at most ``loops.candidates``, best first."""
-    m = truth.map
+    """Never the keyframe or one sharing a point with it; at most ``loops.candidates``, best first.
+
+    On the loop room's map, where every keyframe has candidates.
+    """
+    m = loop_keyframes[2]
     for k in range(m.keyframes):
         keyframe = int(m.kf_id[k])
-        linked = set(m.kf_id[covisibility.links(m, k, settings)[0]].tolist())
-        found = database.loop_candidates(room_database, m, keyframe, settings)
+        sharing = set(m.kf_id[covisibility.connected(m, k)[0]].tolist())
+        found = database.loop_candidates(loop_database, m, keyframe, settings)
+        assert len(found.keyframes), f"the loop room's keyframe {keyframe} has candidates"
         assert keyframe not in found.keyframes
-        assert not linked & set(found.keyframes.tolist())
+        assert not sharing & set(found.keyframes.tolist())
         assert len(found.keyframes) <= settings.loops.candidates
         assert np.all(np.diff(found.scores) <= 0.0)
-        assert found.sharing <= m.keyframes - 1 - len(linked)
+        assert found.sharing <= m.keyframes - 1 - len(sharing)
         assert found.scored <= found.sharing
 
 
-def test_only_the_best_groups_are_kept(truth: Truth, room_database: Database) -> None:
-    """With one candidate asked and every sharer scored, the best group alone comes back."""
-    m = truth.map
-    looser = BEST_LINK_ONLY.with_settings({"loops.candidates": 1, "loops.common_words": 0.1})
-    found = database.loop_candidates(room_database, m, int(m.kf_id[-1]), looser)
-    assert len(found.keyframes) == 1
-    assert found.scored == found.sharing >= 1
+def test_only_the_best_groups_are_kept(
+    loop_keyframes: LoopKeyframes, loop_database: Database
+) -> None:
+    """With one candidate asked, the best group alone comes back, the first of three asked."""
+    m = loop_keyframes[2]
+    looser = BEST_LINK_ONLY.with_settings({"loops.common_words": 0.1})
+    keyframe = int(m.kf_id[-1])
+    three = database.loop_candidates(loop_database, m, keyframe, looser)
+    one = database.loop_candidates(
+        loop_database, m, keyframe, looser.with_settings({"loops.candidates": 1})
+    )
+    assert len(three.keyframes) == 3
+    assert one.keyframes.tolist() == three.keyframes[:1].tolist()
+    assert (one.sharing, one.scored) == (three.sharing, three.scored)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -226,14 +275,14 @@ def test_only_the_best_groups_are_kept(truth: Truth, room_database: Database) ->
     ids=["defaults", "best link only", "looser"],
 )
 def test_every_backend_finds_python_s_loop_candidates(
-    backend: str, settings: Options, truth: Truth, room_database: Database
+    backend: str, settings: Options, loop_keyframes: LoopKeyframes, loop_database: Database
 ) -> None:
     """The same candidates in the same order, the same sums of the same scores: exactly."""
     chosen = require_function(backend, database.__name__, "loop_candidates")
-    m = truth.map
+    m = loop_keyframes[2]
     for keyframe in m.kf_id.tolist():
-        expected = database.loop_candidates(room_database, m, keyframe, settings)
-        got = database.loop_candidates(room_database, m, keyframe, settings, backend=chosen)
+        expected = database.loop_candidates(loop_database, m, keyframe, settings)
+        got = database.loop_candidates(loop_database, m, keyframe, settings, backend=chosen)
         _assert_same_candidates(got, expected)
 
 

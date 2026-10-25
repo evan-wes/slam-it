@@ -1,12 +1,14 @@
 //! Integration tests of the keyframe database (`slam_it_edge::database`) on the exact scene's
 //! map: the inverted index as keyframes enter and leave it, relocalisation's candidates without
-//! an erased keyframe, loop closing's outside a keyframe's links, and the refusals (a keyframe
-//! given twice, one erased that is not there, a malformed vector, a keyframe outside the map or
-//! the database).
+//! an erased keyframe, loop closing's sharing no point with the keyframe, and the refusals (a
+//! keyframe given twice, one erased that is not there, a malformed vector, a keyframe outside the
+//! map or the database).
 
 mod scene;
 
+use slam_it_edge::covisibility::links;
 use slam_it_edge::database::{Database, Words, candidates, loop_candidates};
+use slam_it_edge::map::{Map, forget_observations};
 use slam_it_edge::options::{CovisibilityOptions, Options};
 use slam_it_foundations::error::ErrorKind;
 use slam_it_foundations::vocabulary::BowVector;
@@ -92,18 +94,54 @@ fn a_keyframe_twice_and_a_malformed_vector_are_refused() {
     assert_eq!(err.kind, ErrorKind::InvalidInput);
 }
 
-/// Loop closing's candidates are never the keyframe or one linked to it; with every keyframe
-/// linked to its best alone, the other is the one left; a keyframe outside the map or the
-/// database is refused.
+/// The scene's map with its first keyframe seeing only the first `n` points: its other
+/// observations forgotten, it shares `n` points with each other keyframe, and those two still
+/// share all 60.
+fn first_sharing(n: usize) -> Map {
+    let mut m = scene_map();
+    let rows: Vec<usize> = (n..POINTS).collect(); // the first keyframe's keypoints come first
+    forget_observations(&mut m, &rows).unwrap();
+    m
+}
+
+/// Loop closing's candidates are never the keyframe or one sharing a point with it, however few:
+/// the first keyframe, sharing 1 to 14 points with the third and so not linked to it
+/// (`covisibility.min_points` 15), is never the third's candidate; sharing none, it is. A
+/// keyframe outside the map or the database is refused.
 #[test]
-fn loop_candidates_are_outside_a_keyframe_s_links() {
-    let m = scene_map();
+fn loop_candidates_share_no_point_with_the_keyframe() {
     let mut db = Database::default();
     for k in 0..3 {
         db.insert(k, words_of(k)).unwrap();
     }
-    let linked = loop_candidates(&db, &m, 2, &Options::default()).unwrap();
-    assert!(linked.keyframes.is_empty() && linked.sharing == 0);
+    let options = Options::default();
+    for n in 0..15 {
+        let m = first_sharing(n);
+        let linked: Vec<usize> = links(&m, 2, &options)
+            .unwrap()
+            .iter()
+            .map(|link| link.row)
+            .collect();
+        assert_eq!(
+            linked,
+            [1],
+            "sharing {n}: the second keyframe alone is linked"
+        );
+        let found = loop_candidates(&db, &m, 2, &options).unwrap();
+        if n == 0 {
+            assert_eq!(
+                found.keyframes,
+                [0],
+                "sharing none, the first is the candidate"
+            );
+        } else {
+            assert!(
+                found.keyframes.is_empty() && found.sharing == 0,
+                "sharing {n}, the first is no candidate"
+            );
+        }
+    }
+    let m = scene_map();
     let best_only = Options {
         covisibility: CovisibilityOptions {
             min_points: 1 << 20,
@@ -112,8 +150,7 @@ fn loop_candidates_are_outside_a_keyframe_s_links() {
         ..Options::default()
     };
     let found = loop_candidates(&db, &m, 2, &best_only).unwrap();
-    assert_eq!((found.sharing, found.keyframes.len()), (1, 1));
-    assert_ne!(found.keyframes[0], 2);
+    assert!(found.keyframes.is_empty() && found.sharing == 0);
     assert_eq!(
         loop_candidates(&db, &m, 7, &best_only).unwrap_err().kind,
         ErrorKind::InvalidInput

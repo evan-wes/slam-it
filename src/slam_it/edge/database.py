@@ -17,8 +17,10 @@ T-RO 2012), for the map being tracked:
   ``relocalization.group_score`` of the best accumulated score give the candidates, best first.
 - **Loop closing's candidates** (:func:`loop_candidates`, ORB-SLAM3's ``DetectNBestCandidates``):
   the same scoring of a keyframe of the map, with ``loops.common_words`` and ``loops.neighbours``,
-  leaving out the keyframe and every keyframe linked to it; the best ``loops.candidates`` groups
-  give the candidates, with no cut on their scores.
+  leaving out the keyframe and every keyframe sharing a point with it, however few (its connected
+  keyframes, :func:`slam_it.edge.covisibility.connected`, ORB-SLAM's ``GetConnectedKeyFrames``,
+  not only its links); the best ``loops.candidates`` groups give the candidates, with no cut on
+  their scores.
 - **A merge's candidates** (:func:`merge_candidates`, ``DetectNBestCandidates``' merge list):
   the same scoring of a keyframe's words in each of the other maps' databases
   (:class:`Indexed`), each map's words counted within it (the online-SLAM design, section 14,
@@ -336,10 +338,10 @@ def _loop_candidates(db: Database, m: Map, keyframe: int, options: Options) -> C
     """Find loop closing's candidates (reference)."""
     settings = options.loops
     row = int(m.keyframe_rows(np.array([keyframe]))[0])
-    linked = {int(k) for k in m.kf_id[covisibility.links(m, row, options)[0]]}
+    sharing = {int(k) for k in m.kf_id[covisibility.connected(m, row)[0]]}
     rules = (settings.common_words, settings.neighbours)
     found = _scoring(
-        db, m, db.vector(keyframe), excluded={keyframe} | linked, rules=rules, options=options
+        db, m, db.vector(keyframe), excluded={keyframe} | sharing, rules=rules, options=options
     )
     chosen = _chosen(found.groups, above=-math.inf, most=settings.candidates)
     return replace(chosen, sharing=found.sharing, scored=found.scored)
@@ -415,8 +417,8 @@ def loop_candidates(
 
     Relocalisation's scoring (:func:`candidates`) of the keyframe's own words, with
     ``loops.common_words`` and ``loops.neighbours``, leaving out the keyframe and every keyframe
-    linked to it (:func:`slam_it.edge.covisibility.links`); the best ``loops.candidates`` groups,
-    with no cut on their scores.
+    sharing a point with it (:func:`slam_it.edge.covisibility.connected`); the best
+    ``loops.candidates`` groups, with no cut on their scores.
 
     Parameters
     ----------
@@ -435,8 +437,8 @@ def loop_candidates(
     Returns
     -------
     Candidates
-        The candidates, best first, with their scores; none if no keyframe outside its links
-        shares a word. ``sharing`` and ``scored`` count those keyframes only.
+        The candidates, best first, with their scores; none if no keyframe sharing no point
+        with it shares a word. ``sharing`` and ``scored`` count those keyframes only.
 
     Raises
     ------

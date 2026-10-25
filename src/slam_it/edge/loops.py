@@ -16,8 +16,9 @@ in the pipeline's one worker. The design is section 10 of
    ``loops.temporal_matches`` needed. One more confirmation; ``loops.confirmations`` close the
    loop; ``loops.misses`` keyframes in a row without one drop it.
 2. **Otherwise, the keyframe database's candidates** (:func:`slam_it.edge.database
-   .loop_candidates`), each tried with its best ``loops.neighbours`` links
-   (``DetectCommonRegionsFromBoW``), unless one of them is linked to the keyframe:
+   .loop_candidates`), none sharing a point with the keyframe, each tried with its best
+   ``loops.neighbours`` links (``DetectCommonRegionsFromBoW``), unless one of them is linked to
+   the keyframe:
 
    - the keyframe's points matched by word to each of the group's (:func:`match_by_word`,
      ``loops.ratio``), ``loops.min_matches`` in all;
@@ -82,6 +83,15 @@ scale, so their similarities are rigid (``mbFixScale``).
   ORB-SLAM's ``SearchAndFuse`` defers its replacements (``vpReplacePoint``), so there the
   second finds the keypoint's first point already replaced and merges nothing (rare; B3's
   review panel, L5).
+
+**Unlike ORB-SLAM3's source, by choice:** the near check (a group holding one of the keyframe's
+links is passed over), the group's widening and the correction's new loop links read the
+keyframe's links, those sharing ``covisibility.min_points`` (``_linked``); ORB-SLAM3's read its
+connected keyframes (``GetConnectedKeyFrames``), every keyframe sharing a point, as the
+candidates' retrieval does here. With the connected keyframes in all three as well,
+arkitscenes-42446137 loses its right-place loop, its final ATE rising from 29.6 to 90.7 cm (C++,
+inline): its candidate shares no point with the keyframe, but its group holds one that shares
+exactly one. The design's section 10, item 2, gives the measurements.
 """
 
 from __future__ import annotations
@@ -611,7 +621,7 @@ class DetectionSummary:
     confirmation : ConfirmationSummary or None
         The loop being confirmed, carried to it; None if there was none.
     sharing : int
-        The keyframes outside its links that share a word with it.
+        The keyframes sharing no point with it that share a word with it.
     scored : int
         Those scored.
     candidates : tuple of CandidateSummary
@@ -666,7 +676,12 @@ class Detection:
 
 
 def _linked(m: Map, k: int, options: Options) -> set[int]:
-    """Return a keyframe's links' rows, all of them (``GetConnectedKeyFrames``)."""
+    """Return a keyframe's links' rows, all of them: those sharing ``covisibility.min_points``.
+
+    Not ORB-SLAM3's ``GetConnectedKeyFrames``, every keyframe sharing a point
+    (:func:`slam_it.edge.covisibility.connected`), which its near check, its group's widening and
+    its correction's new loop links read where these read this; the module's docstring says why.
+    """
     return {int(r) for r in covisibility.links(m, k, options)[0]}
 
 

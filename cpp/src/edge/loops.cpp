@@ -314,7 +314,11 @@ Result<Ids> best_links(const Map& m, std::size_t k, const Options& options) {
   return link_rows(m, k, options, options.loops.neighbours);
 }
 
-/// @brief A keyframe's links' rows, all of them (`slam_it.edge.loops._linked`).
+/// @brief A keyframe's links' rows, all of them: those sharing `covisibility.min_points`
+///        (`slam_it.edge.loops._linked`). Not ORB-SLAM3's `GetConnectedKeyFrames`, every keyframe
+///        sharing a point (`connected`), which its near check, its group's widening and its
+///        correction's new loop links read where these read this; the Python module's docstring
+///        says why.
 /// @param m The map.
 /// @param k The keyframe's row.
 /// @param options The settings.

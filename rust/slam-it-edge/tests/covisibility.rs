@@ -1,11 +1,14 @@
 //! Native tests for the covisibility graph (`slam_it_edge::covisibility`), against the
 //! brute-force fixture `tests/fixtures/edge/covisibility.json` that the Python and C++ tests
-//! share: each keyframe's links, tracking's local map, the parent a keyframe adopts, the
-//! parents a culled keyframe's children get, a keyframe culled, and the strong links.
+//! share: each keyframe's links and connected keyframes, tracking's local map, the parent a
+//! keyframe adopts, the parents a culled keyframe's children get, a keyframe culled, and the
+//! strong links.
 
 use nalgebra::{Matrix4, Vector3};
 use serde_json::Value;
-use slam_it_edge::covisibility::{adopt, cull, links, local_map, reparent, strong_links};
+use slam_it_edge::covisibility::{
+    Link, adopt, connected, cull, links, local_map, reparent, strong_links,
+};
 use slam_it_edge::map::{Map, add_loop_edge, check_map, erase_keyframe, index_observations};
 use slam_it_edge::mapping::{fuse_targets, local_ba_keyframes};
 use slam_it_edge::options::{Mode, Options};
@@ -35,6 +38,20 @@ fn rows(value: &Value) -> Vec<usize> {
         .into_iter()
         .map(|v| usize::try_from(v).expect("a row"))
         .collect()
+}
+
+/// Asserts links found are the fixture's rows and weights, in order.
+fn assert_links(found: &[Link], expected: &Value, what: &str) {
+    assert_eq!(
+        found.iter().map(|l| l.row).collect::<Vec<_>>(),
+        rows(&expected[0]),
+        "{what}: rows"
+    );
+    assert_eq!(
+        found.iter().map(|l| l.weight).collect::<Vec<_>>(),
+        rows(&expected[1]),
+        "{what}: weights"
+    );
 }
 
 /// A case's map: the columns the graph reads (ids, parents, each keypoint's point), the rest
@@ -156,17 +173,15 @@ fn every_case_matches_the_brute_force() {
         let m = map_of(&case["keyframes"]);
         let options = options_of(&case["settings"]);
         for k in 0..m.keyframes() {
-            let found = links(&m, k, &options).unwrap();
-            let expected = &case["links"][k];
-            assert_eq!(
-                found.iter().map(|l| l.row).collect::<Vec<_>>(),
-                rows(&expected[0]),
-                "{name}: links of row {k}"
+            assert_links(
+                &links(&m, k, &options).unwrap(),
+                &case["links"][k],
+                &format!("{name}: links of row {k}"),
             );
-            assert_eq!(
-                found.iter().map(|l| l.weight).collect::<Vec<_>>(),
-                rows(&expected[1]),
-                "{name}: weights of row {k}"
+            assert_links(
+                &connected(&m, k).unwrap(),
+                &case["connected"][k],
+                &format!("{name}: the keyframes connected to row {k}"),
             );
             let mut orphaned = m.clone();
             let id = m.kf_id[k];
@@ -248,6 +263,7 @@ fn a_bad_row_or_point_is_refused() {
     let m = map_of(&fixture()["cases"][0]["keyframes"]);
     let options = Options::default();
     assert!(links(&m, m.keyframes(), &options).is_err());
+    assert!(connected(&m, m.keyframes()).is_err());
     let mut past = m.clone();
     assert_eq!(
         cull(&mut past, m.keyframes(), &options, &[])

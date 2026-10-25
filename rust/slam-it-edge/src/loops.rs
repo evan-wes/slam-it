@@ -609,7 +609,11 @@ fn best_links(m: &Map, k: usize, options: &Options) -> Result<Vec<usize>> {
     Ok(out)
 }
 
-/// A keyframe's links' rows, all of them (`GetConnectedKeyFrames`).
+/// A keyframe's links' rows, all of them: those sharing `covisibility.min_points`
+/// (`slam_it.edge.loops._linked`). Not ORB-SLAM3's `GetConnectedKeyFrames`, every keyframe
+/// sharing a point ([`covisibility::connected`]), which its near check, its group's widening and
+/// its correction's new loop links read where these read this; the Python module's docstring
+/// says why.
 ///
 /// # Arguments
 ///
@@ -1165,7 +1169,7 @@ pub struct DetectionSummary {
     pub outcome: Outcome,
     /// The loop being confirmed, carried to it; `None` if there was none.
     pub confirmation: Option<ConfirmationSummary>,
-    /// The keyframes outside its links that share a word with it.
+    /// The keyframes sharing no point with it that share a word with it.
     pub sharing: usize,
     /// Those scored.
     pub scored: usize,

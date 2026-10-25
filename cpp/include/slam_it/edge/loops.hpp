@@ -235,7 +235,7 @@ struct DetectionSummary {
   Outcome outcome{Outcome::kNone};
   /// @brief The loop being confirmed, carried to it, if there was one.
   std::optional<ConfirmationSummary> confirmation;
-  /// @brief The keyframes outside its links that share a word with it.
+  /// @brief The keyframes sharing no point with it that share a word with it.
   std::int64_t sharing{0};
   /// @brief Those scored.
   std::int64_t scored{0};
