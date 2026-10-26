@@ -284,6 +284,13 @@ Each gets its own section here before its PR, its forks put to the owner then.
   Levenberg-Marquardt damping in the three languages, measured on the loop sequences and the
   test set, the records regenerated. *As built* (0.3.18.0, with ORB-SLAM3's culling rule): see
   section 11's L2.
+- **Local BA's near-plane guard** (after 0.3.18.0, a PR of its own; the 0.3.18.0 review panel,
+  A7): local BA (`foundations.ba`, its own solver, which drops an observation only behind its
+  camera, at `camera.MIN_DEPTH`) leaves out the observations nearer than a fraction of the median
+  depth at the start, as global and welding BA do since 0.3.18.0 (section 11's L2). The rule is
+  to be one rung-0 function in each language, which `foundations.ba` and `foundations.graphs`
+  both call, not a second implementation of it; whether `loops.min_depth_ratio` then moves to
+  the `adjustment` settings is decided in that PR (the panel's A5).
 - **B3b** (0.3.13.0 -> 0.3.14.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
@@ -651,14 +658,41 @@ alone, and runs on real data only when asked.
     *As built (0.3.18.0; design "G", decided by evan-wes on 2026-10-23):* global BA runs g2o's
     damping, `λ0` = 1e-5 times the Hessian's largest diagonal entry, by Nielsen's schedule with
     no practical bound, and ORB-SLAM3's stop after three iterations in a row each lowering the
-    error by under 0.1% (`loops.global_damping`, `loops.global_small_steps`,
-    `loops.global_small_decrease`); the welding BA keeps GTSAM's own damping and no stop, g2o's
-    having left its first solve 0.2% to 1.7% above GTSAM's cost; both leave out each
-    observation behind its camera or nearer than 1e-3 of the median depth
-    (`loops.near_fraction`), which no damping could solve past. With them keyframe culling
-    takes ORB-SLAM3's rule (`mapping.redundant_observers` 4), and loop closing's candidates
-    leave out every keyframe sharing a point with the new one (section 10, item 2). Local BA's
-    near-plane guard is a later PR.
+    error by under 0.1% (`loops.global_damping_scale`, g2o's `τ`; `loops.global_small_steps`,
+    `loops.global_small_decrease`; a solve so ended reports `small_steps`); the welding BA
+    keeps GTSAM's own damping and no stop, g2o's having left its first solve 0.2% to 1.7% above
+    GTSAM's cost; both leave out each observation behind its camera or nearer than 1e-3 of the
+    median depth at the start (`loops.min_depth_ratio`), which no damping could solve past, and
+    record how many they left out and how many kept ones ended behind or nearer than that
+    (`left_out`, `ended_near`). With them keyframe culling takes ORB-SLAM3's rule
+    (`mapping.redundant_observers` 4), and loop closing's candidates leave out every keyframe
+    sharing a point with the new one (section 10, item 2). Local BA's near-plane guard is a
+    later PR (section 7).
+    *Measured* (2026-10-23 to 25, at 789fe641, before the review panel's fixes, which change no
+    decision in the rooms' records; the CHANGELOG's 0.3.18.0 entry gives each figure's
+    conditions):
+    - Per call, the 24 global BAs dumped from runs: develop's damping accepted no step on 14; this
+      one steps on all 24, the cameras' centres staying within 0.974 to 1.004 of where they started
+      on 22. On the other two, zju-A1's, the map changes shape. The first (the centres' scale 0.637)
+      is not a correction: the solve, with no robust loss, bends the map towards 4,879 of its 73,017
+      observations that start over about 100 px off (χ² ≥ 1e4), their cost falling from 1.9e8 to
+      2.9e7 while the inliers' rises from 2.8e4 to 3.4e7, and 57 kept observations of 17 points
+      cross behind their cameras, 30% of the final cost. The second (0.842) reconciles the map: half
+      its observations at χ² 100 to 1e4 become inliers, none crossing (the review panel's L1).
+      ORB-SLAM3's global BA, non-robust too, would fit such a map the same way; section 12 asks
+      where its gross outliers come from.
+    - The test sets, monocular and RGB-D, C++ and Rust, inline and threaded, one run each at
+      seed 0: inline, the monocular median final ATE 29.39 to 24.81 cm (C++) and 28.02 cm
+      (Rust), loops at a wrong place 2 to 1 in each; the RGB-D median 4.33 to 5.37 cm, none at
+      a wrong place. None of this version's runs failed or ran out of memory.
+    - The loop sequences (`loops-b3.toml`'s 20 not in the test sets: EuRoC monocular and
+      stereo, TUM's fr1_desk and fr3_long_office), threaded, three runs each in C++ and Rust,
+      beside ORB-SLAM3's own three (its anchor, run by SLAM It!'s scoring): the median final
+      ATE 2.32 cm [2.32 to 2.47] in C++ and 2.81 cm [2.74 to 3.00] in Rust against ORB-SLAM3's
+      2.94 cm [2.38 to 2.97]; the median share tracked 0.976 against 0.985; loops 7 [7 to 9]
+      and 11 [10 to 18] against 11 [11 to 12]; none at a wrong place but in one Rust run, which
+      closed one on V1_03 monocular and one on V1_03 stereo; no run failed. B3's bar was
+      measured inline (above); these runs are threaded.
 
 ## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
@@ -822,9 +856,36 @@ the ladder's open items):
   correction and the global BA gives a scale of 0.276 (0.821 in the narrow miss, 0.93 to 1.32
   in the other 31). The investigation starts from that copy: dump it from such a run, solve it
   inline, and compare GTSAM's absolute initial damping (`lambdaInitial`) with g2o's,
-  τ·max(diag H), which ORB-SLAM3's global BA starts from.
+  τ·max(diag H), which ORB-SLAM3's global BA starts from. *As built (0.3.18.0):* a tenth of the
+  loop room's failing global BA is `tests/fixtures/edge/global_ba_slide.json`; GTSAM's damping
+  slides its cameras' centres to a scale of 0.7322, g2o's holds them at 0.9968 (section 11's
+  L2; L4's test, `tests/edge/test_loops.py`).
 - **A failed correction (item 14) is still open,** with no decision yet: whether a GTSAM failure
   inside a loop's correction should be recorded and the loop skipped.
+
+**Deferred from 0.3.18.0's review panel** (global BA's damping, the culling rule and loop
+retrieval, section 11's L2;
+[the report](../reviews/2026-10-25-feature-global-ba-damping-culling-rule.md), decided by
+evan-wes on 2026-10-25):
+- **A dump script for a run's global BA (H9).** `tests/fixtures/edge/global_ba_slide.json` was
+  cut from a probe's dump that the repository cannot make again; a script that dumps a run's
+  global BA would let its tenth of the points be chosen again.
+- **The remaining departure in loop detection, counted (L4).** Over the test set, in C++ and
+  Rust: how often the near check passes a candidate's group that holds a keyframe connected to
+  the new one but not linked to it, and whether those loops land at the right place (section
+  10, item 2).
+- **Culling's candidates against ORB-SLAM3's (L7).** Culling tests the new keyframe's 15-point
+  links, where ORB-SLAM3 tests every covisible keyframe, up to 100 (`LocalMapping.cc:910,
+  1060`): compare the keyframe counts with the ORB-SLAM3 anchor's.
+- **What global BA fits on a map like zju-A1's (L1).** Where its first dump's starting cost of
+  1.97e8 comes from (the weld, the fusion or the essential graph); a gate on gross outliers
+  before global BA, as ORB-SLAM3's local BA drops observations with `chi2 > 5.991` or a
+  non-positive depth between its passes and COLMAP filters observations over 4 px between its
+  global BA's refinements; and a point crossing its camera's plane during a solve counted as a
+  failed trial.
+- **The near filter's median per keyframe (L3).** One median over every observation, where
+  ORB-SLAM's own depth statistic is per keyframe (`ComputeSceneMedianDepth`): a merged map's
+  parts at different scales would each have their own.
 
 ## 13. Measurements (B3b)
 
