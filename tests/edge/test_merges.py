@@ -352,7 +352,7 @@ def test_the_weld_keeps_gtsam_s_damping_and_global_ba_takes_g2o_s(
 
     The weld's two solves take :func:`slam_it.edge.loops.weld_options`, the global BA after the
     merge :func:`slam_it.edge.loops.global_ba_options` (decided with evan-wes on 2026-10-23);
-    each leaves out the observations nearer than ``loops.near_fraction`` of the median depth.
+    each leaves out the observations nearer than ``loops.min_depth_ratio`` of the median depth.
     """
     solves: list[tuple[graphs.Options, float]] = []
     adjust = graphs.bundle_adjust
@@ -368,7 +368,7 @@ def test_the_weld_keeps_gtsam_s_damping_and_global_ba_takes_g2o_s(
         loops.weld_options(OPTIONS.adjustment.refine_iterations),
         loops.global_ba_options(OPTIONS),
     ]
-    assert {near for _, near in solves} == {OPTIONS.loops.near_fraction}
+    assert {near for _, near in solves} == {OPTIONS.loops.min_depth_ratio}
 
 
 def test_the_merge_refuses_what_it_cannot_join(two_rigid: TwoMaps) -> None:

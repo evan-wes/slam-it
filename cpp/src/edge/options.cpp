@@ -101,19 +101,21 @@ foundations::Result<void> check_reals(const Options& options) {
       {"loops.confirm_window", options.loops.confirm_window},
       {"loops.fuse_window", options.loops.fuse_window},
       {"loops.essential_damping", options.loops.essential_damping},
-      {"loops.global_damping", options.loops.global_damping},
+      {"loops.global_damping_scale", options.loops.global_damping_scale},
   }};
   for (const auto& [setting, value] : positive) {
     if (!std::isfinite(value) || value <= 0.0) {
       return foundations::fail_setting(setting, "must be finite and positive", value);
     }
   }
-  for (const auto& [setting, value] :
-       {RealSetting{"loss.relocalize_seconds", options.loss.relocalize_seconds},
-        RealSetting{"loops.near_fraction", options.loops.near_fraction}}) {
-    if (!std::isfinite(value) || value < 0.0) {
-      return foundations::fail_setting(setting, "must be finite and not negative", value);
-    }
+  if (!std::isfinite(options.loss.relocalize_seconds) || options.loss.relocalize_seconds < 0.0) {
+    return foundations::fail_setting("loss.relocalize_seconds", "must be finite and not negative",
+                                     options.loss.relocalize_seconds);
+  }
+  if (!std::isfinite(options.loops.min_depth_ratio) || options.loops.min_depth_ratio < 0.0 ||
+      options.loops.min_depth_ratio >= 1.0) {
+    return foundations::fail_setting("loops.min_depth_ratio", "must be in [0, 1)",
+                                     options.loops.min_depth_ratio);
   }
   const std::array<RealSetting, 23> fractions{{
       {"initialization.ratio", options.initialization.ratio},

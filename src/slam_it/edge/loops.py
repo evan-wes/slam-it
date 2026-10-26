@@ -88,10 +88,10 @@ scale, so their similarities are rigid (``mbFixScale``).
 links is passed over), the group's widening and the correction's new loop links read the
 keyframe's links, those sharing ``covisibility.min_points`` (``_linked``); ORB-SLAM3's read its
 connected keyframes (``GetConnectedKeyFrames``), every keyframe sharing a point, as the
-candidates' retrieval does here. With the connected keyframes in all three as well,
-arkitscenes-42446137 loses its right-place loop, its final ATE rising from 29.6 to 90.7 cm (C++,
-inline): its candidate shares no point with the keyframe, but its group holds one that shares
-exactly one. The design's section 10, item 2, gives the measurements.
+candidates' retrieval does here. With the connected keyframes there as well, a loop whose
+candidate shares no point with the keyframe, but whose group holds one sharing a single point, is
+passed over, right-place loops among them: the online-SLAM design's section 10, item 2, gives the
+measurements.
 """
 
 from __future__ import annotations
@@ -1615,13 +1615,15 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
 def global_ba_options(options: Options) -> graphs.Options:
     """Return global BA's solve: ``loops.global_iterations``, g2o's damping, ORB-SLAM3's stop.
 
-    ORB-SLAM3's global BA runs g2o's Levenberg-Marquardt as its every BA does: ``λ`` from ``τ``
-    (``loops.global_damping``) times the largest diagonal entry of the normal equations, by
-    Nielsen's schedule, and its solve ends after three iterations in a row each lowering the
-    error by under 0.1% (``loops.global_small_steps``, ``loops.global_small_decrease``;
-    ``optimization_algorithm_levenberg.cpp``). GTSAM's absolute ``λ`` let a monocular map's
-    global BA slide along its free scale (0.55 on the loop room's failing run, 0.99 so) and, at
-    its bound of 1e5, accept no step on real maps (advio-20's, 0.3.17.2's review panel, L5).
+    ORB-SLAM3's global BA runs g2o's Levenberg-Marquardt as its every BA does: ``λ`` from
+    ``loops.global_damping_scale`` (g2o's ``τ``) times the largest diagonal entry of the normal
+    equations, by Nielsen's schedule, ending after ``loops.global_small_steps`` iterations in a
+    row each lowering the error by under ``loops.global_small_decrease`` of it
+    (``optimization_algorithm_levenberg.cpp``). GTSAM's absolute damping let a monocular map's
+    global BA slide along its free scale (the scale carrying its cameras' centres onto where they
+    started: 0.55 under GTSAM's damping, 0.99 under this one, on the loop room's failing run) and,
+    at its bound, accept no step on real maps: the online-SLAM design, section 11's L2, and the
+    CHANGELOG's 0.3.18.0 entry, *Measured*.
 
     Parameters
     ----------
@@ -1637,7 +1639,7 @@ def global_ba_options(options: Options) -> graphs.Options:
     return graphs.Options(
         max_iterations=loops.global_iterations,
         scaled_damping=True,
-        damping_scale=loops.global_damping,
+        damping_scale=loops.global_damping_scale,
         small_steps=loops.global_small_steps,
         small_decrease=loops.global_small_decrease,
     )
@@ -1646,9 +1648,9 @@ def global_ba_options(options: Options) -> graphs.Options:
 def weld_options(iterations: int) -> graphs.Options:
     """Return a welding BA's solve: `iterations`, GTSAM's own damping, and no stop by small steps.
 
-    ORB-SLAM3's welding BA runs g2o's damping and stop too, but here it keeps GTSAM's (decided
-    with evan-wes on 2026-10-23): with g2o's, its first solve (5 iterations) ended 0.2% to 1.7%
-    above GTSAM's cost on the five welds the F2 split probe dumped from the test set.
+    ORB-SLAM3's welding BA runs g2o's damping and stop too, but here it keeps GTSAM's (decided by
+    evan-wes on 2026-10-23): with g2o's, its first solve ended above GTSAM's cost on the welds
+    dumped from the test set (the CHANGELOG's 0.3.18.0 entry, *Measured*).
 
     Parameters
     ----------
@@ -1680,7 +1682,7 @@ def _global_bundle_adjust(
         intrinsics=camera.intrinsics,
         bf=camera.focal * camera.baseline,
         fixed=np.flatnonzero(m.kf_id == 0),
-        near=options.loops.near_fraction,
+        near=options.loops.min_depth_ratio,
         options=global_ba_options(options),
         stop=stop,
     )
@@ -2310,7 +2312,7 @@ def _weld(
         m.pt_xyz[problem.points].copy(),
     )
     everything = np.ones(len(problem.rows), dtype=bool)
-    near = options.loops.near_fraction
+    near = options.loops.min_depth_ratio
     poses, xyz, first = _weld_solve(
         problem, camera, state, everything, robust=True,
         iterations=options.adjustment.iterations, near=near,
@@ -3188,7 +3190,7 @@ def global_bundle_adjust(
     """Bundle-adjust every keyframe and point (``GlobalBundleAdjustemnt``, as loop closing runs it).
 
     Every observation, weighed by its level's information, with its right column where it has
-    one, but those near their camera's plane (``loops.near_fraction``); no robust loss; the map's
+    one, but those near their camera's plane (``loops.min_depth_ratio``); no robust loss; the map's
     first keyframe (id 0) held fixed; solved as :func:`global_ba_options` says
     (:func:`slam_it.foundations.graphs.bundle_adjust`). Every point is refreshed after.
 
@@ -3199,8 +3201,8 @@ def global_bundle_adjust(
     camera : slam_it.edge.frames.Camera
         The camera.
     options : slam_it.edge.options.Options
-        ``loops.global_iterations``, ``loops.global_damping``, ``loops.global_small_steps``,
-        ``loops.global_small_decrease`` and ``loops.near_fraction``.
+        ``loops.global_iterations``, ``loops.global_damping_scale``, ``loops.global_small_steps``,
+        ``loops.global_small_decrease`` and ``loops.min_depth_ratio``.
     stop : callable, optional
         Asked before each iteration whether to stop (a global BA in a thread of its own,
         superseded: ORB-SLAM's ``mbStopGBA``); the Python reference's alone.

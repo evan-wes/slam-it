@@ -207,6 +207,11 @@ void check_checks(int& failures) {
       is_invalid_input(edge::check_options(edge::Options{.loss = {.relocalize_seconds = -1.0}})) &&
           edge::check_options(edge::Options{.loss = {.relocalize_seconds = 0.0}}).has_value(),
       "check_options takes a loss window of 0, not below", failures);
+  expect(is_invalid_input(edge::check_options(edge::Options{.loops = {.min_depth_ratio = 1.0}})) &&
+             is_invalid_input(
+                 edge::check_options(edge::Options{.loops = {.min_depth_ratio = -1e-3}})) &&
+             edge::check_options(edge::Options{.loops = {.min_depth_ratio = 0.0}}).has_value(),
+         "check_options takes a depth ratio in [0, 1)", failures);
   const edge::Camera bad{.model = slam_it::foundations::camera::Model::kPinhole,
                          .intrinsics = Eigen::Vector4d(250.0, 250.0, 160.0, 120.0),
                          .width = 320,

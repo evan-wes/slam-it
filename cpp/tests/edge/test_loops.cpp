@@ -71,7 +71,7 @@ void check_solves(int& failures) {
   expect(weld.max_iterations == 5 && !weld.scaled_damping && weld.small_steps == 0 &&
              weld.initial_damping == gtsam.initial_damping,
          "a welding BA: GTSAM's own damping, no stop by small steps", failures);
-  expect(options.loops.near_fraction == 1e-3,
+  expect(options.loops.min_depth_ratio == 1e-3,
          "global and welding BA leave out the observations nearer than 1e-3 of the median depth",
          failures);
 }

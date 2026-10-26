@@ -194,7 +194,7 @@ fn global_ba_damps_as_g2o_and_stops_as_orb_slam3_and_the_weld_keeps_gtsam_s_damp
         (weld.initial_damping, weld.small_steps),
         (gtsam.initial_damping, 0)
     );
-    assert_eq!(options.loops.near_fraction, 1e-3);
+    assert_eq!(options.loops.min_depth_ratio, 1e-3);
 }
 
 #[test]

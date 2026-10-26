@@ -37,12 +37,12 @@ def test_global_ba_damps_from_g2o_s_tau_and_stops_as_orb_slam3() -> None:
     """
     options = Options()
     loops = options.loops
-    assert (loops.global_damping, loops.global_small_steps, loops.global_small_decrease) == (
+    assert (loops.global_damping_scale, loops.global_small_steps, loops.global_small_decrease) == (
         1e-5,
         3,
         1e-3,
     )
-    assert loops.near_fraction == 1e-3
+    assert loops.min_depth_ratio == 1e-3
 
 
 def test_extraction_doubles_the_features_while_initializing() -> None:
@@ -102,10 +102,14 @@ def test_the_settings_cross_as_groups_of_scalars() -> None:
         ({"loops.confidence": 1.0}, r"loops.confidence: must be in \(0, 1\), got 1.0"),
         ({"loops.fine_distance": 257}, "loops.fine_distance: must be from 1 to 256"),
         ({"loops.essential_damping": 0.0}, "loops.essential_damping: must be finite and positive"),
-        ({"loops.global_damping": 0.0}, "loops.global_damping: must be finite and positive"),
+        (
+            {"loops.global_damping_scale": 0.0},
+            "loops.global_damping_scale: must be finite and positive",
+        ),
         ({"loops.global_small_steps": -1}, "loops.global_small_steps: must be from 0"),
         ({"loops.global_small_decrease": 1.5}, r"loops.global_small_decrease: must be in \(0, 1\]"),
-        ({"loops.near_fraction": -1e-3}, "loops.near_fraction: must be finite and not negative"),
+        ({"loops.min_depth_ratio": -1e-3}, r"loops.min_depth_ratio: must be in \[0, 1\)"),
+        ({"loops.min_depth_ratio": 1.0}, r"loops.min_depth_ratio: must be in \[0, 1\)"),
         ({"loss.relocalize_seconds": -1.0}, "loss.relocalize_seconds: must be finite and not neg"),
         ({"features.n_features": "a"}, "features.n_features: must be an integer"),
         ({"features.n_features": None}, "features.n_features: must be an integer"),

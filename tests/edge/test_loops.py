@@ -734,10 +734,10 @@ def test_every_backend_adjusts_the_whole_map_as_python_does(backend: str, loop: 
 
 
 MOVED_GLOBAL_BA = {
-    "loops.global_damping": 1e-2,
+    "loops.global_damping_scale": 1e-2,
     "loops.global_small_steps": 1,
     "loops.global_small_decrease": 0.5,
-    "loops.near_fraction": 0.9,
+    "loops.min_depth_ratio": 0.9,
 }
 """Global BA's settings off their defaults: a heavier first damping, a solve ended by its first
 iteration's decrease under half, and the observations nearer than 0.9 of the median depth left
@@ -810,7 +810,7 @@ def test_global_ba_holds_a_monocular_map_s_scale(backend: str) -> None:
     bundle = _slide_problem()
     settings = Options()
     held = graphs.bundle_adjust(
-        **bundle, near=settings.loops.near_fraction, options=loops.global_ba_options(settings),
+        **bundle, near=settings.loops.min_depth_ratio, options=loops.global_ba_options(settings),
         backend=chosen,
     )  # fmt: skip
     assert abs(_centres_scale(bundle["poses"], held.poses) - 1.0) < SCALE_TOLERANCE

@@ -2675,8 +2675,13 @@ pub fn essential_graph(
 }
 
 /// Global BA's solve (`slam_it.edge.loops.global_ba_options`): `loops.global_iterations`, g2o's
-/// damping from `loops.global_damping`, as ORB-SLAM3's every BA runs it, and ORB-SLAM3's stop
-/// after `loops.global_small_steps` decreases in a row under `loops.global_small_decrease`.
+/// damping from `loops.global_damping_scale` (its `tau`), as ORB-SLAM3's every BA runs it, and
+/// ORB-SLAM3's stop after `loops.global_small_steps` decreases in a row under
+/// `loops.global_small_decrease`. GTSAM's absolute damping let a monocular map's global BA slide
+/// along its free scale (the scale carrying its cameras' centres onto where they started: 0.55
+/// under GTSAM's damping, 0.99 under this one, on the loop room's failing run) and, at its bound,
+/// accept no step on real maps: the online-SLAM design, section 11's L2, and the CHANGELOG's
+/// 0.3.18.0 entry, Measured.
 ///
 /// # Arguments
 ///
@@ -2691,7 +2696,7 @@ pub fn global_ba_options(options: &Options, stop: &Stop) -> graphs::Options {
     graphs::Options {
         max_iterations: options.loops.global_iterations,
         scaled_damping: true,
-        damping_scale: options.loops.global_damping,
+        damping_scale: options.loops.global_damping_scale,
         small_steps: options.loops.global_small_steps,
         small_decrease: options.loops.global_small_decrease,
         stop: stop.clone(),
@@ -2699,9 +2704,10 @@ pub fn global_ba_options(options: &Options, stop: &Stop) -> graphs::Options {
     }
 }
 
-/// A welding BA's solve (`slam_it.edge.loops.weld_options`): GTSAM's own damping and no stop by
-/// small steps, by the owner's decision (g2o's left its first solve 0.2% to 1.7% above GTSAM's
-/// cost on the test set's welds).
+/// A welding BA's solve (`slam_it.edge.loops.weld_options`): `iterations`, GTSAM's own damping
+/// and no stop by small steps. ORB-SLAM3's welding BA runs g2o's damping and stop too, but here
+/// it keeps GTSAM's (decided by evan-wes on 2026-10-23): with g2o's, its first solve ended above
+/// GTSAM's cost on the welds dumped from the test set (the CHANGELOG's 0.3.18.0 entry, Measured).
 ///
 /// # Arguments
 ///
@@ -2729,7 +2735,7 @@ pub fn weld_options(iterations: usize) -> graphs::Options {
 /// * `camera` - The camera.
 /// * `fixed` - The cameras held.
 /// * `near` - The fraction of the median depth nearer than which an observation is left out
-///   (`loops.near_fraction`).
+///   (`loops.min_depth_ratio`).
 /// * `solve` - How the solve runs (`global_ba_options` or `weld_options`).
 ///
 /// # Returns
@@ -2766,15 +2772,15 @@ fn adjust(
 /// Bundle-adjusts every keyframe and point (`slam_it.edge.loops.global_bundle_adjust`,
 /// `GlobalBundleAdjustemnt` as loop closing runs it): every observation, weighed by its
 /// level's information, with its right column where it has one, but those near their camera's
-/// plane (`loops.near_fraction`); no robust loss; the map's first keyframe (id 0) held fixed;
+/// plane (`loops.min_depth_ratio`); no robust loss; the map's first keyframe (id 0) held fixed;
 /// solved as `global_ba_options` says. Every point is refreshed after.
 ///
 /// # Arguments
 ///
 /// * `m` - The map, changed in place, with its first keyframe.
 /// * `camera` - The camera.
-/// * `options` - `loops.global_iterations`, `loops.global_damping`, `loops.global_small_steps`,
-///   `loops.global_small_decrease` and `loops.near_fraction`.
+/// * `options` - `loops.global_iterations`, `loops.global_damping_scale`,
+///   `loops.global_small_steps`, `loops.global_small_decrease` and `loops.min_depth_ratio`.
 /// * `stop` - Stops it before its next iteration (a global BA in a thread of its own,
 ///   superseded: ORB-SLAM's `mbStopGBA`).
 ///
@@ -2833,7 +2839,7 @@ pub fn global_bundle_adjust(
         },
         camera,
         &fixed,
-        options.loops.near_fraction,
+        options.loops.min_depth_ratio,
         &global_ba_options(options, stop),
     )?;
     m.kf_pose = adjusted.poses.iter().map(sim3::inverse).collect();
@@ -3526,7 +3532,7 @@ struct WeldState {
 /// * `robust` - With a Huber loss at each one's threshold's root.
 /// * `iterations` - The solve's iterations (`weld_options`).
 /// * `near` - The fraction of the median depth nearer than which an observation is left out
-///   (`loops.near_fraction`).
+///   (`loops.min_depth_ratio`).
 ///
 /// # Returns
 ///
@@ -3535,10 +3541,6 @@ struct WeldState {
 /// # Errors
 ///
 /// GTSAM's.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the problem, its state, which observations, and the solve's three settings"
-)]
 fn weld_solve(
     problem: &Weld,
     camera: &Camera,
@@ -3673,7 +3675,7 @@ fn weld(
         xyz: problem.points.iter().map(|&p| m.pt_xyz[p]).collect(),
     };
     let everything = vec![true; problem.rows.len()];
-    let near = options.loops.near_fraction;
+    let near = options.loops.min_depth_ratio;
     let first = weld_solve(
         &problem,
         camera,

@@ -1881,7 +1881,7 @@ struct WeldState {
 /// @param robust With a Huber loss at each one's threshold's root.
 /// @param iterations The solve's iterations (`weld_options`).
 /// @param near The fraction of the median depth nearer than which an observation is left out
-///        (`loops.near_fraction`).
+///        (`loops.min_depth_ratio`).
 /// @return The solve's summary; GTSAM's failure.
 Result<graphs::Summary> weld_solve(const Weld& problem, const Camera& camera, WeldState& state,
                                    const std::vector<bool>& use, bool robust,
@@ -1994,7 +1994,7 @@ Result<WeldSummary> weld(Map& m, const Camera& camera, std::span<const std::int6
     state.xyz.push_back(m.pt_xyz[static_cast<std::size_t>(p)]);
   }
   const std::vector<bool> everything(problem.rows.size(), true);
-  const double near = options.loops.near_fraction;
+  const double near = options.loops.min_depth_ratio;
   auto first =
       weld_solve(problem, camera, state, everything, true, options.adjustment.iterations, near);
   if (!first) {
@@ -2268,7 +2268,7 @@ Result<std::optional<graphs::Summary>> global_ba_after(Map& m, const Camera& cam
 graphs::Options global_ba_options(const Options& options, const std::atomic<bool>* stop) {
   return graphs::Options{.max_iterations = static_cast<int>(options.loops.global_iterations),
                          .scaled_damping = true,
-                         .damping_scale = options.loops.global_damping,
+                         .damping_scale = options.loops.global_damping_scale,
                          .small_steps = static_cast<int>(options.loops.global_small_steps),
                          .small_decrease = options.loops.global_small_decrease,
                          .stop = stop};
@@ -2323,7 +2323,7 @@ Result<graphs::Summary> global_bundle_adjust(Map& m, const Camera& camera, const
                                           .huber = {}};
   auto adjusted = graphs::bundle_adjust(
       poses, points, observations, camera.model, camera.intrinsics, focal(camera) * camera.baseline,
-      fixed, options.loops.near_fraction, global_ba_options(options, stop));
+      fixed, options.loops.min_depth_ratio, global_ba_options(options, stop));
   if (!adjusted) {
     return std::unexpected(std::move(adjusted.error()));
   }

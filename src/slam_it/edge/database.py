@@ -338,11 +338,12 @@ def _loop_candidates(db: Database, m: Map, keyframe: int, options: Options) -> C
     """Find loop closing's candidates (reference)."""
     settings = options.loops
     row = int(m.keyframe_rows(np.array([keyframe]))[0])
-    sharing = {int(k) for k in m.kf_id[covisibility.connected(m, row)[0]]}
+    connected_ids = {int(k) for k in m.kf_id[covisibility.connected(m, row)[0]]}
     rules = (settings.common_words, settings.neighbours)
     found = _scoring(
-        db, m, db.vector(keyframe), excluded={keyframe} | sharing, rules=rules, options=options
-    )
+        db, m, db.vector(keyframe), excluded={keyframe} | connected_ids, rules=rules,
+        options=options,
+    )  # fmt: skip
     chosen = _chosen(found.groups, above=-math.inf, most=settings.candidates)
     return replace(chosen, sharing=found.sharing, scored=found.scored)
 

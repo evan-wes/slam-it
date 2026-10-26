@@ -362,15 +362,15 @@ class MappingOptions:
     min_point_observations_depth : int
         ...3 for stereo and RGB-D.
     redundant_fraction : float
-        A keyframe is culled when this fraction of its points are seen by
-        ``mapping.redundant_observers`` other keyframes at the same, a finer or the next coarser
-        scale (0.9)...
+        The fraction of a keyframe's points that must be redundant for culling to remove it,
+        each seen by ``mapping.redundant_observers`` other keyframes at the same, a finer or the
+        next coarser scale (``KeyFrameCulling``'s 0.9).
     redundant_observers : int
-        ...this many (4): ORB-SLAM3's ``nObs > 3`` (``KeyFrameCulling``), where ORB-SLAM2 has
-        ``>= 3``. The point must also weigh more than this (``Observations() > 3`` there), which
-        so many other keyframes and its own already make it. Until 0.3.18.0, ORB-SLAM2's 3:
-        culling then thinned a monocular map so far that one keyframe deferred while mapping
-        was busy starved its tracking (the revisit room's map lost, 2026-10-21).
+        How many other keyframes must see a point, at the same, a finer or the next coarser
+        scale, for it to count as redundant (4): ORB-SLAM3's ``nObs > 3`` (``KeyFrameCulling``),
+        where ORB-SLAM2 has ``>= 3``. The point must also weigh more than this (``Observations()
+        > 3`` there), which so many other keyframes and its own already make it. Why ORB-SLAM3's
+        and not ORB-SLAM2's: the online-SLAM design, section 11's L2.
     max_queued : int
         With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is queued
         only while fewer than this many wait (``NeedNewKeyFrame``'s ``KeyframesInQueue() < 3``).
@@ -588,22 +588,25 @@ class LoopOptions:
         Bundle-adjust the whole map after each loop (on, as visual-only ORB-SLAM3 always does;
         off measures what it adds).
     global_iterations : int
-        Its iterations (``GlobalBundleAdjustemnt``'s 10)...
-    global_damping : float
-        ...from this damping, a fraction of the largest diagonal entry of its normal equations,
-        then Nielsen's schedule: g2o's damping, its ``τ`` 1e-5, which ORB-SLAM3's global BA
-        leaves at its default (:attr:`slam_it.foundations.graphs.Options.scaled_damping`)...
+        Global BA's Levenberg-Marquardt iterations at most (``GlobalBundleAdjustemnt``'s 10).
+    global_damping_scale : float
+        Global BA's ``τ``, relative: its first damping is this times the largest diagonal entry
+        of its normal equations, then follows Nielsen's schedule (g2o's damping, its ``τ`` 1e-5,
+        which ORB-SLAM3's global BA leaves at its default;
+        :attr:`slam_it.foundations.graphs.Options.damping_scale`). Unlike
+        ``loops.essential_damping``, which is absolute.
     global_small_steps : int
-        ...ending once this many iterations in a row have each lowered its error by less than
-        ``loops.global_small_decrease`` of it (ORB-SLAM3's g2o stop, 3); 0, never...
+        How many iterations in a row, each lowering global BA's error by less than
+        ``loops.global_small_decrease`` of it, end the solve (ORB-SLAM3's g2o stop, 3); 0, never.
     global_small_decrease : float
-        ...that fraction (0.1%).
-    near_fraction : float
-        Global and welding BA leave out each observation whose point is behind its camera or
-        in front of it nearer than this fraction of every observation's median depth
-        (:func:`slam_it.foundations.graphs.bundle_adjust`'s ``near``, 1e-3; 0 leaves none out):
-        real maps hold points 1e-9 to 1e-4 of the median depth in front of a camera, whose
-        ``(f/z)²`` stalls every damping. ORB-SLAM3 has no such filter.
+        The fraction of global BA's error an iteration must lower it by not to count as a small
+        step towards ``loops.global_small_steps`` (ORB-SLAM3's 1e-3).
+    min_depth_ratio : float
+        The fraction of every observation's median depth below which global and welding BA leave
+        an observation out at the start, with those behind their camera
+        (:func:`slam_it.foundations.graphs.bundle_adjust`'s ``near``, 1e-3; 0 leaves none out).
+        In [0, 1). ORB-SLAM3 has no such filter; why it is here: the online-SLAM design, section
+        11's L2.
     weld_neighbours : int
         The best links of the merge's keyframe a welding window starts with, and the keyframes
         it is widened to while it holds fewer (ORB-SLAM3's ``numTemporalKFs``, 25, which
@@ -650,10 +653,10 @@ class LoopOptions:
     essential_damping: float = 1e-16
     global_ba: bool = True
     global_iterations: int = 10
-    global_damping: float = 1e-5
+    global_damping_scale: float = 1e-5
     global_small_steps: int = 3
     global_small_decrease: float = 1e-3
-    near_fraction: float = 1e-3
+    min_depth_ratio: float = 1e-3
     weld_neighbours: int = 25
     weld_widen: int = 12
     weld_rounds: int = 5
@@ -915,6 +918,9 @@ def _checked(name: str, kind: str, value: Any) -> bool | int | float:  # noqa: A
     if name in _MAY_BE_ZERO:
         if not (math.isfinite(number) and number >= 0.0):
             raise InvalidInputError(f"{name}: must be finite and not negative, got {number}")
+    elif name in _BELOW_ONE:
+        if not (math.isfinite(number) and 0.0 <= number < 1.0):
+            raise InvalidInputError(f"{name}: must be in [0, 1), got {number}")
     elif name in _FRACTIONS:
         if not (math.isfinite(number) and 0.0 < number <= 1.0):
             raise InvalidInputError(f"{name}: must be in (0, 1], got {number}")
@@ -933,10 +939,12 @@ _MAY_BE_ZERO = frozenset(
         "loops.weld_rounds",
         "loops.global_small_steps",
         "loss.relocalize_seconds",
-        "loops.near_fraction",
     }
 )
-"""The settings that may be 0: integers, and two reals."""
+"""The settings that may be 0: integers, and one real."""
+
+_BELOW_ONE = frozenset({"loops.min_depth_ratio"})
+"""The real settings in [0, 1)."""
 
 _FRACTIONS = frozenset(
     {

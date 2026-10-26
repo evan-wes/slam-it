@@ -247,12 +247,12 @@ Result<Candidates> loop_candidates(const Database& db, const Map& m, std::int64_
     return fail(ErrorKind::kInvalidInput,
                 "database: keyframe " + std::to_string(keyframe) + " is not in it");
   }
-  auto sharing = connected(m, row);
-  if (!sharing) {
-    return std::unexpected(std::move(sharing.error()));
+  auto connected_rows = connected(m, row);
+  if (!connected_rows) {
+    return std::unexpected(std::move(connected_rows.error()));
   }
   std::vector<std::int64_t> excluded{keyframe};
-  for (const Link& link : *sharing) {
+  for (const Link& link : *connected_rows) {
     excluded.push_back(m.kf_id[static_cast<std::size_t>(link.row)]);
   }
   const LoopOptions& settings = options.loops;
