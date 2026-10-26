@@ -4,7 +4,7 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
-## [0.3.18.0] - 2026-10-24
+## [0.3.18.0] - 2026-10-25
 
 Loop closing's global BA solves as ORB-SLAM3's does, with g2o's Levenberg-Marquardt: its first
 damping scaled to the Hessian, Nielsen's schedule, and ORB-SLAM3's stop after three small steps.
@@ -23,23 +23,28 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
 ### Changed
 
 - **Global BA's damping** is g2o's (`OptimizationAlgorithmLevenberg`, which ORB-SLAM3's BAs
-  run): the first `λ` is `loops.global_damping` (1e-5, g2o's `τ`) times the largest diagonal
-  entry of the normal equations at the start, over the variables, as g2o's `computeLambdaInit`
-  takes it over its free vertices; then Nielsen's schedule, GTSAM's `useFixedLambdaFactor =
-  false` policy from a factor of 2 (a failed trial multiplies `λ` by 2, 4, 8, ...; an accepted
-  step by `max(1/3, 1 - (2ρ - 1)³)`), up to 1e32, GTSAM's own bound for its Ceres-like
-  parameters, in practice none (`graphs.Options.scaled_damping`).
+  run): the first `λ` is `loops.global_damping_scale` (1e-5, g2o's `τ`, relative, unlike
+  `loops.essential_damping`) times the largest diagonal entry of the normal equations at the
+  start, over the variables, as g2o's `computeLambdaInit` takes it over its free vertices; then
+  Nielsen's schedule, GTSAM's `useFixedLambdaFactor = false` policy from a factor of 2 (a failed
+  trial multiplies `λ` by 2, 4, 8, ...; an accepted step by `max(1/3, 1 - (2ρ - 1)³)`), up to
+  1e32, GTSAM's own bound for its Ceres-like parameters, in practice none
+  (`graphs.Options.scaled_damping` and `damping_scale`; `initial_damping` stays GTSAM's absolute
+  first `λ`, read only without `scaled_damping`).
 - **ORB-SLAM3's stop** ends global BA after `loops.global_small_steps` (3) iterations in a row
   each lowering the error by less than `loops.global_small_decrease` (1e-3) of it, as its
-  modified g2o does (`optimization_algorithm_levenberg.cpp:157-166`), converged
-  (`graphs.Options.small_steps`, `small_decrease`).
-- **The near-plane filter** (`graphs.bundle_adjust`'s `near`, `graphs.kept_observations`;
-  `loops.near_fraction`, 1e-3): global and welding BA leave out each observation whose point,
-  at the start, is behind its camera or in front of it nearer than 1e-3 of every observation's
-  median depth. Only the points and free cameras the rest reach are solved; with none left,
-  nothing is. Real maps hold points 1e-9 to 1e-4 of the median depth in front of a camera, whose
-  `(f/z)²` makes the Hessian's largest diagonal entry 1e13 to 1e23 and stalls every damping.
-  ORB-SLAM3 has no such filter in its global BA.
+  modified g2o does (`optimization_algorithm_levenberg.cpp:157-166`), converged, with a
+  termination of its own (`graphs.Termination.SMALL_STEPS`; `graphs.Options.small_steps`,
+  `small_decrease`).
+- **The near-plane filter** (`graphs.bundle_adjust`'s `near`; `loops.min_depth_ratio`, 1e-3, in
+  [0, 1)): global and welding BA leave out each observation whose point, at the start, is
+  behind its camera or in front of it nearer than 1e-3 of every observation's median depth.
+  Only the points and free cameras the rest reach are solved; with none left, nothing is. The
+  solve summary counts the observations left out (`left_out`) and the kept ones whose point ends
+  behind its camera or nearer than the limit (`ended_near`), the filter acting at the start
+  only; loop closing's solve records hold both. Real maps hold points 1e-9 to 1e-4 of the median
+  depth in front of a camera, whose `(f/z)²` makes the Hessian's largest diagonal entry 1e13 to
+  1e23 and stalls every damping. ORB-SLAM3 has no such filter in its global BA.
 - **The merge's welding BA keeps GTSAM's own damping and no stop** (evan-wes, 2026-10-23), where
   ORB-SLAM3's runs g2o's: with g2o's, its first solve (5 iterations) ended 0.2% to 1.7% above
   GTSAM's cost on the five welds the F2 split probe dumped from the test set. L5's bound of 1e5
@@ -67,8 +72,8 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
   of 1e11 reach; the small-steps stop ends a solve as converged, where g2o returns `Terminate`;
   Python computes the Hessian's diagonal from each factor's whitened Jacobian, GTSAM's wrapper
   lacking `hessianDiagonal`.
-- **Settings:** 142, four more (`loops.global_damping`, `loops.global_small_steps`,
-  `loops.global_small_decrease`, `loops.near_fraction`), each read by every native.
+- **Settings:** 142, four more (`loops.global_damping_scale`, `loops.global_small_steps`,
+  `loops.global_small_decrease`, `loops.min_depth_ratio`), each read by every native.
 - **The Rust bridge** gains `largest_hessian_diagonal`; its `new_optimizer` takes the damping's
   factor, whether Nielsen's schedule moves it, and its bound.
 - **Measured**, develop (8e9ae9c1, 0.3.17.2) against this version (789fe641; the per-call
@@ -76,19 +81,24 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
   own 8 GB scope, pinned to efficiency cores (one a run inline, three threaded), beside four or
   five others and other programs on the machine (this version's first inline runs beside layer
   1 as well):
-  - Per call, through the bindings, the 24 global BAs the F2 split and merge-cost probes dumped
-    (23 from the test set's runs, one the loop room's failing one), each solved as develop's
-    global BA and as this version's: develop's accepts no step on 14 of them in C++ and Rust
-    alike (one iteration at the damping's bound of 1e5, advio-20's among them, L5), and ends at
-    its bound on 18; this version's accepts steps on all 24 (advio-20's: 9 iterations, its cost
-    889,584 -> 200,725, converged), 12 converging and 12 running their 10 iterations, C++ and
-    Rust agreeing to 3.3e-12 in cost and in every iteration count. The similarity carrying the
-    cameras' centres onto where they started stays within 0.974 to 1.004 on 22 of them, where
-    develop's slid to 0.4227 on zju-A0's (at a cost 4e-4 lower) and 0.5508 on the loop room's;
-    on two of zju-A1's, where develop moved nothing, it is 0.637 and 0.842, their cost falling
-    from 1.97e8 to 7.2e7 and from 9.2e7 to 1.5e6. The filter leaves out at most 125
-    observations of a dump (advio-19's, of 241,436). A call takes 0.27 to 51 s where develop's
-    took 0.15 to 28 s, most of the difference the steps develop never took.
+  - Per call, through the bindings, the 24 global BAs the F2 split and merge-cost probes dumped (23
+    from the test set's runs, one the loop room's failing one), each solved as develop's global BA
+    and as this version's: develop's accepts no step on 14 of them in C++ and Rust alike (one
+    iteration at the damping's bound of 1e5, advio-20's among them, L5), and ends at its bound on
+    18; this version's accepts steps on all 24 (advio-20's: 9 iterations, its cost 889,584 ->
+    200,725, converged), 12 converging and 12 running their 10 iterations, C++ and Rust agreeing to
+    3.3e-12 in cost and in every iteration count. The similarity carrying the cameras' centres onto
+    where they started stays within 0.974 to 1.004 on 22 of them, where develop's slid to 0.4227 on
+    zju-A0's (at a cost 4e-4 lower) and 0.5508 on the loop room's. On zju-A1's two, where develop
+    moved nothing, the map changes shape. On the first (0.637, its cost 1.97e8 -> 7.2e7) global BA,
+    with no robust loss, fits 4,879 of 73,017 observations that start over about 100 px off (χ² ≥
+    1e4) at the inliers' expense: the outliers' cost falls from 1.9e8 to 2.9e7, the inliers' rises
+    from 2.8e4 to 3.4e7, and 57 kept observations of 17 points cross behind their cameras, 30% of
+    the final cost (the review panel's L1); ORB-SLAM3's non-robust global BA would do the same. On
+    the second (0.842, 9.2e7 -> 1.5e6) it reconciles the map, half its observations at χ² 100 to 1e4
+    becoming inliers. The filter leaves out at most 125 observations of a dump (advio-19's, of
+    241,436). A call takes 0.27 to 51 s where develop's took 0.15 to 28 s, most of the difference
+    the steps develop never took.
   - The monocular test set (58 sequences, seed 0), inline, C++ and Rust: frames tracked
     168,270 -> 168,395 (C++) and 168,143 -> 168,152 (Rust); the median share 0.869 -> 0.871 and
     0.868 -> 0.875; the median final ATE over the 56 sequences scored in both 29.39 -> 24.81 cm
@@ -108,6 +118,15 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
     and 2.4 s in C++ (develop: 10.4 s, 4.6 s, 1.8 s) and 14.8 s, 1.4 and 8.6 s, and 2.5 s in Rust
     (10.3 s, 4.9 s, 2.1 s), their runs peaking at 1,525, 1,587 and 847 MiB in C++ (790, 493,
     300) and 1,522, 706 and 877 MiB in Rust (710, 506, 306).
+  - Which change makes which regression, inline (C++, the attribution probe's 20 sequences, the
+    rule and G each alone on develop, before the candidates' change): the culling rule makes the
+    five gains and most regressions, advio-03, -06, -10, -17, -19, -20 and -21, zju-B4,
+    arkitscenes-42445028 and -42446016 each as bad under the rule alone, while G alone lowers the
+    sum of the final ATE over the 20 from 5,363.6 to 4,617.0 cm (the rule alone 7,025.0, both
+    7,918.6); tum-freiburg2_360_hemisphere's (14.85 -> 24.74 cm) is G's (24.01 alone, 79.15 under
+    the rule alone); advio-11's and zju-A1's come from the two together (advio-11 181.97 cm under
+    G alone and 190.13 under the rule alone, 1,021.47 with both; zju-A1 15.94 and 27.19 alone,
+    89.08 with both, 24.88 with the candidates' change too).
   - The same runs without the candidates' change (b67c3249, the rule and G alone) closed 24
     loops in C++ and 29 in Rust, 9 at a wrong place in each: advio-16's five loops, about 7 m
     apart, two of advio-13's, one of advio-17's, and advio-03's merge. The change leaves
@@ -128,7 +147,9 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
     longest loop-closing step 1.74 -> 2.30 s and 2.06 -> 2.31 s, the longest global BA in its
     thread 9.1 -> 9.7 s and 14.4 -> 8.2 s. advio-19's, zju-A1's and zju-B6's merges took 1.7 s,
     1.0 and 1.8 s, and none (C++), and 2.3 s, 1.0 and 2.0 s, and 0.8 s (Rust), their runs peaking
-    at 451, 657 and 131 MiB and 633, 765 and 278 MiB.
+    at 451, 657 and 131 MiB and 633, 765 and 278 MiB. Not attributed: the median moves with the
+    candidates' change too (15.30 -> 20.46 cm in C++, 19.30 -> 29.95 in Rust), by more than the
+    two languages' develop runs differ, but these are single runs, which their timing moves.
   - The test set's 19 RGB-D sequences (seed 0), inline, C++ and Rust alike to 0.01 cm in every
     final ATE but develop's tum-freiburg2_360_hemisphere (11.31 and 12.09 cm): frames tracked
     42,735 -> 42,754; the median share 0.946 in both; the median final ATE over the 18 scored
@@ -140,7 +161,8 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
     arkitscenes-42444946 (15.20 -> 55.70), arkitscenes-42445021 (12.78 -> 14.79),
     arkitscenes-42445028 (2.93 -> 6.70) and arkitscenes-42446016 (4.32 -> 7.88).
     arkitscenes-42444946's last map now merges into its first at a poor pose (the measure: 1.77 m
-    and 166 degrees off, not at a wrong place), as develop's threaded Rust run did too.
+    and 166 degrees off, not at a wrong place), as develop's threaded Rust run did too. Not
+    attributed: no RGB-D run was made of G, the rule or the candidates' change alone.
   - The same, threaded: frames tracked 42,416 -> 42,657 (C++) and 42,702 -> 42,690 (Rust); the
     median share 0.946 in all; the median final ATE 6.40 -> 6.29 cm over the 17 scored in both
     (develop's C++ run of tum-freiburg3_structure_notexture_far failed, its point lives refused
@@ -156,29 +178,38 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
 
 - **The damping's schedules, in every language:** one point, two held cameras, started three
   times too far: each of the first iterations lands where an emulation of GTSAM's search does,
-  the scaled damping's first failing at `λ0`, `2λ0` and `8λ0` before `64λ0` steps.
+  the scaled damping's first failing at `λ0`, `2λ0` and `8λ0` before `64λ0` steps; the field the
+  other damping reads set far off, so each reads its own alone.
 - **The stop, in every language:** decreases growing from small through large, then shrinking:
   with `small_decrease` between the second and the third, the solve ends at the third small one
-  in a row after the large ones; with every decrease small, after three iterations.
+  in a row after the large ones, later than a count that ignored the reset would, as
+  `small_steps`; with every decrease small, after three iterations.
 - **The filter, in every language:** exactly the near and behind observations left out (the
-  starting error the kept ones'), the point and camera they alone reached and the held camera
-  back bit for bit; a bundle with every observation left out back as given.
+  starting error the kept ones', `left_out` their count), `ended_near` the recount from the
+  result's depths, the point and camera they alone reached and the held camera back bit for bit;
+  a bundle with every observation left out back as given, its 3 counted.
 - **The weld and global BA:** each language's `global_ba_options` and `weld_options`; a merge's
   three BAs recorded in Python, the weld's two by `weld_options`, the global BA by
-  `global_ba_options`, each with `loops.near_fraction`; each compiled backend reads the four
-  settings (H21's rule).
+  `global_ba_options`, each with `loops.min_depth_ratio`; each compiled backend reads the four
+  settings (H21's rule): global BA's against Python with all four moved, and the weld's
+  `loops.min_depth_ratio` against Python with it moved to 0.9, where the weld leaves
+  observations out and the map moves. `loops.min_depth_ratio` is refused outside [0, 1) in every
+  language.
 - **L4, global BA holds a monocular map's scale:** a tenth of the loop room's failing global BA
   (`tests/fixtures/edge/global_ba_slide.json`, 103 keyframes, 537 points, 3,930 observations),
-  on which GTSAM's damping slides the keyframes' centres to a scale of 0.7322 in every language:
-  global BA's solve keeps it within 1% of 1 (0.9968), its final cost 7.3e-5 relative above.
+  on which GTSAM's damping drifts the keyframes' centres along a near-flat valley beside the
+  free scale to a scale of 0.7322 in every language: global BA's solve keeps it within 1% of 1
+  (0.9968), its final cost 7.3e-5 relative above; both solves make the same gauge-free
+  correction (the cameras' mean step over the observations' median depth agrees within 1%).
 - **L8, graphs.json** gains the stereo BA with half its cameras held, the weld's typical case,
   and the global BA's solve and the filter as parity cases; every case holding a camera or a
   pose moved by at most 3.8e-11 in a pose and 1.9e-10 m in a point, now generated from the
-  constant form.
+  constant form. Each case's codes hold the counts too (6 left out in the filter's case).
 - **The rule's default, in every language;** the C++ and Rust culling scene at both rules: at 3
   its first redundant keyframe goes, at 4 every keyframe stays.
 - **The connected keyframes, in every language:** `covisibility.json` gains each keyframe's, by
-  brute force (they differ from its links on 35 of its 52 keyframe rows); every backend and the
+  brute force (they differ from its links on 35 of its first 52 keyframe rows), and a case whose
+  newest keyframe shares no point, with no links and nothing connected; every backend and the
   C++ and Rust natives are held to them.
 - **A keyframe sharing 1 to 14 points with the new one, and so not linked to it, is never a loop
   candidate; sharing none, it is,** in every language: C++ and Rust on the exact scene's map,
@@ -186,7 +217,7 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
   forgotten down to that many points. The links-only exclusion returns it for every count from 1
   to 14. Python's other loop-candidate tests move to the loop room's map, where every keyframe has
   candidates (on the truth map each shares 26 points or more with every other).
-- **The rooms' golden records** are regenerated three times. Global BA's solve changes the loop room
+- **The rooms' golden records** are regenerated four times. Global BA's solve changes the loop room
   alone, alike in every language: its global BA ends after 6 iterations where it ran 10
   (monocular), 10 where 8 (RGB-D) and 9 as before (stereo), its cost 8.1e-6, 1.3e-8 and 4.8e-7
   relative higher; in monocular 10 later frames track a different count of inliers, and the
@@ -197,7 +228,9 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
   1.188 (the damping) -> 1.696 cm (the rule), under the bar's 2 cm; RGB-D 4.674 cm; stereo
   3.636 -> 3.635 cm. The candidates' change changes no decision, no pose and no final ATE in any
   case or language: the three loop rooms' detection summaries alone, by the same counts in every
-  language (candidates tried 274 -> 268 monocular, 27 -> 25 RGB-D, 31 -> 34 stereo).
+  language (candidates tried 274 -> 268 monocular, 27 -> 25 RGB-D, 31 -> 34 stereo). The review
+  panel's fixes change no decision or pose either: the loop rooms' global BA ends as
+  `small_steps` where it read `function`, and every solve record holds its counts (0 in each).
 - **A tolerance moves:** global BA on the exactly observed, nudged loop map ends its 10
   iterations with the poses within 2e-6 of the truth (within 1e-6 under GTSAM's damping), its
   cost 8e-14 of its start: the test takes 3e-6.
