@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from slam_it import backends
-from slam_it.edge import covisibility, database, frames
+from slam_it.edge import covisibility, database
 from slam_it.edge import map as maps
 from slam_it.edge.database import Database, Indexed
 from slam_it.edge.map import Map
@@ -18,7 +18,7 @@ from slam_it.edge.options import Options
 from slam_it.foundations import vocabulary
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
-from tests.edge.conftest import KEYFRAMES, Truth, TwoMaps
+from tests.edge.conftest import KEYFRAMES, LoopKeyframes, Truth, TwoMaps
 from tests.edge.support import OPTIONS
 
 
@@ -187,8 +187,6 @@ def test_a_database_with_a_key_missing_or_extra_is_refused(
 
 BEST_LINK_ONLY = OPTIONS.with_settings({"covisibility.min_points": 1 << 20})
 """Each keyframe linked to the one it shares most with alone: groups of one."""
-
-LoopKeyframes = tuple[list[frames.Frame], list[np.ndarray], Map]
 
 
 def _first_sharing(m: Map, n: int) -> Map:

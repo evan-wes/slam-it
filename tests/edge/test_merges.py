@@ -557,6 +557,35 @@ def test_every_backend_merges_as_python_does(
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_welds_by_its_depth_ratio_as_python_does(backend: str, two: TwoMaps) -> None:
+    """Each core's weld reads ``loops.min_depth_ratio``, as Python's does (H21's rule).
+
+    With the ratio moved to 0.9 and global BA off, so that the weld alone acts: each backend's
+    merged map and records are Python's, the weld leaves observations out where the default
+    leaves none, and the map differs from the default's.
+    """
+    require_function(backend, loops.__name__, "merge")
+    options = OPTIONS.with_settings({"loops.global_ba": False})
+    moved = options.with_settings({"loops.min_depth_ratio": 0.9})
+    found = _found(two)
+    expected, got = (
+        loops.merge(
+            two.active, two.matched, CAMERA, found, mode=_mode(two), options=moved,
+            backend=chosen,
+        )
+        for chosen in ("python", backend)
+    )  # fmt: skip
+    assert_maps_match(got.map, expected.map, GRAPH_TOLERANCE)
+    assert_records_match(got.summary.as_dict(), expected.summary.as_dict(), GRAPH_TOLERANCE)
+    default = loops.merge(
+        two.active, two.matched, CAMERA, found, mode=_mode(two), options=options, backend=backend
+    )
+    assert default.summary.weld.first.left_out == 0 < got.summary.weld.first.left_out
+    same_shape = got.map.pt_xyz.shape == default.map.pt_xyz.shape
+    assert not (same_shape and np.allclose(got.map.pt_xyz, default.map.pt_xyz, rtol=0, atol=1e-9))
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_every_core_refuses_a_merge_it_cannot_make(backend: str, two_rigid: TwoMaps) -> None:
     """Python refuses a keyframe outside its map, or an unknown mode, first; each core does too."""
     require_function(backend, loops.__name__, "merge")

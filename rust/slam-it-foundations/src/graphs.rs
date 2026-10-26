@@ -2580,9 +2580,12 @@ mod tests {
         (residual, jacobian)
     }
 
+    /// GTSAM's `minModelFidelity`: the gain ratio a step must exceed to be accepted.
+    const MIN_MODEL_FIDELITY: f64 = 1e-3;
+
     /// One of GTSAM's Levenberg-Marquardt iterations on the held pair's point, emulated
     /// (`tests/foundations/test_graphs.py`'s `_gtsam_iteration`): trials of
-    /// `(H + lambda I) delta = -g` until the gain ratio passes GTSAM's `minModelFidelity`, 1e-3; a
+    /// `(H + lambda I) delta = -g` until the gain ratio passes `MIN_MODEL_FIDELITY`; a
     /// failed one multiplies the damping by the factor, which Nielsen's schedule doubles; an
     /// accepted one divides it by the factor, or with Nielsen's schedule scales it by
     /// `max(1/3, 1 - (2 rho - 1)^3)` and resets the factor to 2. Takes and returns the point, the
@@ -2602,7 +2605,7 @@ mod tests {
             let predicted = error - 0.5 * (&residual + &jacobian * &step).norm_squared();
             let moved = point + Vector3::new(step[0], step[1], step[2]);
             let ratio = (error - 0.5 * pair_residuals(&moved).0.norm_squared()) / predicted;
-            if ratio > 1e-3 {
+            if ratio > MIN_MODEL_FIDELITY {
                 if nielsen {
                     let scale = (1.0 - (2.0 * ratio - 1.0).powi(3)).max(1.0 / 3.0);
                     return (moved, damping * scale, 2.0);

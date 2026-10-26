@@ -170,7 +170,9 @@ fn a_similarity_has_a_scale_and_a_rigid_part() {
     assert!(gap(&loops::rigid_of(&scaled), &rigid) < 1e-15);
 }
 
-/// The RANSAC budget: `SetRansacParameters(0.99, 15, 300)`.
+/// Global BA's solve: 10 iterations, g2o's damping from `tau` 1e-5, ORB-SLAM3's stop after three
+/// small steps; a welding BA's: GTSAM's own damping and no stop; and the near-plane filter's
+/// default.
 #[test]
 fn global_ba_damps_as_g2o_and_stops_as_orb_slam3_and_the_weld_keeps_gtsam_s_damping() {
     let options = Options::default();
@@ -197,6 +199,7 @@ fn global_ba_damps_as_g2o_and_stops_as_orb_slam3_and_the_weld_keeps_gtsam_s_damp
     assert_eq!(options.loops.min_depth_ratio, 1e-3);
 }
 
+/// The RANSAC budget: `SetRansacParameters(0.99, 15, 300)`.
 #[test]
 fn the_ransac_budget_is_orb_slams() {
     let options = Options::default();

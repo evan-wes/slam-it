@@ -540,13 +540,17 @@ def _point_residuals(point: Array) -> tuple[Array, Array]:
     return np.concatenate(rows), np.vstack(blocks)
 
 
+MIN_MODEL_FIDELITY = 1e-3
+"""GTSAM's ``minModelFidelity``: the gain ratio a step must exceed to be accepted."""
+
+
 def _gtsam_iteration(
     point: Array, damping: float, factor: float, *, nielsen: bool, limit: float
 ) -> tuple[Array, float, float]:
     """One of GTSAM's Levenberg-Marquardt iterations on the held pair's point, emulated.
 
     ``LevenbergMarquardtOptimizer::tryLambda``'s search: each trial solves ``(H + λI) δ = -g``,
-    and is accepted when the error falls with a gain ratio over ``minModelFidelity`` (1e-3); a
+    and is accepted when the error falls with a gain ratio over :data:`MIN_MODEL_FIDELITY`; a
     failed trial multiplies ``λ`` by the factor, which Nielsen's schedule then doubles; an
     accepted one divides ``λ`` by the factor, or with Nielsen's schedule multiplies it by
     ``max(1/3, 1 - (2ρ - 1)³)`` and resets the factor to 2. Returns the point, ``λ`` and the
@@ -561,7 +565,7 @@ def _gtsam_iteration(
         predicted = error - 0.5 * linear @ linear
         moved, _ = _point_residuals(point + step)
         ratio = float((error - 0.5 * moved @ moved) / predicted)
-        if ratio > 1e-3:
+        if ratio > MIN_MODEL_FIDELITY:
             if nielsen:
                 return point + step, damping * max(1 / 3, 1 - (2 * ratio - 1) ** 3), 2.0
             return point + step, damping / factor, factor

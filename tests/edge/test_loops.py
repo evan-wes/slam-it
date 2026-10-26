@@ -794,17 +794,34 @@ def _centres_scale(before: NDArray[np.float64], after: NDArray[np.float64]) -> f
     return alignment.align(before[:, :3, 3], after[:, :3, 3], with_scale=True).scale
 
 
+def _shape_ratio(
+    poses: NDArray[np.float64], points: NDArray[np.float64], bundle: dict[str, Any]
+) -> float:
+    """Return a map's gauge-free shape: its cameras' mean step over its observations' median depth.
+
+    A similarity of the whole map (the monocular gauge) leaves it unchanged.
+    """
+    step = float(np.mean(np.linalg.norm(np.diff(poses[:, :3, 3], axis=0), axis=1)))
+    cameras, ids = bundle["cameras"], bundle["point_ids"]
+    depth = np.einsum("mi,mi->m", poses[cameras, :3, 2], points[ids] - poses[cameras, :3, 3])
+    return step / float(np.median(depth))
+
+
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 def test_global_ba_holds_a_monocular_map_s_scale(backend: str) -> None:
     """Global BA's solve keeps a monocular map's scale where GTSAM's damping let it slide (L4).
 
-    A monocular global BA holding one keyframe has a free scale: its cost does not change along
-    it, so nothing but the damping holds it. From GTSAM's absolute ``λ`` of 1e-5, divided by 10
-    a step, the solve slides along it (0.7322 here, 0.5508 on the whole problem); from g2o's,
-    scaled to the Hessian's largest diagonal entry, with ORB-SLAM3's stop and the near-plane
-    filter (:func:`slam_it.edge.loops.global_ba_options`), it stays within
-    :data:`SCALE_TOLERANCE`. The damping does not hold the scale as a constraint would; it
-    holds it in practice (0.3.17.2's review panel, L4).
+    A monocular global BA holding one keyframe has a free scale, the exact gauge, which no
+    Levenberg-Marquardt step moves along (each step is orthogonal to it); beside it lies a
+    near-flat valley, the cameras and the well-constrained points rescaling while far, weakly
+    constrained points barely move, at almost no cost. From GTSAM's absolute ``λ`` of 1e-5,
+    divided by 10 a step, the solve drifts along that valley (the centres' scale 0.7322 here,
+    0.5508 on the whole problem); from g2o's, scaled to the Hessian's largest diagonal entry,
+    with ORB-SLAM3's stop and the near-plane filter
+    (:func:`slam_it.edge.loops.global_ba_options`), the damping holds those near-null directions
+    and the scale stays within :data:`SCALE_TOLERANCE` (0.3.17.2's review panel, L4; the
+    0.3.18.0 panel's L2). Both make the same gauge-free correction (:func:`_shape_ratio` agrees
+    within 1% and moves by over 10%) and end at the same cost: the difference is drift alone.
     """
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     bundle = _slide_problem()
@@ -818,8 +835,13 @@ def test_global_ba_holds_a_monocular_map_s_scale(backend: str) -> None:
         **bundle, options=graphs.Options(max_iterations=settings.loops.global_iterations),
         backend=chosen,
     )  # fmt: skip
+    # Far past the tolerance, so the test tells the two dampings apart (0.7322 measured).
     assert _centres_scale(bundle["poses"], slid.poses) < 1.0 - 20 * SCALE_TOLERANCE
     assert slid.summary.final_error == pytest.approx(held.summary.final_error, rel=1e-3)
+    start = _shape_ratio(bundle["poses"], bundle["points"], bundle)
+    corrected = _shape_ratio(held.poses, held.points, bundle)
+    assert _shape_ratio(slid.poses, slid.points, bundle) == pytest.approx(corrected, rel=1e-2)
+    assert abs(corrected / start - 1.0) > 0.1
 
 
 def test_global_ba_damps_as_g2o_and_stops_as_orb_slam3_and_the_weld_does_neither() -> None:
