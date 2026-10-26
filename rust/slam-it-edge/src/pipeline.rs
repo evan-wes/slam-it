@@ -199,6 +199,10 @@ pub struct LoopSummary {
 /// # Returns
 ///
 /// The correction, the matched keyframe's run id first.
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "moved into the record it returns"
+)]
 fn corrected(atlas: &Atlas, summary: CorrectionSummary) -> Corrected {
     let run_ids = [atlas.run_id(summary.matched), atlas.run_id(summary.current)];
     Corrected { summary, run_ids }

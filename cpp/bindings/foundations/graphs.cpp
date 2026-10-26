@@ -3,7 +3,8 @@
 ///
 /// Each solve takes its arrays and options by keyword, as the Python `Implementation`
 /// Protocol names them, and returns a dict: its arrays, and the summary's fields
-/// (`initial_error`, `final_error`, `iterations`, `termination` as its code in `codes()`).
+/// (`initial_error`, `final_error`, `iterations`, `termination` as its code in `codes()`,
+/// `left_out`, `ended_near`).
 #include "slam_it/foundations/graphs.hpp"
 
 #include <nanobind/nanobind.h>
@@ -19,6 +20,7 @@
 
 #include "common.hpp"
 #include "foundations/foundations.hpp"
+#include "foundations/graphs_crossing.hpp"
 
 namespace nb = nanobind;
 
@@ -34,9 +36,9 @@ using IndexPairsIn =
     nb::ndarray<const std::int64_t, nb::shape<-1, 2>, nb::c_contig, nb::device::cpu>;
 
 /// @brief `graphs::Options`' fields, as `graphs.Options.as_dict` names them.
-constexpr std::array<const char*, 7> kOptionKeys = {
+constexpr std::array<const char*, 8> kOptionKeys = {
     "max_iterations", "initial_damping", "relative_tolerance", "absolute_tolerance",
-    "scaled_damping", "small_steps",     "small_decrease"};
+    "scaled_damping", "damping_scale",   "small_steps",        "small_decrease"};
 
 /// @brief Read a solve's options from `graphs.Options.as_dict`.
 /// @param options The dict.
@@ -49,18 +51,9 @@ graphs::Options read_options(const nb::dict& options) {
                          .relative_tolerance = nb::cast<double>(options["relative_tolerance"]),
                          .absolute_tolerance = nb::cast<double>(options["absolute_tolerance"]),
                          .scaled_damping = nb::cast<bool>(options["scaled_damping"]),
+                         .damping_scale = nb::cast<double>(options["damping_scale"]),
                          .small_steps = nb::cast<int>(options["small_steps"]),
                          .small_decrease = nb::cast<double>(options["small_decrease"])};
-}
-
-/// @brief Write a summary's fields into a result dict.
-/// @param summary The summary.
-/// @param out The dict.
-void write_summary(const graphs::Summary& summary, nb::dict& out) {
-  out["initial_error"] = summary.initial_error;
-  out["final_error"] = summary.final_error;
-  out["iterations"] = summary.iterations;
-  out["termination"] = static_cast<int>(summary.termination);
 }
 
 /// @brief A 1D int64 array viewed as a span.
@@ -92,7 +85,7 @@ nb::dict codes() {
 /// @param fixed The poses held fixed.
 /// @param similarity Optimise Sim(3) rather than SE(3).
 /// @param options `graphs.Options.as_dict()`.
-/// @return `{"poses", "initial_error", "final_error", "iterations", "termination"}`.
+/// @return `{"poses"}` and the summary's fields (`write_graph_summary`).
 /// @throws CoreError for an invalid graph or a failed solve.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
 nb::dict optimize_pose_graph(const BatchIn<4, 4>& poses, const IndexPairsIn& edges,
@@ -106,7 +99,7 @@ nb::dict optimize_pose_graph(const BatchIn<4, 4>& poses, const IndexPairsIn& edg
       starts, pairs, measured, span_of(fixed), similarity, read_options(options)));
   nb::dict out;
   out["poses"] = poses_array(result.poses);
-  write_summary(result.summary, out);
+  write_graph_summary(result.summary, out);
   return out;
 }
 
@@ -122,8 +115,7 @@ nb::dict optimize_pose_graph(const BatchIn<4, 4>& poses, const IndexPairsIn& edg
 /// @param fixed_scale Hold the scale at 1.
 /// @param huber The Huber loss's threshold, or None for no robust loss.
 /// @param options `graphs.Options.as_dict()`.
-/// @return `{"similarity", "chi2", "initial_error", "final_error", "iterations",
-///         "termination"}`.
+/// @return `{"similarity", "chi2"}` and the summary's fields (`write_graph_summary`).
 /// @throws CoreError for invalid matches or a failed solve; std::invalid_argument for an
 ///         unknown model code.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
@@ -140,7 +132,7 @@ nb::dict refine_similarity(const Matrix4In& similarity, const BatchIn<3>& points
   nb::dict out;
   out["similarity"] = matrix_array(result.similarity);
   out["chi2"] = matrix_array(result.chi2);
-  write_summary(result.summary, out);
+  write_graph_summary(result.summary, out);
   return out;
 }
 
@@ -159,7 +151,7 @@ nb::dict refine_similarity(const Matrix4In& similarity, const BatchIn<3>& points
 /// @param huber Each observation's Huber threshold, or None for no robust loss.
 /// @param near The fraction of the median depth nearer than which an observation is left out.
 /// @param options `graphs.Options.as_dict()`.
-/// @return `{"poses", "points", "initial_error", "final_error", "iterations", "termination"}`.
+/// @return `{"poses", "points"}` and the summary's fields (`write_graph_summary`).
 /// @throws CoreError for an invalid bundle or a failed solve; std::invalid_argument for an
 ///         unknown model code.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
@@ -187,7 +179,7 @@ nb::dict bundle_adjust(const BatchIn<4, 4>& poses, const BatchIn<3>& points,
   nb::dict out;
   out["poses"] = poses_array(result.poses);
   out["points"] = matrix_array(result.points);
-  write_summary(result.summary, out);
+  write_graph_summary(result.summary, out);
   return out;
 }
 

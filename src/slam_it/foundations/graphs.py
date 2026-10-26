@@ -42,22 +42,26 @@ cameras until nothing was left to cost, and the map collapsed (the loop room, 20
 every language stops by the same rule (:class:`Termination`), and a ``stop`` check between
 iterations can end it, as g2o's ``setForceStopFlag`` ends ORB-SLAM's. Each ``iterate()`` linearises,
 then raises its damping ``λ`` until a step lowers the error, or gives up at its upper bound.
-By default the damping is GTSAM's own: ``λ`` from an absolute 1e-5, divided by 10 after a step
-that lowers the error, multiplied by 10 after one that does not, up to 1e5. With
-:attr:`Options.scaled_damping` it is g2o's, as ORB-SLAM3's BAs run it: ``λ`` from ``τ`` times
-the largest diagonal entry of the normal equations, by Nielsen's schedule; and
-:attr:`Options.small_steps` adds ORB-SLAM3's own stop, three iterations in a row each lowering
-the error by under 0.1% (since 0.3.18.0: loop closing's global BA takes both, its welding BA
-neither). An error GTSAM raises while solving is
+By default the damping is GTSAM's own: ``λ`` from :attr:`Options.initial_damping` (an absolute
+1e-5), divided by 10 after a step that lowers the error, multiplied by 10 after one that does
+not, up to 1e5. With :attr:`Options.scaled_damping` it is g2o's, as ORB-SLAM3's BAs run it:
+``λ`` from :attr:`Options.damping_scale` (``τ``) times the largest diagonal entry of the normal
+equations, by Nielsen's schedule; and :attr:`Options.small_steps` adds ORB-SLAM3's own stop, a
+number of iterations in a row each lowering the error by under a fraction of it
+(:attr:`Termination.SMALL_STEPS`). An error GTSAM raises while solving is
 :class:`~slam_it.foundations.errors.NotConvergedError`, as the compiled backends report it.
 
-**Bundle adjustment can leave out observations near a camera's plane** (``near``, since
-0.3.18.0): each whose point, at the start, is behind its camera or in front of it nearer than
-``near`` times the median depth of every observation. Real maps hold a few points 1e-9 to 1e-4
-of the median depth in front of a camera, whose ``(f/z)²`` makes the Hessian's largest diagonal
-entry 1e13 to 1e23: each damping then either stalls the solve or, scaled to that entry, takes no
-step. ORB-SLAM3's global BA has no such filter; its local and welding BAs drop an observation
-behind its camera only after a solve (``isDepthPositive``).
+**Bundle adjustment can leave out observations near a camera's plane** (``near``): each whose
+point, at the start, is behind its camera or in front of it nearer than ``near`` times the
+median depth of every observation. The test is made once, at the start: a kept observation's
+point may still cross its camera's plane during the solve, where it costs GTSAM's constant (the
+paragraph above) and no longer moves. The summary counts both: the observations left out
+(:attr:`Summary.left_out`) and the kept ones whose point ends behind its camera or nearer than
+the limit (:attr:`Summary.ended_near`). A point a few millionths of the median depth in front of
+a camera makes ``(f/z)²``, the Hessian's largest diagonal entry, so large that each damping
+either stalls the solve or, scaled to that entry, takes no step. ORB-SLAM3's global BA has no
+such filter; its local and welding BAs drop an observation behind its camera only after a solve
+(``isDepthPositive``).
 
 **Held cameras and poses are constants,** never variables, as g2o's fixed vertices hold
 ORB-SLAM's (``setFixed``): a held camera's observation is a factor on its point alone (through a
@@ -85,7 +89,7 @@ from __future__ import annotations
 import enum
 import math
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, NamedTuple, Protocol
 
 import gtsam
@@ -140,8 +144,9 @@ class Termination(enum.StrEnum):
     """Why a solve stopped."""
 
     FUNCTION = "function"
-    """Converged: an iteration lowered the error by no more than the tolerances, or left it
-    at zero."""
+    """Converged: an iteration lowered the error by no more than the tolerances, or the error
+    is zero; or there was nothing to solve (every pose of a pose graph held, or every
+    observation of a bundle left out, :attr:`Summary.left_out`), after no iteration."""
     MAX_ITERATIONS = "max_iterations"
     """Not converged: ``max_iterations`` iterations ran."""
     DAMPING_LIMIT = "damping_limit"
@@ -149,9 +154,12 @@ class Termination(enum.StrEnum):
     (also how a solve at its minimum ends when both tolerances are 0)."""
     STOPPED = "stopped"
     """Not converged: stopped from outside, between iterations (a ``stop`` check)."""
+    SMALL_STEPS = "small_steps"
+    """Converged: :attr:`Options.small_steps` iterations in a row each lowered the error by less
+    than :attr:`Options.small_decrease` times it (ORB-SLAM3's stop)."""
 
 
-CONVERGED = frozenset({Termination.FUNCTION})
+CONVERGED = frozenset({Termination.FUNCTION, Termination.SMALL_STEPS})
 """The terminations that count as converged."""
 
 
@@ -165,8 +173,9 @@ class Options:
         Iterations at most (ORB-SLAM's ``optimize(n)``): each linearises once and tries
         dampings until a step lowers the error. At least 1.
     initial_damping : float
-        Levenberg-Marquardt's first ``λ``, added to the normal equations' diagonal (GTSAM's
-        ``lambdaInitial``; ORB-SLAM's essential graph sets g2o's to 1e-16). Positive.
+        GTSAM's own damping's first ``λ``, absolute: added to the normal equations' diagonal as
+        it is (GTSAM's ``lambdaInitial``; ORB-SLAM's essential graph sets g2o's to 1e-16).
+        Read only without ``scaled_damping``. Positive.
     relative_tolerance, absolute_tolerance : float
         An iteration that lowers the error by at most ``relative_tolerance`` times it, or by at
         most ``absolute_tolerance``, ends the solve as converged. Non-negative. The default
@@ -178,20 +187,23 @@ class Options:
         Which damping the solve follows. False, GTSAM's own: ``λ`` starts at
         ``initial_damping``, is divided by :data:`ABSOLUTE_DAMPING_FACTOR` after a step that
         lowers the error and multiplied by it after one that does not, up to
-        :data:`ABSOLUTE_DAMPING_LIMIT`. True, g2o's
-        (``OptimizationAlgorithmLevenberg``, which ORB-SLAM3's BAs run): ``λ`` starts at
-        ``initial_damping`` times the largest diagonal entry of the normal equations at the start
-        (g2o's ``computeLambdaInit``, ``initial_damping`` its ``τ``) and follows Nielsen's
+        :data:`ABSOLUTE_DAMPING_LIMIT`. True, g2o's (``OptimizationAlgorithmLevenberg``, which
+        ORB-SLAM3's BAs run): ``λ`` starts at ``damping_scale`` times the largest diagonal entry
+        of the normal equations at the start (g2o's ``computeLambdaInit``) and follows Nielsen's
         schedule (:data:`SCALED_DAMPING_FACTOR`) up to :data:`SCALED_DAMPING_LIMIT`. A BA's
-        Hessian holds up to 1e11 on its diagonal (advio-20's global BA: 4e8 to 2.5e11 on its
-        cameras' translations), so GTSAM's absolute ``λ`` neither holds a monocular BA's free
-        scale nor, at its bound, turns a step towards the gradient.
+        Hessian can hold 1e11 on its diagonal, where an absolute ``λ`` of 1e-5 neither holds a
+        monocular BA's free scale nor, at its bound of 1e5, turns a step towards the gradient.
+    damping_scale : float
+        g2o's ``τ``: with ``scaled_damping``, the first ``λ`` is this times the largest diagonal
+        entry of the normal equations at the start (g2o's and ORB-SLAM3's 1e-5). Read only with
+        ``scaled_damping``. Positive.
     small_steps : int
         End the solve as converged once this many iterations in a row have each lowered the
         error by less than ``small_decrease`` times it (ORB-SLAM3's g2o, 3; Mur-Artal's "stop
         criterium", ``optimization_algorithm_levenberg.cpp``); 0, never. Non-negative.
     small_decrease : float
-        See ``small_steps`` (ORB-SLAM3's 1e-3). Positive.
+        The fraction of the error an iteration must lower it by not to count as a small step
+        towards ``small_steps`` (ORB-SLAM3's 1e-3). Positive.
     """
 
     max_iterations: int = 10
@@ -199,6 +211,7 @@ class Options:
     relative_tolerance: float = 1e-10
     absolute_tolerance: float = 0.0
     scaled_damping: bool = False
+    damping_scale: float = 1e-5
     small_steps: int = 0
     small_decrease: float = 1e-3
 
@@ -220,7 +233,7 @@ class Options:
             raise InvalidInputError(f"small_steps: expected >= 0, got {self.small_steps}")
         if not isinstance(self.scaled_damping, bool):
             raise InvalidInputError("scaled_damping: expected a bool")
-        for name in ("initial_damping", "small_decrease"):
+        for name in ("initial_damping", "damping_scale", "small_decrease"):
             value = getattr(self, name)
             if not (math.isfinite(value) and value > 0.0):
                 raise InvalidInputError(f"{name}: expected > 0, got {value}")
@@ -250,6 +263,14 @@ class Summary:
         Why the solve stopped.
     converged : bool
         Whether ``termination`` is one of :data:`CONVERGED`.
+    left_out : int
+        A bundle adjustment's observations left out at the start (:func:`bundle_adjust`'s
+        ``near``): behind their camera or nearer than ``near`` times the median depth. 0 for
+        another solve.
+    ended_near : int
+        A bundle adjustment's kept observations whose point ends behind its camera or nearer than
+        that limit (behind, with ``near`` 0): those that crossed it during the solve, where they
+        cost a constant. 0 for another solve.
     """
 
     initial_error: float
@@ -257,6 +278,8 @@ class Summary:
     iterations: int
     termination: Termination
     converged: bool
+    left_out: int = 0
+    ended_near: int = 0
 
 
 @dataclass(frozen=True)
@@ -570,7 +593,7 @@ def similarity_residuals(  # noqa: PLR0913, PLR0917 -- the match, its camera, th
 # --- the solve ----------------------------------------------------------------------------
 
 
-def largest_hessian_diagonal(graph: gtsam.NonlinearFactorGraph, values: gtsam.Values) -> float:
+def _largest_hessian_diagonal(graph: gtsam.NonlinearFactorGraph, values: gtsam.Values) -> float:
     """Return the largest diagonal entry of a graph's normal equations ``JᵀJ`` at `values`.
 
     Each factor linearised as GTSAM linearises it (whitened, a robust loss's weight applied), each
@@ -619,9 +642,9 @@ def _params(
         params.setlambdaFactor(ABSOLUTE_DAMPING_FACTOR)
         params.setlambdaUpperBound(ABSOLUTE_DAMPING_LIMIT)
         return params
-    largest = largest_hessian_diagonal(graph, values)
+    largest = _largest_hessian_diagonal(graph, values)
     # With no gradient anywhere (every Jacobian zero), λ cannot be scaled to it: its τ alone.
-    params.setlambdaInitial(options.initial_damping * (largest if largest > 0.0 else 1.0))
+    params.setlambdaInitial(options.damping_scale * (largest if largest > 0.0 else 1.0))
     params.setlambdaFactor(SCALED_DAMPING_FACTOR)
     params.setUseFixedLambdaFactor(False)
     params.setlambdaUpperBound(SCALED_DAMPING_LIMIT)
@@ -673,7 +696,7 @@ def _solve(
             break
         small = small + 1 if decrease < options.small_decrease * previous else 0
         if options.small_steps and small >= options.small_steps:
-            termination = Termination.FUNCTION
+            termination = Termination.SMALL_STEPS
             break
     if current == 0.0:
         termination = Termination.FUNCTION
@@ -693,8 +716,8 @@ def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Su
     Parameters
     ----------
     raw : dict
-        ``initial_error``, ``final_error``, ``iterations`` and ``termination`` (an index into
-        ``codes["graphs_termination"]``).
+        ``initial_error``, ``final_error``, ``iterations``, ``termination`` (an index into
+        ``codes["graphs_termination"]``), ``left_out`` and ``ended_near``.
     codes : dict of str to list of str
         The backend's enum names in code order (its ``codes()``).
 
@@ -710,6 +733,8 @@ def summary_from_backend(raw: dict[str, Any], codes: dict[str, list[str]]) -> Su
         iterations=int(raw["iterations"]),
         termination=termination,
         converged=termination in CONVERGED,
+        left_out=int(raw["left_out"]),
+        ended_near=int(raw["ended_near"]),
     )
 
 
@@ -1205,45 +1230,51 @@ def _pinhole_factors(
     return build
 
 
-def kept_observations(
-    poses: Array, points: Array, cameras: IntArray, point_ids: IntArray, near: float
-) -> NDArray[np.bool_]:
-    """Return which observations a bundle adjustment keeps (:func:`bundle_adjust`'s `near`).
+def _depths(poses: Array, points: Array, cameras: IntArray, point_ids: IntArray) -> Array:
+    """Return each observation's depth, its point in front of its camera along the optical axis.
 
-    With `near` 0, every one. Otherwise those whose point, at the start, is in front of its
-    camera and no nearer than `near` times the median of every observation's depth: the
-    ``⌊M/2⌋``-th smallest of the M, counting from 0, as every language takes it. Each depth is
     ``R[0, 2] dx + R[1, 2] dy + R[2, 2] dz``, summed in that order, ``(dx, dy, dz)`` the point less
-    the camera's centre, so that every language finds the same median.
-
-    Parameters
-    ----------
-    poses : ndarray of float64, shape (C, 4, 4)
-        Each camera's ``T_world_cam``.
-    points : ndarray of float64, shape (P, 3)
-        Each point, in the world.
-    cameras, point_ids : ndarray of int64, shape (M,)
-        Each observation's camera and point, M >= 1.
-    near : float
-        The fraction of the median depth, non-negative.
-
-    Returns
-    -------
-    ndarray of bool, shape (M,)
-        Whether each observation is kept.
+    the camera's centre, so that every language finds the same depths.
     """
-    if near == 0.0:
-        return np.ones(cameras.shape[0], dtype=np.bool_)
     rotation = poses[cameras, :3, :3]
     offset = points[point_ids] - poses[cameras, :3, 3]
-    depth = (
+    return np.asarray(
         rotation[:, 0, 2] * offset[:, 0]
         + rotation[:, 1, 2] * offset[:, 1]
-        + rotation[:, 2, 2] * offset[:, 2]
+        + rotation[:, 2, 2] * offset[:, 2],
+        dtype=np.float64,
     )
+
+
+def _kept_observations(
+    poses: Array, points: Array, cameras: IntArray, point_ids: IntArray, near: float
+) -> tuple[NDArray[np.bool_], float]:
+    """Return which observations a bundle adjustment keeps, and the depth limit (`near`'s).
+
+    With `near` 0, every one, and a limit of 0. Otherwise the limit is `near` times the median
+    of every observation's depth (:func:`_depths`) at the start, the ``⌊M/2⌋``-th smallest of the
+    M counting from 0, as every language takes it; and those are kept whose depth is positive and
+    not below it. M >= 1.
+    """
+    if near == 0.0:
+        return np.ones(cameras.shape[0], dtype=np.bool_), 0.0
+    depth = _depths(poses, points, cameras, point_ids)
     middle = depth.shape[0] // 2
-    median = float(np.partition(depth, middle)[middle])
-    return np.asarray((depth > 0.0) & ~(depth < near * median), dtype=np.bool_)
+    limit = near * float(np.partition(depth, middle)[middle])
+    return np.asarray((depth > 0.0) & ~(depth < limit), dtype=np.bool_), limit
+
+
+def _ended_near(  # noqa: PLR0913, PLR0917 -- the solution, the observations, which and the limit
+    poses: Array,
+    points: Array,
+    cameras: IntArray,
+    point_ids: IntArray,
+    kept: NDArray[np.bool_],
+    limit: float,
+) -> int:
+    """Return how many kept observations' points end behind their camera or below the limit."""
+    depth = _depths(poses, points, cameras[kept], point_ids[kept])
+    return int(np.count_nonzero(~(depth > 0.0) | (depth < limit)))
 
 
 def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
@@ -1268,7 +1299,8 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
     Only the observations `near` keeps take part, and only the points and free cameras they
     reach are solved; the rest come back as given.
     """
-    kept = kept_observations(poses, points, cameras, point_ids, near)
+    kept, limit = _kept_observations(poses, points, cameras, point_ids, near)
+    left_out = int(np.count_nonzero(~kept))
     held = {int(c) for c in fixed}
     solved_cameras = {int(c) for c in cameras[kept]} - held
     solved_points = {int(p) for p in point_ids[kept]}
@@ -1279,6 +1311,7 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
             iterations=0,
             termination=Termination.FUNCTION,
             converged=True,
+            left_out=left_out,
         )
         return Adjustment(poses=poses.copy(), points=points.copy(), summary=nothing)
     graph = gtsam.NonlinearFactorGraph()
@@ -1324,7 +1357,9 @@ def _bundle(  # noqa: PLR0913, PLR0917 -- the problem, its camera and the solve
         out_poses[c] = np.asarray(solved.atPose3(c).matrix(), np.float64)
     for p in solved_points:
         out_points[p] = np.asarray(solved.atPoint3(first_point + p), dtype=np.float64)
-    return Adjustment(poses=out_poses, points=out_points, summary=summary)
+    ended = _ended_near(out_poses, out_points, cameras, point_ids, kept, limit)
+    counted = replace(summary, left_out=left_out, ended_near=ended)
+    return Adjustment(poses=out_poses, points=out_points, summary=counted)
 
 
 def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options, backend
@@ -1356,10 +1391,12 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
     it, and the damping holds it along the ray. With `huber`, each observation's whitened error
     passes through a Huber loss at its threshold (GTSAM's ``mEstimator::Huber``), as ORB-SLAM's
     local and welding BAs weigh theirs (``RobustKernelHuber``). With `near`, the observations
-    near their camera's plane are left out (the module docstring; :func:`kept_observations`):
-    only the points and free cameras the others reach are solved, the rest coming back as
-    given, and the summary's errors are the kept observations'; with none kept, nothing is
-    solved, and the summary is 0 iterations, converged, with errors of 0.
+    near their camera's plane at the start are left out (the module docstring): only the points
+    and free cameras the others reach are solved, the rest coming back as given, and the
+    summary's errors are the kept observations'; with none kept, nothing is solved, and the
+    summary is 0 iterations, converged (:attr:`Termination.FUNCTION`), with errors of 0. The
+    summary counts the observations left out and the kept ones whose point ends behind its
+    camera or nearer than the limit (:attr:`Summary.left_out`, :attr:`Summary.ended_near`).
 
     Parameters
     ----------
@@ -1388,8 +1425,8 @@ def bundle_adjust(  # noqa: PLR0913, PLR0917 -- the problem, its camera, options
         no robust loss).
     near : float, optional
         Leave out each observation whose point, at the start, is behind its camera or nearer
-        than this fraction of the median depth, finite and non-negative (default 0: none left
-        out; loop closing's global and welding BAs pass ``loops.near_fraction``, 1e-3).
+        than this fraction of the median depth (the ``⌊M/2⌋``-th smallest of the M, counting from
+        0), finite and non-negative (default 0: none left out).
     options : Options, optional
         How the solve runs (default: :class:`Options`'s).
     stop : callable, optional

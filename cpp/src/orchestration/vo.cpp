@@ -513,7 +513,9 @@ Result<eval::runs::JsonValue> graph_solve_json(const foundations::graphs::Summar
   return nested({{"initial_error", s.initial_error},
                  {"final_error", s.final_error},
                  {"iterations", static_cast<std::int64_t>(s.iterations)},
-                 {"termination", name_json(foundations::graphs::name(s.termination))}});
+                 {"termination", name_json(foundations::graphs::name(s.termination))},
+                 {"left_out", s.left_out},
+                 {"ended_near", s.ended_near}});
 }
 
 /// @brief A loop search's summary as JSON (`slam_it.edge.loops.DetectionSummary.as_dict`).

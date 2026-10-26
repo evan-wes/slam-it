@@ -456,7 +456,7 @@ fn detection_dict<'py>(py: Python<'py>, d: &DetectionSummary) -> PyResult<Bound<
 ///
 /// # Returns
 ///
-/// Its errors, iterations and termination code.
+/// Its errors, iterations, termination code and a bundle adjustment's counts.
 ///
 /// # Errors
 ///
@@ -470,6 +470,8 @@ fn solve_dict<'py>(py: Python<'py>, summary: &graphs::Summary) -> PyResult<Bound
         "termination",
         encode(&Termination::ALL, summary.termination)?,
     )?;
+    out.set_item("left_out", to_i64(summary.left_out))?;
+    out.set_item("ended_near", to_i64(summary.ended_near))?;
     Ok(out)
 }
 

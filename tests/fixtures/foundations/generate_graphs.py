@@ -83,7 +83,7 @@ TOLERANCES = {
     },
     "codes": {
         "comparison": "exact", "rtol": 0.0, "atol": 0.0,
-        "reason": "iterations and termination: the backends' solves step alike",
+        "reason": "iterations, termination and counts: the backends' solves step alike",
     },
 }  # fmt: skip
 """Each field's policy (``tests.conftest.assert_matches_fixture``)."""
@@ -116,10 +116,15 @@ def _json(value: Any) -> Any:  # noqa: ANN401 -- any JSON-able value
 
 
 def _summary(summary: graphs.Summary) -> dict[str, Any]:
-    """Return a solve's summary as the fixture holds it: its errors and its codes."""
+    """Return a solve's summary as the fixture holds it: its errors and its codes (the counts)."""
     return {
         "errors": [summary.initial_error, summary.final_error],
-        "codes": {"iterations": summary.iterations, "termination": str(summary.termination)},
+        "codes": {
+            "iterations": summary.iterations,
+            "termination": str(summary.termination),
+            "left_out": summary.left_out,
+            "ended_near": summary.ended_near,
+        },
     }
 
 

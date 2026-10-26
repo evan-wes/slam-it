@@ -1346,12 +1346,18 @@ class CorrectionSummary:
 
 
 def _solve_record(summary: graphs.Summary) -> dict[str, Any]:
-    """Return a solve's summary as JSON values."""
+    """Return a solve's summary as JSON values.
+
+    Its errors, iterations and termination, and a bundle adjustment's counts (``left_out``,
+    ``ended_near``; 0 for the essential graph).
+    """
     return {
         "initial_error": summary.initial_error,
         "final_error": summary.final_error,
         "iterations": summary.iterations,
         "termination": summary.termination.value,
+        "left_out": summary.left_out,
+        "ended_near": summary.ended_near,
     }
 
 
@@ -1630,8 +1636,8 @@ def global_ba_options(options: Options) -> graphs.Options:
     loops = options.loops
     return graphs.Options(
         max_iterations=loops.global_iterations,
-        initial_damping=loops.global_damping,
         scaled_damping=True,
+        damping_scale=loops.global_damping,
         small_steps=loops.global_small_steps,
         small_decrease=loops.global_small_decrease,
     )

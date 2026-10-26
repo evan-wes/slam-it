@@ -2690,8 +2690,8 @@ pub fn essential_graph(
 pub fn global_ba_options(options: &Options, stop: &Stop) -> graphs::Options {
     graphs::Options {
         max_iterations: options.loops.global_iterations,
-        initial_damping: options.loops.global_damping,
         scaled_damping: true,
+        damping_scale: options.loops.global_damping,
         small_steps: options.loops.global_small_steps,
         small_decrease: options.loops.global_small_decrease,
         stop: stop.clone(),

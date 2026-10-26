@@ -578,7 +578,8 @@ def test_the_damping_starts_and_moves_as_its_schedule_says(backend: str, scaled:
     One point, two held cameras, the point started three times too far: each iteration's result,
     one to four, is the emulated search's (:func:`_gtsam_iteration`). The scaled damping's first
     iteration fails three trials, at ``λ0``, ``2 λ0`` and ``8 λ0``, before ``64 λ0`` steps, and its
-    later ones follow the gain ratio; GTSAM's own starts at ``τ`` and moves by 10.
+    later ones follow the gain ratio; GTSAM's own starts at ``τ`` and moves by 10. The field the
+    other damping reads is set far off (1.0), so each solve shows it reads its own alone.
     """
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     start = FAR_POINT[1]
@@ -596,7 +597,10 @@ def test_the_damping_starts_and_moves_as_its_schedule_says(backend: str, scaled:
             HELD_PAIR, start[None], [0, 1], [0, 0], _seen_from_held_pair(), [np.nan, np.nan],
             [1.0, 1.0], model=PINHOLE[0], intrinsics=PINHOLE[1], bf=BF, fixed=[0, 1],
             options=graphs.Options(
-                max_iterations=iterations, initial_damping=tau, scaled_damping=scaled
+                max_iterations=iterations,
+                initial_damping=1.0 if scaled else tau,
+                damping_scale=tau if scaled else 1.0,
+                scaled_damping=scaled,
             ),
             backend=chosen,
         )  # fmt: skip
@@ -632,14 +636,15 @@ def test_small_steps_in_a_row_end_a_solve_and_a_large_one_resets_their_count(
     then shrink as the solve converges. Each iteration's error is read from solves capped there;
     ``small_decrease`` is set between the second decrease and the third, so the first two count
     as small and the third resets them: the solve ends at the third small decrease in a row after
-    it, converged, its error the capped solve's; without the reset it would end at the first.
+    it, converged (:attr:`~slam_it.foundations.graphs.Termination.SMALL_STEPS`), its error the
+    capped solve's; without the reset it would end at the first small decrease after the third.
     With every decrease small, it ends after three iterations.
     """
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     bundle = _stereo_start()
 
     def solve(**changes: Any) -> graphs.Adjustment:  # noqa: ANN401 -- Options' fields
-        options = graphs.Options(scaled_damping=True, initial_damping=3000.0, **changes)
+        options = graphs.Options(scaled_damping=True, damping_scale=3000.0, **changes)
         return graphs.bundle_adjust(**bundle, options=options, backend=chosen)
 
     errors = [solve(max_iterations=1).summary.initial_error]
@@ -649,12 +654,25 @@ def test_small_steps_in_a_row_end_a_solve_and_a_large_one_resets_their_count(
     small = [d < threshold for d in decrease]
     assert small[:3] == [True, True, False]  # two small, then one that resets them
     ends = next(k for k in range(3, len(small)) if all(small[k - 2 : k + 1])) + 1
-    assert ends > 6
+    without_reset = next(k for k in range(3, len(small)) if small[k]) + 1
+    assert ends > without_reset  # the reset decides where the solve ends
     stopped = solve(max_iterations=30, small_steps=3, small_decrease=threshold)
-    assert (stopped.summary.iterations, stopped.summary.termination) == (ends, "function")
+    assert (stopped.summary.iterations, stopped.summary.termination) == (ends, "small_steps")
+    assert stopped.summary.converged
     assert stopped.summary.final_error == pytest.approx(errors[ends], rel=1e-12)
     three = solve(max_iterations=30, small_steps=3, small_decrease=0.9)
-    assert (three.summary.iterations, three.summary.converged) == (3, True)
+    assert (three.summary.iterations, three.summary.termination) == (3, "small_steps")
+
+
+def _depths_of(
+    poses: NDArray[np.float64], points: NDArray[np.float64], bundle: dict[str, Any]
+) -> NDArray[np.float64]:
+    """Return each of a bundle's observations' depth, its point along its camera's optical axis."""
+    cameras, ids = np.array(bundle["cameras"]), np.array(bundle["point_ids"])
+    return np.asarray(
+        np.einsum("mi,mi->m", poses[cameras, :3, 2], points[ids] - poses[cameras, :3, 3]),
+        dtype=np.float64,
+    )
 
 
 def _near_and_behind() -> tuple[dict[str, Any], NDArray[np.bool_]]:
@@ -693,20 +711,16 @@ def _near_and_behind() -> tuple[dict[str, Any], NDArray[np.bool_]]:
 def test_the_near_filter_leaves_out_exactly_the_near_and_behind_observations(
     backend: str,
 ) -> None:
-    """With ``near``, the solve's starting error is the kept observations' alone.
+    """With ``near``, the solve's starting error is the kept observations' alone, and counted.
 
-    The point and the camera every one of whose observations is left out come back bit for bit
-    as given, as does the held camera; without ``near`` every observation counts.
+    The summary counts the observations left out, and the kept ones whose point ends behind its
+    camera or below the limit, as recounted here from the result. The point and the camera every
+    one of whose observations is left out come back bit for bit as given, as does the held
+    camera; without ``near`` every observation counts, and the observations of the point behind
+    its cameras end behind them.
     """
     chosen = require_function(backend, graphs.__name__, "bundle_adjust")
     bundle, kept = _near_and_behind()
-    np.testing.assert_array_equal(
-        graphs.kept_observations(
-            bundle["poses"], bundle["points"], np.array(bundle["cameras"]),
-            np.array(bundle["point_ids"]), 1e-3,
-        ),
-        kept,
-    )  # fmt: skip
     costs = np.array(
         [
             0.5
@@ -722,11 +736,19 @@ def test_the_near_filter_leaves_out_exactly_the_near_and_behind_observations(
     options = graphs.Options(max_iterations=5)
     filtered = graphs.bundle_adjust(**bundle, near=1e-3, options=options, backend=chosen)
     assert filtered.summary.initial_error == pytest.approx(float(costs[kept].sum()), rel=1e-12)
+    assert filtered.summary.left_out == int(np.count_nonzero(~kept))
+    start = _depths_of(bundle["poses"], bundle["points"], bundle)
+    limit = 1e-3 * float(np.sort(start)[len(start) // 2])
+    end = _depths_of(filtered.poses, filtered.points, bundle)
+    assert filtered.summary.ended_near == int(np.count_nonzero(kept & ((end <= 0) | (end < limit))))
     np.testing.assert_array_equal(filtered.points[61], bundle["points"][61])
     np.testing.assert_array_equal(filtered.poses[[0, 5]], bundle["poses"][[0, 5]])
     assert not np.array_equal(filtered.points[60], bundle["points"][60])  # seen by 0 and 4 still
     every = graphs.bundle_adjust(**bundle, options=options, backend=chosen)
     assert every.summary.initial_error == pytest.approx(float(costs.sum()), rel=1e-12)
+    assert every.summary.left_out == 0
+    behind = _depths_of(every.poses, every.points, bundle) <= 0
+    assert every.summary.ended_near == int(np.count_nonzero(behind)) >= 3  # point 61's three
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -745,6 +767,7 @@ def test_a_bundle_whose_observations_are_all_left_out_comes_back_as_given(backen
     summary = result.summary
     assert (summary.iterations, summary.termination, summary.converged) == (0, "function", True)
     assert (summary.initial_error, summary.final_error) == (0.0, 0.0)
+    assert (summary.left_out, summary.ended_near) == (3, 0)
 
 
 @pytest.mark.parametrize("near", [-1e-3, np.inf, np.nan])
@@ -859,6 +882,8 @@ def test_bad_refinements_are_refused(changes: dict[str, object], named: str) -> 
         ("max_iterations", True),
         ("initial_damping", 0.0),
         ("initial_damping", np.inf),
+        ("damping_scale", 0.0),
+        ("damping_scale", np.nan),
         ("relative_tolerance", -1.0),
         ("absolute_tolerance", np.nan),
         ("scaled_damping", 1),
@@ -923,5 +948,10 @@ def test_matches_fixture(backend: str, function: str, case: dict[str, Any]) -> N
     summary = got.summary
     errors = [summary.initial_error, summary.final_error]
     assert_matches_fixture(errors, expected["errors"], tolerance["errors"])
-    codes = {"iterations": summary.iterations, "termination": str(summary.termination)}
+    codes = {
+        "iterations": summary.iterations,
+        "termination": str(summary.termination),
+        "left_out": summary.left_out,
+        "ended_near": summary.ended_near,
+    }
     assert_matches_fixture(codes, expected["codes"], tolerance["codes"])

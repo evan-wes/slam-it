@@ -574,13 +574,15 @@ fn termination_json(degenerate: bool, termination: Option<ransac::Termination>) 
 ///
 /// # Returns
 ///
-/// Its errors, iterations and termination by name.
+/// Its errors, iterations, termination by name and a bundle adjustment's counts.
 fn graph_solve_json(summary: &graphs::Summary) -> JsonValue {
     object([
         ("initial_error", JsonValue::Number(summary.initial_error)),
         ("final_error", JsonValue::Number(summary.final_error)),
         ("iterations", count(summary.iterations)),
         ("termination", name_json(summary.termination.name())),
+        ("left_out", count(summary.left_out)),
+        ("ended_near", count(summary.ended_near)),
     ])
 }
 

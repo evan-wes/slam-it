@@ -37,7 +37,7 @@ namespace {
 
 /// @brief Each termination's name, in code order (`graphs.Termination`).
 constexpr std::array<const char*, static_cast<std::size_t>(Termination::kCount)> kTerminationNames =
-    {"function", "max_iterations", "damping_limit", "stopped"};
+    {"function", "max_iterations", "damping_limit", "stopped", "small_steps"};
 
 /// @brief A similarity's rotation, translation and scale.
 struct Parts {
@@ -381,7 +381,7 @@ struct Solved {
 };
 
 /// @brief The largest diagonal entry of a graph's normal equations at its values
-///        (`graphs.largest_hessian_diagonal`): g2o's `computeLambdaInit`'s maximum, over the
+///        (`graphs._largest_hessian_diagonal`): g2o's `computeLambdaInit`'s maximum, over the
 ///        variables as g2o's over its free vertices.
 /// @param graph The factor graph.
 /// @param values Its variables' values.
@@ -417,7 +417,7 @@ gtsam::LevenbergMarquardtParams solve_params(const gtsam::NonlinearFactorGraph& 
   }
   const double largest = largest_hessian_diagonal(graph, values);
   // With no gradient anywhere (every Jacobian zero), the damping cannot be scaled to it: tau alone.
-  params.setlambdaInitial(options.initial_damping * (largest > 0.0 ? largest : 1.0));
+  params.setlambdaInitial(options.damping_scale * (largest > 0.0 ? largest : 1.0));
   params.setlambdaFactor(kScaledDampingFactor);
   params.setUseFixedLambdaFactor(false);
   params.setlambdaUpperBound(kScaledDampingLimit);
@@ -461,7 +461,7 @@ Result<Solved> solve(const gtsam::NonlinearFactorGraph& graph, const gtsam::Valu
       }
       small = decrease < options.small_decrease * previous ? small + 1 : 0;
       if (options.small_steps > 0 && small >= options.small_steps) {
-        termination = Termination::kFunction;
+        termination = Termination::kSmallSteps;
         break;
       }
     }
@@ -674,7 +674,9 @@ const char* name(Termination termination) {
   return index < kTerminationNames.size() ? kTerminationNames.at(index) : "unknown";
 }
 
-bool is_converged(Termination termination) { return termination == Termination::kFunction; }
+bool is_converged(Termination termination) {
+  return termination == Termination::kFunction || termination == Termination::kSmallSteps;
+}
 
 Result<void> check_options(const Options& options) {
   if (options.max_iterations < 1) {
@@ -682,6 +684,9 @@ Result<void> check_options(const Options& options) {
   }
   if (!std::isfinite(options.initial_damping) || options.initial_damping <= 0.0) {
     return fail_setting("initial_damping", "expected > 0", options.initial_damping);
+  }
+  if (!std::isfinite(options.damping_scale) || options.damping_scale <= 0.0) {
+    return fail_setting("damping_scale", "expected > 0", options.damping_scale);
   }
   if (!std::isfinite(options.relative_tolerance) || options.relative_tolerance < 0.0) {
     return fail_setting("relative_tolerance", "expected >= 0", options.relative_tolerance);
@@ -958,6 +963,83 @@ Result<void> check_bundle(std::span<const Eigen::Matrix4d> poses,
   return camera::check_intrinsics(model, intrinsics);
 }
 
+/// @brief Each observation's depth: its point in front of its camera along the optical axis,
+///        `R(0,2) dx + R(1,2) dy + R(2,2) dz` summed in that order, `(dx, dy, dz)` the point less
+///        the camera's centre, as every language takes it (`graphs._depths`).
+/// @param poses Each camera's `T_world_cam`, checked.
+/// @param points Each point, checked.
+/// @param observations The observations, checked.
+/// @return A depth per observation.
+std::vector<double> depths(std::span<const Eigen::Matrix4d> poses,
+                           const Eigen::Ref<const Points>& points,
+                           const Observations& observations) {
+  std::vector<double> out(observations.cameras.size());
+  for (std::size_t m = 0; m < out.size(); ++m) {
+    const Eigen::Matrix4d& pose = poses[static_cast<std::size_t>(observations.cameras[m])];
+    const Eigen::Vector3d offset =
+        points.row(static_cast<Eigen::Index>(observations.point_ids[m])).transpose() -
+        pose.topRightCorner<3, 1>();
+    out[m] = pose(0, 2) * offset.x() + pose(1, 2) * offset.y() + pose(2, 2) * offset.z();
+  }
+  return out;
+}
+
+/// @brief Which observations a bundle adjustment keeps, and its depth limit.
+struct Kept {
+  /// @brief A flag per observation.
+  std::vector<bool> flags;
+  /// @brief `near` times the median depth at the start; 0 with `near` 0.
+  double limit = 0.0;
+};
+
+/// @brief Which observations a bundle adjustment keeps (`graphs._kept_observations`): with `near`
+///        0, every one; otherwise those whose depth at the start is positive and not below `near`
+///        times the median of every observation's depth, the `floor(M/2)`-th smallest of the M
+///        counting from 0.
+/// @param poses Each camera's `T_world_cam`, checked.
+/// @param points Each point, checked.
+/// @param observations The observations, checked, at least one.
+/// @param near The fraction of the median depth, non-negative.
+/// @return The flags and the limit.
+Kept kept_observations(std::span<const Eigen::Matrix4d> poses,
+                       const Eigen::Ref<const Points>& points, const Observations& observations,
+                       double near) {
+  const std::size_t count = observations.cameras.size();
+  Kept out{.flags = std::vector<bool>(count, true), .limit = 0.0};
+  if (near == 0.0 || count == 0) {
+    return out;
+  }
+  const std::vector<double> depth = depths(poses, points, observations);
+  std::vector<double> sorted = depth;
+  const auto middle = static_cast<std::ptrdiff_t>(count / 2);
+  std::ranges::nth_element(sorted, sorted.begin() + middle);
+  out.limit = near * sorted[static_cast<std::size_t>(middle)];
+  for (std::size_t m = 0; m < count; ++m) {
+    out.flags[m] = depth[m] > 0.0 && !(depth[m] < out.limit);
+  }
+  return out;
+}
+
+/// @brief How many kept observations' points end behind their camera or below the limit
+///        (`graphs._ended_near`).
+/// @param poses Each camera's `T_world_cam` at the end.
+/// @param points Each point at the end.
+/// @param observations The observations, checked.
+/// @param kept Which were kept, and the limit.
+/// @return The count.
+std::int64_t ended_near(std::span<const Eigen::Matrix4d> poses,
+                        const Eigen::Ref<const Points>& points, const Observations& observations,
+                        const Kept& kept) {
+  const std::vector<double> depth = depths(poses, points, observations);
+  std::int64_t out = 0;
+  for (std::size_t m = 0; m < depth.size(); ++m) {
+    if (kept.flags[m] && (!(depth[m] > 0.0) || depth[m] < kept.limit)) {
+      ++out;
+    }
+  }
+  return out;
+}
+
 /// @brief The free cameras and the points a bundle adjustment's kept observations reach: those
 ///        it solves.
 struct Reached {
@@ -1076,32 +1158,6 @@ Result<SimilarityRefinement> refine_similarity(
   return refine(to_similarity3(similarity), matches, model, intrinsics, huber, options);
 }
 
-std::vector<bool> kept_observations(std::span<const Eigen::Matrix4d> poses,
-                                    const Eigen::Ref<const Points>& points,
-                                    const Observations& observations, double near) {
-  const std::size_t count = observations.cameras.size();
-  std::vector<bool> kept(count, true);
-  if (near == 0.0 || count == 0) {
-    return kept;
-  }
-  std::vector<double> depth(count);
-  for (std::size_t m = 0; m < count; ++m) {
-    const Eigen::Matrix4d& pose = poses[static_cast<std::size_t>(observations.cameras[m])];
-    const Eigen::Vector3d offset =
-        points.row(static_cast<Eigen::Index>(observations.point_ids[m])).transpose() -
-        pose.topRightCorner<3, 1>();
-    depth[m] = pose(0, 2) * offset.x() + pose(1, 2) * offset.y() + pose(2, 2) * offset.z();
-  }
-  std::vector<double> sorted = depth;
-  const auto middle = static_cast<std::ptrdiff_t>(count / 2);
-  std::ranges::nth_element(sorted, sorted.begin() + middle);
-  const double limit = near * sorted[static_cast<std::size_t>(middle)];
-  for (std::size_t m = 0; m < count; ++m) {
-    kept[m] = depth[m] > 0.0 && !(depth[m] < limit);
-  }
-  return kept;
-}
-
 Result<Adjustment> bundle_adjust(std::span<const Eigen::Matrix4d> poses,
                                  const Eigen::Ref<const Points>& points,
                                  const Observations& observations, camera::Model model,
@@ -1120,51 +1176,56 @@ Result<Adjustment> bundle_adjust(std::span<const Eigen::Matrix4d> poses,
   // Only the kept observations take part, and only the points and free cameras they reach are
   // solved. The held cameras are constants, not variables (g2o's fixed vertices, as ORB-SLAM
   // holds them): each of their observations is a factor on its point alone.
-  const std::vector<bool> kept = kept_observations(poses, points, observations, near);
+  const Kept kept = kept_observations(poses, points, observations, near);
   const std::vector<bool> held = held_flags(fixed, poses.size());
-  const Reached solved_by = reached(observations, kept, held, point_count);
+  const Reached solving = reached(observations, kept.flags, held, point_count);
   Adjustment out{.poses = {poses.begin(), poses.end()},
                  .points = points,
                  .summary = Summary{.initial_error = 0.0,
                                     .final_error = 0.0,
                                     .iterations = 0,
                                     .termination = Termination::kFunction,
-                                    .converged = true}};
-  if (std::ranges::none_of(kept, [](bool k) { return k; })) {
+                                    .converged = true,
+                                    .left_out = std::ranges::count(kept.flags, false),
+                                    .ended_near = 0}};
+  if (std::cmp_equal(out.summary.left_out, kept.flags.size())) {
     return out;  // nothing left to solve: the input as given, no error counted
   }
   gtsam::Values values;
   const std::size_t first_point = poses.size();
   for (std::size_t c = 0; c < poses.size(); ++c) {
-    if (solved_by.cameras[c]) {
+    if (solving.cameras[c]) {
       values.insert(c, gtsam::Pose3(poses[c]));
     }
   }
   for (std::size_t p = 0; p < point_count; ++p) {
-    if (solved_by.points[p]) {
+    if (solving.points[p]) {
       values.insert(first_point + p,
                     gtsam::Point3(points.row(static_cast<Eigen::Index>(p)).transpose()));
     }
   }
   const gtsam::NonlinearFactorGraph graph =
-      bundle_graph(poses, held, observations, kept,
+      bundle_graph(poses, held, observations, kept.flags,
                    Sighting{.measured = {}, .model = model, .intrinsics = intrinsics, .bf = bf});
   auto solved = solve(graph, values, options);
   if (!solved) {
     return std::unexpected(solved.error());
   }
+  const std::int64_t left_out = out.summary.left_out;
   out.summary = solved->summary;
   for (std::size_t c = 0; c < poses.size(); ++c) {
-    if (solved_by.cameras[c]) {
+    if (solving.cameras[c]) {
       out.poses[c] = solved->values.at<gtsam::Pose3>(c).matrix();
     }
   }
   for (std::size_t p = 0; p < point_count; ++p) {
-    if (solved_by.points[p]) {
+    if (solving.points[p]) {
       out.points.row(static_cast<Eigen::Index>(p)) =
           solved->values.at<gtsam::Point3>(first_point + p).transpose();
     }
   }
+  out.summary.left_out = left_out;
+  out.summary.ended_near = ended_near(out.poses, out.points, observations, kept);
   return out;
 }
 

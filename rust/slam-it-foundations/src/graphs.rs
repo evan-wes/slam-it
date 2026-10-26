@@ -56,8 +56,9 @@ pub const SCALED_DAMPING_LIMIT: f64 = 1e32;
 /// Why a solve stopped (`slam_it.foundations.graphs.Termination`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Termination {
-    /// Converged: an iteration lowered the error by no more than the tolerances, or left it at
-    /// zero.
+    /// Converged: an iteration lowered the error by no more than the tolerances, or the error is
+    /// zero; or there was nothing to solve (every pose of a pose graph held, or every observation
+    /// of a bundle left out, `Summary::left_out`), after no iteration.
     Function = 0,
     /// Not converged: `max_iterations` iterations ran.
     MaxIterations = 1,
@@ -66,22 +67,26 @@ pub enum Termination {
     DampingLimit = 2,
     /// Not converged: stopped from outside, between iterations (`Options::stop`).
     Stopped = 3,
+    /// Converged: `Options::small_steps` iterations in a row each lowered the error by less than
+    /// `Options::small_decrease` of it (ORB-SLAM3's stop).
+    SmallSteps = 4,
 }
 
 impl Termination {
     /// Every termination, in code order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Function,
         Self::MaxIterations,
         Self::DampingLimit,
         Self::Stopped,
+        Self::SmallSteps,
     ];
 
     /// The termination's name, as the Python side spells it.
     ///
     /// # Returns
     ///
-    /// `"function"`, `"max_iterations"`, `"damping_limit"` or `"stopped"`.
+    /// `"function"`, `"max_iterations"`, `"damping_limit"`, `"stopped"` or `"small_steps"`.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -89,6 +94,7 @@ impl Termination {
             Self::MaxIterations => "max_iterations",
             Self::DampingLimit => "damping_limit",
             Self::Stopped => "stopped",
+            Self::SmallSteps => "small_steps",
         }
     }
 
@@ -96,10 +102,10 @@ impl Termination {
     ///
     /// # Returns
     ///
-    /// True for `Function`.
+    /// True for `Function` and `SmallSteps`.
     #[must_use]
     pub const fn is_converged(self) -> bool {
-        matches!(self, Self::Function)
+        matches!(self, Self::Function | Self::SmallSteps)
     }
 }
 
@@ -109,7 +115,8 @@ pub struct Options {
     /// Iterations at most, at least 1: each linearises once and tries dampings until a step
     /// lowers the error.
     pub max_iterations: usize,
-    /// Levenberg-Marquardt's first damping (GTSAM's `lambdaInitial`), positive.
+    /// GTSAM's own damping's first `lambda`, absolute: added to the normal equations' diagonal
+    /// as it is (GTSAM's `lambdaInitial`). Read only without `scaled_damping`; positive.
     pub initial_damping: f64,
     /// An iteration lowering the error by at most this fraction of it ends the solve as
     /// converged; non-negative.
@@ -118,16 +125,22 @@ pub struct Options {
     /// non-negative.
     pub absolute_tolerance: f64,
     /// Follow g2o's damping (`OptimizationAlgorithmLevenberg`, which ORB-SLAM3's BAs run)
-    /// rather than GTSAM's own: the first damping `initial_damping` times the largest diagonal
-    /// entry of the normal equations at the start (g2o's `tau`), then Nielsen's schedule
+    /// rather than GTSAM's own: the first damping `damping_scale` times the largest diagonal
+    /// entry of the normal equations at the start, then Nielsen's schedule
     /// (`SCALED_DAMPING_FACTOR`) up to `SCALED_DAMPING_LIMIT`; GTSAM's own starts at
     /// `initial_damping`, divides it by 10 after a step that lowers the error and multiplies it
     /// by 10 after one that does not, up to `ABSOLUTE_DAMPING_LIMIT`.
     pub scaled_damping: bool,
-    /// End the solve as converged once this many iterations in a row have each lowered the
-    /// error by less than `small_decrease` of it (ORB-SLAM3's g2o: 3); 0, never.
+    /// g2o's `tau`: with `scaled_damping`, the first damping is this times the largest diagonal
+    /// entry of the normal equations at the start (g2o's and ORB-SLAM3's 1e-5). Read only with
+    /// `scaled_damping`; positive.
+    pub damping_scale: f64,
+    /// End the solve as converged (`Termination::SmallSteps`) once this many iterations in a row
+    /// have each lowered the error by less than `small_decrease` of it (ORB-SLAM3's g2o: 3); 0,
+    /// never.
     pub small_steps: usize,
-    /// See `small_steps` (ORB-SLAM3's 1e-3); positive.
+    /// The fraction of the error an iteration must lower it by not to count as a small step
+    /// towards `small_steps` (ORB-SLAM3's 1e-3); positive.
     pub small_decrease: f64,
     /// Stops the solve before its next iteration when another thread sets it (a global BA
     /// superseded, ORB-SLAM's `mbStopGBA`).
@@ -140,7 +153,7 @@ impl Default for Options {
     /// # Returns
     ///
     /// Ten iterations, a first damping of 1e-5, a relative tolerance of 1e-10 and no absolute
-    /// one; GTSAM's own damping, and no stop by small steps.
+    /// one; GTSAM's own damping (a `tau` of 1e-5 for g2o's), and no stop by small steps.
     fn default() -> Self {
         Self {
             max_iterations: 10,
@@ -148,6 +161,7 @@ impl Default for Options {
             relative_tolerance: 1e-10,
             absolute_tolerance: 0.0,
             scaled_damping: false,
+            damping_scale: 1e-5,
             small_steps: 0,
             small_decrease: 1e-3,
             stop: Stop::never(),
@@ -167,6 +181,9 @@ impl Options {
         }
         if !(self.initial_damping.is_finite() && self.initial_damping > 0.0) {
             return fail_setting("initial_damping", "expected > 0", self.initial_damping);
+        }
+        if !(self.damping_scale.is_finite() && self.damping_scale > 0.0) {
+            return fail_setting("damping_scale", "expected > 0", self.damping_scale);
         }
         if !(self.relative_tolerance.is_finite() && self.relative_tolerance >= 0.0) {
             return fail_setting(
@@ -202,6 +219,13 @@ pub struct Summary {
     pub termination: Termination,
     /// Whether `termination` counts as converged.
     pub converged: bool,
+    /// A bundle adjustment's observations left out at the start (`bundle_adjust`'s `near`):
+    /// behind their camera or nearer than `near` times the median depth. 0 for another solve.
+    pub left_out: usize,
+    /// A bundle adjustment's kept observations whose point ends behind its camera or nearer than
+    /// that limit (behind, with `near` 0): those that crossed it during the solve, where they
+    /// cost a constant. 0 for another solve.
+    pub ended_near: usize,
 }
 
 impl crate::solve::Summary for Summary {
@@ -935,7 +959,7 @@ fn solve(
         // tau alone.
         let scale = if largest > 0.0 { largest } else { 1.0 };
         (
-            options.initial_damping * scale,
+            options.damping_scale * scale,
             SCALED_DAMPING_FACTOR,
             SCALED_DAMPING_LIMIT,
         )
@@ -990,7 +1014,7 @@ fn solve(
             0
         };
         if options.small_steps > 0 && small >= options.small_steps {
-            termination = Termination::Function;
+            termination = Termination::SmallSteps;
             break;
         }
     }
@@ -1003,6 +1027,8 @@ fn solve(
         iterations,
         termination,
         converged: termination.is_converged(),
+        left_out: 0,
+        ended_near: 0,
     };
     Ok((optimizer, summary))
 }
@@ -1404,6 +1430,8 @@ pub fn optimize_pose_graph(
                 iterations: 0,
                 termination: Termination::Function,
                 converged: true,
+                left_out: 0,
+                ended_near: 0,
             },
         });
     };
@@ -1635,12 +1663,40 @@ pub fn refine_similarity(
     })
 }
 
-/// Which observations a bundle adjustment keeps (`graphs.kept_observations`).
+/// Each observation's depth: its point in front of its camera along the optical axis,
+/// `R(0,2) dx + R(1,2) dy + R(2,2) dz` summed in that order, `(dx, dy, dz)` the point less the
+/// camera's centre, as every language takes it (`graphs._depths`).
 ///
-/// With `near` 0, every one. Otherwise those whose point, at the start, is in front of its camera
-/// and no nearer than `near` times the median of every observation's depth, the `floor(M/2)`-th
-/// smallest of the M counting from 0; each depth `R(0,2) dx + R(1,2) dy + R(2,2) dz`, summed in
-/// that order, `(dx, dy, dz)` the point less the camera's centre, as every language takes it.
+/// # Arguments
+///
+/// * `poses` - Each camera's `T_world_cam`, checked.
+/// * `points` - Each point, checked.
+/// * `observations` - The observations, checked.
+///
+/// # Returns
+///
+/// A depth per observation.
+fn depths(
+    poses: &[Matrix4<f64>],
+    points: &[Vector3<f64>],
+    observations: &Observations<'_>,
+) -> Vec<f64> {
+    observations
+        .cameras
+        .iter()
+        .zip(observations.point_ids)
+        .map(|(&c, &p)| {
+            let pose = &poses[c];
+            let offset = points[p] - pose.fixed_view::<3, 1>(0, 3);
+            pose[(0, 2)] * offset.x + pose[(1, 2)] * offset.y + pose[(2, 2)] * offset.z
+        })
+        .collect()
+}
+
+/// Which observations a bundle adjustment keeps (`graphs._kept_observations`): with `near` 0,
+/// every one; otherwise those whose depth at the start is positive and not below `near` times
+/// the median of every observation's depth, the `floor(M/2)`-th smallest of the M counting from
+/// 0.
 ///
 /// # Arguments
 ///
@@ -1651,33 +1707,54 @@ pub fn refine_similarity(
 ///
 /// # Returns
 ///
-/// A flag per observation.
-#[must_use]
-pub fn kept_observations(
+/// A flag per observation, and the limit (`near` times the median; 0 with `near` 0).
+fn kept_observations(
     poses: &[Matrix4<f64>],
     points: &[Vector3<f64>],
     observations: &Observations<'_>,
     near: f64,
-) -> Vec<bool> {
+) -> (Vec<bool>, f64) {
     let count = observations.cameras.len();
     if near == 0.0 || count == 0 {
-        return vec![true; count];
+        return (vec![true; count], 0.0);
     }
-    let depth: Vec<f64> = observations
-        .cameras
-        .iter()
-        .zip(observations.point_ids)
-        .map(|(&c, &p)| {
-            let pose = &poses[c];
-            let offset = points[p] - pose.fixed_view::<3, 1>(0, 3);
-            pose[(0, 2)] * offset.x + pose[(1, 2)] * offset.y + pose[(2, 2)] * offset.z
-        })
-        .collect();
+    let depth = depths(poses, points, observations);
     let mut sorted = depth.clone();
     let middle = count / 2;
     let (_, median, _) = sorted.select_nth_unstable_by(middle, f64::total_cmp);
     let limit = near * *median;
-    depth.iter().map(|&z| z > 0.0 && z >= limit).collect()
+    (
+        depth.iter().map(|&z| z > 0.0 && z >= limit).collect(),
+        limit,
+    )
+}
+
+/// How many kept observations' points end behind their camera or below the limit
+/// (`graphs._ended_near`).
+///
+/// # Arguments
+///
+/// * `poses` - Each camera's `T_world_cam` at the end.
+/// * `points` - Each point at the end.
+/// * `observations` - The observations, checked.
+/// * `kept` - Which were kept.
+/// * `limit` - The depth limit.
+///
+/// # Returns
+///
+/// The count.
+fn ended_near(
+    poses: &[Matrix4<f64>],
+    points: &[Vector3<f64>],
+    observations: &Observations<'_>,
+    kept: &[bool],
+    limit: f64,
+) -> usize {
+    depths(poses, points, observations)
+        .iter()
+        .zip(kept)
+        .filter(|&(&z, &k)| k && (z.is_nan() || z <= 0.0 || z < limit))
+        .count()
 }
 
 /// Adjusts every pose and point against every observation, with no robust loss or Huber's
@@ -1687,10 +1764,16 @@ pub fn kept_observations(
 /// the observations' `huber`, each whitened error through a Huber loss at its threshold, as
 /// ORB-SLAM's local and welding BAs weigh theirs. The cameras in `fixed` are held as constants,
 /// as g2o's fixed vertices hold ORB-SLAM's: each of their observations is a factor on its point
-/// alone. With `near`, the observations near their camera's plane are left out
-/// (`kept_observations`): only the points and free cameras the others reach are solved, the rest
-/// coming back as given, and the summary's errors are the kept observations'; with none kept,
-/// nothing is solved: 0 iterations, converged, errors of 0.
+/// alone. With `near`, the observations near their camera's plane at the start are left out:
+/// each whose point is behind its camera or nearer than `near` times the median of every
+/// observation's depth, the `floor(M/2)`-th smallest of the M counting from 0, each depth
+/// `R(0,2) dx + R(1,2) dy + R(2,2) dz` summed in that order, `(dx, dy, dz)` the point less the
+/// camera's centre, as every language takes it. Only the points and free cameras the others
+/// reach are solved, the rest coming back as given, and the summary's errors are the kept
+/// observations'; with none kept, nothing is solved: 0 iterations, converged
+/// (`Termination::Function`), errors of 0. The summary counts the observations left out and the
+/// kept ones whose point ends behind its camera or nearer than the limit (`Summary::left_out`,
+/// `Summary::ended_near`).
 ///
 /// # Arguments
 ///
@@ -1728,10 +1811,11 @@ pub fn bundle_adjust(
     // Only the kept observations take part, and only the points and free cameras they reach are
     // solved. The held cameras are constants, not variables: each of their observations is a
     // factor on its point alone.
-    let kept = kept_observations(poses, points, observations, near);
+    let (kept, limit) = kept_observations(poses, points, observations, near);
+    let left_out = kept.iter().filter(|&&k| !k).count();
     let held = held_flags(fixed, poses.len());
     let (solved_camera, solved_point) = reached(observations, &kept, &held, points.len());
-    if !kept.iter().any(|&k| k) {
+    if left_out == kept.len() {
         // Nothing left to solve: the input as given, no error counted.
         return Ok(Adjustment {
             poses: poses.to_vec(),
@@ -1742,6 +1826,8 @@ pub fn bundle_adjust(
                 iterations: 0,
                 termination: Termination::Function,
                 converged: true,
+                left_out,
+                ended_near: 0,
             },
         });
     }
@@ -1789,10 +1875,15 @@ pub fn bundle_adjust(
             Ok(Vector3::from(out))
         })
         .collect::<Result<Vec<_>>>()?;
+    let ended_near = ended_near(&poses, &points, observations, &kept, limit);
     Ok(Adjustment {
         poses,
         points,
-        summary,
+        summary: Summary {
+            left_out,
+            ended_near,
+            ..summary
+        },
     })
 }
 
@@ -2560,10 +2651,12 @@ mod tests {
                     &pinhole(),
                     &[0, 1],
                     0.0,
+                    // The other damping's field far off: each solve reads its own alone.
                     &Options {
                         max_iterations: iterations,
-                        initial_damping: TAU,
+                        initial_damping: if scaled { 1.0 } else { TAU },
                         scaled_damping: scaled,
+                        damping_scale: if scaled { TAU } else { 1.0 },
                         ..Options::default()
                     },
                 )
@@ -2588,7 +2681,7 @@ mod tests {
                 &scene,
                 &[0],
                 &Options {
-                    initial_damping: 3000.0,
+                    damping_scale: 3000.0,
                     scaled_damping: true,
                     ..options
                 },
@@ -2610,7 +2703,9 @@ mod tests {
             .find(|&k| small[k] && small[k - 1] && small[k - 2])
             .unwrap()
             + 1;
-        assert!(ends > 6);
+        // Where a count that ignored the reset would end: the reset decides.
+        let without_reset = (3..small.len()).find(|&k| small[k]).unwrap() + 1;
+        assert!(ends > without_reset);
         let stopped = solve(Options {
             max_iterations: MOST,
             small_steps: 3,
@@ -2618,7 +2713,8 @@ mod tests {
             ..Options::default()
         });
         assert_eq!(stopped.summary.iterations, ends);
-        assert_eq!(stopped.summary.termination, Termination::Function);
+        assert_eq!(stopped.summary.termination, Termination::SmallSteps);
+        assert!(stopped.summary.converged);
         let three = solve(Options {
             max_iterations: MOST,
             small_steps: 3,
@@ -2626,13 +2722,25 @@ mod tests {
             ..Options::default()
         });
         assert_eq!(three.summary.iterations, 3);
-        assert!(three.summary.converged);
+        assert_eq!(three.summary.termination, Termination::SmallSteps);
     }
 
-    #[test]
-    fn the_near_filter_leaves_out_exactly_the_near_and_behind_observations() {
-        // The stereo scene, camera 0 held, a sixth camera 2 m ahead, point 60 1 mm in front of
-        // it (seen too by cameras 0 and 4), point 61 behind cameras 0, 1 and 5 (seen by them).
+    /// The near-plane scene's start, and which observations the filter keeps.
+    struct NearScene {
+        /// The stereo scene, the six extra observations added.
+        scene: Scene,
+        /// The cameras' starting poses, the sixth among them.
+        poses: Vec<Matrix4<f64>>,
+        /// The points, the two extra among them.
+        points: Vec<Vector3<f64>>,
+        /// Whether each observation is kept.
+        expected: Vec<bool>,
+    }
+
+    /// The near-plane scene: the stereo scene, camera 0 held, a sixth camera 2 m ahead, point 60
+    /// 1 mm in front of it (seen too by cameras 0 and 4), point 61 behind cameras 0, 1 and 5
+    /// (seen by them).
+    fn near_scene() -> NearScene {
         let mut scene = stereo_scene();
         let mut poses = scene.start.clone();
         poses.push(pose([0.8, 0.0, 2.0], [0.0, 0.0, 0.0]));
@@ -2659,6 +2767,26 @@ mod tests {
             scene.right.push(f64::NAN);
             expected.push(kept);
         }
+        NearScene {
+            scene,
+            poses,
+            points,
+            expected,
+        }
+    }
+
+    #[test]
+    fn the_near_filter_leaves_out_exactly_the_near_and_behind_observations() {
+        // The near-plane scene (`near_scene`). The summary counts the observations left out, and
+        // the kept ones ending behind their camera or below the limit, as recounted here from the
+        // result.
+        let NearScene {
+            scene,
+            poses,
+            points,
+            expected,
+        } = near_scene();
+        let count = scene.start_points.len();
         let information = vec![1.0; scene.cameras.len()];
         let observations = Observations {
             cameras: &scene.cameras,
@@ -2693,10 +2821,16 @@ mod tests {
             .filter(|(_, k)| **k)
             .map(|(c, _)| c)
             .sum();
-        assert_eq!(
-            kept_observations(&poses, &points, &observations, 1e-3),
-            expected
-        );
+        let mut start = depths(&poses, &points, &observations);
+        let middle = start.len() / 2;
+        let limit = 1e-3 * *start.select_nth_unstable_by(middle, f64::total_cmp).1;
+        let ended = |result: &Adjustment, below: f64, which: &[bool]| {
+            depths(&result.poses, &result.points, &observations)
+                .iter()
+                .zip(which)
+                .filter(|&(&z, &k)| k && (z <= 0.0 || z < below))
+                .count()
+        };
         let adjust = |near| {
             bundle_adjust(
                 &poses,
@@ -2713,12 +2847,24 @@ mod tests {
         };
         let filtered = adjust(1e-3).unwrap();
         assert!((filtered.summary.initial_error - kept).abs() <= 1e-12 * kept);
+        assert_eq!(
+            filtered.summary.left_out,
+            expected.iter().filter(|&&k| !k).count()
+        );
+        assert_eq!(
+            filtered.summary.ended_near,
+            ended(&filtered, limit, &expected)
+        );
         assert_eq!(filtered.points[count + 1], points[count + 1]);
         assert_eq!(filtered.poses[0], poses[0]);
         assert_eq!(filtered.poses[5], poses[5]);
         assert_ne!(filtered.points[count], points[count]); // seen by cameras 0 and 4 still
         let all = adjust(0.0).unwrap();
         assert!((all.summary.initial_error - every).abs() <= 1e-12 * every);
+        assert_eq!(all.summary.left_out, 0);
+        let everyone = vec![true; expected.len()];
+        assert_eq!(all.summary.ended_near, ended(&all, 0.0, &everyone));
+        assert!(all.summary.ended_near >= 3); // point 61's three, behind their cameras
         for bad in [-1e-3, f64::INFINITY, f64::NAN] {
             assert_eq!(adjust(bad).unwrap_err().kind, ErrorKind::InvalidInput);
         }
@@ -2754,6 +2900,7 @@ mod tests {
             (result.summary.initial_error, result.summary.final_error),
             (0.0, 0.0)
         );
+        assert_eq!((result.summary.left_out, result.summary.ended_near), (3, 0));
     }
 
     #[test]
@@ -2816,6 +2963,41 @@ mod tests {
     }
 
     #[test]
+    fn bad_options_are_refused_and_the_terminations_named_as_python_names_them() {
+        assert!(
+            Options {
+                max_iterations: 0,
+                ..Options::default()
+            }
+            .check()
+            .is_err()
+        );
+        for small_decrease in [0.0, f64::INFINITY] {
+            assert!(
+                Options {
+                    small_decrease,
+                    ..Options::default()
+                }
+                .check()
+                .is_err()
+            );
+        }
+        for damping_scale in [0.0, f64::NAN] {
+            assert!(
+                Options {
+                    damping_scale,
+                    ..Options::default()
+                }
+                .check()
+                .is_err()
+            );
+        }
+        assert_eq!(Termination::DampingLimit.name(), "damping_limit");
+        assert_eq!(Termination::SmallSteps.name(), "small_steps");
+        assert!(Termination::SmallSteps.is_converged());
+    }
+
+    #[test]
     fn bad_graphs_are_refused() {
         let truth = ring(4, false);
         let relatives = vec![inverse(&truth[0]) * truth[1]];
@@ -2856,25 +3038,6 @@ mod tests {
             false,
             &options
         )));
-        assert!(
-            Options {
-                max_iterations: 0,
-                ..Options::default()
-            }
-            .check()
-            .is_err()
-        );
-        for small_decrease in [0.0, f64::INFINITY] {
-            assert!(
-                Options {
-                    small_decrease,
-                    ..Options::default()
-                }
-                .check()
-                .is_err()
-            );
-        }
-        assert_eq!(Termination::DampingLimit.name(), "damping_limit");
         // A row of pixels2 is finite, or wholly NaN (unseen): anything else is refused (H1, L1).
         let lens = pinhole();
         let points = [

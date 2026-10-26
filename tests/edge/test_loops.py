@@ -826,7 +826,7 @@ def test_global_ba_damps_as_g2o_and_stops_as_orb_slam3_and_the_weld_does_neither
     """Global BA's solve: g2o's damping, ORB-SLAM3's stop; a welding BA's: GTSAM's damping alone."""
     settings = Options()
     assert loops.global_ba_options(settings) == graphs.Options(
-        max_iterations=10, initial_damping=1e-5, scaled_damping=True, small_steps=3,
+        max_iterations=10, scaled_damping=True, damping_scale=1e-5, small_steps=3,
         small_decrease=1e-3,
     )  # fmt: skip
     assert loops.weld_options(5) == graphs.Options(max_iterations=5)

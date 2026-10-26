@@ -62,7 +62,7 @@ void check_solves(int& failures) {
   const edge::Options options;
   const std::atomic<bool> stop{false};
   const graphs::Options global = loops::global_ba_options(options, &stop);
-  expect(global.max_iterations == 10 && global.initial_damping == 1e-5 && global.scaled_damping &&
+  expect(global.max_iterations == 10 && global.damping_scale == 1e-5 && global.scaled_damping &&
              global.small_steps == 3 && global.small_decrease == 1e-3 && global.stop == &stop,
          "global BA: 10 iterations, g2o's damping from tau 1e-5, three small steps end it",
          failures);

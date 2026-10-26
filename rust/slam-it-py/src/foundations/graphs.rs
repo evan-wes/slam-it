@@ -2,7 +2,8 @@
 //!
 //! Each solve takes its arrays and options by keyword, as the Python `Implementation`
 //! Protocol names them, and returns a dict: its arrays, and the summary's fields
-//! (`initial_error`, `final_error`, `iterations`, `termination` as its code in `codes()`).
+//! (`initial_error`, `final_error`, `iterations`, `termination` as its code in `codes()`,
+//! `left_out`, `ended_near`).
 //! The options cross as `graphs.Options.as_dict()`, read strictly by serde.
 
 use nalgebra::{Matrix4, Vector2, Vector3};
@@ -26,7 +27,7 @@ use crate::common::{
 struct OptionsIn {
     /// Iterations at most.
     max_iterations: usize,
-    /// Levenberg-Marquardt's first damping.
+    /// GTSAM's own damping's first lambda, absolute.
     initial_damping: f64,
     /// The relative tolerance.
     relative_tolerance: f64,
@@ -34,6 +35,8 @@ struct OptionsIn {
     absolute_tolerance: f64,
     /// g2o's damping rather than GTSAM's own.
     scaled_damping: bool,
+    /// g2o's tau, with `scaled_damping`.
+    damping_scale: f64,
     /// Iterations in a row of small decrease that end the solve; 0, never.
     small_steps: usize,
     /// What counts as a small decrease, a fraction of the error.
@@ -62,6 +65,7 @@ fn read_options(options: &Bound<'_, PyDict>) -> PyResult<core::Options> {
         relative_tolerance: raw.relative_tolerance,
         absolute_tolerance: raw.absolute_tolerance,
         scaled_damping: raw.scaled_damping,
+        damping_scale: raw.damping_scale,
         small_steps: raw.small_steps,
         small_decrease: raw.small_decrease,
         stop: Stop::never(), // a compiled core's stop is its own threads'
@@ -110,6 +114,8 @@ fn write_summary(summary: &core::Summary, out: &Bound<'_, PyDict>) -> PyResult<(
         "termination",
         encode(&Termination::ALL, summary.termination)?,
     )?;
+    out.set_item("left_out", summary.left_out)?;
+    out.set_item("ended_near", summary.ended_near)?;
     Ok(())
 }
 

@@ -564,6 +564,9 @@ void test_bad_input(int& failures) {
                                                       graphs::Options{.small_steps = -1})),
          "small_steps below 0 is refused", failures);
   expect(is_invalid_input(graphs::optimize_pose_graph(truth, edges, relatives, fixed, false,
+                                                      graphs::Options{.damping_scale = 0.0})),
+         "a damping_scale of 0 is refused", failures);
+  expect(is_invalid_input(graphs::optimize_pose_graph(truth, edges, relatives, fixed, false,
                                                       graphs::Options{.small_decrease = 0.0})),
          "a small_decrease of 0 is refused", failures);
   graphs::Points points(2, 3);
@@ -718,7 +721,8 @@ Damped gtsam_iteration(Damped at, bool nielsen, double limit) {
 /// @brief The scaled damping starts at tau times the largest diagonal entry and follows
 ///        Nielsen's schedule (its first iteration fails at 1, 2 and 8 times its start before 64
 ///        times steps); GTSAM's own starts at tau and moves by 10. Each of the first three
-///        iterations lands where the emulated search does.
+///        iterations lands where the emulated search does. The other damping's field is set far
+///        off (1.0), so each solve reads its own alone.
 /// @param failures The running failure count.
 void test_damping_schedules(int& failures) {
   constexpr double kTau = 1e-5;
@@ -740,17 +744,19 @@ void test_damping_schedules(int& failures) {
     for (int iterations = 1; iterations <= 3; ++iterations) {
       expected = gtsam_iteration(
           expected, scaled, scaled ? graphs::kScaledDampingLimit : graphs::kAbsoluteDampingLimit);
-      const auto result = graphs::bundle_adjust(
-          held_pair(), start,
-          graphs::Observations{.cameras = cameras,
-                               .point_ids = ids,
-                               .pixels = pixels,
-                               .right = right,
-                               .information = information,
-                               .huber = {}},
-          camera::Model::kPinhole, pinhole(), kBf, cameras, 0.0,
-          graphs::Options{
-              .max_iterations = iterations, .initial_damping = kTau, .scaled_damping = scaled});
+      const auto result =
+          graphs::bundle_adjust(held_pair(), start,
+                                graphs::Observations{.cameras = cameras,
+                                                     .point_ids = ids,
+                                                     .pixels = pixels,
+                                                     .right = right,
+                                                     .information = information,
+                                                     .huber = {}},
+                                camera::Model::kPinhole, pinhole(), kBf, cameras, 0.0,
+                                graphs::Options{.max_iterations = iterations,
+                                                .initial_damping = scaled ? 1.0 : kTau,
+                                                .scaled_damping = scaled,
+                                                .damping_scale = scaled ? kTau : 1.0});
       expect(result.has_value() && result->summary.iterations == iterations &&
                  close(result->points.row(0).transpose(), expected.point, 0.0, 1e-9),
              scaled ? "the scaled damping follows Nielsen's schedule from tau max diag(H)"
@@ -764,7 +770,8 @@ void test_damping_schedules(int& failures) {
 ///        pixels perturbed, the decreases grow from small through large, then shrink. With the
 ///        small decrease set between the second and the third, the two first count as small and
 ///        the third resets them: the solve ends at the third small one in a row after it,
-///        converged; with every decrease small, after three iterations.
+///        converged (`kSmallSteps`), later than it would without the reset; with every decrease
+///        small, after three iterations.
 /// @param failures The running failure count.
 void test_small_steps(int& failures) {
   constexpr int kMost = 30;
@@ -775,7 +782,7 @@ void test_small_steps(int& failures) {
   }
   const std::array<std::int64_t, 1> fixed = {0};
   const auto solve = [&](graphs::Options options) {
-    options.initial_damping = 3000.0;
+    options.damping_scale = 3000.0;
     options.scaled_damping = true;
     return adjust(scene, fixed, options);
   };
@@ -799,33 +806,49 @@ void test_small_steps(int& failures) {
   for (std::size_t k = 3; k < small.size() && ends == 0; ++k) {
     ends = small[k] && small[k - 1] && small[k - 2] ? k + 1 : 0;
   }
+  std::size_t without_reset = 0;  // where a count that ignored the reset would end
+  for (std::size_t k = 3; k < small.size() && without_reset == 0; ++k) {
+    without_reset = small[k] ? k + 1 : 0;
+  }
   const auto stopped =
       solve({.max_iterations = kMost, .small_steps = 3, .small_decrease = threshold});
-  expect(ends > 6 && stopped.has_value() && std::cmp_equal(stopped->summary.iterations, ends) &&
-             stopped->summary.termination == graphs::Termination::kFunction,
+  expect(ends > without_reset && stopped.has_value() &&
+             std::cmp_equal(stopped->summary.iterations, ends) &&
+             stopped->summary.termination == graphs::Termination::kSmallSteps &&
+             stopped->summary.converged,
          "the third small decrease in a row after the large ones ends the solve, converged",
          failures);
   const auto three = solve({.max_iterations = kMost, .small_steps = 3, .small_decrease = 0.9});
-  expect(three.has_value() && three->summary.iterations == 3 && three->summary.converged,
+  expect(three.has_value() && three->summary.iterations == 3 &&
+             three->summary.termination == graphs::Termination::kSmallSteps,
          "with every decrease small, three iterations end the solve", failures);
 }
 
-/// @brief Whether the near-plane scene keeps an observation: all but the extra six's first,
-///        fourth, fifth and sixth (`test_near_filter`).
-/// @param from_end The observation's place counted from the last, 1 for the last.
-/// @return Whether it is kept.
-bool near_scene_keeps(std::size_t from_end) {
-  constexpr std::array<bool, 6> kExtraKept = {false, true, true, false, false, false};
-  constexpr std::size_t kExtra = kExtraKept.size();
-  return from_end > kExtra || kExtraKept.at(kExtra - from_end);
+/// @brief Each observation's depth: its point along its camera's optical axis.
+/// @param poses Each camera's `T_world_cam`.
+/// @param points Each point.
+/// @param observations The observations.
+/// @return A depth per observation.
+std::vector<double> depths_of(const std::vector<Eigen::Matrix4d>& poses,
+                              const graphs::Points& points,
+                              const graphs::Observations& observations) {
+  std::vector<double> out;
+  for (std::size_t m = 0; m < observations.cameras.size(); ++m) {
+    const Eigen::Matrix4d& at = poses[static_cast<std::size_t>(observations.cameras[m])];
+    out.push_back(at.block<3, 1>(0, 2).dot(points.row(observations.point_ids[m]).transpose() -
+                                           at.topRightCorner<3, 1>()));
+  }
+  return out;
 }
 
 /// @brief The near-plane filter leaves out exactly the observations near or behind their
-///        cameras: the stereo scene, camera 0 held, a sixth camera 2 m ahead, point 60 1 mm in
-///        front of it (seen too by cameras 0 and 4), point 61 behind cameras 0, 1 and 5 (seen by
-///        them). The starting error is the kept observations'; point 61 and camera 5, every
-///        observation of which is left out, and the held camera come back exactly as given;
-///        with near 0, every observation counts.
+///        cameras, and counts them: the stereo scene, camera 0 held, a sixth camera 2 m ahead,
+///        point 60 1 mm in front of it (seen too by cameras 0 and 4), point 61 behind cameras 0,
+///        1 and 5 (seen by them). The starting error is the kept observations'; point 61 and
+///        camera 5, every observation of which is left out, and the held camera come back
+///        exactly as given; the kept observations ending behind or below the limit are counted
+///        as recounted from the result. With near 0, every observation counts, and point 61's
+///        three end behind their cameras.
 /// @param failures The running failure count.
 void test_near_filter(int& failures) {
   Scene scene = stereo_scene();
@@ -842,14 +865,17 @@ void test_near_filter(int& failures) {
                               .transpose();
   const std::array<std::array<std::int64_t, 2>, 6> extra = {
       {{5, count}, {0, count}, {4, count}, {0, count + 1}, {1, count + 1}, {5, count + 1}}};
+  constexpr std::array<bool, 6> kExtraKept = {false, true, true, false, false, false};
+  std::vector<bool> expected(scene.cameras.size(), true);
   graphs::Pairs pixels(scene.pixels.rows() + 6, 2);
   pixels.topRows(scene.pixels.rows()) = scene.pixels;
   pixels.bottomRows(6).setConstant(300.0);
-  for (const auto& [c, p] : extra) {
-    scene.cameras.push_back(c);
-    scene.ids.push_back(p);
+  for (std::size_t e = 0; e < extra.size(); ++e) {
+    scene.cameras.push_back(extra.at(e)[0]);
+    scene.ids.push_back(extra.at(e)[1]);
     scene.right.push_back(std::numeric_limits<double>::quiet_NaN());
     scene.information.push_back(1.0);
+    expected.push_back(kExtraKept.at(e));
   }
   double every = 0.0;
   double kept = 0.0;
@@ -866,7 +892,7 @@ void test_near_filter(int& failures) {
                                           camera::Model::kRadTan, radtan(), kBf)
                   ->residual.squaredNorm();
     every += cost;
-    kept += near_scene_keeps(scene.cameras.size() - m) ? cost : 0.0;
+    kept += expected[m] ? cost : 0.0;
   }
   const graphs::Observations observations{.cameras = scene.cameras,
                                           .point_ids = scene.ids,
@@ -879,22 +905,34 @@ void test_near_filter(int& failures) {
     return graphs::bundle_adjust(poses, points, observations, camera::Model::kRadTan, radtan(), kBf,
                                  fixed, near, graphs::Options{.max_iterations = 5});
   };
-  const std::vector<bool> flags = graphs::kept_observations(poses, points, observations, 1e-3);
-  bool flags_right = true;
-  for (std::size_t m = 0; m < flags.size(); ++m) {
-    flags_right = flags_right && flags[m] == near_scene_keeps(flags.size() - m);
-  }
+  std::vector<double> start = depths_of(poses, points, observations);
+  std::ranges::nth_element(start, start.begin() + static_cast<std::ptrdiff_t>(start.size() / 2));
+  const double limit = 1e-3 * start[start.size() / 2];
+  const auto ended = [&](const graphs::Adjustment& result, double below,
+                         const std::vector<bool>& which) {
+    const std::vector<double> end = depths_of(result.poses, result.points, observations);
+    std::int64_t out = 0;
+    for (std::size_t m = 0; m < end.size(); ++m) {
+      out += which[m] && (end[m] <= 0.0 || end[m] < below) ? 1 : 0;
+    }
+    return out;
+  };
   const auto filtered = adjust_near(1e-3);
-  expect(flags_right && filtered.has_value() &&
-             std::abs(filtered->summary.initial_error - kept) <= 1e-12 * kept &&
+  expect(filtered.has_value() && std::abs(filtered->summary.initial_error - kept) <= 1e-12 * kept &&
+             filtered->summary.left_out == std::ranges::count(expected, false) &&
+             filtered->summary.ended_near == ended(*filtered, limit, expected) &&
              filtered->points.row(count + 1) == points.row(count + 1) &&
              filtered->poses[0] == poses[0] && filtered->poses[5] == poses[5] &&
              filtered->points.row(count) != points.row(count),
-         "exactly the near and behind observations are left out; what they alone reach stays",
+         "exactly the near and behind observations are left out and counted; what they alone "
+         "reach stays",
          failures);
   const auto all = adjust_near(0.0);
-  expect(all.has_value() && std::abs(all->summary.initial_error - every) <= 1e-12 * every,
-         "with near 0 every observation counts", failures);
+  const std::vector<bool> everyone(scene.cameras.size(), true);
+  expect(all.has_value() && std::abs(all->summary.initial_error - every) <= 1e-12 * every &&
+             all->summary.left_out == 0 && all->summary.ended_near == ended(*all, 0.0, everyone) &&
+             all->summary.ended_near >= 3,
+         "with near 0 every observation counts, and those ending behind are counted", failures);
   for (const double bad :
        {-1e-3, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
     expect(is_invalid_input(adjust_near(bad)), "a negative or infinite near fraction is refused",
@@ -928,7 +966,8 @@ void test_everything_left_out(int& failures) {
                                           graphs::Options{});
   expect(none.has_value() && none->poses == two && none->points == behind &&
              none->summary.iterations == 0 && none->summary.converged &&
-             none->summary.initial_error == 0.0 && none->summary.final_error == 0.0,
+             none->summary.initial_error == 0.0 && none->summary.final_error == 0.0 &&
+             none->summary.left_out == 3 && none->summary.ended_near == 0,
          "a bundle whose every observation is left out comes back as given", failures);
 }
 
@@ -951,7 +990,9 @@ int run() {
   test_near_filter(failures);
   test_everything_left_out(failures);
   test_bad_input(failures);
-  expect(std::string(graphs::name(graphs::Termination::kDampingLimit)) == "damping_limit",
+  expect(std::string(graphs::name(graphs::Termination::kDampingLimit)) == "damping_limit" &&
+             std::string(graphs::name(graphs::Termination::kSmallSteps)) == "small_steps" &&
+             graphs::is_converged(graphs::Termination::kSmallSteps),
          "the terminations are named as Python names them", failures);
   return slam_it::testing::finish("foundations/graphs", failures);
 }

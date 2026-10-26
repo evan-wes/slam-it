@@ -36,7 +36,7 @@
    "comparison": "exact",
    "rtol": 0.0,
    "atol": 0.0,
-   "reason": "iterations and termination: the backends' solves step alike"
+   "reason": "iterations, termination and counts: the backends' solves step alike"
   }
  },
  "functions": {
@@ -219,7 +219,9 @@
       "errors": [0.09003606990523136, 0.0001311497995296605],
       "codes": {
        "iterations": 4,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -400,7 +402,9 @@
       "errors": [0.13578966940216972, 0.00027931778761007683],
       "codes": {
        "iterations": 5,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -581,7 +585,9 @@
       "errors": [0.13399857307141055, 0.058492080203232835],
       "codes": {
        "iterations": 4,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -762,7 +768,9 @@
       "errors": [0.16830166610843936, 0.04706172847912328],
       "codes": {
        "iterations": 4,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     }
@@ -1046,7 +1054,9 @@
       "errors": [1969.726579957346, 828.0493840233629],
       "codes": {
        "iterations": 5,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -1302,7 +1312,9 @@
       "errors": [27.051520246744634, 24.470827456432463],
       "codes": {
        "iterations": 4,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -1582,7 +1594,9 @@
       "errors": [1973.1551979795586, 804.7773440327821],
       "codes": {
        "iterations": 4,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -1838,7 +1852,9 @@
       "errors": [32.568374321554586, 30.559714623623886],
       "codes": {
        "iterations": 3,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     }
@@ -2264,7 +2280,9 @@
       "errors": [14268.141354694417, 499.88600848352604],
       "codes": {
        "iterations": 7,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -2686,7 +2704,9 @@
       "errors": [14006.803292428003, 81.62589060601206],
       "codes": {
        "iterations": 5,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -3108,7 +3128,9 @@
       "errors": [8218.93956426751, 303.3921147225001],
       "codes": {
        "iterations": 5,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -3530,7 +3552,9 @@
       "errors": [8975.658797680033, 463.6058635514243],
       "codes": {
        "iterations": 4,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -3952,7 +3976,9 @@
       "errors": [22249.07075542726, 2049.3827573156354],
       "codes": {
        "iterations": 4,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -4374,7 +4400,9 @@
       "errors": [15544.194749749684, 6972.126852446653],
       "codes": {
        "iterations": 4,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -4717,6 +4745,7 @@
        "relative_tolerance": 1e-10,
        "absolute_tolerance": 0.0,
        "scaled_damping": true,
+       "damping_scale": 1e-05,
        "small_steps": 3,
        "small_decrease": 0.001
       }
@@ -4805,7 +4834,9 @@
       "errors": [6183.107455450292, 105.95802837903369],
       "codes": {
        "iterations": 9,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 0,
+       "ended_near": 0
       }
      }
     },
@@ -5238,7 +5269,9 @@
       "errors": [18825.88148561208, 86.59397775085361],
       "codes": {
        "iterations": 5,
-       "termination": "function"
+       "termination": "function",
+       "left_out": 6,
+       "ended_near": 0
       }
      }
     }
