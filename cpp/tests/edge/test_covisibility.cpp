@@ -45,6 +45,7 @@ edge::Map map_of(const nlohmann::json& keyframes) {
       m.kp_level.push_back(0);
       m.kp_angle.push_back(0);
       m.kp_descriptor.emplace_back();
+      m.kp_node.push_back(0);
       m.kp_bearing.emplace_back(0.0, 0.0, 1.0);
       m.kp_depth.push_back(std::numeric_limits<double>::quiet_NaN());
       m.kp_right.push_back(std::numeric_limits<double>::quiet_NaN());

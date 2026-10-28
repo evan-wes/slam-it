@@ -77,6 +77,9 @@ pub struct Map {
     pub kp_angle: Vec<usize>,
     /// Its descriptor.
     pub kp_descriptor: Vec<Descriptor>,
+    /// Its descriptor's node at the vocabulary's direct level, at least 0, given with its
+    /// keyframe (`slam_it.edge.map`'s docstring: ORB-SLAM's `mFeatVec`).
+    pub kp_node: Vec<i64>,
     /// Its unit bearing (NaN where it has none).
     pub kp_bearing: Vec<Vector3<f64>>,
     /// Its depth, in metres (NaN for none).
@@ -163,6 +166,7 @@ impl Map {
             kp_level: Vec::new(),
             kp_angle: Vec::new(),
             kp_descriptor: Vec::new(),
+            kp_node: Vec::new(),
             kp_bearing: Vec::new(),
             kp_depth: Vec::new(),
             kp_right: Vec::new(),
@@ -393,6 +397,7 @@ pub fn check_map(m: &Map) -> Result<()> {
         m.kp_level.len() == t,
         m.kp_angle.len() == t,
         m.kp_descriptor.len() == t,
+        m.kp_node.len() == t,
         m.kp_bearing.len() == t,
         m.kp_depth.len() == t,
         m.kp_right.len() == t,
@@ -432,6 +437,12 @@ pub fn check_map(m: &Map) -> Result<()> {
                 format!("map.{name}: ids must be ascending, from 0, below the next id"),
             );
         }
+    }
+    if m.kp_node.iter().any(|&node| node < 0) {
+        return fail(
+            ErrorKind::InvalidInput,
+            "map.kp_node: every node must be at least 0",
+        );
     }
     if m.kp_point
         .iter()
@@ -578,6 +589,7 @@ pub fn sub_map(m: &Map, rows: &[usize]) -> Map {
             out.kp_level.push(m.kp_level[row]);
             out.kp_angle.push(m.kp_angle[row]);
             out.kp_descriptor.push(m.kp_descriptor[row]);
+            out.kp_node.push(m.kp_node[row]);
             out.kp_bearing.push(m.kp_bearing[row]);
             out.kp_depth.push(m.kp_depth[row]);
             out.kp_right.push(m.kp_right[row]);
@@ -952,11 +964,13 @@ fn forget(m: &mut Map, rows: &[usize]) {
 /// * `frame` - The frame (its pyramid the map's).
 /// * `pose` - Its `T_cam_world`.
 /// * `points` - The id each keypoint observes (each in the map, at most once), or -1.
+/// * `nodes` - Each keypoint's vocabulary node at the direct level, at least 0
+///   (`slam_it_foundations::vocabulary::quantize`'s `nodes`).
 ///
 /// # Errors
 ///
-/// `InvalidInput` for another pyramid, a pose that is not finite, or ids that are not one per
-/// keypoint, in the map, and distinct.
+/// `InvalidInput` for another pyramid, a pose that is not finite, ids that are not one per
+/// keypoint, in the map, and distinct, or nodes that are not one per keypoint, each at least 0.
 #[allow(
     clippy::float_cmp,
     reason = "the frame's scale factor must be the map's exactly, as in Python"
@@ -966,6 +980,7 @@ pub fn insert_keyframe(
     frame: &Frame,
     pose: &Matrix4<f64>,
     points: &[i64],
+    nodes: &[i64],
 ) -> Result<()> {
     if frame.features.levels != m.levels || frame.features.scale_factor != m.scale_factor {
         return fail(
@@ -986,6 +1001,12 @@ pub fn insert_keyframe(
         return fail(
             ErrorKind::InvalidInput,
             "points: expected one id per keypoint",
+        );
+    }
+    if nodes.len() != n || nodes.iter().any(|&node| node < 0) {
+        return fail(
+            ErrorKind::InvalidInput,
+            format!("nodes: expected {n} vocabulary nodes, one per keypoint, each at least 0"),
         );
     }
     let mut observed = BTreeSet::new();
@@ -1009,6 +1030,7 @@ pub fn insert_keyframe(
         m.kp_level.push(k.level);
         m.kp_angle.push(k.angle);
         m.kp_descriptor.push(frame.features.descriptors[i]);
+        m.kp_node.push(nodes[i]);
         m.kp_bearing.push(frame.bearings[i]);
         m.kp_depth.push(frame.depth[i]);
         m.kp_right.push(frame.right[i]);
@@ -1227,6 +1249,7 @@ pub fn erase_keyframe(m: &mut Map, k: usize) -> Result<()> {
     keep_where(&mut m.kp_level, &keep);
     keep_where(&mut m.kp_angle, &keep);
     keep_where(&mut m.kp_descriptor, &keep);
+    keep_where(&mut m.kp_node, &keep);
     keep_where(&mut m.kp_bearing, &keep);
     keep_where(&mut m.kp_depth, &keep);
     keep_where(&mut m.kp_right, &keep);
@@ -1546,16 +1569,75 @@ mod tests {
         Frame::new(0.0, features, bearings, depth, right).unwrap()
     }
 
+    /// The first keyframe's vocabulary nodes, each keypoint its own.
+    const FIRST_NODES: [i64; 4] = [0, 1, 2, 3];
+
+    /// The second's.
+    const SECOND_NODES: [i64; 4] = [10, 11, 12, 13];
+
     /// A map of two keyframes: the first with depth creating two points, the second seeing them.
     fn two_keyframes() -> Map {
         let mut m = Map::empty(8, 1.2);
-        insert_keyframe(&mut m, &frame_of(4, true), &Matrix4::identity(), &[-1; 4]).unwrap();
+        let none = [-1; 4];
+        insert_keyframe(
+            &mut m,
+            &frame_of(4, true),
+            &Matrix4::identity(),
+            &none,
+            &FIRST_NODES,
+        )
+        .unwrap();
         let xyz = [Vector3::new(0.0, 0.0, 2.0), Vector3::new(0.1, 0.0, 2.0)];
         add_points(&mut m, &xyz, &[vec![0], vec![1]]).unwrap();
         let mut moved = Matrix4::identity();
         moved[(0, 3)] = -0.2;
-        insert_keyframe(&mut m, &frame_of(4, false), &moved, &[0, 1, -1, -1]).unwrap();
+        insert_keyframe(
+            &mut m,
+            &frame_of(4, false),
+            &moved,
+            &[0, 1, -1, -1],
+            &SECOND_NODES,
+        )
+        .unwrap();
         m
+    }
+
+    /// Each keypoint's vocabulary node goes where its keypoint goes: inserted as given, refused
+    /// when not one per keypoint or negative, kept by a sub-map and by the keyframes a culled one
+    /// leaves (a merge's are held to Python's by `tests/edge/test_merges.py`).
+    #[test]
+    fn a_keypoint_keeps_its_node() {
+        let mut m = two_keyframes();
+        assert_eq!(m.kp_node, [FIRST_NODES, SECOND_NODES].concat());
+        let none = [-1; 4];
+        for nodes in [&[0_i64, 1, 2][..], &[0, 1, -1, 3]] {
+            let refused = insert_keyframe(
+                &mut m,
+                &frame_of(4, false),
+                &Matrix4::identity(),
+                &none,
+                nodes,
+            );
+            assert_eq!(refused.unwrap_err().kind, ErrorKind::InvalidInput);
+        }
+        assert_eq!(m.keyframes(), 2);
+        let second = sub_map(&m, &[1]);
+        assert_eq!(second.kp_node, SECOND_NODES);
+        check_map(&second).unwrap();
+        let mut negative = m.clone();
+        negative.kp_node[5] = -1;
+        assert_eq!(
+            check_map(&negative).unwrap_err().kind,
+            ErrorKind::InvalidInput
+        );
+        let mut shorter = m.clone();
+        shorter.kp_node.pop();
+        assert_eq!(
+            check_map(&shorter).unwrap_err().kind,
+            ErrorKind::InvalidInput
+        );
+        erase_keyframe(&mut m, 0).unwrap();
+        assert_eq!(m.kp_node, SECOND_NODES);
     }
 
     /// Building a map gives ids, links, counts, normals and distances.
@@ -1615,7 +1697,14 @@ mod tests {
         assert_eq!(m.pt_observations, vec![vec![0, 4], vec![1, 5]]);
         let mut further = Matrix4::identity();
         further[(0, 3)] = -0.4;
-        insert_keyframe(&mut m, &frame_of(4, false), &further, &[0, 1, -1, -1]).unwrap();
+        insert_keyframe(
+            &mut m,
+            &frame_of(4, false),
+            &further,
+            &[0, 1, -1, -1],
+            &SECOND_NODES,
+        )
+        .unwrap();
         erase_keyframe(&mut m, 1).unwrap();
         assert_eq!(m.pt_observations, vec![vec![0, 4], vec![1, 5]]);
         check_map(&m).unwrap();
@@ -1651,7 +1740,14 @@ mod tests {
         let mut further = Matrix4::identity();
         further[(0, 3)] = -0.4;
         further[(1, 3)] = 0.1;
-        insert_keyframe(&mut m, &frame_of(4, false), &further, &[0, 1, -1, -1]).unwrap();
+        insert_keyframe(
+            &mut m,
+            &frame_of(4, false),
+            &further,
+            &[0, 1, -1, -1],
+            &SECOND_NODES,
+        )
+        .unwrap();
         m.kf_parent = vec![-1, 0, 0];
         let mut looped = m.clone();
         add_loop_edge(&mut looped, 1, 0).unwrap();
@@ -1703,6 +1799,7 @@ mod tests {
             &frame_of(4, true),
             &Matrix4::identity(),
             &[5, -1, -1, -1],
+            &FIRST_NODES,
         );
         assert_eq!(result.unwrap_err().kind, ErrorKind::InvalidInput);
         assert_eq!(

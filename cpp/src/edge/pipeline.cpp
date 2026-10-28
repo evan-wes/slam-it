@@ -495,7 +495,7 @@ class PipelineThreads {
       const std::vector<std::int64_t> holding = held(closing_);
       auto mapped = owner_.apply_mapping([&](Map& m) {
         return process(m, camera_, request.frame, still_mapped(placed(request, m), m), mode_,
-                       options_, holding, &asked);
+                       options_, owner_.vocabulary(), holding, &asked);
       });
       if (!mapped) {
         return std::unexpected(std::move(mapped.error()));
@@ -848,9 +848,11 @@ struct Tracking {
 /// @param camera The camera.
 /// @param frame The frame.
 /// @param options The settings.
+/// @param vocabulary The vocabulary the keyframes' nodes are of.
 /// @return The started map, if any, and how the attempt went; a stage's error.
 Result<Initialization> initialize_monocular(TrackingState& state, const Camera& camera,
-                                            const Frame& frame, const Options& options) {
+                                            const Frame& frame, const Options& options,
+                                            const foundations::vocabulary::Vocabulary& vocabulary) {
   const auto not_started = [](Outcome outcome, std::optional<std::int64_t> matches) {
     return Initialization{.started = std::nullopt,
                           .summary = {.outcome = outcome, .matches = matches, .solves = {}}};
@@ -880,7 +882,7 @@ Result<Initialization> initialize_monocular(TrackingState& state, const Camera& 
     pairs.push_back({match.first, match.second});
   }
   // Nothing keeps the reference: a later frame may have the parallax.
-  return edge::initialize_monocular(camera, *state.reference, frame, pairs, options);
+  return edge::initialize_monocular(camera, *state.reference, frame, pairs, options, vocabulary);
 }
 
 /// @brief Relocalise a frame in the map tracked, and in every kept map with it (the online-SLAM
@@ -963,9 +965,7 @@ Result<Placed> place(const TrackingState& state, MapOwner& owner, const Atlas& a
     return std::unexpected(std::move(recovery.error()));
   }
   summary.pnp = recovery->summary;
-  const std::optional<foundations::vocabulary::Vocabulary>& words = owner.vocabulary();
-  if (recovery->tracked || !words ||
-      !options.relocalization.enabled) {  // placed, or not relocalising
+  if (recovery->tracked || !options.relocalization.enabled) {  // placed, or not relocalising
     if (recovery->tracked) {
       summary.placed_by = Placement::kLocalPnp;
     }
@@ -983,8 +983,8 @@ Result<Placed> place(const TrackingState& state, MapOwner& owner, const Atlas& a
     // and a frame placed in it goes on with the view of where it was placed; one placed in a
     // kept map goes on in that map, once tracking has taken it up.
     const Map& whole = owner.views() ? *owner.map() : *view.map;
-    auto found =
-        relocalize_everywhere(whole, *owner.database(), *words, atlas, camera, frame, options);
+    auto found = relocalize_everywhere(whole, *owner.database(), owner.vocabulary(), atlas, camera,
+                                       frame, options);
     if (found && found->first.tracked && !found->second && owner.views()) {
       view = owner.relocalized(found->first.tracked->points);
     }
@@ -1420,11 +1420,12 @@ ViewSize size_of(const Map& m) {
           .points = static_cast<std::int64_t>(point_count(m)),
           .bytes = bytes(m.kf_id) + bytes(m.kf_time) + bytes(m.kf_pose) + bytes(m.kf_parent) +
                    bytes(m.kf_start) + bytes(m.kp_xy) + bytes(m.kp_level) + bytes(m.kp_angle) +
-                   bytes(m.kp_descriptor) + bytes(m.kp_bearing) + bytes(m.kp_depth) +
-                   bytes(m.kp_right) + bytes(m.kp_point) + bytes(m.pt_id) + bytes(m.pt_xyz) +
-                   bytes(m.pt_descriptor) + bytes(m.pt_normal) + bytes(m.pt_min_distance) +
-                   bytes(m.pt_max_distance) + bytes(m.pt_visible) + bytes(m.pt_found) +
-                   bytes(m.pt_first_kf) + bytes(m.pt_reference_kf) + observations};
+                   bytes(m.kp_descriptor) + bytes(m.kp_node) + bytes(m.kp_bearing) +
+                   bytes(m.kp_depth) + bytes(m.kp_right) + bytes(m.kp_point) + bytes(m.pt_id) +
+                   bytes(m.pt_xyz) + bytes(m.pt_descriptor) + bytes(m.pt_normal) +
+                   bytes(m.pt_min_distance) + bytes(m.pt_max_distance) + bytes(m.pt_visible) +
+                   bytes(m.pt_found) + bytes(m.pt_first_kf) + bytes(m.pt_reference_kf) +
+                   observations};
 }
 
 View MapOwner::view() const {
@@ -1489,7 +1490,7 @@ Result<void> MapOwner::start(Map m) {
   if (publishing()) {
     publish(*map_);
   }
-  if (vocabulary_) {
+  if (keeps_database_) {
     database_.emplace();
     return sync_database();
   }
@@ -1577,14 +1578,14 @@ std::pair<std::optional<Map>, std::optional<Database>> MapOwner::close() {
 void MapOwner::resume(Map m, std::optional<Database> database) {
   ++corrections_;  // counted first: the view made once tracking anchors carries the new count
   map_ = std::move(m);
-  database_ = vocabulary_ ? std::move(database) : std::nullopt;
+  database_ = keeps_database_ ? std::move(database) : std::nullopt;
 }
 
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): the merge's two offsets, as Python's
 Result<void> MapOwner::take_merged(Map m, Database database, std::int64_t keyframe_offset,
                                    std::int64_t point_offset) {
   map_ = std::move(m);
-  if (vocabulary_) {
+  if (keeps_database_) {
     database_ = std::move(database);
   }
   {
@@ -1609,7 +1610,7 @@ Result<void> MapOwner::changed() {
 }
 
 Result<void> MapOwner::sync_database() {
-  if (!database_ || !map_ || !vocabulary_) {
+  if (!database_ || !map_) {
     return {};  // no keyframe database
   }
   const Map& m = *map_;
@@ -1631,7 +1632,7 @@ Result<void> MapOwner::sync_database() {
     const auto begin = static_cast<std::size_t>(m.kf_start[k]);
     const auto end = static_cast<std::size_t>(m.kf_start[k + 1]);
     const auto descriptors = std::span(m.kp_descriptor).subspan(begin, end - begin);
-    if (auto ok = add(*database_, *vocabulary_, m.kf_id[k], descriptors); !ok) {
+    if (auto ok = add(*database_, vocabulary_, m.kf_id[k], descriptors); !ok) {
       return ok;
     }
   }
@@ -1639,8 +1640,7 @@ Result<void> MapOwner::sync_database() {
 }
 
 Pipeline::Pipeline(Mode mode, Camera camera, Options options,
-                   std::optional<foundations::vocabulary::Vocabulary> vocabulary,
-                   Threading threading)
+                   foundations::vocabulary::Vocabulary vocabulary, Threading threading)
     : mode_(mode),
       camera_(std::move(camera)),
       options_(options),
@@ -1656,7 +1656,7 @@ Pipeline::~Pipeline() = default;
 Pipeline::Pipeline(Pipeline&&) noexcept = default;
 
 Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
-                                  std::optional<foundations::vocabulary::Vocabulary> vocabulary,
+                                  foundations::vocabulary::Vocabulary vocabulary,
                                   Threading threading) {
   if (auto ok = check_setup(camera, options); !ok) {
     return std::unexpected(std::move(ok.error()));
@@ -1664,15 +1664,6 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
   if (mode != Mode::kMonocular && !(camera.baseline > 0.0)) {
     return fail(ErrorKind::kInvalidInput,
                 std::string("camera.baseline: ") + name(mode) + " needs a positive baseline");
-  }
-  const bool needed = keeps_keyframe_database(options);
-  if (needed && !vocabulary) {
-    return fail(ErrorKind::kInvalidInput,
-                "vocabulary: relocalization.enabled or loops.enabled needs one");
-  }
-  if (!needed && vocabulary) {
-    return fail(ErrorKind::kInvalidInput,
-                "vocabulary: given, but relocalization.enabled and loops.enabled are both off");
   }
   return Pipeline(mode, std::move(camera), options, std::move(vocabulary), threading);
 }
@@ -1868,9 +1859,10 @@ Result<std::pair<LostSummary, double>> Pipeline::switch_map(std::int64_t number,
 }
 
 Result<Pipeline::Step> Pipeline::initialize(const Frame& frame) {
-  auto attempt = mode_ == Mode::kMonocular
-                     ? initialize_monocular(tracking_, camera_, frame, options_)
-                     : initialize_from_depth(frame, options_);
+  auto attempt =
+      mode_ == Mode::kMonocular
+          ? initialize_monocular(tracking_, camera_, frame, options_, shared_->owner().vocabulary())
+          : initialize_from_depth(frame, options_, shared_->owner().vocabulary());
   if (!attempt) {
     return std::unexpected(std::move(attempt.error()));
   }
@@ -1933,7 +1925,8 @@ Result<Pipeline::Keyframed> Pipeline::make_keyframe(const Map& m, const Frame& f
   const std::vector<std::int64_t> holding = held(shared_->closing());
   // Local mapping's step: insert the frame as a keyframe and map around it.
   auto mapping = shared_->owner().apply_mapping([&](Map& changed) {
-    return process(changed, camera_, frame, tracked, mode_, options_, holding);
+    return process(changed, camera_, frame, tracked, mode_, options_, shared_->owner().vocabulary(),
+                   holding);
   });
   if (!mapping) {
     return std::unexpected(std::move(mapping.error()));

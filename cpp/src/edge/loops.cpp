@@ -1680,6 +1680,7 @@ void absorb(Map& into, const Map& other, std::int64_t keyframe_offset, std::int6
   append<std::int64_t>(into.kp_level, other.kp_level);
   append<std::int64_t>(into.kp_angle, other.kp_angle);
   append<foundations::orb::Descriptor>(into.kp_descriptor, other.kp_descriptor);
+  append<std::int64_t>(into.kp_node, other.kp_node);
   append<Eigen::Vector3d>(into.kp_bearing, other.kp_bearing);
   append<double>(into.kp_depth, other.kp_depth);
   append<double>(into.kp_right, other.kp_right);

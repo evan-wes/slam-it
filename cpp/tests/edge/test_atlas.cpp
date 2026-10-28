@@ -76,7 +76,8 @@ std::optional<edge::Map> merged_map(const edge::Map& matched, std::size_t count)
   edge::Map merged = matched;
   const std::vector<std::int64_t> none(scene::kPoints, -1);
   for (std::size_t k = 0; k < count; ++k) {
-    if (!edge::insert_keyframe(merged, scene::frame(k, false), carried(scene::pose(k)), none)) {
+    const edge::Frame frame = scene::frame(k, false);
+    if (!edge::insert_keyframe(merged, frame, carried(scene::pose(k)), none, scene::nodes(frame))) {
       return std::nullopt;
     }
   }

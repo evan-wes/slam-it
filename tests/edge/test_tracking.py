@@ -244,7 +244,9 @@ def _moved(dz: float) -> np.ndarray:
 def scene() -> tuple[Map, Frame, Tracked]:
     """Build the scene's map of one keyframe, its keypoints on level 2, each seeing its point."""
     last = _scene_frame(np.eye(4), level=2)
-    m = maps.insert_keyframe(maps.empty(8, 1.2), last, np.eye(4), np.full(last.size, -1))
+    m = maps.insert_keyframe(
+        maps.empty(8, 1.2), last, np.eye(4), np.full(last.size, -1), np.zeros(last.size, np.int64)
+    )
     m = maps.add_points(m, _scene_points(), np.arange(last.size)[:, None])
     return m, last, Tracked(pose=np.eye(4), points=m.pt_id.copy())
 

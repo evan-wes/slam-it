@@ -69,6 +69,9 @@ struct Map {
   std::vector<std::int64_t> kp_angle;
   /// @brief Its descriptor.
   std::vector<foundations::orb::Descriptor> kp_descriptor;
+  /// @brief Its descriptor's node at the vocabulary's direct level, at least 0, given with its
+  ///        keyframe (`slam_it.edge.map`'s docstring: ORB-SLAM's `mFeatVec`).
+  std::vector<std::int64_t> kp_node;
   /// @brief Its unit bearing (NaN where it has none).
   std::vector<Eigen::Vector3d> kp_bearing;
   /// @brief Its depth, in metres (NaN for none).
@@ -272,11 +275,15 @@ void index_observations(Map& m);
 /// @param frame The frame (its pyramid the map's).
 /// @param pose Its `T_cam_world`.
 /// @param points The id each keypoint observes (each in the map, at most once), or -1.
-/// @return Nothing; `InvalidInput` for another pyramid, a pose that is not finite, or ids that
-///         are not one per keypoint, in the map, and distinct.
+/// @param nodes Each keypoint's vocabulary node at the direct level, at least 0
+///        (`foundations::vocabulary::quantize`'s `nodes`).
+/// @return Nothing; `InvalidInput` for another pyramid, a pose that is not finite, ids that are
+///         not one per keypoint, in the map, and distinct, or nodes that are not one per
+///         keypoint, each at least 0.
 [[nodiscard]] foundations::Result<void> insert_keyframe(Map& m, const Frame& frame,
                                                         const Eigen::Matrix4d& pose,
-                                                        std::span<const std::int64_t> points);
+                                                        std::span<const std::int64_t> points,
+                                                        std::span<const std::int64_t> nodes);
 
 /// @brief Create points, each observed by keyframe keypoints; their creator and reference is
 ///        the last observer's keyframe, visible and found once.

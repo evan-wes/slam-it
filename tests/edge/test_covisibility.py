@@ -57,6 +57,7 @@ def fixture_map(case: dict[str, Any]) -> Map:
         kp_level=np.zeros(t, dtype=np.int64),
         kp_angle=np.zeros(t, dtype=np.int64),
         kp_descriptor=np.zeros((t, DESCRIPTOR_BYTES), dtype=np.uint8),
+        kp_node=np.zeros(t, dtype=np.int64),
         kp_bearing=np.tile([0.0, 0.0, 1.0], (t, 1)),
         kp_depth=np.full(t, np.nan),
         kp_right=np.full(t, np.nan),

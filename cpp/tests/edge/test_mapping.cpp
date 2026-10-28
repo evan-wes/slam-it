@@ -88,7 +88,8 @@ void check_keyframes_and_points(int& failures) {
   edge::Map m = *built;
   const std::vector<std::int64_t> none(scene::kPoints, -1);
   const Eigen::Matrix4d ahead = scene::moved(0.1);
-  if (!edge::insert_keyframe(m, scene::frame_at(ahead, true), ahead, none)) {
+  const edge::Frame ahead_frame = scene::frame_at(ahead, true);
+  if (!edge::insert_keyframe(m, ahead_frame, ahead, none, scene::nodes(ahead_frame))) {
     expect(false, "the new keyframe inserts", failures);
     return;
   }
@@ -115,9 +116,11 @@ void check_keyframes_and_points(int& failures) {
 /// @param failures Running failure count.
 void check_triangulation(int& failures) {
   edge::Map m = edge::empty_map(8, 1.2);
-  if (!edge::insert_keyframe(m, scene::frame(0, false), scene::pose(0), ids(0, 0)) ||
+  const edge::Frame first = scene::frame(0, false);
+  const edge::Frame second = scene::frame(2, false);
+  if (!edge::insert_keyframe(m, first, scene::pose(0), ids(0, 0), scene::nodes(first)) ||
       !add_scene_points(m, 0, first_points(10)) ||
-      !edge::insert_keyframe(m, scene::frame(2, false), scene::pose(2), ids(0, 10))) {
+      !edge::insert_keyframe(m, second, scene::pose(2), ids(0, 10), scene::nodes(second))) {
     expect(false, "the triangulation scene builds", failures);
     return;
   }
@@ -142,9 +145,11 @@ void check_triangulation(int& failures) {
 void check_fusion(int& failures) {
   constexpr std::int64_t kShared = 5;
   edge::Map m = edge::empty_map(8, 1.2);
-  if (!edge::insert_keyframe(m, scene::frame(0, false), scene::pose(0), ids(0, 0)) ||
+  const edge::Frame first = scene::frame(0, false);
+  const edge::Frame second = scene::frame(2, false);
+  if (!edge::insert_keyframe(m, first, scene::pose(0), ids(0, 0), scene::nodes(first)) ||
       !add_scene_points(m, 0, first_points(scene::kPoints)) ||
-      !edge::insert_keyframe(m, scene::frame(2, false), scene::pose(2), ids(0, kShared)) ||
+      !edge::insert_keyframe(m, second, scene::pose(2), ids(0, kShared), scene::nodes(second)) ||
       !add_scene_points(m, 1, first_points(scene::kPoints), kShared)) {
     expect(false, "the fusion scene builds", failures);
     return;
@@ -176,7 +181,8 @@ void check_culling_and_process(int& failures) {
     edge::Map copy = m;
     edge::Options options;
     options.mapping.redundant_observers = observers;
-    if (!edge::insert_keyframe(copy, scene::frame(2, true), scene::pose(2), ids(0, 60)) ||
+    const edge::Frame again = scene::frame(2, true);
+    if (!edge::insert_keyframe(copy, again, scene::pose(2), ids(0, 60), scene::nodes(again)) ||
         !edge::cull_keyframes(copy, scene::camera(), edge::Mode::kRgbd, options) ||
         !edge::check_map(copy)) {
       return std::vector<std::int64_t>{};
@@ -210,7 +216,7 @@ void check_culling_and_process(int& failures) {
   // Half the keypoints tracked: depth makes points of the rest.
   const auto mapped =
       edge::process(m, scene::camera(), frame, {.pose = ahead, .points = ids(0, 30)},
-                    edge::Mode::kRgbd, edge::Options{});
+                    edge::Mode::kRgbd, edge::Options{}, scene::one_word());
   const bool processed = mapped.has_value();
   expect(processed && m.kf_id.back() == 3 && edge::check_map(m).has_value(),
          "a whole mapping step keeps the new keyframe and a valid map", failures);

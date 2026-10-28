@@ -8,6 +8,7 @@ use slam_it_foundations::matching::{Match, Projection, SearchOptions};
 use slam_it_foundations::nls::Stop;
 use slam_it_foundations::triangulation;
 use slam_it_foundations::twoview::{self, Status};
+use slam_it_foundations::vocabulary::{self, Vocabulary};
 
 use crate::adjust::{Solve, bundle_adjust};
 use crate::covisibility;
@@ -203,19 +204,27 @@ fn check_frame(frame: &Frame, options: &Options, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Adds a keyframe that observes no point yet.
+/// Adds a keyframe that observes no point yet, its features quantised as it enters the map
+/// (ORB-SLAM's `ComputeBoW`).
 ///
 /// # Arguments
 ///
 /// * `m` - The map.
 /// * `frame` - The frame.
 /// * `pose` - Its `T_cam_world`.
+/// * `vocabulary` - The vocabulary, checked.
 ///
 /// # Errors
 ///
 /// The map's error.
-fn insert_unobserving(m: &mut Map, frame: &Frame, pose: &Matrix4<f64>) -> Result<()> {
-    map::insert_keyframe(m, frame, pose, &vec![-1; frame.size()])
+fn insert_unobserving(
+    m: &mut Map,
+    frame: &Frame,
+    pose: &Matrix4<f64>,
+    vocabulary: &Vocabulary,
+) -> Result<()> {
+    let nodes = vocabulary::quantize(vocabulary, &frame.features.descriptors).nodes;
+    map::insert_keyframe(m, frame, pose, &vec![-1; frame.size()], &nodes)
 }
 
 /// Scales the map's translations and points, and refreshes the points (a monocular map's
@@ -267,17 +276,22 @@ fn median(values: &mut [f64]) -> f64 {
 ///
 /// * `frame` - The frame.
 /// * `options` - The minimum keypoints, and the pyramid.
+/// * `vocabulary` - The vocabulary, checked, its features' nodes are of ([`Map::kp_node`]).
 ///
 /// # Returns
 ///
-/// The map of one keyframe at the origin with a point at every keypoint with depth (and a
-/// bearing), or none unless it has more than `initialization.min_features_depth` keypoints; and the
-/// outcome.
+/// The map of one keyframe at the origin with its nodes and a point at every keypoint with
+/// depth (and a bearing), or none unless it has more than `initialization.min_features_depth`
+/// keypoints; and the outcome.
 ///
 /// # Errors
 ///
 /// `InvalidInput` for a frame whose pyramid is not the settings', or invalid settings.
-pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Initialization> {
+pub fn initialize_from_depth(
+    frame: &Frame,
+    options: &Options,
+    vocabulary: &Vocabulary,
+) -> Result<Initialization> {
     check_frame(frame, options, "frame")?;
     if frame.size() <= options.initialization.min_features_depth {
         return Ok(Initialization::failed(
@@ -290,7 +304,7 @@ pub fn initialize_from_depth(frame: &Frame, options: &Options) -> Result<Initial
         .filter(|&i| !frame.depth[i].is_nan() && !frame.bearings[i].x.is_nan())
         .collect();
     let mut m = Map::empty(options.features.levels, options.features.scale_factor);
-    insert_unobserving(&mut m, frame, &Matrix4::identity())?;
+    insert_unobserving(&mut m, frame, &Matrix4::identity(), vocabulary)?;
     let xyz: Vec<Vector3<f64>> = has_depth
         .iter()
         .map(|&i| {
@@ -438,10 +452,11 @@ fn kept_points(
 /// * `frame` - The later frame.
 /// * `matches` - `(reference keypoint, frame keypoint)` pairs.
 /// * `options` - The minimum matches, the parallax, the seed, and the pyramid.
+/// * `vocabulary` - The vocabulary, checked, the keyframes' nodes are of ([`Map::kp_node`]).
 ///
 /// # Returns
 ///
-/// The map of two keyframes and their points (the chosen motion's inliers in front of both
+/// The map of two keyframes, their nodes and their points (the chosen motion's inliers in front of both
 /// views with rays whose cosine is below `initialization.parallax_cos`, `CheckRT`), scaled so the
 /// first's median depth is 1, or none if too few keypoints match, the views do not
 /// initialise, or too few points survive the adjustment; with the pairs given, the outcome and
@@ -457,6 +472,7 @@ pub fn initialize_monocular(
     frame: &Frame,
     matches: &[[usize; 2]],
     options: &Options,
+    vocabulary: &Vocabulary,
 ) -> Result<Initialization> {
     check_camera(camera)?;
     check_frame(reference, options, "reference")?;
@@ -503,8 +519,8 @@ pub fn initialize_monocular(
         return failed(outcome_of(result.status), Vec::new());
     }
     let mut m = Map::empty(options.features.levels, options.features.scale_factor);
-    insert_unobserving(&mut m, reference, &Matrix4::identity())?;
-    insert_unobserving(&mut m, frame, &result.relative_pose)?;
+    insert_unobserving(&mut m, reference, &Matrix4::identity(), vocabulary)?;
+    insert_unobserving(&mut m, frame, &result.relative_pose, vocabulary)?;
     let second = m.kf_start[1];
     let (kept, xyz) = kept_points(&result, &bearings1, &bearings2, options)?;
     let observers: Vec<Vec<usize>> = kept

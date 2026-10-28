@@ -463,7 +463,8 @@ def test_a_request_crosses_as_a_command_line() -> None:
     )
     assert request.arguments() == [
         *("--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"),
-        *("--first", "2", "--count", "5", "--record-features"),
+        *("--first", "2", "--count", "5", "--vocabulary", str(vocabularies.DEFAULT)),
+        "--record-features",
         *(
             "--option",
             "stereo.close_depth=0.30000000000000004",
@@ -484,14 +485,18 @@ def test_parse_reads_a_command_line() -> None:
     """Every flag is read, in any order; the settings named are set, the rest default."""
     request = vo.parse(
         [*("--mode", "rgbd", "--dataset", "tum", "--sequence", "seq", "--out", "out"),
-         *("--first", "3", "--record-features", "--count", "10"),
+         *("--first", "3", "--record-features", "--vocabulary", "words", "--count", "10"),
          *("--option", "covisibility.local_neighbours=7", "--option", "stereo.close_depth=35.5")]
     )  # fmt: skip
     expected = Options().with_settings(
         {"covisibility.local_neighbours": 7, "stereo.close_depth": 35.5}
     )
-    assert request == vo.Request("tum", (Path("seq"),), "rgbd", Path("out"), 3, 10, expected, True)
-    plain = vo.parse(["--dataset", "tum", "--sequence", "s", "--mode", "rgbd", "--out", "o"])
+    assert request == vo.Request(
+        "tum", (Path("seq"),), "rgbd", Path("out"), 3, 10, expected, True, Path("words")
+    )
+    plain = vo.parse(
+        ["--dataset", "tum", "--sequence", "s", "--mode", "rgbd", "--out", "o", "--vocabulary", "v"]
+    )
     assert (plain.first, plain.count, plain.options) == (0, None, Options())
     assert not plain.record_features
 
@@ -520,6 +525,7 @@ def test_parse_reads_a_command_line() -> None:
         (["--record-features", "--record-features"], "--record-features: given twice"),
         (["--threaded", "--threaded"], "--threaded: given twice"),
         (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
+        ([], "--vocabulary: missing"),
         (
             ["--option", "relocalization.enabled=maybe"],
             "relocalization.enabled: expected true or false, got 'maybe'",
@@ -531,7 +537,9 @@ def test_parse_reads_a_command_line() -> None:
     ],
 )
 def test_parse_refuses_what_the_native_programs_refuse(more: list[str], message: str) -> None:
-    """A bad flag, value or setting, a repeated flag, or a missing value: a usage error.
+    """A bad flag, value or setting, a repeated or missing flag, or a missing value: usage errors.
+
+    Every command line names a vocabulary, which every run maps with.
 
     The cases and messages of the native programs' own tests.
     """
@@ -594,6 +602,7 @@ def test_parse_refuses_an_unknown_mode_or_a_missing_flag() -> None:
 def test_a_setting_out_of_range_is_a_failed_run_not_a_usage_error() -> None:
     """As the natives' check refuses it after reading the command line, with exit code 3."""
     base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
+    base += ["--vocabulary", "words"]
     with pytest.raises(InvalidInputError, match=r"covisibility\.local_neighbours") as raised:
         vo.parse([*base, "--option", "covisibility.local_neighbours=0"])
     assert not isinstance(raised.value, vo.UsageError)
@@ -931,60 +940,32 @@ def test_the_vocabulary_and_a_flag_setting_cross_the_command_line() -> None:
     arguments = request.arguments()
     assert arguments[arguments.index("--vocabulary") + 1] == "words"
     assert arguments[arguments.index("--option") + 1] == "relocalization.enabled=false"
-    assert vo.parse(base).vocabulary is None
+    with pytest.raises(vo.UsageError, match="--vocabulary: missing"):
+        vo.parse(base)
     assert vo.parse_setting("relocalization.enabled= true ") == ("relocalization.enabled", True)
 
 
 @pytest.mark.parametrize(
-    ("relocalize", "close_loops", "vocabulary", "message"),
+    "settings",
     [
-        (True, False, None, "--vocabulary: relocalization.enabled or loops.enabled needs one"),
-        (False, True, None, "--vocabulary: relocalization.enabled or loops.enabled needs one"),
-        (
-            False, False, Path("words"),
-            "--vocabulary: given, but relocalization.enabled and loops.enabled are both off",
-        ),
+        {},
+        {"relocalization.enabled": False},
+        {"relocalization.enabled": False, "loops.enabled": False},
     ],
-)  # fmt: skip
-def test_check_refuses_a_vocabulary_missing_or_unasked_for(
-    relocalize: bool, close_loops: bool, vocabulary: Path | None, message: str
+)
+def test_every_run_maps_with_the_committed_vocabulary_unless_told_otherwise(
+    settings: dict[str, bool], tmp_path: Path
 ) -> None:
-    """Relocalising or closing loops needs a vocabulary; one given doing neither is refused."""
-    settings = {"relocalization.enabled": relocalize, "loops.enabled": close_loops}
-    request = vo.Request(
-        "tum", (SEQUENCES / "tum_camera",), "rgbd", Path("out"),
-        options=Options().with_settings(settings), vocabulary=vocabulary,
-    )  # fmt: skip
-    with pytest.raises(InvalidInputError, match=re.escape(message)):
-        vo.check(request)
+    """Unnamed, a run's vocabulary is the committed one, and the run records it.
 
-
-def test_run_keeps_a_database_with_the_committed_vocabulary_unless_told_otherwise(
-    tmp_path: Path,
-) -> None:
-    """Unnamed, the vocabulary of a run relocalising or closing loops is the committed one.
-
-    The run records it, loop closing alone included (B3's review panel, H7). With both off, none
-    is recorded, and one given is refused before anything runs.
+    Every run maps with it, relocalising, closing loops (alone: B3's review panel, H7) or
+    neither, which keeps no keyframe database (``tests/edge/test_pipeline.py``).
     """
-    on = vo.run("tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "on", count=0)
-    assert on.vocabulary == vocabularies.record(vocabularies.DEFAULT)
-    loops_only = vo.run(
-        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "loops", count=0,
-        options=Options().with_settings({"relocalization.enabled": False}),
-    )  # fmt: skip
-    assert loops_only.vocabulary == vocabularies.record(vocabularies.DEFAULT)
-    off_options = Options().with_settings({"relocalization.enabled": False, "loops.enabled": False})
-    off = vo.run(
-        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "off", count=0, options=off_options
+    options = Options().with_settings(settings)
+    run = vo.run(
+        "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "run", count=0, options=options
     )
-    assert off.vocabulary is None
-    with pytest.raises(InvalidInputError, match=r"loops\.enabled are both off"):
-        vo.run(
-            "tum", SEQUENCES / "tum_camera", "rgbd", tmp_path / "refused", count=0,
-            options=off_options, vocabulary=vocabularies.DEFAULT,
-        )  # fmt: skip
-    assert not (tmp_path / "refused").exists()
+    assert run.vocabulary == vocabularies.record(vocabularies.DEFAULT)
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -992,16 +973,20 @@ def test_run_keeps_a_database_with_the_committed_vocabulary_unless_told_otherwis
     ("more", "message"),
     [
         (["--vocabulary", "a", "--vocabulary", "b"], "--vocabulary: given twice"),
+        ([], "--vocabulary: missing"),
         (
             ["--option", "relocalization.enabled=maybe"],
             "relocalization.enabled: expected true or false, got 'maybe'",
         ),
     ],
 )
-def test_every_program_refuses_a_vocabulary_twice_and_a_flag_not_true_or_false(
+def test_every_program_refuses_a_vocabulary_twice_or_missing_and_a_flag_not_true_or_false(
     backend: str, more: list[str], message: str
 ) -> None:
-    """Every program's usage error, with Python's parse's message (review panel finding H10)."""
+    """Every program's usage error, with Python's parse's message (review panel finding H10).
+
+    Every command line names a vocabulary, whatever its settings: every run maps with it.
+    """
     base = ["--dataset", "tum", "--sequence", "seq", "--mode", "rgbd", "--out", "out"]
     program = vo.command(require_program(backend))
     done = subprocess.run([*program, *base, *more], capture_output=True, text=True, check=False)
@@ -1020,34 +1005,25 @@ def _foreign_vocabulary(folder: Path) -> Path:
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
-@pytest.mark.parametrize("refused", ["none", "unasked", "foreign"])
-def test_every_program_refuses_a_vocabulary_missing_unasked_or_foreign(
-    backend: str, refused: str, tmp_path: Path
+@pytest.mark.parametrize(
+    "settings", [{}, {"relocalization.enabled": False, "loops.enabled": False}]
+)
+def test_every_program_refuses_a_foreign_vocabulary(
+    backend: str, settings: dict[str, bool], tmp_path: Path
 ) -> None:
-    """A vocabulary missing, unasked for or foreign: every program fails the run and writes none.
+    """A vocabulary of another descriptor: every program fails the run and writes none.
 
-    Relocalising without a vocabulary, given one with relocalisation and loop closing off, or
-    given one of another descriptor, every program exits 3 and says why (review panel findings A1
-    and run 2's H17: before B1's fixes, the native programs read a foreign vocabulary and exited
-    0).
+    Every program exits 3 and says why (review panel findings A1 and run 2's H17: before B1's
+    fixes, the native programs read a foreign vocabulary and exited 0), relocalising or not: a
+    run with relocalisation and loop closing off maps with it too.
     """
     out = tmp_path / "run"
-    request = vo.Request("tum", (SEQUENCES / "tum_camera",), "rgbd", out, count=0)
-    message = "--vocabulary: relocalization.enabled or loops.enabled needs one"
-    if refused == "unasked":
-        request = replace(
-            request,
-            options=Options().with_settings(
-                {"relocalization.enabled": False, "loops.enabled": False}
-            ),
-            vocabulary=vocabularies.DEFAULT,
-        )
-        message = "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
-    elif refused == "foreign":
-        folder = _foreign_vocabulary(tmp_path / "foreign")
-        request = replace(request, vocabulary=folder)
-        message = f"{folder}: trained on descriptor version 99"
-    _fails_the_run(backend, request, message)
+    folder = _foreign_vocabulary(tmp_path / "foreign")
+    request = vo.Request(
+        "tum", (SEQUENCES / "tum_camera",), "rgbd", out, count=0,
+        options=Options().with_settings(settings), vocabulary=folder,
+    )  # fmt: skip
+    _fails_the_run(backend, request, f"{folder}: trained on descriptor version 99")
     assert not (out / "run.json").exists()
 
 

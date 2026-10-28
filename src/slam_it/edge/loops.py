@@ -2130,10 +2130,10 @@ def _absorb(into: Map, other: Map, keyframe_offset: int, point_offset: int) -> M
     tables: dict[str, Any] = {
         name: np.concatenate([getattr(into, name), getattr(other, name)])
         for name in (
-            "kf_time", "kf_pose", "kp_xy", "kp_level", "kp_angle", "kp_descriptor", "kp_bearing",
-            "kp_depth", "kp_right", "pt_xyz", "pt_descriptor", "pt_normal", "pt_min_distance",
-            "pt_max_distance", "pt_visible", "pt_found", "gone_pt_xyz", "gone_pt_how",
-            "gone_kf_time", "gone_kf_pose", "gone_kf_relative",
+            "kf_time", "kf_pose", "kp_xy", "kp_level", "kp_angle", "kp_descriptor", "kp_node",
+            "kp_bearing", "kp_depth", "kp_right", "pt_xyz", "pt_descriptor", "pt_normal",
+            "pt_min_distance", "pt_max_distance", "pt_visible", "pt_found", "gone_pt_xyz",
+            "gone_pt_how", "gone_kf_time", "gone_kf_pose", "gone_kf_relative",
         )
     }  # fmt: skip
     return replace(

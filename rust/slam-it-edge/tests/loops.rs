@@ -18,7 +18,7 @@ use slam_it_foundations::graphs;
 use slam_it_foundations::nls::Stop;
 use slam_it_foundations::so3;
 
-use scene::{KEYFRAMES, POINTS, camera, frame_at, one_word, points, pose};
+use scene::{KEYFRAMES, POINTS, camera, frame_at, nodes, one_word, points, pose};
 
 /// The drift the second visit has: a turn of 3 degrees about y and a shift.
 ///
@@ -69,16 +69,37 @@ fn view(k: usize, timestamp: f64) -> Frame {
 fn twice_seen() -> Map {
     let mut m = Map::empty(8, 1.2);
     let observers: Vec<Vec<usize>> = (0..POINTS).map(|p| vec![p]).collect();
-    map::insert_keyframe(&mut m, &view(0, 0.0), &pose(0), &[-1; POINTS]).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &view(0, 0.0),
+        &pose(0),
+        &[-1; POINTS],
+        &nodes(&view(0, 0.0)),
+    )
+    .unwrap();
     map::add_points(&mut m, &points(), &observers).unwrap();
     let first: Vec<i64> = (0..POINTS as i64).collect();
     for k in 1..KEYFRAMES {
-        map::insert_keyframe(&mut m, &view(k, k as f64), &pose(k), &first).unwrap();
+        map::insert_keyframe(
+            &mut m,
+            &view(k, k as f64),
+            &pose(k),
+            &first,
+            &nodes(&view(k, k as f64)),
+        )
+        .unwrap();
         covisibility::adopt(&mut m, k).unwrap();
     }
     let undo = drift().try_inverse().unwrap();
     let start = KEYFRAMES;
-    map::insert_keyframe(&mut m, &view(0, 3.0), &(pose(0) * undo), &[-1; POINTS]).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &view(0, 3.0),
+        &(pose(0) * undo),
+        &[-1; POINTS],
+        &nodes(&view(0, 3.0)),
+    )
+    .unwrap();
     covisibility::adopt(&mut m, start).unwrap();
     let moved: Vec<Vector3<f64>> = points()
         .iter()
@@ -89,7 +110,14 @@ fn twice_seen() -> Map {
     let second: Vec<i64> = (POINTS as i64..2 * POINTS as i64).collect();
     for k in 1..KEYFRAMES {
         let at = 3.0 + k as f64;
-        map::insert_keyframe(&mut m, &view(k, at), &(pose(k) * undo), &second).unwrap();
+        map::insert_keyframe(
+            &mut m,
+            &view(k, at),
+            &(pose(k) * undo),
+            &second,
+            &nodes(&view(k, at)),
+        )
+        .unwrap();
         covisibility::adopt(&mut m, start + k).unwrap();
     }
     m

@@ -26,7 +26,7 @@ using slam_it::testing::is_invalid_input;
 void check_from_depth(int& failures) {
   const edge::Frame frame = scene::frame(0, true);
   const edge::Options options{.initialization = {.min_features_depth = 10}};
-  const auto started = edge::initialize_from_depth(frame, options);
+  const auto started = edge::initialize_from_depth(frame, options, scene::one_word());
   expect(started.has_value() && started->started.has_value() &&
              started->summary.outcome == edge::Outcome::kInitialized && !started->summary.matches &&
              started->summary.solves.empty(),
@@ -43,7 +43,7 @@ void check_from_depth(int& failures) {
            "it puts a point at every keypoint's depth", failures);
   }
   const auto few = edge::initialize_from_depth(
-      frame, edge::Options{.initialization = {.min_features_depth = 100}});
+      frame, edge::Options{.initialization = {.min_features_depth = 100}}, scene::one_word());
   const auto not_started = [](const auto& attempt, edge::Outcome outcome) {
     return attempt.has_value() && !attempt->started.has_value() &&
            attempt->summary.outcome == outcome;
@@ -51,19 +51,19 @@ void check_from_depth(int& failures) {
   expect(not_started(few, edge::Outcome::kTooFewFeatures), "too few keypoints start nothing",
          failures);
   const auto exactly = edge::initialize_from_depth(
-      frame, edge::Options{.initialization = {.min_features_depth = 60}});
+      frame, edge::Options{.initialization = {.min_features_depth = 60}}, scene::one_word());
   expect(not_started(exactly, edge::Outcome::kTooFewFeatures),
          "the start needs more keypoints than the count, as ORB-SLAM's N > 500", failures);
   edge::Frame shallow = frame;
   for (std::size_t i = 5; i < shallow.depth.size(); ++i) {
     shallow.depth[i] = std::nan("");
   }
-  const auto thin = edge::initialize_from_depth(shallow, options);
+  const auto thin = edge::initialize_from_depth(shallow, options, scene::one_word());
   expect(
       thin.has_value() && thin->started.has_value() && edge::point_count(thin->started->map) == 5,
       "a frame with little depth starts a map of the points it has", failures);
-  expect(is_invalid_input(
-             edge::initialize_from_depth(frame, edge::Options{.features = {.levels = 4}})),
+  expect(is_invalid_input(edge::initialize_from_depth(
+             frame, edge::Options{.features = {.levels = 4}}, scene::one_word())),
          "a frame of another pyramid is rejected", failures);
 }
 
@@ -99,16 +99,18 @@ void check_monocular(int& failures) {
     }
   }
   const auto given = static_cast<std::int64_t>(pairs.size());
-  const auto few = edge::initialize_monocular(scene::camera(), first, last, pairs, edge::Options{});
+  const auto few = edge::initialize_monocular(scene::camera(), first, last, pairs, edge::Options{},
+                                              scene::one_word());
   expect(few.has_value() && !few->started.has_value() &&
              few->summary.outcome == edge::Outcome::kTooFewMatches && few->summary.matches == given,
          "fewer matches than initialization.min_matches start nothing", failures);
   const std::vector<std::array<std::int64_t, 2>> beyond{{0, scene::kPoints}};
-  expect(is_invalid_input(
-             edge::initialize_monocular(scene::camera(), first, last, beyond, edge::Options{})),
+  expect(is_invalid_input(edge::initialize_monocular(scene::camera(), first, last, beyond,
+                                                     edge::Options{}, scene::one_word())),
          "initialize_monocular rejects a pair beyond a frame's keypoints", failures);
   const auto started = edge::initialize_monocular(
-      scene::camera(), first, last, pairs, edge::Options{.initialization = {.min_matches = 20}});
+      scene::camera(), first, last, pairs, edge::Options{.initialization = {.min_matches = 20}},
+      scene::one_word());
   expect(started.has_value() && started->started.has_value() &&
              started->summary.outcome == edge::Outcome::kInitialized &&
              started->summary.matches == given && started->summary.solves.size() == 2,

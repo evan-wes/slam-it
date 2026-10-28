@@ -417,17 +417,20 @@ struct LoopState {
 class MapOwner {
  public:
   /// @brief An owner with no map yet.
-  /// @param vocabulary The database's vocabulary; none when neither relocalising nor closing
-  ///        loops, and there is no database.
+  /// @param vocabulary The vocabulary, checked: local mapping quantises each keyframe's features
+  ///        by it, and the database's words are of it.
   /// @param writer The handshake between the threads, not owned; null inline.
   /// @param lock The map's lock, ORB-SLAM's `mMutexMapUpdate`, not owned: the baseline's
   ///        (`Threading::kLocks`), which publishes no view; null otherwise.
-  /// @param options The settings: the local map's, which a view's keyframes follow.
+  /// @param options The settings: whether a map keeps a keyframe database (with relocalisation or
+  ///        loop closing on, `keeps_keyframe_database`), and the local map's, which a view's
+  ///        keyframes follow.
   /// @param views Inline, whether tracking reads each frame a view made then, as a writer
   ///        would publish it (`Threading::kInlineView`, a test); threaded, ignored.
-  MapOwner(std::optional<foundations::vocabulary::Vocabulary> vocabulary, threads::Writer* writer,
+  MapOwner(foundations::vocabulary::Vocabulary vocabulary, threads::Writer* writer,
            std::mutex* lock, const Options& options, bool views)
       : vocabulary_(std::move(vocabulary)),
+        keeps_database_(keeps_keyframe_database(options)),
         writer_(writer),
         lock_(lock),
         options_(options),
@@ -492,9 +495,10 @@ class MapOwner {
   /// @return The database, if any.
   [[nodiscard]] const std::optional<Database>& database() const { return database_; }
 
-  /// @brief The database's vocabulary, when relocalising or closing loops.
-  /// @return The vocabulary, if any.
-  [[nodiscard]] const std::optional<foundations::vocabulary::Vocabulary>& vocabulary() const {
+  /// @brief The vocabulary: each keyframe's features are quantised by it, and the database's
+  ///        words are of it.
+  /// @return The vocabulary.
+  [[nodiscard]] const foundations::vocabulary::Vocabulary& vocabulary() const {
     return vocabulary_;
   }
 
@@ -649,8 +653,10 @@ class MapOwner {
   /// @return Nothing; a quantisation's error.
   foundations::Result<void> sync_database();
 
-  /// @brief The vocabulary, when relocalising or closing loops.
-  std::optional<foundations::vocabulary::Vocabulary> vocabulary_;
+  /// @brief The vocabulary.
+  foundations::vocabulary::Vocabulary vocabulary_;
+  /// @brief Whether a map keeps a keyframe database: with relocalisation or loop closing on.
+  bool keeps_database_;
   /// @brief The handshake between the threads; null inline.
   threads::Writer* writer_;
   /// @brief The map's lock, the baseline's; null otherwise.
@@ -725,16 +731,15 @@ class Pipeline {
   /// @param mode The sensor mode.
   /// @param camera The camera.
   /// @param options The settings.
-  /// @param vocabulary The vocabulary of the keyframe database's words: required with
-  ///        `relocalization.enabled` or `loops.enabled` on, refused with both off.
+  /// @param vocabulary The vocabulary, checked: mapping quantises each keyframe's features by it,
+  ///        and the keyframe database's words, kept with relocalisation or loop closing on, are
+  ///        of it.
   /// @param threading How the steps run: inline, the default, a run repeating exactly, or in
   ///        threads of their own.
-  /// @return The pipeline; `InvalidInput` for an invalid camera or settings, a stereo or
-  ///         RGB-D camera without a baseline, or a vocabulary missing while relocalising or
-  ///         closing loops, or given while doing neither.
+  /// @return The pipeline; `InvalidInput` for an invalid camera or settings, or a stereo or
+  ///         RGB-D camera without a baseline.
   [[nodiscard]] static foundations::Result<Pipeline> create(
-      Mode mode, Camera camera, Options options,
-      std::optional<foundations::vocabulary::Vocabulary> vocabulary,
+      Mode mode, Camera camera, Options options, foundations::vocabulary::Vocabulary vocabulary,
       Threading threading = Threading::kInline);
 
   /// @brief End the threads, if they still run.
@@ -862,11 +867,11 @@ class Pipeline {
   class Shared {
    public:
     /// @brief Start what a pipeline shares.
-    /// @param vocabulary The keyframe database's vocabulary, when relocalising.
+    /// @param vocabulary The vocabulary.
     /// @param options The settings.
     /// @param threading How the steps run: a writer made for threads of their own, and the map's
     ///        lock used by the baseline.
-    Shared(std::optional<foundations::vocabulary::Vocabulary> vocabulary, const Options& options,
+    Shared(foundations::vocabulary::Vocabulary vocabulary, const Options& options,
            Threading threading)
         : writer_(threaded(threading) ? std::make_unique<threads::Writer>() : nullptr),
           owner_(std::move(vocabulary), writer_.get(),
@@ -917,10 +922,10 @@ class Pipeline {
   /// @param mode The sensor mode.
   /// @param camera The camera.
   /// @param options The settings.
-  /// @param vocabulary The keyframe database's vocabulary, when relocalising or closing loops.
+  /// @param vocabulary The vocabulary.
   /// @param threading How the steps run.
   Pipeline(Mode mode, Camera camera, Options options,
-           std::optional<foundations::vocabulary::Vocabulary> vocabulary, Threading threading);
+           foundations::vocabulary::Vocabulary vocabulary, Threading threading);
 
   /// @brief Try to start the map with a frame.
   /// @param frame The frame.

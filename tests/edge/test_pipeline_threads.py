@@ -24,11 +24,12 @@ from slam_it.edge import map as maps
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
 from slam_it.edge.threads import Writer
+from slam_it.eval import vocabularies
 from slam_it.eval.metrics import absolute_error
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_backend
 from tests.edge import room
-from tests.edge.support import ATE_BOUND, CAMERA, OPTIONS, words_for
+from tests.edge.support import ATE_BOUND, CAMERA, OPTIONS
 
 
 def _frame(f: room.Frame, run: pipeline.Pipeline) -> frames.Frame:
@@ -39,7 +40,7 @@ def _frame(f: room.Frame, run: pipeline.Pipeline) -> frames.Frame:
 def _threaded(options: Options = OPTIONS) -> pipeline.Pipeline:
     """Return a threaded RGB-D pipeline."""
     require_backend("cpp")
-    return pipeline.Pipeline("rgbd", CAMERA, options, words_for(options), threaded=True)
+    return pipeline.Pipeline("rgbd", CAMERA, options, vocabularies.default(), threaded=True)
 
 
 def test_the_room_is_tracked_and_every_keyframe_mapped(rendered: list[room.Frame]) -> None:
@@ -79,7 +80,7 @@ def test_a_finished_run_tracks_no_more(rendered: list[room.Frame]) -> None:
 
 def test_inline_nothing_completes_later(rendered: list[room.Frame]) -> None:
     """Inline, each frame's result holds its mapping: nothing comes later."""
-    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     for f in rendered[:12]:
         run.track(_frame(f, run))
     run.finish()
@@ -135,10 +136,10 @@ def test_busy_mapping_queues_up_to_three(
     ``tracking.max_frames`` since the last, so it wants one busy too.
     """
     require_backend("cpp")
-    inline = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    inline = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     results = [inline.track(_frame(f, inline)) for f in rendered]
     asks = next(k for k, r in enumerate(results) if k > 0 and r.asked)
-    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     for f in rendered[:asks]:
         run.track(_frame(f, run))
     run.tracking.since_keyframe = OPTIONS.tracking.max_frames
@@ -209,10 +210,10 @@ def _centre(pose: NDArray[np.float64]) -> NDArray[np.float64]:
 
 def _owning(rendered: list[room.Frame]) -> tuple[Map, pipeline.MapOwner]:
     """Return the room's first map, started inline, and a threaded owner started on it."""
-    inline = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    inline = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     inline.track(_frame(rendered[0], inline))
     m = inline.owner.read()
-    owner = pipeline.MapOwner(words_for(OPTIONS), Writer())
+    owner = pipeline.MapOwner(vocabularies.default(), OPTIONS.keeps_keyframe_database(), Writer())
     owner.start(m)
     return m, owner
 
@@ -388,7 +389,7 @@ def test_a_lost_map_settles_the_threads_then_closes(rendered: list[room.Frame]) 
     options = OPTIONS.with_settings({"loss.reset_keyframes": 0})
     outcomes = []
     for threaded in (False, True):
-        run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options), threaded=threaded)
+        run = pipeline.Pipeline("rgbd", CAMERA, options, vocabularies.default(), threaded=threaded)
         first, second = rendered[0], rendered[1]
         results = [run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction()))]
         empty = replace(first, gray=np.zeros_like(first.gray))

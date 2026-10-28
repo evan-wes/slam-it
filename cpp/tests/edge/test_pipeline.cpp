@@ -50,12 +50,15 @@ Eigen::Matrix4d along(std::int64_t i) {
 }
 
 /// @brief The settings for a 60-point scene: the counts ORB-SLAM sizes for hundreds lowered.
+///
+/// Every pipeline here maps with `scene::one_word()`, as every pipeline maps with a vocabulary:
+/// its one node holds every keypoint, so triangulation compares each free keypoint with every
+/// other, as it did before keyframes kept their nodes, and these tests' expectations stand.
 /// @return The settings.
 edge::Options small_scene() {
   edge::Options out{
       .initialization = {.min_features = 20, .min_features_depth = 20, .min_matches = 20}};
-  out.relocalization.enabled =
-      false;                  // A2's loss rule; relocalizing() turns it on, with a vocabulary
+  out.relocalization.enabled = false;  // A2's loss rule; relocalizing() turns it on
   out.loops.enabled = false;  // the keyframe database's other user; relocalizing() turns it on
   return out;
 }
@@ -69,7 +72,7 @@ slam_it::foundations::Result<edge::Pipeline> run(
     edge::Mode mode, std::vector<edge::FrameResult>& results,
     edge::Threading threading = edge::Threading::kInline) {
   auto pipeline =
-      edge::Pipeline::create(mode, scene::camera(), small_scene(), std::nullopt, threading);
+      edge::Pipeline::create(mode, scene::camera(), small_scene(), scene::one_word(), threading);
   if (!pipeline) {
     return pipeline;
   }
@@ -226,7 +229,8 @@ bool lived(const edge::Lifetimes& lives, std::int64_t first, bool reset, std::in
 /// @return The pipeline and its first frame's result; none if it did not start map 0.
 std::optional<std::pair<edge::Pipeline, edge::FrameResult>> started_rgbd(
     const edge::Options& options, int& failures) {
-  auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, std::nullopt);
+  auto pipeline =
+      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options, scene::one_word());
   const auto started = start(pipeline);
   if (!started || started->map != 0) {
     expect(false, "the pipeline starts map 0", failures);
@@ -270,8 +274,8 @@ void check_lost(int& failures) {
   }
   edge::Camera monocular = scene::camera();
   monocular.baseline = 0.0;
-  expect(is_invalid_input(
-             edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{}, std::nullopt)),
+  expect(is_invalid_input(edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{},
+                                                 scene::one_word())),
          "RGB-D without a baseline is refused", failures);
 }
 
@@ -398,6 +402,32 @@ void check_closing_loops_alone(int& failures) {
          "closing loops alone, no failed frame relocalises", failures);
 }
 
+/// @brief Check that every pipeline maps with its vocabulary, and a map keeps a keyframe database
+///        exactly with relocalisation or loop closing on (Python's
+///        `test_the_keyframe_database_is_kept_exactly_with_relocalisation_or_loops`): with both
+///        off the map started still holds each keypoint's node.
+/// @param failures Running failure count.
+void check_the_database_follows_the_settings(int& failures) {
+  for (const auto& [relocalize, close_loops] :
+       {std::pair{true, false}, std::pair{false, true}, std::pair{false, false}}) {
+    edge::Options options = small_scene();
+    options.relocalization.enabled = relocalize;
+    options.loops.enabled = close_loops;
+    auto run = started_rgbd(options, failures);
+    if (!run) {
+      continue;
+    }
+    edge::Pipeline& pipeline = run->first;
+    const std::optional<edge::Map>& m = pipeline.map();
+    expect(pipeline.owner().database().has_value() == (relocalize || close_loops),
+           "a map keeps a keyframe database exactly to relocalise or close loops", failures);
+    expect(m && m->kp_node ==
+                    slam_it::foundations::vocabulary::quantize(scene::one_word(), m->kp_descriptor)
+                        .nodes,
+           "the map holds each keypoint's node, quantised by the pipeline's vocabulary", failures);
+  }
+}
+
 /// @brief Check that a frame the local fallback cannot reach is placed by relocalisation in
 ///        the same map, at its pose: after the path, 30 cm to the right, and an empty frame, the
 ///        camera is back where the map began, 25 px away, past the motion model's narrowed
@@ -496,8 +526,8 @@ std::string threaded_check(const char* what, edge::Threading threading) {
 /// @param threading Our design or the baseline.
 /// @param failures Running failure count.
 void check_threaded(edge::Threading threading, int& failures) {
-  auto pipeline =
-      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(), std::nullopt, threading);
+  auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(),
+                                         scene::one_word(), threading);
   std::vector<edge::FrameResult> results;
   if (!pipeline || !track_path(*pipeline, 0, kFrames, results) || !pipeline->finish()) {
     expect(false, "a threaded pipeline tracks the path and finishes", failures);
@@ -572,8 +602,8 @@ void check_threaded(edge::Threading threading, int& failures) {
 /// @param threading Our design or the baseline.
 /// @param failures Running failure count.
 void check_a_stop_refuses_keyframes(edge::Threading threading, int& failures) {
-  auto pipeline =
-      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(), std::nullopt, threading);
+  auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(),
+                                         scene::one_word(), threading);
   std::vector<edge::FrameResult> before;
   std::vector<edge::FrameResult> held;
   bool tracked = pipeline && track_path(*pipeline, 0, kFrames / 2, before);
@@ -643,8 +673,8 @@ edge::View view_now(const edge::MapOwner& owner) {
 /// @param threading Our design or the baseline.
 /// @param failures Running failure count.
 void check_a_correction_followed(edge::Threading threading, int& failures) {
-  auto pipeline =
-      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(), std::nullopt, threading);
+  auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), asking(),
+                                         scene::one_word(), threading);
   std::vector<edge::FrameResult> results;
   bool ok = pipeline && track_path(*pipeline, 0, kFrames / 2, results);
   const Eigen::Matrix4d g = correction();
@@ -684,8 +714,8 @@ edge::Options still() {
 /// @param threading Our design or the baseline.
 /// @param failures Running failure count.
 void check_a_queued_keyframe_placed(edge::Threading threading, int& failures) {
-  auto pipeline =
-      edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), still(), std::nullopt, threading);
+  auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), still(),
+                                         scene::one_word(), threading);
   std::vector<edge::FrameResult> results;
   std::vector<edge::FrameResult> held;
   bool ok = pipeline && track_path(*pipeline, 0, kFrames / 2, results);
@@ -727,7 +757,7 @@ void check_lost_threaded(int& failures) {
   for (const edge::Threading threading :
        {edge::Threading::kInline, edge::Threading::kView, edge::Threading::kLocks}) {
     auto pipeline = edge::Pipeline::create(edge::Mode::kRgbd, scene::camera(), options,
-                                           std::nullopt, threading);
+                                           scene::one_word(), threading);
     std::vector<edge::FrameResult> results;
     bool ok = pipeline && track_path(*pipeline, 0, 1, results);
     for (std::int64_t i = 1; ok && i <= options.loss.lost_frames; ++i) {
@@ -898,6 +928,7 @@ int run_tests() {
   check_carry_through(failures);
   check_lost_relocalizing(failures);
   check_closing_loops_alone(failures);
+  check_the_database_follows_the_settings(failures);
   check_relocalized(failures);
   check_views_decide_as_the_map(failures);
   for (const edge::Threading threading : {edge::Threading::kView, edge::Threading::kLocks}) {

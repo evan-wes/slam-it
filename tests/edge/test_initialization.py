@@ -16,6 +16,7 @@ from slam_it.edge import initialization
 from slam_it.edge.frames import Frame
 from slam_it.edge.initialization import Initialization, Outcome
 from slam_it.edge.options import Options
+from slam_it.eval import vocabularies
 from slam_it.foundations import matching, orb, triangulation, twoview
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
@@ -51,15 +52,19 @@ def test_from_depth_matches_the_reference(backend: str, truth: Truth) -> None:
     """Every backend starts the same map from an RGB-D frame."""
     chosen = require_function(backend, initialization.__name__, "initialize_from_depth")
     frame = truth.frames[0]
-    expected = initialization.initialize_from_depth(frame, OPTIONS)
+    expected = initialization.initialize_from_depth(frame, OPTIONS, vocabularies.default())
     assert expected.started is not None
     assert expected.summary.outcome is Outcome.INITIALIZED
-    got = initialization.initialize_from_depth(frame, OPTIONS, backend=chosen)
+    got = initialization.initialize_from_depth(
+        frame, OPTIONS, vocabularies.default(), backend=chosen
+    )
     _assert_started_match(got, expected, TOLERANCE)
     exactly = OPTIONS.with_settings(
         {"initialization.min_features_depth": frame.size}
     )  # N > 500: more than
-    refused = initialization.initialize_from_depth(frame, exactly, backend=chosen)
+    refused = initialization.initialize_from_depth(
+        frame, exactly, vocabularies.default(), backend=chosen
+    )
     assert refused.started is None
     assert refused.summary.outcome is Outcome.TOO_FEW_FEATURES
 
@@ -81,7 +86,9 @@ def test_from_depth_counts_keypoints_not_depths(backend: str, truth: Truth) -> N
             right=np.where(np.arange(frame.size) < kept, frame.right, np.nan),
         )
         depths = int(np.count_nonzero(~np.isnan(sparse.depth)))
-        started = initialization.initialize_from_depth(sparse, options, backend=chosen).started
+        started = initialization.initialize_from_depth(
+            sparse, options, vocabularies.default(), backend=chosen
+        ).started
         assert started is not None
         assert started[0].points == depths == min(kept, depths)
         assert started[0].keyframes == 1
@@ -90,7 +97,7 @@ def test_from_depth_counts_keypoints_not_depths(backend: str, truth: Truth) -> N
 def test_from_depth_puts_a_point_at_every_keypoint_with_depth(truth: Truth) -> None:
     """One keyframe at the origin; each keypoint with depth sees a point at its depth."""
     frame = truth.frames[0]
-    started = initialization.initialize_from_depth(frame, OPTIONS).started
+    started = initialization.initialize_from_depth(frame, OPTIONS, vocabularies.default()).started
     assert started is not None
     m, tracked = started
     has_depth = ~np.isnan(frame.depth)
@@ -157,21 +164,27 @@ def test_monocular_matches_the_reference(backend: str, monocular_pair: Pair) -> 
     """Every backend starts the same monocular map, and agrees when it does not start."""
     chosen = require_function(backend, initialization.__name__, "initialize_monocular")
     matches = _matched(monocular_pair)
-    expected = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS)
+    expected = initialization.initialize_monocular(
+        CAMERA, *monocular_pair, matches, OPTIONS, vocabularies.default()
+    )
     assert expected.started is not None
     summary = expected.summary
     assert (summary.outcome, summary.matches) == (Outcome.INITIALIZED, len(matches.pairs))
     assert len(summary.solves) == 2  # the initial bundle adjustment's
     got = initialization.initialize_monocular(
-        CAMERA, *monocular_pair, matches, OPTIONS, backend=chosen
+        CAMERA, *monocular_pair, matches, OPTIONS, vocabularies.default(), backend=chosen
     )
     _assert_started_match(got, expected, SOLVER_TOLERANCE)
     same = (monocular_pair[0], monocular_pair[0])  # no parallax at all
-    flat = initialization.initialize_monocular(CAMERA, *same, _matched(same), OPTIONS)
+    flat = initialization.initialize_monocular(
+        CAMERA, *same, _matched(same), OPTIONS, vocabularies.default()
+    )
     assert flat.started is None
     assert flat.summary.outcome not in {Outcome.INITIALIZED, Outcome.TOO_FEW_MATCHES}
     _assert_started_match(
-        initialization.initialize_monocular(CAMERA, *same, _matched(same), OPTIONS, backend=chosen),
+        initialization.initialize_monocular(
+            CAMERA, *same, _matched(same), OPTIONS, vocabularies.default(), backend=chosen
+        ),
         flat,
         SOLVER_TOLERANCE,
     )
@@ -193,12 +206,18 @@ def test_monocular_draws_at_most_init_ransac_iterations(backend: str, monocular_
     pairs[wrong, 1] = rng.permutation(pairs[wrong, 1])
     matches = replace(matched, pairs=pairs)
     one = OPTIONS.with_settings({"initialization.ransac_iterations": 1})
-    expected = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, one)
-    default = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS)
+    expected = initialization.initialize_monocular(
+        CAMERA, *monocular_pair, matches, one, vocabularies.default()
+    )
+    default = initialization.initialize_monocular(
+        CAMERA, *monocular_pair, matches, OPTIONS, vocabularies.default()
+    )
     assert expected.started is not None
     assert default.started is not None
     assert expected.started[0].points != default.started[0].points
-    got = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, one, backend=chosen)
+    got = initialization.initialize_monocular(
+        CAMERA, *monocular_pair, matches, one, vocabularies.default(), backend=chosen
+    )
     _assert_started_match(got, expected, SOLVER_TOLERANCE)
 
 
@@ -273,7 +292,7 @@ def test_monocular_keeps_the_far_points_two_view_does_not(
     result = twoview.initialize(*rays, twoview.Options(focal=CAMERA.focal, seed=OPTIONS.seed))
     assert result.status is twoview.Status.INITIALIZED
     started = initialization.initialize_monocular(
-        CAMERA, reference, frame, matches, OPTIONS, backend=chosen
+        CAMERA, reference, frame, matches, OPTIONS, vocabularies.default(), backend=chosen
     ).started
     assert started is not None
     assert started[0].points > np.count_nonzero(result.triangulated)
@@ -282,7 +301,9 @@ def test_monocular_keeps_the_far_points_two_view_does_not(
 def test_monocular_map_has_unit_median_depth(monocular_pair: Pair) -> None:
     """Two keyframes, the first at the origin and fixed; the points' median depth is 1."""
     matches = _matched(monocular_pair)
-    started = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, OPTIONS).started
+    started = initialization.initialize_monocular(
+        CAMERA, *monocular_pair, matches, OPTIONS, vocabularies.default()
+    ).started
     assert started is not None
     m, tracked = started
     assert m.keyframes == 2
@@ -297,7 +318,9 @@ def test_monocular_needs_enough_matches(monocular_pair: Pair) -> None:
     """With fewer matches than ``initialization.min_matches``, no map."""
     strict = OPTIONS.with_settings({"initialization.min_matches": 10_000})
     matches = _matched(monocular_pair)
-    refused = initialization.initialize_monocular(CAMERA, *monocular_pair, matches, strict)
+    refused = initialization.initialize_monocular(
+        CAMERA, *monocular_pair, matches, strict, vocabularies.default()
+    )
     assert refused.started is None
     assert refused.summary.as_dict() == {
         "matches": len(matches.pairs),
@@ -313,13 +336,15 @@ def test_rejects_frames_of_another_pyramid(
     """A frame extracted with another pyramid raises before any backend runs."""
     other = Options().with_settings({"features.levels": OPTIONS.features.levels - 1})
     with pytest.raises(InvalidInputError, match="pyramid"):
-        initialization.initialize_from_depth(truth.frames[0], other, backend=backend)
+        initialization.initialize_from_depth(
+            truth.frames[0], other, vocabularies.default(), backend=backend
+        )
     own, matches = _own(monocular_pair[0]), _matched(monocular_pair)
     with pytest.raises(InvalidInputError, match="pyramid"):
         initialization.match_for_initialization(*monocular_pair, own, other, backend=backend)
     with pytest.raises(InvalidInputError, match="pyramid"):
         initialization.initialize_monocular(
-            CAMERA, *monocular_pair, matches, other, backend=backend
+            CAMERA, *monocular_pair, matches, other, vocabularies.default(), backend=backend
         )
     with pytest.raises(InvalidInputError, match="previous"):
         initialization.match_for_initialization(*monocular_pair, own[1:], OPTIONS, backend=backend)
@@ -327,5 +352,5 @@ def test_rejects_frames_of_another_pyramid(
     beyond = matching.Matches(pairs=shifted, distances=matches.distances)
     with pytest.raises(InvalidInputError, match="pairs"):
         initialization.initialize_monocular(
-            CAMERA, *monocular_pair, beyond, OPTIONS, backend=backend
+            CAMERA, *monocular_pair, beyond, OPTIONS, vocabularies.default(), backend=backend
         )

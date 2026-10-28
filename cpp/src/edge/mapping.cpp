@@ -977,10 +977,14 @@ struct Made {
 /// @param tracked Its pose and matches.
 /// @param mode The sensor mode.
 /// @param options The settings.
+/// @param vocabulary The vocabulary, checked, the keyframe's features are quantised by.
 /// @return The point counts and the points made; a step's error.
 Result<Made> insert_and_make(Map& m, const Camera& camera, const Frame& frame,
-                             const Tracked& tracked, Mode mode, const Options& options) {
-  if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
+                             const Tracked& tracked, Mode mode, const Options& options,
+                             const foundations::vocabulary::Vocabulary& vocabulary) {
+  const std::vector<std::int64_t> nodes =
+      foundations::vocabulary::quantize(vocabulary, frame.features.descriptors).nodes;
+  if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points, nodes); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
@@ -1019,9 +1023,10 @@ Result<Made> insert_and_make(Map& m, const Camera& camera, const Frame& frame,
 }  // namespace
 
 Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
-                       Mode mode, const Options& options, std::span<const std::int64_t> held,
-                       const Interrupts* interrupts) {
-  auto made = insert_and_make(m, camera, frame, tracked, mode, options);
+                       Mode mode, const Options& options,
+                       const foundations::vocabulary::Vocabulary& vocabulary,
+                       std::span<const std::int64_t> held, const Interrupts* interrupts) {
+  auto made = insert_and_make(m, camera, frame, tracked, mode, options, vocabulary);
   if (!made) {
     return std::unexpected(std::move(made.error()));
   }

@@ -60,21 +60,21 @@ global BA): each language builds its own factors on it, so their solves agree to
 convergence, not their last bits; the decisions still exactly."""
 
 
-def words_for(options: Options) -> vocabulary.Vocabulary | None:
-    """Return the vocabulary a pipeline with these settings needs: the committed one, or none.
+def keyframe_nodes(frame: frames.Frame) -> NDArray[np.int64]:
+    """Return a frame's features' vocabulary nodes, as it enters a map as a keyframe.
 
     Parameters
     ----------
-    options : slam_it.edge.options.Options
-        The settings.
+    frame : slam_it.edge.frames.Frame
+        The frame.
 
     Returns
     -------
-    slam_it.foundations.vocabulary.Vocabulary or None
-        The committed vocabulary with ``relocalization.enabled`` or ``loops.enabled`` on, None
-        with both off.
+    ndarray of int64, shape (N,)
+        Each keypoint's node by the committed vocabulary
+        (:func:`slam_it.foundations.vocabulary.quantize`'s ``nodes``).
     """
-    return vocabularies.default() if options.keeps_keyframe_database() else None
+    return vocabulary.quantize(vocabularies.default(), frame.features.descriptors)[1]
 
 
 def assert_close(

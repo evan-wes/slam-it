@@ -15,7 +15,10 @@ ORB-SLAM's ``StereoInitialization`` and ``MonocularInitialization``:
   until too few keypoints match it (:class:`slam_it.edge.pipeline.Pipeline`).
 
 Each attempt returns an :class:`Initialization`: the started map, if any, and how the attempt
-went (:class:`InitSummary`), which a run records for every frame before the map exists.
+went (:class:`InitSummary`), which a run records for every frame before the map exists. A map
+started holds each keyframe's vocabulary nodes (:attr:`slam_it.edge.map.Map.kp_node`): its
+features are quantised as it enters the map, as ORB-SLAM's ``CreateInitialMapMonocular`` calls
+``ComputeBoW`` on both keyframes and local mapping on a stereo one.
 """
 
 from __future__ import annotations
@@ -33,9 +36,10 @@ from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
-from slam_it.foundations import matching, triangulation, twoview
+from slam_it.foundations import matching, triangulation, twoview, vocabulary
 from slam_it.foundations.arrays import as_indices, as_real
 from slam_it.foundations.errors import DegenerateError, InvalidInputError
+from slam_it.foundations.vocabulary import Vocabulary
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -122,7 +126,8 @@ class Initialization:
 class Implementation(Protocol):
     """The functions a compiled backend's ``edge.initialization`` submodule provides.
 
-    An attempt crosses back as a dict of ``started`` (a dict of ``map``, as
+    The vocabulary crosses as :func:`slam_it.foundations.vocabulary.fields` gives it. An attempt
+    crosses back as a dict of ``started`` (a dict of ``map``, as
     :meth:`Map.as_dict`, ``pose`` and ``points``, the tracked frame; or None), ``outcome`` (its
     code in ``codes()``), ``matches`` (or None) and ``solves`` (as
     :func:`slam_it.edge.adjust.decode_solves` reads them).
@@ -133,7 +138,7 @@ class Implementation(Protocol):
         ...
 
     def initialize_from_depth(
-        self, frame: dict[str, Any], options: dict[str, Any]
+        self, frame: dict[str, Any], options: dict[str, Any], vocabulary: dict[str, Any]
     ) -> dict[str, Any]:
         """Start the map from a stereo or RGB-D frame."""
         ...
@@ -148,13 +153,14 @@ class Implementation(Protocol):
         """Match a monocular reference frame to a later one, where each was last matched."""
         ...
 
-    def initialize_monocular(
+    def initialize_monocular(  # noqa: PLR0913, PLR0917 -- the frames, their matches, the rest
         self,
         camera: dict[str, Any],
         reference: dict[str, Any],
         frame: dict[str, Any],
         pairs: NDArray[np.int64],
         options: dict[str, Any],
+        vocabulary: dict[str, Any],
     ) -> dict[str, Any]:
         """Start the map from two monocular frames and their matches."""
         ...
@@ -193,7 +199,12 @@ def _failed(
     )
 
 
-def _initialize_from_depth(frame: Frame, options: Options) -> Initialization:
+def _nodes(words: Vocabulary, frame: Frame) -> IntArray:
+    """Return a frame's features' vocabulary nodes, as it becomes a keyframe (``ComputeBoW``)."""
+    return vocabulary.quantize(words, frame.features.descriptors)[1]
+
+
+def _initialize_from_depth(frame: Frame, options: Options, words: Vocabulary) -> Initialization:
     """Start the map from a stereo or RGB-D frame (reference)."""
     if frame.size <= options.initialization.min_features_depth:
         return _failed(Outcome.TOO_FEW_FEATURES)
@@ -204,6 +215,7 @@ def _initialize_from_depth(frame: Frame, options: Options) -> Initialization:
         frame,
         pose,
         np.full(frame.size, -1, dtype=np.int64),
+        _nodes(words, frame),
     )
     bearings = frame.bearings[has_depth]
     xyz = bearings * (frame.depth[has_depth] / bearings[:, 2])[:, None]
@@ -217,7 +229,7 @@ def _initialize_from_depth(frame: Frame, options: Options) -> Initialization:
 
 
 def initialize_from_depth(
-    frame: Frame, options: Options, *, backend: str = "python"
+    frame: Frame, options: Options, words: Vocabulary, *, backend: str = "python"
 ) -> Initialization:
     """Start the map from a stereo or RGB-D frame (``StereoInitialization``).
 
@@ -227,14 +239,16 @@ def initialize_from_depth(
         The frame.
     options : Options
         The minimum keypoints, and the pyramid.
+    words : slam_it.foundations.vocabulary.Vocabulary
+        The vocabulary its features' nodes are of (the module docstring).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
     Returns
     -------
     Initialization
-        The map, its one keyframe at the origin with a point at every keypoint with depth
-        (and a bearing), and the frame tracked; none unless the frame has more than
+        The map, its one keyframe at the origin with its nodes and a point at every keypoint
+        with depth (and a bearing), and the frame tracked; none unless the frame has more than
         ``initialization.min_features_depth`` keypoints (:attr:`Outcome.TOO_FEW_FEATURES`).
 
     Raises
@@ -247,8 +261,12 @@ def initialize_from_depth(
         backend,
         __name__,
         "initialize_from_depth",
-        reference=lambda: _initialize_from_depth(frame, options),
-        arguments={"frame": frame.as_dict(), "options": options.as_dict()},
+        reference=lambda: _initialize_from_depth(frame, options, words),
+        arguments={
+            "frame": frame.as_dict(),
+            "options": options.as_dict(),
+            "vocabulary": vocabulary.fields(words),
+        },
         decode=_decode_initialization,
     )
 
@@ -359,8 +377,13 @@ def _kept_points(
     return inliers[keep], found.points[keep]
 
 
-def _initialize_monocular(
-    camera: Camera, reference: Frame, frame: Frame, matched: IntArray, options: Options
+def _initialize_monocular(  # noqa: PLR0913, PLR0917 -- the frames, matches, settings, vocabulary
+    camera: Camera,
+    reference: Frame,
+    frame: Frame,
+    matched: IntArray,
+    options: Options,
+    words: Vocabulary,
 ) -> Initialization:
     """Start the map from two monocular frames (reference)."""
     given = len(matched)
@@ -392,9 +415,14 @@ def _initialize_monocular(
         reference,
         np.eye(4),
         np.full(reference.size, -1, dtype=np.int64),
+        _nodes(words, reference),
     )
     m = maps.insert_keyframe(
-        m, frame, result.relative_pose, np.full(frame.size, -1, dtype=np.int64)
+        m,
+        frame,
+        result.relative_pose,
+        np.full(frame.size, -1, dtype=np.int64),
+        _nodes(words, frame),
     )
     second = int(m.kf_start[1])
     observers = np.column_stack([pairs[good, 0], second + pairs[good, 1]]).astype(np.int64)
@@ -422,12 +450,13 @@ def _initialize_monocular(
     )
 
 
-def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the settings
+def initialize_monocular(  # noqa: PLR0913, PLR0917 -- the frames, matches, settings, vocabulary
     camera: Camera,
     reference: Frame,
     frame: Frame,
     matches: matching.Matches,
     options: Options,
+    words: Vocabulary,
     *,
     backend: str = "python",
 ) -> Initialization:
@@ -452,6 +481,8 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
         ``(reference keypoint, frame keypoint)`` pairs.
     options : Options
         The window, the minimum matches, the seed, and the pyramid.
+    words : slam_it.foundations.vocabulary.Vocabulary
+        The vocabulary the keyframes' nodes are of (the module docstring).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -484,13 +515,14 @@ def initialize_monocular(  # noqa: PLR0913 -- the two frames, their matches, the
         backend,
         __name__,
         "initialize_monocular",
-        reference=lambda: _initialize_monocular(camera, reference, frame, pairs, options),
+        reference=lambda: _initialize_monocular(camera, reference, frame, pairs, options, words),
         arguments={
             "camera": camera.as_dict(),
             "reference": reference.as_dict(),
             "frame": frame.as_dict(),
             "pairs": pairs,
             "options": options.as_dict(),
+            "vocabulary": vocabulary.fields(words),
         },
         decode=_decode_initialization,
     )

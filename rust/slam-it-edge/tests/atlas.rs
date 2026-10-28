@@ -19,7 +19,7 @@ use slam_it_edge::options::Options;
 use slam_it_foundations::error::{Error, ErrorKind};
 use slam_it_foundations::{sim3, so3};
 
-use scene::{KEYFRAMES, POINTS, frame, moved, points, pose, scene_map};
+use scene::{KEYFRAMES, POINTS, frame, moved, nodes, points, pose, scene_map};
 
 /// The scale `G` carries the active map's world into the matched map's by: its world is the
 /// matched map's scaled by 0.7, as a monocular map started apart has its own units.
@@ -76,6 +76,7 @@ fn a_monocular_merge_carries_the_records_into_the_matched_maps_units() {
             &frame(k, false),
             &carried(&pose(k)),
             &[-1; POINTS],
+            &nodes(&frame(k, false)),
         )
         .unwrap();
     }
@@ -126,6 +127,7 @@ fn a_merged_map_reset_drops_its_frames_and_those_merged_into_it() {
             &frame(k, false),
             &carried(&pose(k)),
             &[-1; POINTS],
+            &nodes(&frame(k, false)),
         )
         .unwrap();
     }

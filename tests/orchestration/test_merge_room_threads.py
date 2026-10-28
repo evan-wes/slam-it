@@ -27,11 +27,11 @@ from numpy.typing import NDArray
 from slam_it.edge import frames, pipeline
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
-from slam_it.eval import runs
+from slam_it.eval import runs, vocabularies
 from slam_it.orchestration import vo
 from tests.conftest import require_backend
 from tests.edge import room
-from tests.edge.support import CAMERA, words_for
+from tests.edge.support import CAMERA
 from tests.orchestration.conftest import fast_cores, require_program
 from tests.orchestration.datasets import LOOP_CASES, MERGE_OPTIONS, Room, merge_frames
 from tests.orchestration.test_merge_room import assert_merged
@@ -82,7 +82,7 @@ def _run_merging(
     matched map's next ids).
     """
     require_backend("cpp")
-    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options), threaded=True)
+    run = pipeline.Pipeline("rgbd", CAMERA, options, vocabularies.default(), threaded=True)
     threads = run._threads  # the merge read as tracking makes it
     assert threads is not None
     made: list[tuple[_Seen, _Seen, tuple[int, int]]] = []

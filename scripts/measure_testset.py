@@ -107,8 +107,9 @@ C++'s baseline (:func:`slam_it.orchestration.vo.run`); each result says ``thread
 read as JSON: ``--option relocalization.enabled=false`` measures without relocalisation, loop
 closing kept, with its keyframe database (B3's review panel, H7: before, the database went with
 relocalisation, and loop closing with it); adding ``--option loops.enabled=false`` measures
-with neither, as ``relocalization.enabled=false`` alone did before. ``--option seed=1`` measures
-at another RANSAC seed.
+with neither, and no keyframe database, as ``relocalization.enabled=false`` alone did before
+(mapping still quantises each keyframe by the vocabulary, as every run's does since 0.3.18.0).
+``--option seed=1`` measures at another RANSAC seed.
 Each result names the settings it replaced, in ``options``.
 
 The results are one JSON line per sequence in ``OUT/results.jsonl``, and a table on stdout::

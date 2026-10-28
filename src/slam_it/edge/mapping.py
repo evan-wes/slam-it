@@ -3,9 +3,10 @@
 After tracking decides a frame becomes a keyframe (:func:`need_keyframe`), :func:`process`
 runs ORB-SLAM's local mapping steps in order, single-threaded:
 
-1. **Insert the keyframe** with the points it tracked; a stereo or RGB-D keyframe also
-   creates points from its close depth (:func:`create_points_from_depth`,
-   ``CreateNewKeyFrame``).
+1. **Insert the keyframe** with the points it tracked and its features' vocabulary nodes,
+   quantised now (:attr:`slam_it.edge.map.Map.kp_node`, ``ComputeBoW`` in
+   ``ProcessNewKeyFrame``); a stereo or RGB-D keyframe also creates points from its close depth
+   (:func:`create_points_from_depth`, ``CreateNewKeyFrame``).
 2. **Cull new points** (:func:`cull_points`, ``MapPointCulling``).
 3. **Triangulate new points** between the keyframe and its best links
    (:func:`triangulate_new_points`, ``CreateNewMapPoints``).
@@ -53,9 +54,10 @@ from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
 from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options, check_mode
-from slam_it.foundations import matching, triangulation
+from slam_it.foundations import matching, triangulation, vocabulary
 from slam_it.foundations.arrays import as_count, as_flag, as_real
 from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.vocabulary import Vocabulary
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -235,9 +237,10 @@ class Implementation(Protocol):
 
     The map crosses as :meth:`Map.as_dict`, a frame as
     :meth:`slam_it.edge.frames.Frame.as_dict`, a tracked frame as :meth:`Tracked.as_dict`, the
-    mode by name. A mapped keyframe crosses back as a dict of ``map``, the summary's counts,
-    ``solves`` (as :func:`slam_it.edge.adjust.decode_solves` reads them), ``made`` and
-    ``schedule`` (each step's :class:`Scheduled` by name).
+    mode by name, the vocabulary as :func:`slam_it.foundations.vocabulary.fields` gives it. A
+    mapped keyframe crosses back as a dict of ``map``, the summary's counts, ``solves`` (as
+    :func:`slam_it.edge.adjust.decode_solves` reads them), ``made`` and ``schedule`` (each step's
+    :class:`Scheduled` by name).
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -315,6 +318,7 @@ class Implementation(Protocol):
         tracked: Crossing,
         mode: str,
         options: Crossing,
+        vocabulary: Crossing,
         held: NDArray[np.int64],
     ) -> Crossing:
         """Insert a keyframe and run local mapping on it."""
@@ -1261,11 +1265,13 @@ def _process(  # noqa: PLR0913 -- the stage's state
     *,
     mode: str,
     options: Options,
+    words: Vocabulary,
     held: IntArray,
     interrupts: Interrupts | None = None,
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (reference)."""
-    m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
+    nodes = vocabulary.quantize(words, frame.features.descriptors)[1]
+    m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points, nodes)
     # Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
     m = covisibility.adopt(m, m.keyframes - 1)
     start, first = m.points, m.next_pt_id
@@ -1325,6 +1331,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     *,
     mode: str,
     options: Options,
+    words: Vocabulary,
     held: ArrayLike = (),
     interrupts: Interrupts | None = None,
     backend: str = "python",
@@ -1345,6 +1352,8 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
         The pipeline's mode.
     options : Options
         The settings.
+    words : slam_it.foundations.vocabulary.Vocabulary
+        The vocabulary the keyframe's features are quantised by (its nodes, step 1).
     held : array_like of int, optional
         The ids of the keyframes loop detection holds, which culling spares (default: none).
     interrupts : Interrupts, optional
@@ -1381,6 +1390,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
             checked,
             mode=mode,
             options=options,
+            words=words,
             held=kept,
             interrupts=interrupts,
         ),
@@ -1391,6 +1401,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
             frame=frame.as_dict(),
             tracked=checked.as_dict(),
             mode=mode,
+            vocabulary=vocabulary.fields(words),
             held=kept,
         ),
         decode=_decode_mapped,

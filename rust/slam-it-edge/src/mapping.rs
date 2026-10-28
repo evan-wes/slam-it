@@ -10,6 +10,7 @@ use slam_it_foundations::matching::FeatureGrid;
 use slam_it_foundations::nls::Stop;
 use slam_it_foundations::orb::{self, Keypoint};
 use slam_it_foundations::triangulation;
+use slam_it_foundations::vocabulary::{self, Vocabulary};
 
 use crate::adjust::{Adjustment, Solve, bundle_adjust};
 use crate::covisibility;
@@ -1308,6 +1309,9 @@ pub struct Mapped {
 /// * `tracked` - Its pose and matches.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The settings.
+/// * `vocabulary` - The vocabulary, checked, the keyframe's features are quantised by as it
+///   enters the map (its nodes, [`Map::kp_node`]; ORB-SLAM's `ComputeBoW` in
+///   `ProcessNewKeyFrame`).
 /// * `held` - The ids of the keyframes loop detection holds, which culling spares.
 /// * `interrupts` - What local mapping's thread is asked between the steps; `None` inline,
 ///   every step run.
@@ -1331,10 +1335,12 @@ pub fn process(
     tracked: &Tracked,
     mode: Mode,
     options: &Options,
+    vocabulary: &Vocabulary,
     held: &[i64],
     interrupts: Option<&dyn Interrupts>,
 ) -> Result<Mapped> {
-    map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
+    let nodes = vocabulary::quantize(vocabulary, &frame.features.descriptors).nodes;
+    map::insert_keyframe(m, frame, &tracked.pose, &tracked.points, &nodes)?;
     // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
     let newest = m.keyframes() - 1;
     covisibility::adopt(m, newest)?;

@@ -13,12 +13,13 @@ from slam_it.edge.initialization import Outcome
 from slam_it.edge.map import Removal
 from slam_it.edge.options import Options
 from slam_it.edge.pipeline import Placement
+from slam_it.eval import vocabularies
 from slam_it.eval.metrics import absolute_error
-from slam_it.foundations import orb, so3
+from slam_it.foundations import orb, so3, vocabulary
 from slam_it.foundations.errors import InvalidInputError
 from tests.edge import room
 from tests.edge.conftest import Run
-from tests.edge.support import ATE_BOUND, CAMERA, MONOCULAR_START, OPTIONS, words_for
+from tests.edge.support import ATE_BOUND, CAMERA, MONOCULAR_START, OPTIONS
 
 
 @pytest.mark.parametrize("mode", ["monocular", "stereo", "rgbd"])
@@ -154,11 +155,11 @@ def test_the_final_trajectory_follows_the_keyframes(mode: str, runs: dict[str, R
 def test_monocular_frames_start_with_more_features() -> None:
     """Before the map, a monocular frame gets features.init_factor times the features."""
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240)
-    mono = pipeline.Pipeline("monocular", camera, OPTIONS, words_for(OPTIONS))
+    mono = pipeline.Pipeline("monocular", camera, OPTIONS, vocabularies.default())
     assert (
         mono.extraction().n_features == OPTIONS.features.init_factor * OPTIONS.features.n_features
     )
-    depth = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    depth = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     assert depth.extraction().n_features == OPTIONS.features.n_features
 
 
@@ -187,7 +188,7 @@ def _lose_and_restart(
     A map of one keyframe is lost on the fifth either way: after loss.lost_frames (5) failures if it
     is small, or once more than loss.relocalize_seconds (3) have passed since the first if not.
     """
-    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
+    run = pipeline.Pipeline("rgbd", CAMERA, options, vocabularies.default())
     first, second = rendered[0], rendered[1]
     results = [run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction()))]
     results += [run.track(_empty(float(t))) for t in range(1, 6)]
@@ -265,7 +266,7 @@ def test_a_new_session_closes_the_map_and_starts_another(
     on the session's first frame; with no map tracked, there is nothing to close.
     """
     options = OPTIONS.with_settings({"loss.session_keyframes": session_keyframes})
-    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
+    run = pipeline.Pipeline("rgbd", CAMERA, options, vocabularies.default())
     first, second = rendered[0], rendered[1]
     started = run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction()))
     closed = run.start_session()
@@ -281,7 +282,7 @@ def test_a_new_session_closes_the_map_and_starts_another(
 
 def test_a_finished_run_starts_no_session(rendered: list[room.Frame]) -> None:
     """After finish, start_session is refused, as track is, and the map tracked stays as it was."""
-    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     first = rendered[0]
     run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction()))
     run.finish()
@@ -298,7 +299,7 @@ def _failures(
 
     The empty frames come `step` seconds apart; their results are returned.
     """
-    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
+    run = pipeline.Pipeline("rgbd", CAMERA, options, vocabularies.default())
     first = rendered[0]
     assert run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction())).keyframe
     return [run.track(_empty(step * (k + 1))) for k in range(count)]
@@ -351,19 +352,26 @@ def test_off_a_kept_map_is_lost_after_lost_frames_and_nothing_relocalizes(
 
 
 @pytest.mark.parametrize(
-    ("relocalize", "close_loops", "message"),
-    [(True, False, "needs one"), (False, True, "needs one"), (False, False, "both off")],
+    ("relocalize", "close_loops"), [(True, False), (False, True), (False, False)]
 )
-def test_the_vocabulary_is_needed_exactly_with_a_keyframe_database(
-    relocalize: bool, close_loops: bool, message: str
+def test_the_keyframe_database_is_kept_exactly_with_relocalisation_or_loops(
+    rendered: list[room.Frame], relocalize: bool, close_loops: bool
 ) -> None:
-    """Relocalising or closing loops without a vocabulary, or given one doing neither: refused."""
+    """Every pipeline maps with its vocabulary; a map keeps a database only to relocalise or close.
+
+    With both off the map still holds each keypoint's node, quantised by the vocabulary.
+    """
     options = OPTIONS.with_settings(
         {"relocalization.enabled": relocalize, "loops.enabled": close_loops}
     )
-    given = None if relocalize or close_loops else words_for(OPTIONS)
-    with pytest.raises(InvalidInputError, match=f"vocabulary: .*{message}"):
-        pipeline.Pipeline("rgbd", CAMERA, options, given)
+    words = vocabularies.default()
+    run = pipeline.Pipeline("rgbd", CAMERA, options, words)
+    first = rendered[0]
+    assert run.track(frames.rgbd(first.gray, first.depth, 0.0, CAMERA, run.extraction())).keyframe
+    assert (run.owner.database is not None) == (relocalize or close_loops)
+    m = run.owner.read()
+    nodes = vocabulary.quantize(words, m.kp_descriptor)[1]
+    np.testing.assert_array_equal(m.kp_node, nodes)
 
 
 def test_when_the_fallback_fails_relocalization_places_the_frame_in_its_map(
@@ -376,7 +384,7 @@ def test_when_the_fallback_fails_relocalization_places_the_frame_in_its_map(
     options = OPTIONS.with_settings(
         {"tracking.pnp_min_inliers": 1 << 20, "loss.reset_keyframes": 0}
     )
-    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
+    run = pipeline.Pipeline("rgbd", CAMERA, options, vocabularies.default())
     for f in rendered[:31]:
         run.track(frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, run.extraction()))
     lost = [run.track(_empty(rendered[30].timestamp + 0.01 * (k + 1))) for k in range(3)]
@@ -405,7 +413,7 @@ def test_a_failed_frame_ends_the_velocity(
         return predict(last_pose, velocity)
 
     monkeypatch.setattr(tracking, "predict", recording)
-    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     for f in rendered[:4]:
         run.track(frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, run.extraction()))
         if f is rendered[2]:
@@ -419,7 +427,7 @@ def test_a_frame_with_little_depth_starts_the_map(rendered: list[room.Frame]) ->
 
     ORB-SLAM's rule: a map too thin to track is lost and reset, and the next frame starts again.
     """
-    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     first = rendered[0]
     sparse = np.zeros_like(first.depth)
     sparse[:, 150:160] = first.depth[:, 150:160]  # depth only in a narrow strip
@@ -439,7 +447,7 @@ def test_a_map_without_points_is_lost_and_the_third_map_follows_the_first_two(
     reset. Map 1 starts on the next frame and is lost on empty frames; map 2 starts after it,
     its keyframe and points numbered after both maps' (review panel finding L4).
     """
-    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline("rgbd", CAMERA, OPTIONS, vocabularies.default())
     first = rendered[0]
     no_depth = frames.rgbd(first.gray, np.zeros_like(first.depth), 0.0, CAMERA, run.extraction())
     results = [run.track(no_depth)]
@@ -471,7 +479,7 @@ def test_a_map_without_points_is_lost_and_the_third_map_follows_the_first_two(
 def test_a_monocular_reference_needs_enough_features(rendered: list[room.Frame]) -> None:
     """A frame with too few features drops the monocular reference rather than pairing."""
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240)
-    run = pipeline.Pipeline("monocular", camera, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline("monocular", camera, OPTIONS, vocabularies.default())
     first = rendered[0]
     run.track(frames.monocular(first.gray, 0.0, camera, run.extraction()))
     run.track(_empty())
@@ -486,7 +494,7 @@ def test_rejects_a_bad_mode_or_baseline(mode: str, baseline: float, message: str
     """An unknown mode, or a depth mode without a baseline, is refused."""
     camera = frames.Camera("pinhole", room.SMALL.intrinsics, 320, 240, baseline)
     with pytest.raises(InvalidInputError, match=message):
-        pipeline.Pipeline(mode, camera, Options(), words_for(Options()))
+        pipeline.Pipeline(mode, camera, Options(), vocabularies.default())
 
 
 def test_the_database_holds_the_maps_keyframes_through_culling(
@@ -500,7 +508,7 @@ def test_the_database_holds_the_maps_keyframes_through_culling(
     options = OPTIONS.with_settings(
         {"mapping.redundant_fraction": 0.6, "mapping.redundant_observers": 1}
     )
-    run = pipeline.Pipeline("rgbd", CAMERA, options, words_for(options))
+    run = pipeline.Pipeline("rgbd", CAMERA, options, vocabularies.default())
     for f in rendered:
         run.track(frames.rgbd(f.gray, f.depth, f.timestamp, CAMERA, run.extraction()))
         assert run.map is not None

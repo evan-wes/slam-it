@@ -69,6 +69,7 @@ fn map_of(keyframes: &Value) -> Map {
             m.kp_level.push(0);
             m.kp_angle.push(0);
             m.kp_descriptor.push([0; 32]);
+            m.kp_node.push(0);
             m.kp_bearing.push(Vector3::z());
             m.kp_depth.push(f64::NAN);
             m.kp_right.push(f64::NAN);

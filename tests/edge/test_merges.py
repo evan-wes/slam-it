@@ -23,6 +23,7 @@ from slam_it.edge.database import Indexed
 from slam_it.edge.loops import Merge, MergeDetection, Merging, Outcome, Pending
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
+from slam_it.eval import vocabularies
 from slam_it.foundations import graphs, sim3, vocabulary
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
@@ -270,9 +271,10 @@ def test_the_merge_puts_the_active_map_where_it_belongs(two: TwoMaps) -> None:
 
     Here each welding window holds all of its map, so the matched map has no keyframe outside
     to hold, and its window is held: the matched map stays where it was. The active map's
-    keyframes and points follow the matched map's, every id moved on by the matched map's next;
-    its tree hangs under the matched keyframe, the matched map's root the merged map's; the
-    merge edge joins the two keyframes, and culling spares them.
+    keyframes and points follow the matched map's, every id moved on by the matched map's next,
+    each keypoint with its vocabulary node; its tree hangs under the matched keyframe, the
+    matched map's root the merged map's; the merge edge joins the two keyframes, and culling
+    spares them.
     """
     found = _found(two)
     merged = loops.merge(
@@ -287,6 +289,8 @@ def test_the_merge_puts_the_active_map_where_it_belongs(two: TwoMaps) -> None:
         m.kf_id, np.concatenate([two.matched.kf_id, two.active.kf_id + merged.keyframe_offset])
     )
     np.testing.assert_array_equal(m.kf_time[two.matched.keyframes :], two.active.kf_time)
+    nodes = np.concatenate([two.matched.kp_node, two.active.kp_node])
+    np.testing.assert_array_equal(m.kp_node, nodes)
     assert _errors(two, merged).max() < 0.03
     np.testing.assert_allclose(
         m.kf_pose[: two.matched.keyframes], two.matched.kf_pose, rtol=0, atol=1e-12
@@ -625,6 +629,6 @@ def test_a_merge_with_a_map_not_kept_is_refused_by_its_number(two_rigid: TwoMaps
     atlas.start()
     with pytest.raises(InvalidInputError, match=f"merge: map {found.map} is not kept"):
         pipeline._merged(
-            pipeline.LoopState(), pipeline.MapOwner(), atlas, found, two_rigid.active,
-            camera=CAMERA, mode=_mode(two_rigid), options=OPTIONS,
+            pipeline.LoopState(), pipeline.MapOwner(vocabularies.default(), True), atlas, found,
+            two_rigid.active, camera=CAMERA, mode=_mode(two_rigid), options=OPTIONS,
         )  # fmt: skip

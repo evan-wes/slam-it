@@ -8,7 +8,7 @@ use slam_it_edge::frames::{Camera, Frame};
 use slam_it_edge::map::{self, Map};
 use slam_it_foundations::camera::Model;
 use slam_it_foundations::orb::{Features, Keypoint};
-use slam_it_foundations::vocabulary::Vocabulary;
+use slam_it_foundations::vocabulary::{self, Vocabulary};
 
 /// The scene's points.
 pub const POINTS: usize = 60;
@@ -177,6 +177,21 @@ pub fn one_word() -> Vocabulary {
     }
 }
 
+/// A frame's keypoints' vocabulary nodes by [`one_word`]: one node for every keypoint (the
+/// vocabulary's one leaf, above the direct level), so matching by node compares every keypoint
+/// with every other, as these tests did before keyframes kept their nodes.
+///
+/// # Arguments
+///
+/// * `f` - The frame.
+///
+/// # Returns
+///
+/// Its nodes.
+pub fn nodes(f: &Frame) -> Vec<i64> {
+    vocabulary::quantize(&one_word(), &f.features.descriptors).nodes
+}
+
 /// A frame with no keypoints, at a time.
 ///
 /// # Arguments
@@ -213,12 +228,14 @@ pub fn empty_frame(timestamp: f64) -> Frame {
 #[allow(clippy::cast_possible_wrap, reason = "point ids below 60")]
 pub fn scene_map() -> Map {
     let mut m = Map::empty(8, 1.2);
-    map::insert_keyframe(&mut m, &frame(0, true), &pose(0), &[-1; POINTS]).unwrap();
+    let first = frame(0, true);
+    map::insert_keyframe(&mut m, &first, &pose(0), &[-1; POINTS], &nodes(&first)).unwrap();
     let observers: Vec<Vec<usize>> = (0..POINTS).map(|p| vec![p]).collect();
     map::add_points(&mut m, &points(), &observers).unwrap();
     let ids: Vec<i64> = (0..POINTS as i64).collect();
     for k in 1..KEYFRAMES {
-        map::insert_keyframe(&mut m, &frame(k, true), &pose(k), &ids).unwrap();
+        let later = frame(k, true);
+        map::insert_keyframe(&mut m, &later, &pose(k), &ids, &nodes(&later)).unwrap();
     }
     m
 }

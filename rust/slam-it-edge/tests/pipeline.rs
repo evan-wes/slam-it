@@ -23,6 +23,7 @@ use slam_it_edge::pipeline::{
 };
 use slam_it_foundations::error::ErrorKind;
 use slam_it_foundations::so3;
+use slam_it_foundations::vocabulary;
 
 use scene::{camera, empty_frame, frame_at, one_word};
 
@@ -38,6 +39,10 @@ fn along(i: usize) -> Matrix4<f64> {
 }
 
 /// The settings for a 60-point scene: the counts ORB-SLAM sizes for hundreds lowered.
+///
+/// Every pipeline here maps with [`one_word`], as every pipeline maps with a vocabulary: its one
+/// node holds every keypoint, so triangulation compares each free keypoint with every other, as
+/// it did before keyframes kept their nodes, and these tests' expectations stand.
 fn small_scene() -> Options {
     Options {
         initialization: InitializationOptions {
@@ -47,7 +52,7 @@ fn small_scene() -> Options {
             ..InitializationOptions::default()
         },
         relocalization: RelocalizationOptions {
-            enabled: false, // A2's loss rule; relocalizing() turns it on, with a vocabulary
+            enabled: false, // A2's loss rule; relocalizing() turns it on
             ..RelocalizationOptions::default()
         },
         loops: LoopOptions {
@@ -66,7 +71,7 @@ fn run(mode: Mode) -> (Pipeline, Vec<FrameResult>) {
 /// Runs the path through a pipeline whose steps run in turn, inline or each frame on a view.
 #[allow(clippy::cast_precision_loss, reason = "frames below 16")]
 fn run_as(mode: Mode, threading: Threading) -> (Pipeline, Vec<FrameResult>) {
-    let mut pipeline = Pipeline::new(mode, camera(), small_scene(), None, threading).unwrap();
+    let mut pipeline = Pipeline::new(mode, camera(), small_scene(), one_word(), threading).unwrap();
     let results = (0..FRAMES)
         .map(|i| {
             let frame = Frame {
@@ -174,8 +179,14 @@ fn monocular_tracks_the_path_direction() {
 ///
 /// The pipeline, and the first frame's result.
 fn start_on_the_path(options: &Options) -> (Pipeline, FrameResult) {
-    let mut pipeline =
-        Pipeline::new(Mode::Rgbd, camera(), *options, None, Threading::Inline).unwrap();
+    let mut pipeline = Pipeline::new(
+        Mode::Rgbd,
+        camera(),
+        *options,
+        one_word(),
+        Threading::Inline,
+    )
+    .unwrap();
     let first = pipeline.track(&frame_at(&along(0), true, 0)).unwrap();
     assert_eq!(first.map, Some(0));
     (pipeline, first)
@@ -240,7 +251,7 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
         Mode::Rgbd,
         monocular,
         Options::default(),
-        None,
+        one_word(),
         Threading::Inline,
     )
     .unwrap_err();
@@ -308,7 +319,7 @@ fn lose_the_track(options: &Options, step: f64, count: usize) -> Vec<FrameResult
         Mode::Rgbd,
         camera(),
         *options,
-        Some(one_word()),
+        one_word(),
         Threading::Inline,
     )
     .unwrap();
@@ -361,6 +372,30 @@ fn closing_loops_alone_relocalizes_nothing() {
     assert!(failed.iter().all(|r| r.summary.relocalization.is_none()));
 }
 
+/// Every pipeline maps with its vocabulary, and a map keeps a keyframe database exactly with
+/// relocalisation or loop closing on (Python's
+/// `test_the_keyframe_database_is_kept_exactly_with_relocalisation_or_loops`): with both off the
+/// map started still holds each keypoint's node.
+#[test]
+fn the_database_follows_the_settings() {
+    for (relocalize, close_loops) in [(true, false), (false, true), (false, false)] {
+        let mut options = small_scene();
+        options.relocalization.enabled = relocalize;
+        options.loops.enabled = close_loops;
+        let (pipeline, _) = start_on_the_path(&options);
+        let (kept, nodes) = pipeline.owner().reading(|held| {
+            let m = held.map().unwrap();
+            let quantized = vocabulary::quantize(&one_word(), &m.kp_descriptor).nodes;
+            (held.database().is_some(), m.kp_node == quantized)
+        });
+        assert_eq!(kept, relocalize || close_loops);
+        assert!(
+            nodes,
+            "the map holds each keypoint's node, by the pipeline's vocabulary"
+        );
+    }
+}
+
 /// A frame the local fallback cannot reach is placed by relocalisation in the same map, at its
 /// pose: after the path, 30 cm to the right, and an empty frame, the camera is back where the
 /// map began, 25 px away, past the motion model's narrowed window.
@@ -370,14 +405,8 @@ fn a_frame_out_of_the_fallbacks_reach_is_relocalized_in_its_map() {
     let mut options = relocalizing(0);
     options.tracking.pnp_min_inliers = 1 << 20; // the local fallback out of reach
     options.tracking.motion_window = 5.0; // 10 px widened: the 25 px back to the start out of reach
-    let mut pipeline = Pipeline::new(
-        Mode::Rgbd,
-        camera(),
-        options,
-        Some(one_word()),
-        Threading::Inline,
-    )
-    .unwrap();
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), options, one_word(), Threading::Inline).unwrap();
     for i in 0..FRAMES {
         let mut frame = frame_at(&along(i), true, 0);
         frame.timestamp = i as f64;
@@ -441,7 +470,7 @@ fn track_path(pipeline: &mut Pipeline, frames: std::ops::Range<usize>) -> Vec<Fr
 #[test]
 fn threaded_the_path_is_tracked_and_every_keyframe_mapped() {
     let mut pipeline =
-        Pipeline::new(Mode::Rgbd, camera(), asking(), None, Threading::View).unwrap();
+        Pipeline::new(Mode::Rgbd, camera(), asking(), one_word(), Threading::View).unwrap();
     let results = track_path(&mut pipeline, 0..FRAMES);
     pipeline.finish().unwrap();
     for (i, r) in results.iter().enumerate() {
@@ -509,7 +538,7 @@ fn threaded_the_path_is_tracked_and_every_keyframe_mapped() {
 #[test]
 fn threaded_a_stop_refuses_every_keyframe_asked() {
     let mut pipeline =
-        Pipeline::new(Mode::Rgbd, camera(), asking(), None, Threading::View).unwrap();
+        Pipeline::new(Mode::Rgbd, camera(), asking(), one_word(), Threading::View).unwrap();
     track_path(&mut pipeline, 0..FRAMES / 2);
     let writer = pipeline.writer().unwrap();
     let held = {
@@ -565,7 +594,7 @@ fn move_world(m: &mut Map, g: &Matrix4<f64>) {
 #[test]
 fn threaded_after_a_correction_the_next_frame_follows_its_keyframe() {
     let mut pipeline =
-        Pipeline::new(Mode::Rgbd, camera(), asking(), None, Threading::View).unwrap();
+        Pipeline::new(Mode::Rgbd, camera(), asking(), one_word(), Threading::View).unwrap();
     track_path(&mut pipeline, 0..FRAMES / 2);
     let g = correction();
     {
@@ -618,7 +647,8 @@ fn still() -> Options {
     reason = "a path frame's time is its number"
 )]
 fn threaded_a_keyframe_queued_across_a_correction_is_placed_by_its_reference() {
-    let mut pipeline = Pipeline::new(Mode::Rgbd, camera(), still(), None, Threading::View).unwrap();
+    let mut pipeline =
+        Pipeline::new(Mode::Rgbd, camera(), still(), one_word(), Threading::View).unwrap();
     track_path(&mut pipeline, 0..FRAMES / 2);
     let g = correction();
     let writer = pipeline.writer().unwrap();
@@ -666,7 +696,7 @@ fn threaded_a_lost_map_settles_the_threads_then_closes() {
         .into_iter()
         .map(|threading| {
             let mut pipeline =
-                Pipeline::new(Mode::Rgbd, camera(), options, None, threading).unwrap();
+                Pipeline::new(Mode::Rgbd, camera(), options, one_word(), threading).unwrap();
             let mut results = track_path(&mut pipeline, 0..1);
             for t in 1..=options.loss.lost_frames {
                 #[allow(clippy::cast_precision_loss, reason = "a few frames")]

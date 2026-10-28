@@ -25,7 +25,7 @@ inline constexpr std::array<const char*, 2> kDatasets{"tum", "euroc"};
 inline constexpr const char* kUsage =
     "usage: slam_it_vo --dataset tum|euroc --sequence PATH [--sequence PATH ...] "
     "--mode monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] "
-    "[--vocabulary FOLDER] [--record-features] [--threaded [--locks] | --views] "
+    "--vocabulary FOLDER [--record-features] [--threaded [--locks] | --views] "
     "[--option KEY=VALUE ...]";
 
 /// @brief The program's exit code for a command line it cannot read.
@@ -69,9 +69,9 @@ struct Request {
   edge::Options options;
   /// @brief Whether the run records each frame's keypoints, with their fates.
   bool record_features{false};
-  /// @brief The vocabulary's folder: required with `relocalization.enabled` or `loops.enabled`
-  ///        on, refused with both off.
-  std::optional<std::string> vocabulary;
+  /// @brief The vocabulary's folder, which every run needs: mapping quantises each keyframe's
+  ///        features by it, and relocalisation and loop closing find keyframes by its words.
+  std::string vocabulary;
   /// @brief Whether the steps run in threads of their own, the frames fed at their recorded
   ///        rate.
   bool threaded{false};
@@ -96,8 +96,8 @@ struct Request {
 /// @param request The request.
 /// @return Nothing; `InvalidInput` for no sequence, an unknown dataset, a mode it does not
 ///         record (TUM has no stereo pairs, EuRoC no depth maps), a negative `first` or
-///         `count`, settings out of range, a vocabulary missing while relocalising or given
-///         while not, `--locks` without `--threaded`, or `--views` with it.
+///         `count`, settings out of range, `--locks` without `--threaded`, or `--views` with
+///         it.
 [[nodiscard]] foundations::Result<void> check(const Request& request);
 
 /// @brief Each session's time offset, in seconds (`slam_it.orchestration.vo.session_offsets`):

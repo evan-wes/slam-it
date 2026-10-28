@@ -40,8 +40,7 @@ vo::Request request_for(const std::string& dataset, edge::Mode mode, const std::
   out.sequences = {sequence(name)};
   out.mode = mode;
   out.out = "run";
-  out.options.relocalization.enabled = false;  // no vocabulary: these check the request
-  out.options.loops.enabled = false;
+  out.vocabulary = slam_it::testing::fixture_path("eval/vocabulary");  // the reader's fixture
   return out;
 }
 
@@ -49,8 +48,8 @@ vo::Request request_for(const std::string& dataset, edge::Mode mode, const std::
 /// @param more The flags after them.
 /// @return The arguments.
 std::vector<std::string> command(const std::vector<std::string>& more) {
-  std::vector<std::string> out{"--dataset", "tum",  "--sequence", sequence("tum_camera"),
-                               "--mode",    "rgbd", "--out",      "run"};
+  std::vector<std::string> out{"--dataset", "tum",   "--sequence", sequence("tum_camera"), "--mode",
+                               "rgbd",      "--out", "run",        "--vocabulary",         "words"};
   out.insert(out.end(), more.begin(), more.end());
   return out;
 }
@@ -107,6 +106,12 @@ void check_parse(int& failures) {
   }
   expect(is_invalid_input(vo::parse(std::vector<std::string>{"--dataset", "tum"})),
          "parse refuses a command line without its required flags", failures);
+  const auto unnamed = vo::parse(std::vector<std::string>{
+      "--dataset", "tum", "--sequence", sequence("tum_camera"), "--mode", "rgbd", "--out", "run"});
+  expect(!unnamed.has_value() && unnamed.error().message == "--vocabulary: missing",
+         "parse refuses a command line naming no vocabulary: every run maps with one", failures);
+  expect(request.has_value() && request->vocabulary == "words",
+         "parse reads the vocabulary's folder", failures);
 }
 
 /// @brief Check the request's checks.

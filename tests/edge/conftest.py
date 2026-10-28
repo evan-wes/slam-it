@@ -40,7 +40,7 @@ from slam_it.eval import vocabularies
 from slam_it.foundations import matching, so3, vocabulary
 from tests.conftest import require_backend
 from tests.edge import room
-from tests.edge.support import CAMERA, FRAMES, OPTIONS, words_for
+from tests.edge.support import CAMERA, FRAMES, OPTIONS, keyframe_nodes
 
 KEYFRAMES = (0, 12, 24, 36)
 """The frames the truth map makes keyframes."""
@@ -140,7 +140,7 @@ def truth_map(built: list[frames.Frame], poses: list[np.ndarray]) -> Map:
     m = maps.empty(OPTIONS.features.levels, OPTIONS.features.scale_factor)
     for i in KEYFRAMES:
         observed = _observe(m, built[i], poses[i])
-        m = maps.insert_keyframe(m, built[i], poses[i], observed)
+        m = maps.insert_keyframe(m, built[i], poses[i], observed, keyframe_nodes(built[i]))
         m = _points_from_depth(m, poses[i])
     return m
 
@@ -260,7 +260,7 @@ def loop_map(built: list[frames.Frame], poses: list[np.ndarray]) -> Map:
     m = maps.empty(OPTIONS.features.levels, OPTIONS.features.scale_factor)
     for i, (frame, pose) in enumerate(zip(built, poses, strict=True)):
         observed = _observe(m, frame, pose, among=m.pt_first_kf >= i - LOOP_WINDOW)
-        m = maps.insert_keyframe(m, frame, pose, observed)
+        m = maps.insert_keyframe(m, frame, pose, observed, keyframe_nodes(frame))
         m = _points_from_depth(m, pose)
         m = covisibility.adopt(m, m.keyframes - 1)
     return exact_observations(m)
@@ -509,7 +509,7 @@ def run_room(mode: str, rendered: list[room.Frame]) -> Run:
     camera = frames.Camera(
         "pinhole", room.SMALL.intrinsics, room.SMALL.width, room.SMALL.height, baseline
     )
-    run = pipeline.Pipeline(mode, camera, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline(mode, camera, OPTIONS, vocabularies.default())
     results = []
     for f in rendered:
         if mode == "monocular":

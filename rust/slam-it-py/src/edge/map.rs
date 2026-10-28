@@ -57,6 +57,7 @@ fn predict_level<'py>(
 /// * `frame` - The frame, as a dict.
 /// * `pose` - Its `T_cam_world`.
 /// * `points` - The point id each keypoint observes, or -1.
+/// * `nodes` - Each keypoint's vocabulary node.
 ///
 /// # Returns
 ///
@@ -72,6 +73,7 @@ fn insert_keyframe<'py>(
     frame: &Bound<'py, PyDict>,
     pose: PyReadonlyArray2<'py, f64>,
     points: Bound<'py, PyAny>,
+    nodes: Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut out = map_in(py, m)?;
     unwrap(
@@ -81,6 +83,7 @@ fn insert_keyframe<'py>(
             &frame_in(frame)?,
             &pose_in(&pose)?,
             &vector::<i64>(&points)?,
+            &vector::<i64>(&nodes)?,
         ),
     )?;
     map_dict(py, &out)

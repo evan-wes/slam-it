@@ -3301,6 +3301,7 @@ fn absorb(into: &mut Map, other: &Map, keyframe_offset: i64, point_offset: i64) 
     into.kp_level.extend(&other.kp_level);
     into.kp_angle.extend(&other.kp_angle);
     into.kp_descriptor.extend(&other.kp_descriptor);
+    into.kp_node.extend(&other.kp_node);
     into.kp_bearing.extend(&other.kp_bearing);
     into.kp_depth.extend(&other.kp_depth);
     into.kp_right.extend(&other.kp_right);

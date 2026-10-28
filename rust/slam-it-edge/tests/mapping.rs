@@ -14,7 +14,7 @@ use slam_it_edge::mapping::{
 };
 use slam_it_edge::options::{MappingOptions, Mode, Options, StereoOptions};
 
-use scene::{POINTS, camera, frame, frame_at, moved, points, pose, scene_map};
+use scene::{POINTS, camera, frame, frame_at, moved, nodes, one_word, points, pose, scene_map};
 
 /// Point ids `first` to `last - 1`, then -1 to the scene's size.
 #[allow(clippy::cast_possible_wrap, reason = "ids below 60")]
@@ -87,7 +87,14 @@ fn keyframes_and_points_follow_the_rules() {
     );
     let mut m = built.clone();
     let ahead = moved(0.1);
-    map::insert_keyframe(&mut m, &frame_at(&ahead, true, 0), &ahead, &[-1; POINTS]).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &frame_at(&ahead, true, 0),
+        &ahead,
+        &[-1; POINTS],
+        &nodes(&frame_at(&ahead, true, 0)),
+    )
+    .unwrap();
     let mut every = m.clone();
     create_points_from_depth(&mut every, &camera(), &Options::default()).unwrap();
     assert_eq!(every.points(), 2 * POINTS);
@@ -115,9 +122,23 @@ fn keyframes_and_points_follow_the_rules() {
 #[test]
 fn triangulation_recovers_the_scene() {
     let mut m = Map::empty(8, 1.2);
-    map::insert_keyframe(&mut m, &frame(0, false), &pose(0), &ids(0, 0)).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &frame(0, false),
+        &pose(0),
+        &ids(0, 0),
+        &nodes(&frame(0, false)),
+    )
+    .unwrap();
     add_scene_points(&mut m, 0, 0, 10);
-    map::insert_keyframe(&mut m, &frame(2, false), &pose(2), &ids(0, 10)).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &frame(2, false),
+        &pose(2),
+        &ids(0, 10),
+        &nodes(&frame(2, false)),
+    )
+    .unwrap();
     let pairs = match_for_triangulation(&m, &camera(), 1, 0, &Options::default()).unwrap();
     assert_eq!((pairs.len(), pairs[0]), (50, [70, 10]));
     triangulate_new_points(&mut m, &camera(), Mode::Monocular, &Options::default()).unwrap();
@@ -133,9 +154,23 @@ fn triangulation_recovers_the_scene() {
 fn fusion_merges_duplicates() {
     const SHARED: usize = 5;
     let mut m = Map::empty(8, 1.2);
-    map::insert_keyframe(&mut m, &frame(0, false), &pose(0), &ids(0, 0)).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &frame(0, false),
+        &pose(0),
+        &ids(0, 0),
+        &nodes(&frame(0, false)),
+    )
+    .unwrap();
     add_scene_points(&mut m, 0, 0, POINTS);
-    map::insert_keyframe(&mut m, &frame(2, false), &pose(2), &ids(0, SHARED)).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &frame(2, false),
+        &pose(2),
+        &ids(0, SHARED),
+        &nodes(&frame(2, false)),
+    )
+    .unwrap();
     add_scene_points(&mut m, 1, SHARED, POINTS);
     fuse_points(&mut m, &camera(), Mode::Rgbd, &Options::default()).unwrap();
     assert_eq!(m.points(), POINTS);
@@ -163,7 +198,14 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
     // A fourth keyframe seeing every point: each is seen by three keyframes besides keyframe 1.
     let culled = |observers: usize| {
         let mut copy = built.clone();
-        map::insert_keyframe(&mut copy, &frame(2, true), &pose(2), &ids(0, 60)).unwrap();
+        map::insert_keyframe(
+            &mut copy,
+            &frame(2, true),
+            &pose(2),
+            &ids(0, 60),
+            &nodes(&frame(2, true)),
+        )
+        .unwrap();
         let mut options = Options::default();
         options.mapping.redundant_observers = observers;
         cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &options, &[]).unwrap();
@@ -201,6 +243,7 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
         &tracked,
         Mode::Rgbd,
         &Options::default(),
+        &one_word(),
         &[],
         None,
     )

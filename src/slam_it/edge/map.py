@@ -5,7 +5,8 @@ A :class:`Map` holds three tables, each a set of arrays row for row:
 - **keyframes** (K rows): an id, a time, the pose ``T_cam_world``, and where its keypoints
   start in the keypoint table (``kf_start``, K + 1 offsets);
 - **keypoints** (T rows, keyframe after keyframe): what tracking and mapping read of each
-  keyframe's features, and the id of the map point each observes (-1 for none);
+  keyframe's features, among them each one's vocabulary node (``kp_node``, below), and the id of
+  the map point each observes (-1 for none);
 - **points** (P rows): an id, the position in the world, and what matching a point needs:
   its distinctive descriptor, its mean viewing direction and the distances over which its
   scale stays invariant (ORB-SLAM's ``MapPoint``), and how often it was visible and found.
@@ -20,6 +21,13 @@ a keyframe removes its rows. Every operation returns a new map and leaves its in
 and each erased keyframe's id, time, pose, parent and pose relative to that parent. A run
 records from them when each point and keyframe was removed (:mod:`slam_it.eval.runs`), and
 places the frames tracked from a culled keyframe through its parents.
+
+**Each keypoint's vocabulary node** (``kp_node``) is its descriptor's node at the vocabulary's
+direct level (:data:`slam_it.foundations.vocabulary.DIRECT_LEVEL`), given with its keyframe: the
+keyframe's features are quantised when it enters the map, as ORB-SLAM's ``KeyFrame::ComputeBoW``
+makes its ``mFeatVec``, by initialisation (:mod:`slam_it.edge.initialization`) and local mapping
+(:func:`slam_it.edge.mapping.process`). The column moves with its keypoints: a sub-map, a culled
+keyframe and a merge carry it as they carry the descriptors.
 
 **The loops closed** are the map's loop edges (``loop_edges``), each a pair of keyframe ids: a
 keyframe with one is never culled, as ORB-SLAM's ``AddLoopEdge`` marks it not to be erased. **The
@@ -106,6 +114,9 @@ class Map:
         Its orientation bin.
     kp_descriptor : ndarray of uint8, shape (T, DESCRIPTOR_BYTES)
         Its descriptor.
+    kp_node : ndarray of int64, shape (T,)
+        Its descriptor's node at the vocabulary's direct level, at least 0 (the module
+        docstring).
     kp_bearing : ndarray of float64, shape (T, 3)
         Its unit bearing (NaN where it has none).
     kp_depth : ndarray of float64, shape (T,)
@@ -168,6 +179,7 @@ class Map:
     kp_level: IntArray
     kp_angle: IntArray
     kp_descriptor: NDArray[np.uint8]
+    kp_node: IntArray
     kp_bearing: Array
     kp_depth: Array
     kp_right: Array
@@ -203,10 +215,11 @@ class Map:
         slam_it.foundations.errors.InvalidInputError
             If an array has the wrong type or length, the keypoint offsets do not run from 0
             to the keypoint count, an id column is not strictly ascending or reaches its next
-            id, a keypoint observes a point that is not in the map, a keyframe's parent is
-            neither -1 nor another of its keyframes, the archive holds an id the map still
-            has, one it never gave, or an unknown removal, or a loop or merge edge joins a
-            keyframe the map does not hold, or one to itself, or lists the newer first.
+            id, a keypoint's node is negative, a keypoint observes a point that is not in the
+            map, a keyframe's parent is neither -1 nor another of its keyframes, the archive
+            holds an id the map still has, one it never gave, or an unknown removal, or a loop
+            or merge edge joins a keyframe the map does not hold, or one to itself, or lists the
+            newer first.
         """
         _check(self)
 
@@ -358,6 +371,7 @@ def empty(levels: int, scale_factor: float) -> Map:
         kp_level=no_int,
         kp_angle=no_int,
         kp_descriptor=np.zeros((0, DESCRIPTOR_BYTES), dtype=np.uint8),
+        kp_node=no_int,
         kp_bearing=np.zeros((0, 3)),
         kp_depth=no_real,
         kp_right=no_real,
@@ -556,7 +570,7 @@ def _predict_level(m: Map, rows: IntArray, distance: Array) -> IntArray:
     return np.clip(level, 0, m.levels - 1).astype(np.int64)
 
 
-def _insert_keyframe(m: Map, frame: Frame, pose: Array, points: IntArray) -> Map:
+def _insert_keyframe(m: Map, frame: Frame, pose: Array, points: IntArray, nodes: IntArray) -> Map:
     """Add a keyframe (reference)."""
     keypoints = frame.features.keypoints
     total = int(m.kf_start[-1])
@@ -571,6 +585,7 @@ def _insert_keyframe(m: Map, frame: Frame, pose: Array, points: IntArray) -> Map
         kp_level=np.concatenate([m.kp_level, keypoints.level]),
         kp_angle=np.concatenate([m.kp_angle, keypoints.angle]),
         kp_descriptor=np.concatenate([m.kp_descriptor, frame.features.descriptors]),
+        kp_node=np.concatenate([m.kp_node, nodes]),
         kp_bearing=np.concatenate([m.kp_bearing, frame.bearings]),
         kp_depth=np.concatenate([m.kp_depth, frame.depth]),
         kp_right=np.concatenate([m.kp_right, frame.right]),
@@ -798,6 +813,7 @@ _SHAPES: dict[str, tuple[str, type[np.generic], tuple[int, ...]]] = {
     "kp_level": ("T", np.int64, ()),
     "kp_angle": ("T", np.int64, ()),
     "kp_descriptor": ("T", np.uint8, (DESCRIPTOR_BYTES,)),
+    "kp_node": ("T", np.int64, ()),
     "kp_bearing": ("T", np.float64, (3,)),
     "kp_depth": ("T", np.float64, ()),
     "kp_right": ("T", np.float64, ()),
@@ -857,6 +873,8 @@ def _check(m: Map) -> None:
         ids = np.asarray(getattr(m, name))
         if np.any(np.diff(ids) <= 0) or (len(ids) and (ids[0] < 0 or ids[-1] >= last)):
             raise InvalidInputError(f"map.{name}: ids must be ascending, from 0, below the next id")
+    if np.any(np.asarray(m.kp_node) < 0):
+        raise InvalidInputError("map.kp_node: every node must be at least 0")
     observed = np.asarray(m.kp_point)
     observed = observed[observed >= 0]
     if np.any(np.asarray(m.kp_point) < -1) or np.any(_rows(m.pt_id, observed) < 0):
@@ -911,6 +929,7 @@ class Implementation(Protocol):
         frame: dict[str, Any],
         pose: NDArray[np.float64],
         points: NDArray[np.int64],
+        nodes: NDArray[np.int64],
     ) -> dict[str, Any]:
         """Add a keyframe."""
         ...
@@ -1097,6 +1116,16 @@ def _as_ids(ids: ArrayLike, name: str) -> IntArray:
     return np.ascontiguousarray(arr, dtype=np.int64)
 
 
+def _as_nodes(nodes: ArrayLike, size: int) -> IntArray:
+    """Check a keyframe's vocabulary nodes: one integer per keypoint, each at least 0."""
+    arr = np.asarray(nodes)
+    if arr.shape != (size,) or (size and (not holds_integers(arr) or arr.min() < 0)):
+        raise InvalidInputError(
+            f"nodes: expected {size} vocabulary nodes, one per keypoint, each at least 0"
+        )
+    return np.ascontiguousarray(arr, dtype=np.int64)
+
+
 def to_camera(pose: Array, xyz: Array) -> Array:
     """Move world points into a camera's frame: ``R X + t``.
 
@@ -1230,10 +1259,16 @@ def predict_level(
     )
 
 
-def insert_keyframe(
-    m: Map, frame: Frame, pose: ArrayLike, points: ArrayLike, *, backend: str = "python"
+def insert_keyframe(  # noqa: PLR0913 -- the map, the frame, its pose, points and nodes
+    m: Map,
+    frame: Frame,
+    pose: ArrayLike,
+    points: ArrayLike,
+    nodes: ArrayLike,
+    *,
+    backend: str = "python",
 ) -> Map:
-    """Add a keyframe: the frame, its pose, and the points its keypoints observe.
+    """Add a keyframe: the frame, its pose, the points its keypoints observe, and their nodes.
 
     The observed points' descriptors, normals and distances are refreshed.
 
@@ -1248,6 +1283,9 @@ def insert_keyframe(
     points : array_like of int, shape (N,)
         The id of the point each keypoint observes (each in the map, each at most once), or
         -1.
+    nodes : array_like of int, shape (N,)
+        Each keypoint's vocabulary node at the direct level, at least 0
+        (:func:`slam_it.foundations.vocabulary.quantize`'s ``nodes``; the module docstring).
     backend : {"python", "cpp", "rust"}, optional
         Which implementation computes the result (default: the Python reference).
 
@@ -1259,8 +1297,9 @@ def insert_keyframe(
     Raises
     ------
     slam_it.foundations.errors.InvalidInputError
-        If the frame's pyramid differs from the map's, the pose is not finite, or the point
-        ids are not one per keypoint, in the map, and distinct.
+        If the frame's pyramid differs from the map's, the pose is not finite, the point
+        ids are not one per keypoint, in the map, and distinct, or the nodes are not one per
+        keypoint, each at least 0.
     """
     if frame.features.levels != m.levels or frame.features.scale_factor != m.scale_factor:
         raise InvalidInputError("frame: its pyramid must be the map's")
@@ -1273,12 +1312,19 @@ def insert_keyframe(
     observed = ids[ids >= 0]
     if len(np.unique(observed)) != len(observed) or np.any(m.point_rows(observed) < 0):
         raise InvalidInputError("points: each must be in the map, and observed once")
+    held = _as_nodes(nodes, frame.size)
     return backends.call(
         backend,
         __name__,
         "insert_keyframe",
-        reference=lambda: _insert_keyframe(m, frame, matrix, ids),
-        arguments={"m": m.as_dict(), "frame": frame.as_dict(), "pose": matrix, "points": ids},
+        reference=lambda: _insert_keyframe(m, frame, matrix, ids, held),
+        arguments={
+            "m": m.as_dict(),
+            "frame": frame.as_dict(),
+            "pose": matrix,
+            "points": ids,
+            "nodes": held,
+        },
         decode=decode,
     )
 

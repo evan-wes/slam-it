@@ -18,6 +18,7 @@
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/options.hpp"
 #include "slam_it/foundations/error.hpp"
+#include "slam_it/foundations/vocabulary.hpp"
 
 namespace slam_it::edge {
 
@@ -229,16 +230,18 @@ struct Mapped {
 /// @param tracked Its pose and matches.
 /// @param mode The pipeline's mode.
 /// @param options The settings.
+/// @param vocabulary The vocabulary, checked, the keyframe's features are quantised by as it
+///        enters the map (its nodes, `map.hpp`'s `kp_node`; ORB-SLAM's `ComputeBoW` in
+///        `ProcessNewKeyFrame`).
 /// @param held The ids of the keyframes loop detection holds, which culling spares.
 /// @param interrupts What local mapping's thread is asked between the steps; null inline, every
 ///        step run.
 /// @return How each step went and was scheduled, and the points made for the keyframe's
 ///         keypoints; `InvalidInput` for matches that are not one per keypoint, or an invalid
 ///         camera or settings.
-[[nodiscard]] foundations::Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame,
-                                                  const Tracked& tracked, Mode mode,
-                                                  const Options& options,
-                                                  std::span<const std::int64_t> held = {},
-                                                  const Interrupts* interrupts = nullptr);
+[[nodiscard]] foundations::Result<Mapped> process(
+    Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked, Mode mode,
+    const Options& options, const foundations::vocabulary::Vocabulary& vocabulary,
+    std::span<const std::int64_t> held = {}, const Interrupts* interrupts = nullptr);
 
 }  // namespace slam_it::edge

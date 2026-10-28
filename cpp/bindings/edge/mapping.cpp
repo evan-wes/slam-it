@@ -2,7 +2,8 @@
 /// @brief Bindings for `slam_it.edge.mapping` (`slam_it._cpp.edge.mapping`).
 ///
 /// Each step copies the map in, changes the copy, and returns it as a dict; the mode crosses
-/// by name, a tracked frame as `pose` and `points`.
+/// by name, a tracked frame as `pose` and `points`, the vocabulary as
+/// `vocabulary_crossing::vocabulary_in` reads it.
 #include "slam_it/edge/mapping.hpp"
 
 #include <nanobind/nanobind.h>
@@ -18,6 +19,7 @@
 #include "common.hpp"
 #include "edge/edge.hpp"
 #include "edge/edge_crossing.hpp"
+#include "foundations/vocabulary_crossing.hpp"
 
 namespace nb = nanobind;
 
@@ -174,6 +176,7 @@ nb::dict cull_keyframes(const nb::dict& m, const nb::dict& camera, const std::st
 /// @param tracked Its pose and matches, as a dict.
 /// @param mode The mode's name.
 /// @param options The settings, as a dict.
+/// @param vocabulary The vocabulary, as a dict of its fields.
 /// @param held The ids of the keyframes loop detection holds.
 /// @return The new map, as a dict, how each step went (the summary's counts and `solves`), and
 ///         `made`.
@@ -181,11 +184,12 @@ nb::dict cull_keyframes(const nb::dict& m, const nb::dict& camera, const std::st
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
 nb::dict process(const nb::dict& m, const nb::dict& camera, const nb::dict& frame,
                  const nb::dict& tracked, const std::string& mode, const nb::dict& options,
-                 const edge_crossing::Int64In& held) {
+                 const nb::dict& vocabulary, const edge_crossing::Int64In& held) {
   edge::Map mapped = map_in(m);
-  const edge::Mapped done = unwrap(edge::process(
-      mapped, camera_in(camera), edge_crossing::frame_in(frame), edge_crossing::tracked_in(tracked),
-      mode_in(mode), options_in(options), edge_crossing::int64_in(held)));
+  const edge::Mapped done = unwrap(
+      edge::process(mapped, camera_in(camera), edge_crossing::frame_in(frame),
+                    edge_crossing::tracked_in(tracked), mode_in(mode), options_in(options),
+                    vocabulary_crossing::vocabulary_in(vocabulary), edge_crossing::int64_in(held)));
   const edge::MappingSummary& summary = done.summary;
   nb::dict out;
   out["map"] = map_dict(mapped);
@@ -236,7 +240,7 @@ void bind_mapping(nb::module_& m) {
         nb::arg("options"), nb::arg("held").noconvert(),
         "Cull the newest keyframe's redundant links.");
   m.def("process", &process, nb::arg("m"), nb::arg("camera"), nb::arg("frame"), nb::arg("tracked"),
-        nb::arg("mode"), nb::arg("options"), nb::arg("held").noconvert(),
+        nb::arg("mode"), nb::arg("options"), nb::arg("vocabulary"), nb::arg("held").noconvert(),
         "Insert a keyframe and run local mapping on it.");
 }
 
