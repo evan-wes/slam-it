@@ -163,6 +163,16 @@ def test_monocular_frames_start_with_more_features() -> None:
     assert depth.extraction().n_features == OPTIONS.features.n_features
 
 
+@pytest.mark.parametrize("given", [None, "default"], ids=["none", "a name"])
+def test_a_pipeline_refuses_what_is_not_a_vocabulary(given: object) -> None:
+    """Every pipeline quantises its keyframes by its vocabulary, so one not given is refused.
+
+    Before, a pipeline made without one failed at its first keyframe, with ``AttributeError``.
+    """
+    with pytest.raises(InvalidInputError, match="vocabulary: expected a Vocabulary"):
+        pipeline.Pipeline("monocular", CAMERA, OPTIONS, given)  # type: ignore[arg-type]
+
+
 def _empty(timestamp: float = 0.0) -> frames.Frame:
     """Return a frame with no keypoints, at `timestamp`."""
     features = orb.Features(

@@ -1665,6 +1665,10 @@ Result<Pipeline> Pipeline::create(Mode mode, Camera camera, Options options,
     return fail(ErrorKind::kInvalidInput,
                 std::string("camera.baseline: ") + name(mode) + " needs a positive baseline");
   }
+  // Once, here: every keyframe is quantised by it, and quantisation walks the tree unchecked.
+  if (auto ok = foundations::vocabulary::check(vocabulary); !ok) {
+    return fail(ErrorKind::kInvalidInput, "vocabulary: " + ok.error().message);
+  }
   return Pipeline(mode, std::move(camera), options, std::move(vocabulary), threading);
 }
 

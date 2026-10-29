@@ -2024,10 +2024,16 @@ class Pipeline:
         Raises
         ------
         slam_it.foundations.errors.InvalidInputError
-            If the mode is unknown, or a stereo or RGB-D camera has no baseline.
+            If the mode is unknown, a stereo or RGB-D camera has no baseline, or the vocabulary
+            is not a :class:`slam_it.foundations.vocabulary.Vocabulary` (one is checked as it is
+            made).
         """
         if self.mode not in MODES:
             raise InvalidInputError(f"mode: expected one of {MODES}, got {self.mode!r}")
+        if not isinstance(self.vocabulary, Vocabulary):
+            raise InvalidInputError(
+                f"vocabulary: expected a Vocabulary, got {type(self.vocabulary).__name__}"
+            )
         if self.mode != "monocular" and not self.camera.baseline > 0.0:
             raise InvalidInputError(f"camera.baseline: {self.mode} needs a positive baseline")
         writer = Writer() if self.threaded else None

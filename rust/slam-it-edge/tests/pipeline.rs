@@ -256,6 +256,21 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
     )
     .unwrap_err();
     assert_eq!(err.kind, ErrorKind::InvalidInput);
+    // Every keyframe is quantised by the vocabulary, which quantisation walks unchecked: a tree
+    // whose child names another parent is refused once, as the pipeline starts.
+    let mut broken = one_word();
+    broken.parents[1] = 1;
+    let refused = Pipeline::new(
+        Mode::Monocular,
+        camera(),
+        Options::default(),
+        broken,
+        Threading::Inline,
+    )
+    .err()
+    .expect("a malformed vocabulary is refused");
+    assert_eq!(refused.kind, ErrorKind::InvalidInput);
+    assert!(refused.message.starts_with("vocabulary: "));
 }
 
 /// A session started closes the map tracked: the map of one keyframe is reset with

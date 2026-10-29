@@ -277,6 +277,14 @@ void check_lost(int& failures) {
   expect(is_invalid_input(edge::Pipeline::create(edge::Mode::kRgbd, monocular, edge::Options{},
                                                  scene::one_word())),
          "RGB-D without a baseline is refused", failures);
+  // Every keyframe is quantised by the vocabulary, which quantisation walks unchecked: a tree
+  // whose child names another parent is refused once, as the pipeline starts.
+  slam_it::foundations::vocabulary::Vocabulary broken = scene::one_word();
+  broken.parents[1] = 1;
+  const auto refused =
+      edge::Pipeline::create(edge::Mode::kMonocular, scene::camera(), edge::Options{}, broken);
+  expect(is_invalid_input(refused) && refused.error().message.starts_with("vocabulary: "),
+         "a malformed vocabulary is refused", failures);
 }
 
 /// @brief Check starting a session: the map of one keyframe is reset with

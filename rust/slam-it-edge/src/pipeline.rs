@@ -23,7 +23,7 @@ use std::time::Instant;
 use nalgebra::Matrix4;
 use slam_it_foundations::error::{Error, ErrorKind, Result, fail};
 use slam_it_foundations::nls::Stop;
-use slam_it_foundations::vocabulary::Vocabulary;
+use slam_it_foundations::vocabulary::{self, Vocabulary};
 use slam_it_foundations::{orb, se3, sim3};
 
 use crate::atlas::{Atlas, Lifetimes, Trajectory};
@@ -2998,8 +2998,8 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// `InvalidInput` for an invalid camera or settings, or a stereo or RGB-D camera without a
-    /// baseline.
+    /// `InvalidInput` for an invalid camera, settings or vocabulary (`vocabulary::check`, once),
+    /// or a stereo or RGB-D camera without a baseline.
     pub fn new(
         mode: Mode,
         camera: Camera,
@@ -3012,6 +3012,13 @@ impl Pipeline {
             return fail(
                 ErrorKind::InvalidInput,
                 format!("camera.baseline: {} needs a positive baseline", mode.name()),
+            );
+        }
+        // Once, here: every keyframe is quantised by it, and quantisation walks the tree unchecked.
+        if let Err(error) = vocabulary::check(&vocabulary) {
+            return fail(
+                ErrorKind::InvalidInput,
+                format!("vocabulary: {}", error.message),
             );
         }
         let shared = Arc::new(Shared {

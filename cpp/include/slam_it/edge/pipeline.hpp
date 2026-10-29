@@ -736,8 +736,9 @@ class Pipeline {
   ///        of it.
   /// @param threading How the steps run: inline, the default, a run repeating exactly, or in
   ///        threads of their own.
-  /// @return The pipeline; `InvalidInput` for an invalid camera or settings, or a stereo or
-  ///         RGB-D camera without a baseline.
+  /// @return The pipeline; `InvalidInput` for an invalid camera, settings or vocabulary
+  ///         (`foundations::vocabulary::check`, once), or a stereo or RGB-D camera without a
+  ///         baseline.
   [[nodiscard]] static foundations::Result<Pipeline> create(
       Mode mode, Camera camera, Options options, foundations::vocabulary::Vocabulary vocabulary,
       Threading threading = Threading::kInline);
