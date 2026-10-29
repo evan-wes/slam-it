@@ -28,7 +28,14 @@ from slam_it.foundations import camera, se3, so3
 from slam_it.foundations.arrays import group_members
 from slam_it.foundations.ba.gauge import confinement
 from slam_it.foundations.ba.layout import Layout
-from slam_it.foundations.ba.problem import AFFINE_DIM, POSE_DIM, Array, BAProblem, IndexArray
+from slam_it.foundations.ba.problem import (
+    AFFINE_DIM,
+    POSE_DIM,
+    Array,
+    BAProblem,
+    IndexArray,
+    to_camera,
+)
 from slam_it.foundations.ba.schur import (
     Blocks,
     ReducedSystemSolver,
@@ -317,8 +324,7 @@ class Bundle:
     @staticmethod
     def _in_camera(state: State, world: Array, cam: IndexArray, pt: IndexArray) -> Array:
         """Return ``world[pt]`` in camera ``cam``'s frame, shape (M, 3)."""
-        in_camera = np.einsum("mij,mj->mi", state.poses[cam, :3, :3], world[pt])
-        return np.asarray(in_camera + state.poses[cam, :3, 3], dtype=np.float64)
+        return to_camera(state.poses, world, cam, pt)
 
     def _reprojection(self, state: State, world: Array) -> Array:
         """Return the weighted reprojection errors ``√w (project - pixel)``, shape (M, 2).
