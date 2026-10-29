@@ -144,16 +144,17 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
    at least 15. A neighbour that shares words but was not scored adds nothing to the group
    (ORB-SLAM adds the score it kept from an earlier query, which the three languages could not
    reproduce alike).
-5. **The loss flow:** a frame that fails, as now (the motion model, then PnP against the local
-   map), is relocalised against the whole active map, while `relocalize` is on (by default, as
-   ORB-SLAM always relocalises; on, a run needs a vocabulary: `vo.run` takes the committed one
-   unless told another, and a program needs `--vocabulary`; off, it refuses one, and a map is
-   lost as A2 loses it). A run is recently lost from its first failed frame: it is tracked
-   again on a frame that succeeds,
-   and lost, its map closed as A2 closes it, once `relocalize_seconds` (3.0) have passed since
-   that frame with no success. A map of `reset_keyframes` or fewer is lost after `lost_frames`
-   (5) failures instead, as section 6 has it. The pipeline's own state stays tracking or not
-   initialised between frames, the loss flagged on the frame's step (the A2 panel's A8).
+5. **The loss flow:** a frame that fails, as now (the motion model, then PnP against the local map),
+   is relocalised against the whole active map, while `relocalize` is on (by default, as ORB-SLAM
+   always relocalises; off, a map is lost as A2 loses it). A run relocalising needed a vocabulary,
+   `vo.run` taking the committed one unless told another and a program needing `--vocabulary`, and a
+   run with relocalisation off refused one; since 0.3.18.0 every run names a vocabulary, as mapping
+   quantises each keyframe by it (section 11's L2). A run is recently lost from its first failed
+   frame: it is tracked again on a frame that succeeds, and lost, its map closed as A2 closes it,
+   once `relocalize_seconds` (3.0) have passed since that frame with no success. A map of
+   `reset_keyframes` or fewer is lost after `lost_frames` (5) failures instead, as section 6 has it.
+   The pipeline's own state stays tracking or not initialised between frames, the loss flagged on
+   the frame's step (the A2 panel's A8).
 6. **The run format,** version 5, a clean break with 0.3.9.0's runs (B1's panel, H9): `run.json`'s
    `vocabulary` is required, null or the vocabulary's record; a frame relocalised is placed by
    `relocalization`, and
@@ -290,13 +291,24 @@ Each gets its own section here before its PR, its forks put to the owner then.
   depth at the start, as global and welding BA do since 0.3.18.0 (section 11's L2). The rule is
   to be one rung-0 function in each language, which `foundations.ba` and `foundations.graphs`
   both call, not a second implementation of it; whether `loops.min_depth_ratio` then moves to
-  the `adjustment` settings is decided in that PR (the panel's A5). B1's final measurement met
+  the `adjustment` settings is decided in that PR (the panel's A5). The final measurement of
+  triangulation by node (section 11's L2; the keyframe-stream investigation's option B1) met
   the case (2026-10-29): Rust's inline run of advio-01 ended in a local BA whose start held an
   observation of a point 1e-9 m in front of its camera, kept by the BA's in-front test and
   refused by its projection, which compute the depth by different formulas either side of
-  `camera.MIN_DEPTH`; the solve refused an infinite starting cost. Since 6274b518 the in-front
-  test takes the depth as the residuals do, in C++ and Rust (Python's already did), so such an
-  observation is left out at the start; the filter of near observations is still that PR's.
+  `camera.MIN_DEPTH`; the solve refused an infinite starting cost. Since 6274b518 (C++ and
+  Rust) and 253f0596 (Python, whose two formulas agreed by numpy's rounding, not by
+  construction) the in-front test and the residuals take a point's depth from one function, so
+  such an observation is left out at the start; the filter of near observations is still that
+  PR's. Three more for it (the 0.3.18.0 review panel, run 2, A11 and L14):
+  - **Anchored points** stay outside that one function in every language: an anchored point's
+    residual places it on its host camera's ray at its inverse depth, which the in-front test
+    does not, so it could pass the test and fail the projection (no pipeline anchors points).
+  - **The bound is absolute:** a point 2e-9 m in front of its camera still passes, its
+    Jacobian of order f/z²; only the relative guard removes it.
+  - **How a point came to sit at a camera's centre** in local BA is unexplained: one probe of
+    which step put it there (fusion, a merge, or local BA sliding a low-parallax point along
+    its ray), beside the guard.
 - **B3b** (0.3.13.0 -> 0.3.14.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
@@ -700,10 +712,10 @@ alone, and runs on real data only when asked.
       closed one on V1_03 monocular and one on V1_03 stereo; no run failed. B3's bar was
       measured inline (above); these runs are threaded.
 
-    *As built, B1 (0.3.18.0; decided by evan-wes on 2026-10-28):* triangulation matches within
-    vocabulary nodes, as ORB-SLAM3's `SearchForTriangulation` walks the two keyframes'
-    `FeatureVector` node by node. The keyframe-stream investigation (2026-10-26) found our
-    threaded monocular runs making 0.51 (C++) and 0.67 (Rust) times ORB-SLAM3's keyframes over
+    *As built, triangulation by node (0.3.18.0; decided by evan-wes on 2026-10-28):* triangulation
+    matches within vocabulary nodes, as ORB-SLAM3's `SearchForTriangulation` walks the two
+    keyframes' `FeatureVector` node by node. The keyframe-stream investigation (2026-10-26) found
+    our threaded monocular runs making 0.51 (C++) and 0.67 (Rust) times ORB-SLAM3's keyframes over
     the test set, one cause being mapping 2 to 7 times slower per keyframe, mostly brute-force
     matching for triangulation; the other, c2's inputs, is in section 12's backlog (A).
     - **The map keeps each keypoint's node** (`Map.kp_node`): its node at the vocabulary's
@@ -712,48 +724,70 @@ alone, and runs on real data only when asked.
       as ORB-SLAM's `ComputeBoW` does, and carried with its keypoints through sub-maps, culled
       keyframes and merges. Mapping needs the vocabulary, so every pipeline holds one, as
       ORB-SLAM always loads one; a map keeps a keyframe database only with relocalisation or
-      loop closing on.
+      loop closing on. A Python pipeline refuses anything but a vocabulary, and the C++ and Rust
+      pipelines check theirs once as they start (the 0.3.18.0 review panel, run 2, A13).
     - **ORB-SLAM3's rules,** its tie rule among them: of a keyframe-1 keypoint's candidates under
       its node, within `matching.th_low`, the epipolar band and away from the epipole, the
       nearest wins, the last of equally near ones (its `dist > bestDist` skips only a farther
       one).
-    - **Two departures kept.** A keyframe-2 keypoint is matched once, the nearest keyframe-1
-      keypoint keeping it, where ORB-SLAM3 v1.0 tests `vbMatched2` but never sets it (ORB-SLAM2
-      sets it). Letting several take it, as ORB-SLAM3 does, was measured and rejected (on B1
-      before the tie rule, 2026-10-28): the merge room's monocular wall 0.0752 m but its ATE
-      2.871 cm, over the 2.8 cm bar, in the three languages; on the eight threaded regression
-      sequences (C++, three runs each) the median of the medians 6.70 cm and their sum 178.6 cm,
-      against B1's 4.90 and 77.0 in the batch of 2026-10-26. And a monocular keyframe
-      triangulates against 20 neighbours, ORB-SLAM2's count, where ORB-SLAM3's
-      `CreateNewMapPoints` takes 30: 30 changed little on the merge room (0.0970 m and 2.113 cm
-      against 0.0964 and 2.110, C++, the same code otherwise).
-    - **The ties were a third departure,** the first of equally near candidates winning, until
+    - **Three departures kept** (`match_for_triangulation` names them in each language):
+      - **A keyframe-2 keypoint is matched once,** the nearest keyframe-1 keypoint keeping it, as
+        our map holds one point per keypoint. ORB-SLAM3 v1.0 tests `vbMatched2` but never sets
+        it (neither does ORB-SLAM2; the original ORB-SLAM does), so two keyframe-1 keypoints can
+        take one keyframe-2 keypoint: both points record the observation, and the keyframe keeps
+        the later, the earlier's observation left dangling (`LocalMapping.cc:698-702`). Its
+        measurements were inconclusive (the 0.3.18.0 review panel, run 2, L11). Letting several
+        take it, as ORB-SLAM3 does, was measured and rejected (before the tie rule, 2026-10-28):
+        the merge room's monocular wall 0.0752 m but its ATE 2.871 cm, over the 2.8 cm bar, in
+        the three languages, a case that is a coin flip (section 12); on the eight threaded
+        regression sequences (C++, three runs each) the median of the medians 6.70 cm and their
+        sum 178.6 cm, against 6.84 and 106.7 cm for triangulation by node with the same tie rule
+        on the same day (4.90 and 77.0 in the batch of 2026-10-26).
+      - **A monocular keyframe triangulates against 20 neighbours,** ORB-SLAM2's count, where
+        ORB-SLAM3's `CreateNewMapPoints` takes 30: 30 changed little on the merge room (0.0970 m
+        and 2.113 cm against 0.0964 and 2.110, C++, the same code otherwise). Not measured on
+        the test set (section 12).
+      - **Every neighbour is matched,** where ORB-SLAM's `CreateNewMapPoints` stops after the
+        first once a new keyframe waits for mapping (`if(i>0 && CheckNewKeyFrames()) return;`,
+        `LocalMapping.cc:436-437`, as ORB-SLAM2's line 239), so that its 30 is a ceiling reached
+        only when no keyframe waits (the panel's L12; porting it is in section 12).
+    - **The ties departed too,** the first of equally near candidates winning, until
       the merge-room dig (2026-10-28; section 12's backlog): with ORB-SLAM3's rule every room
       bar passes in the three languages, the merge room's monocular wall 0.0572 m and ATE
       1.355 cm against the first rule's 0.0964 m, over the 0.09 m bar, and 2.110 cm. That pass is
       a favourable draw, not a fix: with 5% of the triangulation pairs dropped at random, the
       room's monocular bars pass in 7 of 10 draws with the last rule and 6 of 10 with the first.
 
-    *Measured (B1, 2026-10-28 and 29, at 2b17bfae's code; the CHANGELOG's 0.3.18.0 entry gives
-    each figure's conditions):* threaded, three runs a sequence in C++ and Rust against the
-    branch's three before B1, keyframes made over the monocular test set rose from 0.51 to 0.71
-    (C++) and 0.67 to 0.81 (Rust) times ORB-SLAM3's (the median ratio over 56 sequences), and
-    mapping's time per keyframe fell to 0.61 and 0.74 times what it was; the median final ATE
-    over the test set moved within the runs' ranges (15.34 to 18.69 cm in C++, 29.14 to 31.77
-    cm in Rust). On the eight regression sequences the median of the medians fell from 16.31 to
-    9.74 cm (C++) and 13.31 to 10.62 cm (Rust), and on the three referenced independently of
-    ARKit (tum-freiburg2_360_hemisphere, zju-B0, zju-B5) from 1.74 to 1.58 cm and 3.06 to 1.28
-    cm; the five ARKitScenes sequences are scored against ARKit's own visual-inertial poses, so
-    small differences there are within their reference's error (the ladder's L8). Inline, where
-    mapping's speed buys nothing, the median final ATE rose from 24.81 to 28.71 cm (C++) and
-    24.74 to 27.36 cm (Rust); one Rust run failed (advio-01; section 7, fixed since). The loop
-    sequences: 2.32 to 2.91 cm (C++) and 2.81 to 2.93 cm (Rust), ORB-SLAM3's 2.94. Against
-    develop, the branch as a whole remains about 11% to 12% worse per sequence on the
-    monocular test set threaded (the geometric mean of the per-sequence ratio of median final
-    ATE: 1.109 in C++, 1.116 in Rust; B1's own step 1.041 and 1.009); B1 closes
-    tum-freiburg2_360_hemisphere's regression in C++ (develop 11.38 cm, B1 9.80) and only partly
-    in Rust (9.64 cm, 26.06). The likeliest lead is the keyframe gap in section 12's backlog: a
-    lead, not a proven cause.
+    *Measured (triangulation by node, 2026-10-28 and 29, at 2b17bfae's code; the CHANGELOG's
+    0.3.18.0 entry gives each figure's conditions):* threaded, three runs a sequence in C++ and Rust
+    against the branch's three before it, keyframes made over the monocular test set rose from 0.51
+    to 0.71 (C++) and 0.67 to 0.81 (Rust) times ORB-SLAM3's (the median ratio over 56 sequences),
+    and mapping's time per keyframe fell to 0.61 and 0.74 times what it was (the median ratio over
+    the same 56, lower on 55); the median final ATE over the test set moved within the runs' ranges
+    (15.34 to 18.69 cm in C++, 29.14 to 31.77 cm in Rust). On the eight regression sequences the
+    median of the medians fell from 16.31 to 9.74 cm (C++) and 13.31 to 10.62 cm (Rust), and on the
+    three referenced independently of ARKit (tum-freiburg2_360_hemisphere, zju-B0, zju-B5) from 1.74
+    to 1.58 cm and 3.06 to 1.28 cm; the five ARKitScenes sequences are scored against ARKit's own
+    visual-inertial poses, so small differences there are within their reference's error (the
+    ladder's L8). Inline, where mapping's speed buys nothing and only the matching differs, it costs
+    tracking: the share tracked fell by more than 0.005 on 27 sequences and rose on 10 in C++ (a
+    sign test's p 0.008), on 22 and 11 in Rust (p 0.080), and the losses rose from 139 to 153 (C++,
+    the 58 sequences) and 124 to 136 (Rust, the 57 both finished: its run of advio-01 failed,
+    section 7, fixed since); the median final ATE rose from 24.81 to 28.71 cm (C++) and 24.74 to
+    27.36 cm (Rust), though the geometric mean of the per-sequence ratio fell to 0.982 and 0.928.
+    The loop sequences: 2.32 to 2.91 cm (C++) and 2.81 to 2.93 cm (Rust), ORB-SLAM3's 2.94;
+    euroc-V1_02_medium-monocular gains a map and a loss in all six runs, its share 0.947 to 0.909.
+    Against develop, three threaded runs a sequence do not separate the branch from it: the
+    geometric mean over the 56 of the per-sequence ratio of median final ATE, develop to the branch,
+    is 1.109 in C++ (a permutation test exchanging each sequence's runs: p 0.172, the null's 95%
+    [0.864, 1.157]) and 1.116 in Rust (p 0.115, [0.874, 1.145]), and inline, where timing plays no
+    part, the branch is a little better, 0.957 (C++, 56) and 0.972 (Rust, 55).
+    tum-freiburg2_360_hemisphere's threaded runs fall in two modes, 8.2 to 11.5 cm and 21.6 to 40.5
+    cm, above 20 cm in 2 of develop's six, 5 of the branch's six before triangulation by node and 3
+    of six with it; inline its final ATE is develop's or better, but over fewer frames, 0.455 (C++)
+    and 0.491 (Rust) of them against develop's 0.750. Develop made fewer keyframes than the branch,
+    0.55 (C++) and 0.76 (Rust) times ORB-SLAM3's against 0.71 and 0.81, so the keyframe gap in
+    section 12's backlog is a lead for the distance to ORB-SLAM3, not for that to develop.
 
 ## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
@@ -948,31 +982,53 @@ evan-wes on 2026-10-25):
   ORB-SLAM's own depth statistic is per keyframe (`ComputeSceneMedianDepth`): a merged map's
   parts at different scales would each have their own.
 
-**Deferred from B1** (triangulation within vocabulary nodes, section 11's L2; decided by evan-wes
-on 2026-10-28):
+**Deferred from triangulation by node** (section 11's L2; decided by evan-wes on 2026-10-28, and
+from the 0.3.18.0 review panel's run 2 on 2026-10-29):
 - **A: the new keyframe's outlier matches.** ORB-SLAM3's new keyframe takes the frame's outlier
   matches too, so the reference keyframe's tracked points (`nRefMatches`) stay above the next
   frames' inliers (0.74 to 0.88 of them), where ours, holding the inliers only, reach 1.0 to 1.2,
   and c2 holds on 25% to 66% of our keyframe decisions against ORB-SLAM3's 75% to 90% (the
   keyframe-stream investigation, 2026-10-26). A keyframe holding them made more keyframes, with
-  no gain in accuracy, and with B1 failed 16 room checks.
-- **The keyframe gap that remains.** With B1 our threaded runs still make fewer keyframes than
-  ORB-SLAM3's: over the monocular test set 0.71 (C++) and 0.81 (Rust) times as many (the median
-  ratio over 56 sequences, three runs each, 2026-10-29); on the eight threaded regression
-  sequences, 4,109 (the sum of each sequence's median over three runs, C++, 2026-10-26) against
-  its 6,186, c2 holding on 21% to 38% of the decisions.
-- **The keyframe database reusing the words.** The database quantises a keyframe's descriptors
-  again to index it, and keeps its own copy of their nodes (`Database.insert`), though mapping
-  quantised them as the keyframe entered the map; the map could keep the words beside the
-  nodes for the database to take, as ORB-SLAM's one `ComputeBoW` serves both.
-- **The merge room's monocular judgement is a coin flip** (the merge-room dig, 2026-10-28, on B1
-  and on the branch before it). `tests/orchestration/test_merge_room.py` judges one run a case.
-  On the TUM monocular case its two bars, the wall distance under 0.09 m and the final ATE
-  under 2.8 cm, turn on the matching's details: with 5% of the triangulation pairs dropped at
-  random (ten seeds, C++), both pass in 5 of 10 draws before B1, 6 of 10 with B1 and its first
-  tie rule, and 7 of 10 with ORB-SLAM3's; with 1% dropped before B1, the wall ranged 0.050 to
-  0.119 m and the ATE 1.47 to 6.28 cm over four draws. The run before B1 (0.0424 m, 1.341 cm) was
-  a favourable draw and B1's with the first tie rule (0.0964 m, 2.110 cm) an unfavourable one.
+  no gain in accuracy, and with triangulation by node failed 16 room checks.
+- **The keyframe gap that remains.** With triangulation by node our threaded runs still make
+  fewer keyframes than ORB-SLAM3's: over the monocular test set 0.71 (C++) and 0.81 (Rust) times
+  as many (the median ratio over 56 sequences, three runs each, 2026-10-29); on the eight
+  threaded regression sequences, 4,109 (the sum of each sequence's median over three runs, C++,
+  2026-10-26) against its 6,186, c2 holding on 21% to 38% of the decisions. It is a lead for the
+  distance to ORB-SLAM3 only: develop made fewer keyframes still (0.55 and 0.76 times
+  ORB-SLAM3's), and the branch is not separated from it (section 11's L2; the panel's L9). Two
+  of ORB-SLAM3's own rules to measure here (the panel's L11 and L12):
+  - **30 monocular neighbours,** ORB-SLAM3's count, against our 20: first inline on the
+    monocular test set, deterministic, so that it isolates the matching (inline, triangulation
+    by node lowered the share tracked on most sequences it moved).
+  - **ORB-SLAM's early return** from triangulation once a new keyframe waits
+    (`LocalMapping.cc:436-437`), ported and measured threaded together with 30 neighbours,
+    which it makes a ceiling reached only when no keyframe waits.
+- **Develop against the branch, interleaved** (the panel's L9): threaded, in batches interleaved
+  on the same day, with more than three runs a sequence. Three runs did not separate them (the
+  permutation test's p 0.172 in C++ and 0.115 in Rust; section 11's L2), and the batches
+  compared were made on different days beside different loads. Needed if a decision turns on
+  that comparison.
+- **The keyframe database reusing the words, with or before the threaded merge** (the panel's
+  A14; B4's panel's H14, the database re-quantised in the merge's pause, is the same work). A
+  keyframe is quantised up to three times: by mapping for `Map.kp_node`, by the database to
+  index it (`Database.insert`, which keeps its own copy of the nodes, read by relocalisation and
+  loop closing while triangulation reads the map's), and again for a merge's absorbed keyframes
+  inside its pause (`apply_merge`). The map could keep each keypoint's word beside its node for
+  the database to take, as ORB-SLAM's one `ComputeBoW` serves both: one direct index, nothing
+  re-quantised in the pause. With it, a visitor over the per-keypoint columns: the C++ and Rust
+  maps list each column by hand at about ten sites (the field, its checks, `sub_map`,
+  `insert_keyframe`, `erase_keyframe`, `absorb`, `size_of`, the bindings), so a new column would
+  be one edit a language, and `absorb`, which the threaded merge reworks, could not miss one.
+- **The merge room's monocular judgement is a coin flip** (the merge-room dig, 2026-10-28, with
+  triangulation by node and on the branch before it). `tests/orchestration/test_merge_room.py`
+  judges one run a case. On the TUM monocular case its two bars, the wall distance under 0.09 m and
+  the final ATE under 2.8 cm, turn on the matching's details: with 5% of the triangulation pairs
+  dropped at random (ten seeds, C++), both pass in 5 of 10 draws before triangulation by node, 6 of
+  10 with it and its first tie rule, and 7 of 10 with ORB-SLAM3's; with 1% dropped before it, the
+  wall ranged 0.050 to 0.119 m and the ATE 1.47 to 6.28 cm over four draws. The run before it
+  (0.0424 m, 1.341 cm) was a favourable draw and its run with the first tie rule (0.0964 m, 2.110
+  cm) an unfavourable one.
   - Why: the first map, 90° of an outward-looking arc, holds 70% of its points at 1° to 2° of
     triangulation parallax. Its local BAs converge (a single solve of 10 iterations and 50 + 50
     end where ours does) to an optimum costing less than the truth (at keyframe 17, 1,318
