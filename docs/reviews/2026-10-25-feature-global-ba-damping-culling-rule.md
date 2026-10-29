@@ -8,7 +8,7 @@
 | **Range** | `8e9ae9c1...0aa70550` (base: `origin/develop`) |
 | **Reviewers** | hygiene (sonnet), architecture (opus), algorithm (opus): PATCH change |
 | **How they ran** | registered slam-it-* agents |
-| **Layer 1** | at `97de38f3`, whose tree equals `0aa70550`'s except `CHANGELOG.md`: all 29 checks passed (`scripts/check.sh --env slam-it`, exit 0; pytest 5,216 passed, 1 skipped, 19 deselected) |
+| **Layer 1** | on a commit since rewritten out of the branch's history, whose tree equalled `0aa70550`'s except `CHANGELOG.md`: all 29 checks passed (`scripts/check.sh --env slam-it`, exit 0; pytest 5,216 passed, 1 skipped, 19 deselected) |
 
 ### Findings and resolutions
 
