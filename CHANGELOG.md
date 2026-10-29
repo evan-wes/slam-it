@@ -265,8 +265,7 @@ far slower than ORB-SLAM3's, keeps up with more keyframes when threaded.
     and 2,682 -> 2,015 MiB. One run failed: Rust's advio-01, whose local BA refused to start, an
     observation's point lying 1e-9 m in front of its camera, at the camera's centre, kept by the
     BA's in-front test and refused by its projection, which compute the depth by different
-    formulas either side of `camera.MIN_DEPTH` (local BA's near-plane guard, the online-SLAM
-    design's section 7, would leave it out).
+    formulas either side of `camera.MIN_DEPTH`; fixed since (Fixed, below), the run finishes.
   - The test set's 19 RGB-D sequences inline, C++ and Rust alike to 0.01 cm in every final ATE
     as before: frames tracked 42,754 -> 42,670; the median share 0.946 in both; the median final
     ATE over the 18 scored 5.37 -> 5.30 cm, better by more than 10% on 4 and worse on 6, the
@@ -287,6 +286,39 @@ far slower than ORB-SLAM3's, keeps up with more keyframes when threaded.
     other's, by 0.02 of share or 10% of final ATE), the sequences where SLAM It! is clearly
     behind and clearly ahead: monocular 12 and 8 -> 11 and 9, RGB-D 3 and 9 -> 4 and 7, the loop
     sequences 4 and 2 -> 5 and 0.
+  - **Against develop** (8e9ae9c1, 0.3.17.2; its three threaded runs a sequence, made 2026-10-23
+    to 26, beside the branch's before B1 and B1's above): per sequence, the ratio of the three
+    runs' median final ATE, its geometric mean over the 56 sequences scored in every run, develop
+    -> the branch before B1 1.065 (C++) and 1.106 (Rust), the branch before B1 -> B1 1.041 and
+    1.009, develop -> B1 1.109 and 1.116. Sequences whose three runs do not overlap, develop ->
+    B1: in C++ better on 6 (advio-04, -07 and -22, zju-A7, -B2 and -B6) and worse on 6 (advio-02,
+    -05, -08, -13 and -23, arkitscenes-42445429); in Rust better on 5 (advio-06 and -16, zju-A6,
+    -A7 and -B2) and worse on 6 (advio-02, -03, -07 and -13, arkitscenes-42446016,
+    tum-freiburg2_rpy). The median over the 56 of each run's final ATE, the median of the three
+    runs: develop 22.09 cm (C++) and 11.82 (Rust), B1 18.69 and 31.77; ORB-SLAM3's anchor 21.81.
+    tum-freiburg2_360_hemisphere: develop 11.38 cm (C++) and 9.64 (Rust), the branch before B1
+    37.37 and 34.64, B1 9.80 and 26.06. The branch as a whole remains about 11% to 12% worse
+    than develop per sequence on the monocular test set, threaded: B1 closes hemisphere's
+    regression in C++, and only partly in Rust. The likeliest lead is the keyframe gap that
+    remains, B1's runs making 0.71 (C++) and 0.81 (Rust) times ORB-SLAM3's keyframes: a lead,
+    not a proven cause.
+
+### Fixed
+
+- **Bundle adjustment's in-front test takes a point's depth as its residuals do** (C++ and Rust,
+  `foundations.ba`; 6274b518). B1's final measurement lost Rust's inline run of advio-01: local
+  BA refused to start, "solve: the initial cost is not finite", one of its 7,273 residual blocks
+  infinite. The layout's in-front test had kept an observation of a point 1e-9 m in front of its
+  camera, at the camera's centre, its depth (`R_world_cam`'s column 2 dotted with the point's
+  offset from the centre) just over `camera.MIN_DEPTH`, which the residual's depth (the bundle's
+  inverted pose, `R p + t`, 0.99999999e-9 m) put under it, where the projection fails. One
+  inversion and one camera transform now serve both, so such an observation is left out at the
+  start and counted. Python's layout already took the depth as its bundle does (the two agreed
+  bit for bit on 400,000 points within 2e-16 m of the bound) and is unchanged. The golden room
+  records are unchanged in the three languages. At the fix, the inline runs of advio-01 finish:
+  Rust's tracking 4,586 of 7,795 frames (0.588), its final ATE 176.94 cm; C++'s 4,593 (0.589)
+  and 157.18 cm, as in its run before the fix. Local BA's near-plane filter is still to come (the
+  online-SLAM design's section 7).
 
 ### Tests
 
@@ -348,6 +380,11 @@ far slower than ORB-SLAM3's, keeps up with more keyframes when threaded.
 - **A tolerance moves:** global BA on the exactly observed, nudged loop map ends its 10
   iterations with the poses within 2e-6 of the truth (within 1e-6 under GTSAM's damping), its
   cost 8e-14 of its start: the test takes 3e-6.
+- **A point at a camera's centre, in every language:** a held camera, turned and off the origin,
+  seeing 101 held points within 1e-16 m of 1e-9 m in front of it and 12 more two to three metres
+  out, two free cameras a metre behind seeing them all: the solve finishes, leaving 1 to 101
+  observations out, with a finite cost (`tests/foundations/test_ba.py` over every backend, and
+  the C++ and Rust native tests). Before the fix the C++ and Rust solves refused it.
 - **B1's parity fixture** (`tests/fixtures/edge/triangulation_matches.json`, new): 7 maps of two
   keyframes and their 154 matches, computed from the rules alone; a hand-built case makes each
   rule decide, a near descriptor under another node and two candidates at the same distance (the

@@ -294,7 +294,9 @@ Each gets its own section here before its PR, its forks put to the owner then.
   the case (2026-10-29): Rust's inline run of advio-01 ended in a local BA whose start held an
   observation of a point 1e-9 m in front of its camera, kept by the BA's in-front test and
   refused by its projection, which compute the depth by different formulas either side of
-  `camera.MIN_DEPTH`; the solve refused an infinite starting cost.
+  `camera.MIN_DEPTH`; the solve refused an infinite starting cost. Since 6274b518 the in-front
+  test takes the depth as the residuals do, in C++ and Rust (Python's already did), so such an
+  observation is left out at the start; the filter of near observations is still that PR's.
 - **B3b** (0.3.13.0 -> 0.3.14.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
@@ -744,8 +746,14 @@ alone, and runs on real data only when asked.
     cm; the five ARKitScenes sequences are scored against ARKit's own visual-inertial poses, so
     small differences there are within their reference's error (the ladder's L8). Inline, where
     mapping's speed buys nothing, the median final ATE rose from 24.81 to 28.71 cm (C++) and
-    24.74 to 27.36 cm (Rust); one Rust run failed (advio-01, section 7's near-plane guard). The
-    loop sequences: 2.32 to 2.91 cm (C++) and 2.81 to 2.93 cm (Rust), ORB-SLAM3's 2.94.
+    24.74 to 27.36 cm (Rust); one Rust run failed (advio-01; section 7, fixed since). The loop
+    sequences: 2.32 to 2.91 cm (C++) and 2.81 to 2.93 cm (Rust), ORB-SLAM3's 2.94. Against
+    develop, the branch as a whole remains about 11% to 12% worse per sequence on the
+    monocular test set threaded (the geometric mean of the per-sequence ratio of median final
+    ATE: 1.109 in C++, 1.116 in Rust; B1's own step 1.041 and 1.009); B1 closes
+    tum-freiburg2_360_hemisphere's regression in C++ (develop 11.38 cm, B1 9.80) and only partly
+    in Rust (9.64 cm, 26.06). The likeliest lead is the keyframe gap in section 12's backlog: a
+    lead, not a proven cause.
 
 ## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
