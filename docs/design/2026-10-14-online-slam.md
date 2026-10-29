@@ -694,6 +694,40 @@ alone, and runs on real data only when asked.
       closed one on V1_03 monocular and one on V1_03 stereo; no run failed. B3's bar was
       measured inline (above); these runs are threaded.
 
+    *As built, B1 (0.3.18.0; decided by evan-wes on 2026-10-28):* triangulation matches within
+    vocabulary nodes, as ORB-SLAM3's `SearchForTriangulation` walks the two keyframes'
+    `FeatureVector` node by node. The keyframe-stream investigation (2026-10-26) found our
+    threaded monocular runs making 0.51 (C++) and 0.67 (Rust) times ORB-SLAM3's keyframes over
+    the test set, one cause being mapping 2 to 7 times slower per keyframe, mostly brute-force
+    matching for triangulation; the other, c2's inputs, is in section 12's backlog (A).
+    - **The map keeps each keypoint's node** (`Map.kp_node`): its node at the vocabulary's
+      direct level (`DIRECT_LEVEL` 2, the depth of the `FeatureVector` nodes ORB-SLAM3 takes
+      four levels above its 6-level ORBvoc's leaves), quantised as the keyframe enters the map,
+      as ORB-SLAM's `ComputeBoW` does, and carried with its keypoints through sub-maps, culled
+      keyframes and merges. Mapping needs the vocabulary, so every pipeline holds one, as
+      ORB-SLAM always loads one; a map keeps a keyframe database only with relocalisation or
+      loop closing on.
+    - **ORB-SLAM3's rules,** its tie rule among them: of a keyframe-1 keypoint's candidates under
+      its node, within `matching.th_low`, the epipolar band and away from the epipole, the
+      nearest wins, the last of equally near ones (its `dist > bestDist` skips only a farther
+      one).
+    - **Two departures kept.** A keyframe-2 keypoint is matched once, the nearest keyframe-1
+      keypoint keeping it, where ORB-SLAM3 v1.0 tests `vbMatched2` but never sets it (ORB-SLAM2
+      sets it). Letting several take it, as ORB-SLAM3 does, was measured and rejected (on B1
+      before the tie rule, 2026-10-28): the merge room's monocular wall 0.0752 m but its ATE
+      2.871 cm, over the 2.8 cm bar, in the three languages; on the eight threaded regression
+      sequences (C++, three runs each) the median of the medians 6.70 cm and their sum 178.6 cm,
+      against B1's 4.90 and 77.0 in the batch of 2026-10-26. And a monocular keyframe
+      triangulates against 20 neighbours, ORB-SLAM2's count, where ORB-SLAM3's
+      `CreateNewMapPoints` takes 30: 30 changed little on the merge room (0.0970 m and 2.113 cm
+      against 0.0964 and 2.110, C++, the same code otherwise).
+    - **The ties were a third departure,** the first of equally near candidates winning, until
+      the merge-room dig (2026-10-28; section 12's backlog): with ORB-SLAM3's rule every room
+      bar passes in the three languages, the merge room's monocular wall 0.0572 m and ATE
+      1.355 cm against the first rule's 0.0964 m, over the 0.09 m bar, and 2.110 cm. That pass is
+      a favourable draw, not a fix: with 5% of the triangulation pairs dropped at random, the
+      room's monocular bars pass in 7 of 10 draws with the last rule and 6 of 10 with the first.
+
 ## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
 Decided with evan-wes on 2026-10-17, following ORB-SLAM's papers and a reading of its source
@@ -886,6 +920,45 @@ evan-wes on 2026-10-25):
 - **The near filter's median per keyframe (L3).** One median over every observation, where
   ORB-SLAM's own depth statistic is per keyframe (`ComputeSceneMedianDepth`): a merged map's
   parts at different scales would each have their own.
+
+**Deferred from B1** (triangulation within vocabulary nodes, section 11's L2; decided by evan-wes
+on 2026-10-28):
+- **A: the new keyframe's outlier matches.** ORB-SLAM3's new keyframe takes the frame's outlier
+  matches too, so the reference keyframe's tracked points (`nRefMatches`) stay above the next
+  frames' inliers (0.74 to 0.88 of them), where ours, holding the inliers only, reach 1.0 to 1.2,
+  and c2 holds on 25% to 66% of our keyframe decisions against ORB-SLAM3's 75% to 90% (the
+  keyframe-stream investigation, 2026-10-26). A keyframe holding them made more keyframes, with
+  no gain in accuracy, and with B1 failed 16 room checks.
+- **The keyframe gap that remains.** With B1 our threaded runs still make fewer keyframes than
+  ORB-SLAM3's: on the eight threaded regression sequences, 4,109 (the sum of each sequence's
+  median over three runs, C++, 2026-10-26) against its 6,186, c2 holding on 21% to 38% of the
+  decisions.
+- **The keyframe database reusing the words.** The database quantises a keyframe's descriptors
+  again to index it, and keeps its own copy of their nodes (`Database.insert`), though mapping
+  quantised them as the keyframe entered the map; the map could keep the words beside the
+  nodes for the database to take, as ORB-SLAM's one `ComputeBoW` serves both.
+- **The merge room's monocular judgement is a coin flip** (the merge-room dig, 2026-10-28, on B1
+  and on the branch before it). `tests/orchestration/test_merge_room.py` judges one run a case.
+  On the TUM monocular case its two bars, the wall distance under 0.09 m and the final ATE
+  under 2.8 cm, turn on the matching's details: with 5% of the triangulation pairs dropped at
+  random (ten seeds, C++), both pass in 5 of 10 draws before B1, 6 of 10 with B1 and its first
+  tie rule, and 7 of 10 with ORB-SLAM3's; with 1% dropped before B1, the wall ranged 0.050 to
+  0.119 m and the ATE 1.47 to 6.28 cm over four draws. The run before B1 (0.0424 m, 1.341 cm) was
+  a favourable draw and B1's with the first tie rule (0.0964 m, 2.110 cm) an unfavourable one.
+  - Why: the first map, 90° of an outward-looking arc, holds 70% of its points at 1° to 2° of
+    triangulation parallax. Its local BAs converge (a single solve of 10 iterations and 50 + 50
+    end where ours does) to an optimum costing less than the truth (at keyframe 17, 1,318
+    against 1,335 with the true cameras and the points solved), so the noise turns its
+    keyframes by 0.1° to 0.4° and the points follow their cameras: the same observations
+    re-triangulated with the true cameras lie 0.04 m from the walls whichever the run.
+  - Options: judge the case by the median of several seeded draws, or lengthen the first map's
+    arc. Until then, a change to matching that moves this case either way says little on its
+    own: look at it over several perturbed draws before reading it.
+- **A private, local dashcam test set** (scoped later). Kept outside the repository with the
+  recordings, as the dashcam's rule has it: per drive, the GPS drift
+  (`slam_it.eval.gnss.score`), the share tracked, the maps and merges, and the places loops
+  close at, judged by the owner, optionally beside COLMAP reconstructions of chosen stretches
+  as a reference. No drive's specifics enter the repository.
 
 ## 13. Measurements (B3b)
 

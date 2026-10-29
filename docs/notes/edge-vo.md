@@ -135,7 +135,10 @@ depths read 2.5 times too far (the largest keyframe-centre error 58 mm with it, 
   next frame is predicted with no motion. A draft kept the last velocity through failures.
 - **No ratio test for triangulation**: ORB-SLAM's `SearchForTriangulation` has none, so the
   setting was removed. Without a bag of words, every pair of free keypoints within the
-  stricter descriptor distance and the epipolar band is a candidate, the nearest kept.
+  stricter descriptor distance and the epipolar band was a candidate, the nearest kept; since
+  0.3.18.0 a pair must also share its vocabulary node, as ORB-SLAM3's search walks the two
+  keyframes' `FeatureVector` node by node, and the last of equally near candidates wins, as its
+  `dist > bestDist` keeps (the online-SLAM design's section 11, L2).
 - **A homography of rank below 3 is refused** by H-RANSAC itself (its smallest singular value
   below 1e-4 of its largest, in the normalised frame the DLT fits in), so two-view no longer
   needs its own rank check.
