@@ -18,7 +18,10 @@ its free scale (the loop room's failing run: 0.5508) and, at its bound, tiny bes
 accept no step on real maps (advio-20's; 0.3.17.2's review panel, L4 and L5). The rule fixes the
 starvation of monocular maps (2026-10-21); it waited for 0.3.17.2's held cameras, without which
 merges under it ran out of memory, and for this damping, without which global BA under it shrank
-monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
+monocular maps. Local BA is unchanged: its own near-plane guard is a later PR. Then B1 (decided by
+evan-wes on 2026-10-28): triangulation pairs keypoints only within their vocabulary node, as
+ORB-SLAM3's `SearchForTriangulation` does, the map keeping each keypoint's node, so that mapping,
+far slower than ORB-SLAM3's, keeps up with more keyframes when threaded.
 
 ### Changed
 
@@ -76,6 +79,27 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
   `loops.global_small_decrease`, `loops.min_depth_ratio`), each read by every native.
 - **The Rust bridge** gains `largest_hessian_diagonal`; its `new_optimizer` takes the damping's
   factor, whether Nielsen's schedule moves it, and its bound.
+- **Triangulation matches within vocabulary nodes (B1),** as ORB-SLAM3's `SearchForTriangulation`
+  walks the two keyframes' `FeatureVector`s node by node: a pair of free keypoints is a candidate
+  only under one node, in the three languages (`mapping.match_for_triangulation`). The
+  keyframe-stream investigation (2026-10-26) found our threaded monocular runs making 0.51 (C++)
+  and 0.67 (Rust) times ORB-SLAM3's keyframes over the test set, one cause being mapping 2 to 7
+  times slower per keyframe, mostly in brute-force matching for triangulation. The nearest
+  candidate wins, the last of equally near ones, as ORB-SLAM3's `dist > bestDist` keeps (the
+  first won until the merge room's wall check, decided by evan-wes on 2026-10-28; Tests below).
+  Two departures from ORB-SLAM3 stay: a keyframe-2 keypoint is matched once, where ORB-SLAM3
+  v1.0 tests `vbMatched2` but never sets it (letting several take it failed the merge room's
+  monocular ATE bar, 2.871 cm against 2.8, in every language); and a monocular keyframe
+  triangulates against 20 neighbours, where ORB-SLAM3 takes 30 (30 changed little on the merge
+  room). The online-SLAM design's section 11, L2.
+- **The map keeps each keypoint's vocabulary node** (`Map.kp_node`: its node at `DIRECT_LEVEL` 2,
+  the depth of ORB-SLAM3's `FeatureVector` nodes), quantised as its keyframe enters the map, as
+  ORB-SLAM's `ComputeBoW` does, and carried through sub-maps, culled keyframes and merges, in the
+  three languages and both bindings. Mapping needs the vocabulary, so every pipeline holds one,
+  as ORB-SLAM always loads one: a vocabulary with relocalisation and loop closing both off is no
+  longer refused, every program's command line names one (`--vocabulary`), and `vo.run` passes
+  the committed one by default. A map keeps a keyframe database only with relocalisation or loop
+  closing on.
 - **Measured**, develop (8e9ae9c1, 0.3.17.2) against this version (789fe641; the per-call
   measure on b67c3249, whose global BA is this version's), 2026-10-23 to 25; every run in its
   own 8 GB scope, pinned to efficiency cores (one a run inline, three threaded), beside four or
@@ -173,6 +197,96 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
     1.60 -> 1.36 s and 2.08 -> 2.29 s, the longest loop-closing step 2.81 -> 6.38 s
     (arkitscenes-42446137, C++) and 2.65 -> 2.29 s, the longest global BA in its thread
     3.7 -> 3.8 s and 6.6 -> 5.5 s.
+  - **Why tum-freiburg2_360_hemisphere regresses** (2026-10-26, before B1): not an
+    implementation error, as the branch with its five changes switched off repeats develop
+    exactly inline (14.8 cm). Threaded, only the culling rule acts there, and the bad runs carry a
+    monocular merge whose detection similarity is about 1 m wrong, its scale 2 to 4 times too
+    small for the two maps' true ratio, which still passes the 80-match reprojection check: 4 of
+    6 runs with the rule make it, none of 9 without. Inline, the branch's 24.74 cm is a loss at
+    32.4 s and the new map's drift, and G's alone (24.01 cm) a wrong merge (a scale ratio of
+    0.17) that global BA then starts from at a cost of 8.5e8. ORB-SLAM3 merges the same early
+    pair to within 0.02 to 0.10 m, making 740 to 880 keyframes to our 300 to 390 threaded. Three
+    fixes grounded in ORB-SLAM3 (a merge verified on two-view correspondences only, no global BA
+    after an inline merge, its culling's candidates) each change which wrong merge passes; none
+    fixes the sequence.
+  - **B1, threaded, on the eight regression sequences** (the keyframe-stream investigation's:
+    five ARKitScenes captures, tum-freiburg2_360_hemisphere, zju-B0 and zju-B5; C++, three runs a
+    sequence, each batch beside its own runs before B1, on different days): the median over the
+    sequences of each one's median final ATE, and their sum. The first batch (2026-10-26; B1 as
+    a probe on a5b288ad, with the first tie rule): before B1 11.49 and 145.4 cm, B1 4.90 and
+    77.0 cm. The second (2026-10-28; B1 as committed but with the first tie rule, against the
+    same build with its node rule switched off): before B1 8.36 and 62.0 cm, B1 6.84 and
+    106.7 cm. What held in both: the lower median; more keyframes made (the sums of the
+    sequences' medians 3,209 -> 4,109 and 3,079 -> 3,889); and mapping faster per keyframe on
+    seven of the eight (18% to 57% in the first batch, from its probe's mapping log; 12% to 40%
+    in the second, from the runs' own timings, arkitscenes-42446016's gain the 12%), slower on
+    zju-B5 in both. The sums go both ways, dominated by two bimodal sequences
+    (arkitscenes-42445028's B1 runs ranged 4.7 to 61.0 cm in the second batch,
+    arkitscenes-42446016's 8.2 to 69.9 cm), and three runs cannot separate the configurations:
+    no gain is claimed in the sums. The five ARKitScenes sequences are scored against ARKit's
+    own visual-inertial poses, a reference rather than truth, so small differences there are
+    within its error (the ladder's L8 proposes ScanNet++ as an independent one).
+  - **B1 at the final head** (2b17bfae's code, 2026-10-28 and 29; C++ and Rust, threaded three
+    runs a sequence beside the branch's three before B1, made 2026-10-24 to 26; every run in
+    its own 8 GB scope pinned to three cores, beside four others and other programs). The
+    monocular test set (58 sequences): frames tracked 161,615 -> 163,264 (C++) and
+    164,923 -> 164,656 (Rust), the median of the three runs; the median share 0.822 -> 0.839
+    and 0.843 -> 0.841; the median final ATE over the 56 scored by every run 15.34 cm [15.31 to
+    20.46] -> 18.69 [15.61 to 20.68] in C++ and 29.14 [29.09 to 29.95] -> 31.77 [19.75 to
+    32.38] in Rust, the ranges overlapping; maps 206 -> 199 and 188 -> 187, losses 208 -> 178
+    and 170 -> 169, loops 10 -> 9 and 12 -> 12, merges 21 -> 21 and 23 -> 21; at a wrong place
+    1 [1 to 3] and 2 [1 to 3] against 1 and 0: advio-03's merge in every run, as in every C++ run
+    before, and in three of the six one or two more (a second merge or a loop on advio-03, a
+    merge on advio-19); no run failed; the largest peak RSS 1,143 -> 1,057 MiB and 1,033 ->
+    1,446 MiB. Keyframes made, against ORB-SLAM3's anchor runs (the median over the 56 sequences
+    of the ratio of the three runs' medians): 0.51 -> 0.71 in C++ and 0.67 -> 0.81 in Rust;
+    mapping's median time per keyframe 0.61 (C++) and 0.74 (Rust) times what it was, lower on 55
+    of the 56. Sequences whose three runs do not overlap: in C++, the final ATE better on 3 and
+    worse on 8, the share better on 8 and worse on 5; in Rust, the final ATE better on 7 and
+    worse on 3, the share better on 3 and worse on 1.
+  - The eight regression sequences, from the same runs (median [min to max] of three; median of
+    the medians and their sum): the five ARKitScenes ones 20.31 and 89.5 cm -> 10.07 and 82.1
+    (C++), 14.79 and 82.9 -> 11.72 and 105.6 (Rust), within their reference's error as above;
+    the three referenced independently, tum-freiburg2_360_hemisphere (motion capture) 37.37
+    [11.52 to 40.47] -> 9.80 [9.17 to 24.78] cm in C++ and 34.64 [30.77 to 38.93] -> 26.06
+    [10.39 to 26.89] in Rust, zju-B0 (VICON) 1.74 [1.51 to 2.49] -> 1.58 [1.34 to 2.95] and 3.06
+    [1.47 to 4.13] -> 1.28 [1.18 to 2.28], zju-B5 0.69 [0.53 to 1.45] -> 1.05 [0.59 to 2.55]
+    and 2.40 [1.78 to 9.33] -> 0.53 [0.53 to 1.81]. ORB-SLAM3's: 7.72, 0.79 and 0.60 cm. All
+    eight: 16.31 and 129.3 cm -> 9.74 and 94.5 (C++), 13.31 and 123.0 -> 10.62 and 133.5 (Rust).
+  - The monocular test set inline (one run each, every keyframe mapped before the next frame, so
+    mapping's speed buys nothing and only the matching differs; against the branch before B1 at
+    789fe641): frames tracked 168,395 -> 166,035 (C++) and 168,152 -> 161,539 (Rust); the median
+    share 0.871 -> 0.851 and 0.875 -> 0.853; the median final ATE over the sequences both scored
+    24.81 -> 28.71 cm (56) and 24.74 -> 27.36 cm (55), the final ATE better by more than 10% on
+    21 and worse on 12 in C++, on 20 and 11 in Rust; the worst 1,795.20 (advio-06) -> 906.25 cm
+    (advio-20) and 1,346.67 -> 906.25 cm (advio-20's both); maps 161 -> 174 and 161 -> 157,
+    losses 139 -> 153 and 138 -> 136, loops 13 -> 11 and 15 -> 12, merges 23 -> 24 and
+    21 -> 24, at a wrong place 1 in each, as before; the largest peak RSS 3,478 -> 2,583 MiB
+    and 2,682 -> 2,015 MiB. One run failed: Rust's advio-01, whose local BA refused to start, an
+    observation's point lying 1e-9 m in front of its camera, at the camera's centre, kept by the
+    BA's in-front test and refused by its projection, which compute the depth by different
+    formulas either side of `camera.MIN_DEPTH` (local BA's near-plane guard, the online-SLAM
+    design's section 7, would leave it out).
+  - The test set's 19 RGB-D sequences inline, C++ and Rust alike to 0.01 cm in every final ATE
+    as before: frames tracked 42,754 -> 42,670; the median share 0.946 in both; the median final
+    ATE over the 18 scored 5.37 -> 5.30 cm, better by more than 10% on 4 and worse on 6, the
+    worst 55.70 (arkitscenes-42444946) -> 41.80 cm (arkitscenes-42445984); maps 29 -> 32, losses
+    18 -> 19, loops 6 -> 6, merges 6 -> 4, none at a wrong place; the largest peak RSS 719 ->
+    377 MiB (C++) and 742 -> 392 MiB (Rust).
+  - The test set's 19 RGB-D sequences, threaded, one run each: frames tracked 42,657 -> 42,762
+    (C++) and 42,690 -> 42,747 (Rust); the median share 0.946 in all; the median final ATE over
+    the 18 scored 5.86 -> 5.84 cm and 5.41 -> 5.70 cm; loops 8 -> 6 and 5 -> 5, merges 6 -> 3
+    and 7 -> 4, none at a wrong place; the largest peak RSS 742 -> 818 MiB and 646 -> 616 MiB.
+  - The loop sequences (loops-b3's 20 not in the test sets), threaded, three runs each: the
+    median final ATE 2.32 cm [2.32 to 2.47] -> 2.91 [2.91 to 2.94] in C++ and 2.81 [2.74 to
+    3.00] -> 2.93 [2.91 to 3.01] in Rust, against ORB-SLAM3's 2.94 [2.38 to 2.97]; the median
+    share 0.976 in all four; loops 7 [7 to 9] -> 7 [7 to 8] and 11 [10 to 18] -> 9 [8 to 10],
+    against ORB-SLAM3's 11; at a wrong place one loop on V1_03 monocular in two of B1's Rust
+    runs; no run failed.
+  - Against ORB-SLAM3's anchor (`compare_anchor.py`'s rule: neither system's runs overlapping the
+    other's, by 0.02 of share or 10% of final ATE), the sequences where SLAM It! is clearly
+    behind and clearly ahead: monocular 12 and 8 -> 11 and 9, RGB-D 3 and 9 -> 4 and 7, the loop
+    sequences 4 and 2 -> 5 and 0.
 
 ### Tests
 
@@ -234,6 +348,30 @@ monocular maps. Local BA is unchanged: its own near-plane guard is a later PR.
 - **A tolerance moves:** global BA on the exactly observed, nudged loop map ends its 10
   iterations with the poses within 2e-6 of the truth (within 1e-6 under GTSAM's damping), its
   cost 8e-14 of its start: the test takes 3e-6.
+- **B1's parity fixture** (`tests/fixtures/edge/triangulation_matches.json`, new): 7 maps of two
+  keyframes and their 154 matches, computed from the rules alone; a hand-built case makes each
+  rule decide, a near descriptor under another node and two candidates at the same distance (the
+  later wins) among them. Every Python backend, and the C++ and Rust tests, are held to it.
+- **The node column,** in every language: through insertion, sub-maps and culling, and through a
+  merge (Python's, the compiled backends' maps held to it); the keyframe database kept exactly
+  with relocalisation or loop closing; every program refusing a command line without
+  `--vocabulary`, and every run recording the committed one.
+- **The rooms' golden records for B1:** 25 of the 27 cases decide differently (the kept and lost
+  rooms' EuRoC stereo cases do not), the three languages alike in every case. Monocular cases
+  make 27.7% to 35.6% fewer points; the found and gap rooms one keyframe fewer, and the loop room
+  152 where it made 169 (91 in its final map, not 101). Cases with depth make 7.8% fewer to 2.6%
+  more points, and the loop room one more keyframe in RGB-D and stereo. Each loop room still
+  closes its loop.
+- **The rooms' bars with B1,** every one passing in every language, alike: the merge room's
+  monocular wall distance 0.0424 -> 0.0572 m (bar 0.09) and final ATE 1.341 -> 1.355 cm (bar
+  2.8); RGB-D 0.0669 -> 0.0580 m and 5.457 -> 5.783 cm; stereo 0.0613 -> 0.0685 m and 5.119 ->
+  5.118 cm. The loop room's monocular wall distance gets slightly worse, 0.0386 -> 0.0406 m
+  (bound 0.065), its final ATE 1.696 -> 1.309 cm (bar 2); RGB-D 0.0725 -> 0.0674 m and 4.674 ->
+  4.502 cm; stereo 0.0707 -> 0.0576 m and 3.635 -> 3.874 cm. With the first tie rule the merge
+  room's monocular wall distance read 0.0964 m, over its bar. That case is a coin flip, not a
+  measure of matching: with 5% of the triangulation pairs dropped at random (ten seeds, C++), its
+  two bars pass in 5 of 10 draws before B1, 6 of 10 with B1's first tie rule and 7 of 10 with
+  ORB-SLAM3's (the online-SLAM design's section 12, deferred from B1).
 
 ## [0.3.17.2] - 2026-10-23
 

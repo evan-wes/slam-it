@@ -290,7 +290,11 @@ Each gets its own section here before its PR, its forks put to the owner then.
   depth at the start, as global and welding BA do since 0.3.18.0 (section 11's L2). The rule is
   to be one rung-0 function in each language, which `foundations.ba` and `foundations.graphs`
   both call, not a second implementation of it; whether `loops.min_depth_ratio` then moves to
-  the `adjustment` settings is decided in that PR (the panel's A5).
+  the `adjustment` settings is decided in that PR (the panel's A5). B1's final measurement met
+  the case (2026-10-29): Rust's inline run of advio-01 ended in a local BA whose start held an
+  observation of a point 1e-9 m in front of its camera, kept by the BA's in-front test and
+  refused by its projection, which compute the depth by different formulas either side of
+  `camera.MIN_DEPTH`; the solve refused an infinite starting cost.
 - **B3b** (0.3.13.0 -> 0.3.14.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
@@ -728,6 +732,21 @@ alone, and runs on real data only when asked.
       a favourable draw, not a fix: with 5% of the triangulation pairs dropped at random, the
       room's monocular bars pass in 7 of 10 draws with the last rule and 6 of 10 with the first.
 
+    *Measured (B1, 2026-10-28 and 29, at 2b17bfae's code; the CHANGELOG's 0.3.18.0 entry gives
+    each figure's conditions):* threaded, three runs a sequence in C++ and Rust against the
+    branch's three before B1, keyframes made over the monocular test set rose from 0.51 to 0.71
+    (C++) and 0.67 to 0.81 (Rust) times ORB-SLAM3's (the median ratio over 56 sequences), and
+    mapping's time per keyframe fell to 0.61 and 0.74 times what it was; the median final ATE
+    over the test set moved within the runs' ranges (15.34 to 18.69 cm in C++, 29.14 to 31.77
+    cm in Rust). On the eight regression sequences the median of the medians fell from 16.31 to
+    9.74 cm (C++) and 13.31 to 10.62 cm (Rust), and on the three referenced independently of
+    ARKit (tum-freiburg2_360_hemisphere, zju-B0, zju-B5) from 1.74 to 1.58 cm and 3.06 to 1.28
+    cm; the five ARKitScenes sequences are scored against ARKit's own visual-inertial poses, so
+    small differences there are within their reference's error (the ladder's L8). Inline, where
+    mapping's speed buys nothing, the median final ATE rose from 24.81 to 28.71 cm (C++) and
+    24.74 to 27.36 cm (Rust); one Rust run failed (advio-01, section 7's near-plane guard). The
+    loop sequences: 2.32 to 2.91 cm (C++) and 2.81 to 2.93 cm (Rust), ORB-SLAM3's 2.94.
+
 ## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
 Decided with evan-wes on 2026-10-17, following ORB-SLAM's papers and a reading of its source
@@ -930,9 +949,10 @@ on 2026-10-28):
   keyframe-stream investigation, 2026-10-26). A keyframe holding them made more keyframes, with
   no gain in accuracy, and with B1 failed 16 room checks.
 - **The keyframe gap that remains.** With B1 our threaded runs still make fewer keyframes than
-  ORB-SLAM3's: on the eight threaded regression sequences, 4,109 (the sum of each sequence's
-  median over three runs, C++, 2026-10-26) against its 6,186, c2 holding on 21% to 38% of the
-  decisions.
+  ORB-SLAM3's: over the monocular test set 0.71 (C++) and 0.81 (Rust) times as many (the median
+  ratio over 56 sequences, three runs each, 2026-10-29); on the eight threaded regression
+  sequences, 4,109 (the sum of each sequence's median over three runs, C++, 2026-10-26) against
+  its 6,186, c2 holding on 21% to 38% of the decisions.
 - **The keyframe database reusing the words.** The database quantises a keyframe's descriptors
   again to index it, and keeps its own copy of their nodes (`Database.insert`), though mapping
   quantised them as the keyframe entered the map; the map could keep the words beside the
