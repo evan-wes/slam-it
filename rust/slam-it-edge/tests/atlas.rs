@@ -46,6 +46,22 @@ fn carried(pose: &Matrix4<f64>) -> Matrix4<f64> {
     rigid_of(&(pose * sim3::inverse(&to_world())))
 }
 
+/// The merged map: the matched map's keyframes, then the active map's first `count`, carried.
+fn with_carried(matched: Map, count: usize) -> Map {
+    let mut merged = matched;
+    for k in 0..count {
+        map::insert_keyframe(
+            &mut merged,
+            &frame(k, false),
+            &carried(&pose(k)),
+            &[-1; POINTS],
+            &nodes(&frame(k, false)),
+        )
+        .unwrap();
+    }
+    merged
+}
+
 /// The records a monocular merge carries: two frames tracked in the active map, one against
 /// keyframe 1, one against keyframe 2, which is then culled, so its frame is placed through its
 /// parent; and the culled keyframe's and the removed point's last places.
@@ -69,17 +85,7 @@ fn a_monocular_merge_carries_the_records_into_the_matched_maps_units() {
     atlas.record(Some(&active));
     atlas.merge(0, &to_world()).unwrap();
     // The merged map: the matched map's keyframes, then the active map's left, carried.
-    let mut merged: Map = matched;
-    for k in 0..2 {
-        map::insert_keyframe(
-            &mut merged,
-            &frame(k, false),
-            &carried(&pose(k)),
-            &[-1; POINTS],
-            &nodes(&frame(k, false)),
-        )
-        .unwrap();
-    }
+    let merged = with_carried(matched, 2);
     let trajectory = atlas.trajectory(Some(&merged));
     let expected = [carried(&pose(2)), carried(&through_culled)];
     assert_eq!(trajectory.poses.len(), 2);
@@ -120,17 +126,7 @@ fn a_merged_map_reset_drops_its_frames_and_those_merged_into_it() {
     atlas.place_frame(&active, 2.0, 2, &pose(2)).unwrap();
     atlas.merge(0, &to_world()).unwrap();
     // The merged map: the matched map's keyframes, then the active map's, carried.
-    let mut merged: Map = matched;
-    for k in 0..KEYFRAMES {
-        map::insert_keyframe(
-            &mut merged,
-            &frame(k, false),
-            &carried(&pose(k)),
-            &[-1; POINTS],
-            &nodes(&frame(k, false)),
-        )
-        .unwrap();
-    }
+    let merged = with_carried(matched, KEYFRAMES);
     let before = atlas.trajectory(Some(&merged));
     assert_eq!(
         (before.maps, before.tracked_maps),

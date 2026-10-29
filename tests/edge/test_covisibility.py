@@ -30,6 +30,7 @@ from slam_it.foundations.errors import InvalidInputError
 from slam_it.foundations.orb import DESCRIPTOR_BYTES
 from tests.conftest import load_fixture, require_function
 from tests.edge.conftest import Run
+from tests.edge.support import point_columns
 
 CASES: list[dict[str, Any]] = load_fixture("edge/covisibility.json")["cases"]
 NAMES = [case["name"] for case in CASES]
@@ -63,15 +64,7 @@ def fixture_map(case: dict[str, Any]) -> Map:
         kp_right=np.full(t, np.nan),
         kp_point=observed,
         pt_id=points,
-        pt_xyz=np.tile([0.0, 0.0, 1.0], (p, 1)),
-        pt_descriptor=np.zeros((p, DESCRIPTOR_BYTES), dtype=np.uint8),
-        pt_normal=np.tile([0.0, 0.0, 1.0], (p, 1)),
-        pt_min_distance=np.ones(p),
-        pt_max_distance=np.ones(p),
-        pt_visible=np.ones(p, dtype=np.int64),
-        pt_found=np.ones(p, dtype=np.int64),
-        pt_first_kf=np.zeros(p, dtype=np.int64),
-        pt_reference_kf=np.zeros(p, dtype=np.int64),
+        **point_columns(np.tile([0.0, 0.0, 1.0], (p, 1))),
         next_kf_id=int(max(k["id"] for k in keyframes)) + 1,
         next_pt_id=int(points.max()) + 1 if p else 0,
     )

@@ -4,6 +4,8 @@
 //! keyframe adopts, the parents a culled keyframe's children get, a keyframe culled, and the
 //! strong links.
 
+mod scene;
+
 use nalgebra::{Matrix4, Vector3};
 use serde_json::Value;
 use slam_it_edge::covisibility::{
@@ -13,6 +15,8 @@ use slam_it_edge::map::{Map, add_loop_edge, check_map, erase_keyframe, index_obs
 use slam_it_edge::mapping::{fuse_targets, local_ba_keyframes};
 use slam_it_edge::options::{Mode, Options};
 use slam_it_foundations::error::ErrorKind;
+
+use scene::push_point;
 
 /// The fixture, read once per test.
 fn fixture() -> Value {
@@ -80,15 +84,7 @@ fn map_of(keyframes: &Value) -> Map {
     points.sort_unstable();
     points.dedup();
     for _ in &points {
-        m.pt_xyz.push(Vector3::z()); // in front of every camera, so normals stay finite
-        m.pt_descriptor.push([0; 32]);
-        m.pt_normal.push(Vector3::z());
-        m.pt_min_distance.push(1.0);
-        m.pt_max_distance.push(1.0);
-        m.pt_visible.push(1);
-        m.pt_found.push(1);
-        m.pt_first_kf.push(0);
-        m.pt_reference_kf.push(0);
+        push_point(&mut m, Vector3::z()); // in front of every camera, so normals stay finite
     }
     m.next_kf_id = m.kf_id.iter().max().map_or(0, |&id| id + 1);
     m.next_pt_id = points.last().map_or(0, |&p| p + 1);

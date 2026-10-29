@@ -65,17 +65,26 @@ std::vector<std::int64_t> nodes_of(std::size_t n, std::int64_t first = 0) {
   return out;
 }
 
+/// @brief A map of one keyframe with depth, its four keypoints observing no point, its nodes 0
+///        to 3.
+/// @param failures Running failure count.
+/// @return The map.
+edge::Map one_keyframe(int& failures) {
+  edge::Map m = edge::empty_map(8, 1.2);
+  const std::vector<std::int64_t> none(4, -1);
+  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none, nodes_of(4))
+             .has_value(),
+         "the setup succeeds", failures);
+  return m;
+}
+
 /// @brief A map of two keyframes: the first, with depth, creating points at its first two
 ///        keypoints, its nodes 0 to 3; the second, 0.2 m along x, observing them, its nodes 10
 ///        to 13.
 /// @param failures Running failure count.
 /// @return The map.
 edge::Map two_keyframes(int& failures) {
-  edge::Map m = edge::empty_map(8, 1.2);
-  const std::vector<std::int64_t> none(4, -1);
-  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none, nodes_of(4))
-             .has_value(),
-         "the setup succeeds", failures);
+  edge::Map m = one_keyframe(failures);
   expect(edge::add_points(m, std::vector<Eigen::Vector3d>{{0.0, 0.0, 2.0}, {0.1, 0.0, 2.0}},
                           std::vector<std::vector<std::int64_t>>{{0}, {1}})
              .has_value(),
@@ -92,10 +101,8 @@ edge::Map two_keyframes(int& failures) {
 /// @brief Check building a map: keyframes, points, ids, links and counts.
 /// @param failures Running failure count.
 void check_building(int& failures) {
-  edge::Map m = edge::empty_map(8, 1.2);
-  const std::vector<std::int64_t> none(4, -1);
-  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none, nodes_of(4))
-             .has_value(),
+  edge::Map m = one_keyframe(failures);
+  expect(edge::keyframe_count(m) == 1 && m.kf_start == std::vector<std::int64_t>{0, 4},
          "insert_keyframe adds the first keyframe", failures);
   const std::vector<Eigen::Vector3d> xyz{{0.0, 0.0, 2.0}, {0.1, 0.0, 2.0}};
   const std::vector<std::vector<std::int64_t>> observers{{0}, {1}};
@@ -234,11 +241,7 @@ void check_index(int& failures) {
 /// @brief Check the checks: a map's structure, arguments, options, cameras, depth lookup.
 /// @param failures Running failure count.
 void check_checks(int& failures) {
-  edge::Map m = edge::empty_map(8, 1.2);
-  const std::vector<std::int64_t> none(4, -1);
-  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none, nodes_of(4))
-             .has_value(),
-         "the setup succeeds", failures);
+  edge::Map m = one_keyframe(failures);
   edge::Map dangling = m;
   dangling.kp_point[0] = 9;
   expect(is_invalid_input(edge::check_map(dangling)), "check_map rejects a dangling observation",

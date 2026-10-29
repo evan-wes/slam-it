@@ -184,15 +184,8 @@ edge::Map triangulation_map(const nlohmann::json& c) {
   }
   for (const nlohmann::json& x : c["points"]) {
     m.pt_id.push_back(static_cast<std::int64_t>(m.pt_id.size()));
-    m.pt_xyz.emplace_back(x[0].get<double>(), x[1].get<double>(), x[2].get<double>());
-    m.pt_descriptor.emplace_back();
-    m.pt_normal.emplace_back(0.0, 0.0, 1.0);
-    m.pt_min_distance.push_back(1.0);
-    m.pt_max_distance.push_back(1.0);
-    m.pt_visible.push_back(1);
-    m.pt_found.push_back(1);
-    m.pt_first_kf.push_back(0);
-    m.pt_reference_kf.push_back(0);
+    scene::push_point(m,
+                      Eigen::Vector3d(x[0].get<double>(), x[1].get<double>(), x[2].get<double>()));
   }
   m.next_kf_id = id;
   m.next_pt_id = static_cast<std::int64_t>(m.pt_id.size());

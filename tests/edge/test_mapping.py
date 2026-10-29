@@ -35,6 +35,7 @@ from tests.edge.support import (
     assert_maps_match,
     assert_records_match,
     keyframe_nodes,
+    point_columns,
 )
 
 LAST, CURRENT = 36, 39
@@ -175,15 +176,7 @@ def _fixture_map(case: dict[str, Any]) -> Map:
         kp_right=np.full(t, np.nan),
         kp_point=observed,
         pt_id=np.arange(p, dtype=np.int64),
-        pt_xyz=points,
-        pt_descriptor=np.zeros((p, DESCRIPTOR_BYTES), dtype=np.uint8),
-        pt_normal=np.tile([0.0, 0.0, 1.0], (p, 1)),
-        pt_min_distance=np.ones(p),
-        pt_max_distance=np.ones(p),
-        pt_visible=np.ones(p, dtype=np.int64),
-        pt_found=np.ones(p, dtype=np.int64),
-        pt_first_kf=np.zeros(p, dtype=np.int64),
-        pt_reference_kf=np.zeros(p, dtype=np.int64),
+        **point_columns(points),
         next_kf_id=len(keyframes),
         next_pt_id=p,
     )

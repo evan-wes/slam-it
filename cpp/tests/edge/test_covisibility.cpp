@@ -16,6 +16,7 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
+#include "scene.hpp"
 #include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/mapping.hpp"
@@ -59,15 +60,8 @@ edge::Map map_of(const nlohmann::json& keyframes) {
   const auto [first, last] = std::ranges::unique(points);
   points.erase(first, last);
   for (std::size_t p = 0; p < points.size(); ++p) {
-    m.pt_xyz.emplace_back(0.0, 0.0, 1.0);  // in front of every camera, so normals stay finite
-    m.pt_descriptor.emplace_back();
-    m.pt_normal.emplace_back(0.0, 0.0, 1.0);
-    m.pt_min_distance.push_back(1.0);
-    m.pt_max_distance.push_back(1.0);
-    m.pt_visible.push_back(1);
-    m.pt_found.push_back(1);
-    m.pt_first_kf.push_back(0);
-    m.pt_reference_kf.push_back(0);
+    // In front of every camera, so normals stay finite.
+    slam_it::testing::scene::push_point(m, Eigen::Vector3d(0.0, 0.0, 1.0));
   }
   m.next_kf_id = std::ranges::max(m.kf_id) + 1;
   m.next_pt_id = points.empty() ? 0 : points.back() + 1;

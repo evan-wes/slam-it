@@ -192,6 +192,26 @@ pub fn nodes(f: &Frame) -> Vec<i64> {
     vocabulary::quantize(&one_word(), &f.features.descriptors).nodes
 }
 
+/// Appends a point at `xyz` with the columns a test map needs and the stages read: a blank
+/// descriptor, a normal along +z, distances of 1, seen and found once, first and referenced by
+/// keyframe 0. The caller sets its id.
+///
+/// # Arguments
+///
+/// * `m` - The map.
+/// * `xyz` - The point.
+pub fn push_point(m: &mut Map, xyz: Vector3<f64>) {
+    m.pt_xyz.push(xyz);
+    m.pt_descriptor.push([0; 32]);
+    m.pt_normal.push(Vector3::z());
+    m.pt_min_distance.push(1.0);
+    m.pt_max_distance.push(1.0);
+    m.pt_visible.push(1);
+    m.pt_found.push(1);
+    m.pt_first_kf.push(0);
+    m.pt_reference_kf.push(0);
+}
+
 /// A frame with no keypoints, at a time.
 ///
 /// # Arguments

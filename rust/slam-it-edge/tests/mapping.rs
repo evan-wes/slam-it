@@ -18,7 +18,9 @@ use slam_it_edge::mapping::{
 };
 use slam_it_edge::options::{MappingOptions, Mode, Options, StereoOptions};
 
-use scene::{POINTS, camera, frame, frame_at, moved, nodes, one_word, points, pose, scene_map};
+use scene::{
+    POINTS, camera, frame, frame_at, moved, nodes, one_word, points, pose, push_point, scene_map,
+};
 
 /// Point ids `first` to `last - 1`, then -1 to the scene's size.
 #[allow(clippy::cast_possible_wrap, reason = "ids below 60")]
@@ -123,8 +125,18 @@ fn keyframes_and_points_follow_the_rules() {
     assert_eq!((counted.points(), counted.pt_id[0]), (POINTS - 1, 1));
 }
 
-#[test]
-fn triangulation_recovers_the_scene() {
+/// The scene's first keyframe, making points at its scene points `0..made`, then its third,
+/// observing the first `shared` of them.
+///
+/// # Arguments
+///
+/// * `made` - The points the first keyframe makes.
+/// * `shared` - Those the third observes.
+///
+/// # Returns
+///
+/// The map.
+fn first_and_third(made: usize, shared: usize) -> Map {
     let mut m = Map::empty(8, 1.2);
     map::insert_keyframe(
         &mut m,
@@ -134,15 +146,21 @@ fn triangulation_recovers_the_scene() {
         &nodes(&frame(0, false)),
     )
     .unwrap();
-    add_scene_points(&mut m, 0, 0, 10);
+    add_scene_points(&mut m, 0, 0, made);
     map::insert_keyframe(
         &mut m,
         &frame(2, false),
         &pose(2),
-        &ids(0, 10),
+        &ids(0, shared),
         &nodes(&frame(2, false)),
     )
     .unwrap();
+    m
+}
+
+#[test]
+fn triangulation_recovers_the_scene() {
+    let mut m = first_and_third(10, 10);
     let pairs = match_for_triangulation(&m, &camera(), 1, 0, &Options::default()).unwrap();
     assert_eq!((pairs.len(), pairs[0]), (50, [70, 10]));
     triangulate_new_points(&mut m, &camera(), Mode::Monocular, &Options::default()).unwrap();
@@ -157,24 +175,7 @@ fn triangulation_recovers_the_scene() {
 #[test]
 fn fusion_merges_duplicates() {
     const SHARED: usize = 5;
-    let mut m = Map::empty(8, 1.2);
-    map::insert_keyframe(
-        &mut m,
-        &frame(0, false),
-        &pose(0),
-        &ids(0, 0),
-        &nodes(&frame(0, false)),
-    )
-    .unwrap();
-    add_scene_points(&mut m, 0, 0, POINTS);
-    map::insert_keyframe(
-        &mut m,
-        &frame(2, false),
-        &pose(2),
-        &ids(0, SHARED),
-        &nodes(&frame(2, false)),
-    )
-    .unwrap();
+    let mut m = first_and_third(POINTS, SHARED);
     add_scene_points(&mut m, 1, SHARED, POINTS);
     fuse_points(&mut m, &camera(), Mode::Rgbd, &Options::default()).unwrap();
     assert_eq!(m.points(), POINTS);
@@ -323,16 +324,10 @@ fn triangulation_map(case: &Value) -> Map {
         .enumerate()
     {
         m.pt_id.push(i64::try_from(p).expect("an id"));
-        m.pt_xyz
-            .push(Vector3::new(number(&x[0]), number(&x[1]), number(&x[2])));
-        m.pt_descriptor.push([0; 32]);
-        m.pt_normal.push(Vector3::z());
-        m.pt_min_distance.push(1.0);
-        m.pt_max_distance.push(1.0);
-        m.pt_visible.push(1);
-        m.pt_found.push(1);
-        m.pt_first_kf.push(0);
-        m.pt_reference_kf.push(0);
+        push_point(
+            &mut m,
+            Vector3::new(number(&x[0]), number(&x[1]), number(&x[2])),
+        );
     }
     m.next_kf_id = i64::try_from(m.kf_id.len()).expect("ids");
     m.next_pt_id = i64::try_from(m.pt_id.len()).expect("ids");
