@@ -214,8 +214,11 @@ IndexList in_front(const Problem& problem, Summary& counts) {
         problem.poses[static_cast<std::size_t>(problem.cam_idx[static_cast<std::size_t>(m)])];
     const Eigen::Vector3d point =
         problem.points.row(at(problem.pt_idx[static_cast<std::size_t>(m)])).transpose();
-    const double depth =
-        t_world_cam.topLeftCorner<3, 3>().col(2).dot(point - t_world_cam.topRightCorner<3, 1>());
+    // The bundle's own depth (its state's inverted pose, `R p + t`), so that the two agree at
+    // camera::kMinDepth: a separate formula, `R_world_cam` column 2 dotted with the offset from
+    // the centre, rounded differently, and kept an observation 1e-9 m in front of its camera
+    // that the projection then refused, an infinite starting cost (advio-01, B1).
+    const double depth = to_camera(inverse_pose(t_world_cam), point).z();
     if (depth > camera::kMinDepth) {
       kept.push_back(m);
     } else {

@@ -10,7 +10,10 @@ use nalgebra::{
 use super::gauge;
 use super::layout::Layout;
 use super::schur::{Blocks, Coupling, CouplingLayout, Reduction, SchurSystem};
-use super::{DenseCholesky, Gauge, Intrinsics, Options, POSE_DIM, Problem, Solution, Summary, at};
+use super::{
+    DenseCholesky, Gauge, Intrinsics, Options, POSE_DIM, Problem, Solution, Summary, at, invert,
+    to_camera,
+};
 use crate::camera::{self, Model};
 use crate::error::Result;
 use crate::nls;
@@ -44,20 +47,6 @@ const MAX_COLUMNS: usize = 2 * (POSE_DIM + MAX_INTRINSICS);
 /// The centre in the world frame.
 fn centre(t_cam_world: &Matrix4<f64>) -> Vector3<f64> {
     -se3::rotation(t_cam_world).transpose() * se3::translation(t_cam_world)
-}
-
-/// Inverts a rigid pose (world-to-camera and back).
-///
-/// # Arguments
-///
-/// * `pose` - The pose (already checked).
-///
-/// # Returns
-///
-/// The inverse.
-fn invert(pose: &Matrix4<f64>) -> Matrix4<f64> {
-    let rt = se3::rotation(pose).transpose();
-    se3::from_parts(&rt, &(-rt * se3::translation(pose)))
 }
 
 /// The variables: world-to-camera poses, intrinsics, points, affines, inverse depths.
@@ -547,8 +536,7 @@ impl<'a> Bundle<'a> {
     ///
     /// The point in the camera frame.
     fn in_camera(&self, state: &BundleState, point: &Vector3<f64>, m: usize) -> Vector3<f64> {
-        let pose = &state.poses[at(self.problem.cam_idx[m])];
-        se3::rotation(pose) * point + se3::translation(pose)
+        to_camera(&state.poses[at(self.problem.cam_idx[m])], point)
     }
 
     /// An observation's world point.

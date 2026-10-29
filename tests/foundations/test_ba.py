@@ -12,7 +12,7 @@ from numpy.typing import NDArray
 from scipy.optimize import least_squares
 
 from slam_it import backends
-from slam_it.foundations import ba, camera, nls, se3
+from slam_it.foundations import ba, camera, nls, se3, so3
 from slam_it.foundations.ba.bundle import Bundle, Kind, State
 from slam_it.foundations.ba.layout import make_layout
 from slam_it.foundations.ba.schur import Reduction
@@ -505,6 +505,67 @@ def test_strict_mode_raises(backend: str) -> None:
     options = ba.BAOptions(solver=replace(TIGHT, max_iterations=1, strict=True))
     with pytest.raises(NotConvergedError, match="max_iterations"):
         ba.solve(scene.problem, options, backend=backend)
+
+
+def _camera_plane_problem() -> ba.BAProblem:
+    """Return points 1e-9 m in front of a held camera, at its centre: advio-01's local BA (B1).
+
+    Camera 0, held, turned and off the origin, sees 101 points within 1e-16 m of 1e-9 m in front
+    of it (its depth's bound, ``camera.MIN_DEPTH``) and 12 more two to three metres out; cameras
+    1 and 2, free, a metre behind it and 0.2 m to either side, see all of them. Every point is
+    held. Rounded, about half the near points lie just in front of camera 0 and half not.
+    """
+    rotation = so3.exp(np.array([0.3, -0.5, 0.7]))
+    centre = np.array([-0.0145, -0.0038, -0.0345])
+    near = np.column_stack(
+        [np.full(101, 3.49e-11), np.full(101, 1.458e-10), 1e-9 + (np.arange(101) - 50) * 2e-18]
+    )
+    far = np.array([[x, y, z] for x in (-1.0, 0.0, 1.0) for y in (-0.5, 0.5) for z in (2.0, 3.0)])
+    local = np.concatenate([near, far])  # in camera 0's frame
+    points = centre + local @ rotation.T
+    poses = np.tile(np.eye(4), (3, 1, 1))
+    poses[:, :3, :3] = rotation
+    poses[:, :3, 3] = [
+        centre,
+        centre - rotation @ [-0.2, 0.0, 1.0],
+        centre - rotation @ [0.2, 0.0, 1.0],
+    ]
+    cam_idx = np.repeat(np.arange(3), len(points))
+    pt_idx = np.tile(np.arange(len(points)), 3)
+    t_cam_world = se3.inverse(poses)
+    in_camera = np.einsum("mij,mj->mi", t_cam_world[cam_idx, :3, :3], points[pt_idx])
+    in_camera += t_cam_world[cam_idx, :3, 3]
+    in_camera[: len(points)] = local  # camera 0's as meant, so that every pixel is finite
+    fx, fy, cx, cy = PINHOLE
+    pixels = np.column_stack(  # by hand: camera.project refuses the near points behind 1e-9 m
+        [fx * in_camera[:, 0] / in_camera[:, 2] + cx, fy * in_camera[:, 1] / in_camera[:, 2] + cy]
+    )
+    return ba.BAProblem.create(
+        "pinhole",
+        PINHOLE,
+        poses,
+        points,
+        pixels,
+        cam_idx,
+        pt_idx,
+        fixed_poses=np.array([True, False, False]),
+        fixed_points=np.ones(len(points), dtype=bool),
+    )
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_a_point_at_a_cameras_centre_is_left_out(backend: str) -> None:
+    """An observation the projection would refuse is left out at the start, in every backend.
+
+    The in-front test and the residuals take a point's depth from one computation, so the two
+    cannot fall either side of ``camera.MIN_DEPTH``: B1's Rust inline run of advio-01 kept an
+    observation whose point lay 1e-9 m in front of its camera by the in-front test's formula
+    and not by the projection's, and the solve refused its infinite starting cost.
+    """
+    require_backend(backend)
+    result = ba.solve(_camera_plane_problem(), backend=backend)
+    assert 1 <= result.summary.dropped_observations <= 101
+    assert np.isfinite(result.summary.solve.final_cost)
 
 
 @pytest.mark.parametrize(

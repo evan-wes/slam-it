@@ -4,7 +4,7 @@
 use nalgebra::Vector3;
 
 use super::gauge::{self, Anchors, Plan};
-use super::{Gauge, Options, Problem, at};
+use super::{Gauge, Options, Problem, at, invert, to_camera};
 use crate::camera;
 use crate::error::{ErrorKind, Result, fail};
 use crate::se3;
@@ -318,9 +318,12 @@ fn in_front(problem: &Problem, counts: &mut Counts) -> Vec<usize> {
         }
         let t_world_cam = &problem.poses[at(problem.cam_idx[m])];
         let point = problem.points[at(problem.pt_idx[m])];
-        let depth = se3::rotation(t_world_cam)
-            .column(2)
-            .dot(&(point - centre_of(t_world_cam)));
+        // The bundle's own depth (its state's inverted pose, `R p + t`), so that the two agree
+        // at `camera::MIN_DEPTH`: a separate formula, `R_world_cam`'s column 2 dotted with the
+        // offset from the centre, rounded differently, and kept an observation 1e-9 m in front
+        // of its camera that the projection then refused, an infinite starting cost (advio-01,
+        // B1).
+        let depth = to_camera(&invert(t_world_cam), &point).z;
         if depth > camera::MIN_DEPTH {
             kept.push(m);
         } else {
