@@ -26,8 +26,9 @@ places the frames tracked from a culled keyframe through its parents.
 direct level (:data:`slam_it.foundations.vocabulary.DIRECT_LEVEL`), given with its keyframe: the
 keyframe's features are quantised when it enters the map, as ORB-SLAM's ``KeyFrame::ComputeBoW``
 makes its ``mFeatVec``, by initialisation (:mod:`slam_it.edge.initialization`) and local mapping
-(:func:`slam_it.edge.mapping.process`). The column moves with its keypoints: a sub-map, a culled
-keyframe and a merge carry it as they carry the descriptors.
+(:func:`slam_it.edge.mapping.process`). Matching for triangulation pairs only keypoints under
+the same node (:func:`slam_it.edge.mapping.match_for_triangulation`). The column moves with its
+keypoints: a sub-map, a culled keyframe and a merge carry it as they carry the descriptors.
 
 **The loops closed** are the map's loop edges (``loop_edges``), each a pair of keyframe ids: a
 keyframe with one is never culled, as ORB-SLAM's ``AddLoopEdge`` marks it not to be erased. **The

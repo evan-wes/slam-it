@@ -56,7 +56,8 @@ A correction holds the map through the owner's handshake (:meth:`MapOwner.stoppe
 
 **The vocabulary** is every pipeline's, whatever it relocalises or closes, as ORB-SLAM always loads
 one: a keyframe's features are quantised by it as it enters the map, each keypoint's node kept
-(:attr:`slam_it.edge.map.Map.kp_node`).
+(:attr:`slam_it.edge.map.Map.kp_node`), and matching for triangulation pairs only keypoints under
+the same node.
 
 **The keyframe database** (:class:`slam_it.edge.database.Database`), kept whenever relocalisation
 or loop closing is on (B3's review panel, H7: ORB-SLAM always keeps its ``KeyFrameDatabase``),

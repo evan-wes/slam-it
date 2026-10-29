@@ -1,14 +1,19 @@
 /// @file
 /// @brief Native tests for local mapping (slam_it/edge/mapping.hpp) on the exact scene: the
 ///        keyframe decision, points from depth, culling points and keyframes, triangulation,
-///        fusion, and a whole mapping step. Parity with the Python reference is checked through
-///        the bindings by tests/edge. What fusion and local BA take from the graph
+///        fusion, and a whole mapping step; and matching for triangulation held to the fixture
+///        `tests/fixtures/edge/triangulation_matches.json`, which the Python and Rust tests share.
+///        Parity with the Python reference is checked through the bindings by tests/edge. What
+///        fusion and local BA take from the graph
 ///        (`fuse_targets`, `local_ba_keyframes`) is held to the covisibility fixture in
 ///        test_covisibility.cpp.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -139,6 +144,90 @@ void check_triangulation(int& failures) {
   expect(worst < 1e-9, "the triangulated points are the scene's", failures);
 }
 
+/// @brief A triangulation case's map (`tests/fixtures/edge/triangulation_matches.json`): its two
+///        keyframes' columns and the points they observe, as the Python test builds it.
+/// @param c The case.
+/// @return The map, its observations indexed.
+edge::Map triangulation_map(const nlohmann::json& c) {
+  edge::Map m = edge::empty_map(c["levels"].get<std::int64_t>(), c["scale_factor"].get<double>());
+  std::int64_t id = 0;
+  for (const nlohmann::json& k : c["keyframes"]) {
+    m.kf_id.push_back(id);
+    m.kf_time.push_back(static_cast<double>(id));
+    ++id;
+    Eigen::Matrix4d pose;
+    for (int r = 0; r < 4; ++r) {
+      for (int col = 0; col < 4; ++col) {
+        pose(r, col) = k["pose"][r][col].get<double>();
+      }
+    }
+    m.kf_pose.push_back(pose);
+    m.kf_parent.push_back(-1);
+    for (std::size_t i = 0; i < k["level"].size(); ++i) {
+      const auto& b = k["bearing"][i];
+      m.kp_xy.push_back({0.0, 0.0});
+      m.kp_level.push_back(k["level"][i].get<std::int64_t>());
+      m.kp_angle.push_back(0);
+      slam_it::foundations::orb::Descriptor d{};
+      for (std::size_t byte = 0; byte < d.size(); ++byte) {
+        d.at(byte) = k["descriptor"][i][byte].get<std::uint8_t>();
+      }
+      m.kp_descriptor.push_back(d);
+      m.kp_node.push_back(k["node"][i].get<std::int64_t>());
+      m.kp_bearing.emplace_back(b[0].get<double>(), b[1].get<double>(), b[2].get<double>());
+      m.kp_depth.push_back(k["depth"][i].is_null() ? std::numeric_limits<double>::quiet_NaN()
+                                                   : k["depth"][i].get<double>());
+      m.kp_right.push_back(std::numeric_limits<double>::quiet_NaN());
+      m.kp_point.push_back(k["point"][i].get<std::int64_t>());
+    }
+    m.kf_start.push_back(static_cast<std::int64_t>(m.kp_point.size()));
+  }
+  for (const nlohmann::json& x : c["points"]) {
+    m.pt_id.push_back(static_cast<std::int64_t>(m.pt_id.size()));
+    m.pt_xyz.emplace_back(x[0].get<double>(), x[1].get<double>(), x[2].get<double>());
+    m.pt_descriptor.emplace_back();
+    m.pt_normal.emplace_back(0.0, 0.0, 1.0);
+    m.pt_min_distance.push_back(1.0);
+    m.pt_max_distance.push_back(1.0);
+    m.pt_visible.push_back(1);
+    m.pt_found.push_back(1);
+    m.pt_first_kf.push_back(0);
+    m.pt_reference_kf.push_back(0);
+  }
+  m.next_kf_id = id;
+  m.next_pt_id = static_cast<std::int64_t>(m.pt_id.size());
+  edge::index_observations(m);
+  return m;
+}
+/// @brief Check matching for triangulation against the fixture's rules
+///        (`tests/fixtures/edge/triangulation_matches.json`, which the Python and Rust tests
+///        share): only under one vocabulary node, within `matching.th_low`, the epipolar band and
+///        away from the epipole without depth; the nearest candidate (the last among equals),
+///        each keyframe-2 keypoint kept by its nearest (the lower among equals).
+/// @param failures Running failure count.
+void check_triangulation_fixture(int& failures) {
+  const nlohmann::json fixture = slam_it::testing::load_fixture("edge/triangulation_matches.json");
+  for (const nlohmann::json& c : fixture["cases"]) {
+    const edge::Map m = triangulation_map(c);
+    edge::Camera camera = scene::camera();
+    const auto focal = c["focal"].get<double>();
+    camera.intrinsics = Eigen::Vector4d(focal, focal, 320.0, 240.0);
+    edge::Options options;
+    options.matching.th_low = c["settings"]["matching.th_low"].get<std::int64_t>();
+    options.mapping.epipolar_chi2 = c["settings"]["mapping.epipolar_chi2"].get<double>();
+    options.mapping.min_epipole_distance2 =
+        c["settings"]["mapping.min_epipole_distance2"].get<double>();
+    const auto found = edge::match_for_triangulation(m, camera, c["k1"].get<std::int64_t>(),
+                                                     c["k2"].get<std::int64_t>(), options);
+    std::vector<std::array<std::int64_t, 2>> expected;
+    for (const nlohmann::json& pair : c["pairs"]) {
+      expected.push_back({pair[0].get<std::int64_t>(), pair[1].get<std::int64_t>()});
+    }
+    expect(edge::check_map(m).has_value() && found.has_value() && *found == expected,
+           ("the fixture's matches, " + c["name"].get<std::string>()).c_str(), failures);
+  }
+}
+
 /// @brief Check fusion: the keyframes share a few points, so they are linked, and each made its
 ///        own of the rest; fusing merges those.
 /// @param failures Running failure count.
@@ -233,6 +322,7 @@ int run() {
   int failures = 0;
   check_keyframes_and_points(failures);
   check_triangulation(failures);
+  check_triangulation_fixture(failures);
   check_fusion(failures);
   check_culling_and_process(failures);
   return slam_it::testing::finish("edge/mapping", failures);

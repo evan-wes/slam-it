@@ -2,7 +2,7 @@
 //! mirror of `slam_it.edge.mapping` (ORB-SLAM's `LocalMapping`, lite), whose docstring states
 //! the steps. Mapping a keyframe also says how each step went, which a run records per keyframe.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, check_range, fail};
@@ -453,16 +453,27 @@ fn triangulation_pairs(
         chi2: options.mapping.epipolar_chi2,
         epipole_distance2: options.mapping.min_epipole_distance2,
     };
-    // For each keyframe-1 keypoint, the nearest candidate (ties: the first); then one match per
-    // keyframe-2 keypoint, the nearest keeping it (ties: the lower keyframe-1 keypoint).
+    // Keyframe 2's keypoints under each vocabulary node, in row order: a pair shares its node
+    // (ORB-SLAM3's SearchForTriangulation walks the two FeatureVectors node by node).
+    let mut by_node: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (j, &r2) in rows2.iter().enumerate() {
+        by_node.entry(m.kp_node[r2]).or_default().push(j);
+    }
+    // For each keyframe-1 keypoint, the nearest candidate (ties: the last, as ORB-SLAM3's
+    // `dist > bestDist` skips only a farther one); then one match per keyframe-2 keypoint, the
+    // nearest keeping it (ties: the lower keyframe-1 keypoint).
     let mut claims: BTreeMap<usize, (i64, usize)> = BTreeMap::new();
     for (i, &r1) in rows1.iter().enumerate() {
+        let Some(candidates) = by_node.get(&m.kp_node[r1]) else {
+            continue;
+        };
         let line = epipolar.essential * normalised(&m.kp_bearing[r1]);
         let mut best: Option<(i64, usize)> = None;
-        for (j, &r2) in rows2.iter().enumerate() {
+        for &j in candidates {
+            let r2 = rows2[j];
             let d = orb::distance(&m.kp_descriptor[r1], &m.kp_descriptor[r2]);
             if d <= options.matching.th_low
-                && best.is_none_or(|(b, _)| d < b)
+                && best.is_none_or(|(b, _)| d <= b)
                 && epipolar_ok(m, &epipolar, &line, r1, r2)
             {
                 best = Some((d, j));
@@ -482,9 +493,9 @@ fn triangulation_pairs(
     out
 }
 
-/// Matches two keyframes' free keypoints for triangulation
-/// (`slam_it.edge.mapping.match_for_triangulation`, ORB-SLAM's `SearchForTriangulation`,
-/// lite).
+/// Matches two keyframes' free keypoints for triangulation, only under the same vocabulary node
+/// (`slam_it.edge.mapping.match_for_triangulation`, which names its departures from ORB-SLAM3's
+/// `SearchForTriangulation`).
 ///
 /// # Arguments
 ///

@@ -320,7 +320,8 @@ class MappingOptions:
         A new stereo or RGB-D keyframe triangulates against its best this many links
         (``CreateNewMapPoints``' ``nn``: 10)...
     mono_triangulation_neighbours : int
-        ...20 for monocular.
+        ...20 for monocular (ORB-SLAM2's; ORB-SLAM3 takes 30, a departure kept: the online-SLAM
+        design's section 11, L2).
     epipolar_chi2 : float
         A match for triangulation must lie within this chi-square (1 dof, 95%) of its
         epipolar line (``CheckDistEpipolarLine``'s 3.84)...

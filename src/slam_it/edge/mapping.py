@@ -33,9 +33,10 @@ threads; their bindings do not cross Python's callables, so a compiled backend g
 ``interrupts`` is refused.
 
 A keyframe's neighbours are its links in the covisibility graph
-(:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Lite: matching for triangulation has no
-bag of words: every free keypoint pair within the stricter distance and the epipolar band is a
-candidate (:func:`match_for_triangulation`).
+(:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Matching for triangulation pairs only
+keypoints under the same vocabulary node (:attr:`slam_it.edge.map.Map.kp_node`), as ORB-SLAM3's
+``SearchForTriangulation`` walks the two keyframes' ``FeatureVector`` node by node
+(:func:`match_for_triangulation`, which names its two departures).
 """
 
 from __future__ import annotations
@@ -714,9 +715,14 @@ def _match_for_triangulation(
         )
         no_depth = np.isnan(m.kp_depth[rows1])[:, None] & np.isnan(m.kp_depth[rows2])[None, :]
         band &= ~(no_depth & near[None, :])
+    same_node = m.kp_node[rows1][:, None] == m.kp_node[rows2][None, :]
     hamming = matching.distances(m.kp_descriptor[rows1], m.kp_descriptor[rows2])
-    hamming = np.where(band & (hamming <= options.matching.th_low), hamming, np.iinfo(np.int64).max)
-    best = np.argmin(hamming, axis=1)
+    hamming = np.where(
+        same_node & band & (hamming <= options.matching.th_low), hamming, np.iinfo(np.int64).max
+    )
+    # The nearest candidate, the last among equals: ORB-SLAM3's ``dist > bestDist`` skips only a
+    # farther one.
+    best = hamming.shape[1] - 1 - np.argmin(hamming[:, ::-1], axis=1)
     best_distance = hamming[np.arange(len(rows1)), best]
     claims: dict[int, tuple[int, int]] = {}
     for i in np.flatnonzero(best_distance <= options.matching.th_low):
@@ -730,13 +736,21 @@ def _match_for_triangulation(
 def match_for_triangulation(  # noqa: PLR0913 -- the map, its camera, two keyframes, the settings
     m: Map, camera: Camera, k1: int, k2: int, options: Options, *, backend: str = "python"
 ) -> IntArray:
-    """Match two keyframes' free keypoints for triangulation (``SearchForTriangulation``, lite).
+    """Match two keyframes' free keypoints for triangulation (``SearchForTriangulation``).
 
-    No bag of words: for each free keypoint of `k1` (one observing no point), the nearest
-    free keypoint of `k2` within ``matching.th_low`` (ties: the first) that lies within the epipolar
-    band (``mapping.epipolar_chi2`` of its level's variance, in pixels at the focal length) and,
-    when neither has depth, not near the epipole (``mapping.min_epipole_distance2``). One match per
-    keypoint of `k2`: the nearest keeps it (ties: the lower `k1` keypoint).
+    For each free keypoint of `k1` (one observing no point, with a bearing in front), the nearest
+    free keypoint of `k2` under the same vocabulary node (:attr:`slam_it.edge.map.Map.kp_node`;
+    ORB-SLAM3 walks the two keyframes' ``FeatureVector`` node by node) within
+    ``matching.th_low`` (ties: the last, as ORB-SLAM3's ``dist > bestDist`` keeps) that lies
+    within the epipolar band (``mapping.epipolar_chi2`` of its level's variance, in pixels at the
+    focal length) and, when neither has depth, not near the epipole
+    (``mapping.min_epipole_distance2``). One match per keypoint of `k2`: the nearest keeps it
+    (ties: the lower `k1` keypoint).
+
+    Unlike ORB-SLAM3 (decided by evan-wes on 2026-10-28; the online-SLAM design's section 11,
+    L2): a `k2` keypoint is matched once, where ORB-SLAM3 v1.0 tests ``vbMatched2`` but never
+    sets it; and a monocular keyframe triangulates against 20 neighbours, ORB-SLAM2's count,
+    where ORB-SLAM3's ``CreateNewMapPoints`` takes 30 (``mapping.mono_triangulation_neighbours``).
 
     Parameters
     ----------

@@ -153,9 +153,9 @@ struct Mapped {
 /// @return Nothing; `InvalidInput` for a map without keyframes, or invalid settings.
 [[nodiscard]] foundations::Result<void> cull_points(Map& m, Mode mode, const Options& options);
 
-/// @brief Match two keyframes' free keypoints for triangulation
-///        (`slam_it.edge.mapping.match_for_triangulation`, ORB-SLAM's `SearchForTriangulation`,
-///        lite).
+/// @brief Match two keyframes' free keypoints for triangulation, only under the same vocabulary
+///        node (`slam_it.edge.mapping.match_for_triangulation`, which names its departures from
+///        ORB-SLAM3's `SearchForTriangulation`).
 /// @param m The map.
 /// @param camera The camera.
 /// @param k1 The first keyframe's row.

@@ -18,14 +18,15 @@ import numpy as np
 import pytest
 
 from slam_it import backends
+from slam_it.edge import frames, mapping, residuals, tracking
 from slam_it.edge import map as maps
-from slam_it.edge import mapping, residuals, tracking
 from slam_it.edge.frames import Frame, Tracked
 from slam_it.edge.map import Map
 from slam_it.eval import vocabularies
 from slam_it.foundations import matching
 from slam_it.foundations.errors import InvalidInputError
-from tests.conftest import require_function
+from slam_it.foundations.orb import DESCRIPTOR_BYTES
+from tests.conftest import load_fixture, require_function
 from tests.edge.conftest import Truth
 from tests.edge.support import (
     CAMERA,
@@ -38,6 +39,9 @@ from tests.edge.support import (
 
 LAST, CURRENT = 36, 39
 """The room's last keyframe, and the frame tracked from it and inserted."""
+
+TRIANGULATION: list[dict[str, Any]] = load_fixture("edge/triangulation_matches.json")["cases"]
+"""Matching for triangulation's cases (``generate_triangulation_matches.py``)."""
 
 MODES = ("monocular", "stereo", "rgbd")
 """Every mode (the frames are RGB-D's; the mode decides the steps' rules)."""
@@ -139,6 +143,71 @@ def test_local_ba_waits_for_enough_keyframes(backend: str, mapped: Mapped) -> No
     assert not np.array_equal(ran.map.kf_pose[-1], mapped.tracked.pose)
     assert len(ran.summary.solves) == 2
     _same(backend, "process", *args, mode="rgbd", options=waiting, words=words)
+
+
+def _fixture_map(case: dict[str, Any]) -> Map:
+    """Return a case's map: its two keyframes' columns, and the points they observe."""
+    keyframes = case["keyframes"]
+
+    def column(name: str) -> list[Any]:
+        return [v for k in keyframes for v in k[name]]
+
+    t = len(column("level"))
+    observed = np.array(column("point"), dtype=np.int64)
+    points = np.array(case["points"], dtype=np.float64).reshape(-1, 3)
+    p = len(points)
+    depth = [np.nan if d is None else d for d in column("depth")]
+    sizes = [len(k["level"]) for k in keyframes]
+    m = replace(
+        maps.empty(case["levels"], case["scale_factor"]),
+        kf_id=np.arange(len(keyframes), dtype=np.int64),
+        kf_time=np.arange(len(keyframes), dtype=np.float64),
+        kf_pose=np.array([k["pose"] for k in keyframes], dtype=np.float64),
+        kf_parent=np.full(len(keyframes), -1, dtype=np.int64),
+        kf_start=np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64),
+        kp_xy=np.zeros((t, 2)),
+        kp_level=np.array(column("level"), dtype=np.int64),
+        kp_angle=np.zeros(t, dtype=np.int64),
+        kp_descriptor=np.array(column("descriptor"), dtype=np.uint8).reshape(t, DESCRIPTOR_BYTES),
+        kp_node=np.array(column("node"), dtype=np.int64),
+        kp_bearing=np.array(column("bearing"), dtype=np.float64),
+        kp_depth=np.array(depth, dtype=np.float64),
+        kp_right=np.full(t, np.nan),
+        kp_point=observed,
+        pt_id=np.arange(p, dtype=np.int64),
+        pt_xyz=points,
+        pt_descriptor=np.zeros((p, DESCRIPTOR_BYTES), dtype=np.uint8),
+        pt_normal=np.tile([0.0, 0.0, 1.0], (p, 1)),
+        pt_min_distance=np.ones(p),
+        pt_max_distance=np.ones(p),
+        pt_visible=np.ones(p, dtype=np.int64),
+        pt_found=np.ones(p, dtype=np.int64),
+        pt_first_kf=np.zeros(p, dtype=np.int64),
+        pt_reference_kf=np.zeros(p, dtype=np.int64),
+        next_kf_id=len(keyframes),
+        next_pt_id=p,
+    )
+    return m
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", TRIANGULATION, ids=lambda c: c["name"])
+def test_triangulation_matches_the_fixture(backend: str, case: dict[str, Any]) -> None:
+    """Every backend pairs keypoints for triangulation as the fixture's rules do.
+
+    Only under one vocabulary node, within ``matching.th_low``, the epipolar band and away from
+    the epipole without depth; the nearest candidate (the last among equals), each keyframe-2
+    keypoint kept by its nearest (the lower among equals).
+    """
+    chosen = require_function(backend, mapping.__name__, "match_for_triangulation")
+    camera = frames.Camera(
+        "pinhole", np.array([case["focal"], case["focal"], 320.0, 240.0]), 640, 480, 0.0
+    )
+    options = OPTIONS.with_settings(case["settings"])
+    found = mapping.match_for_triangulation(
+        _fixture_map(case), camera, case["k1"], case["k2"], options, backend=chosen
+    )
+    np.testing.assert_array_equal(found, np.array(case["pairs"], dtype=np.int64).reshape(-1, 2))
 
 
 def test_keyframe_needed_when_tracking_thins(mapped: Mapped) -> None:
