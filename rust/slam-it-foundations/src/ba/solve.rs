@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(solved.points[20], problem.points[20]);
     }
 
-    /// Points 1e-9 m in front of a held camera, at its centre (advio-01's local BA, B1): camera
+    /// Points 1e-9 m in front of a held camera, at its centre (advio-01's local BA): camera
     /// 0, held, turned and off the origin, sees 101 points within 1e-16 m of 1e-9 m in front of
     /// it (`camera::MIN_DEPTH`) and 12 more two to three metres out; cameras 1 and 2, free, a
     /// metre behind it and 0.2 m to either side, see all of them; every point is held. The

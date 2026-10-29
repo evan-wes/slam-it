@@ -36,7 +36,7 @@ A keyframe's neighbours are its links in the covisibility graph
 (:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Matching for triangulation pairs only
 keypoints under the same vocabulary node (:attr:`slam_it.edge.map.Map.kp_node`), as ORB-SLAM3's
 ``SearchForTriangulation`` walks the two keyframes' ``FeatureVector`` node by node
-(:func:`match_for_triangulation`, which names its two departures).
+(:func:`match_for_triangulation`, which names its three departures).
 """
 
 from __future__ import annotations
@@ -747,10 +747,20 @@ def match_for_triangulation(  # noqa: PLR0913 -- the map, its camera, two keyfra
     (``mapping.min_epipole_distance2``). One match per keypoint of `k2`: the nearest keeps it
     (ties: the lower `k1` keypoint).
 
-    Unlike ORB-SLAM3 (decided by evan-wes on 2026-10-28; the online-SLAM design's section 11,
-    L2): a `k2` keypoint is matched once, where ORB-SLAM3 v1.0 tests ``vbMatched2`` but never
-    sets it; and a monocular keyframe triangulates against 20 neighbours, ORB-SLAM2's count,
-    where ORB-SLAM3's ``CreateNewMapPoints`` takes 30 (``mapping.mono_triangulation_neighbours``).
+    Three departures from ORB-SLAM3 (the online-SLAM design's section 11, L2; the first two
+    decided by evan-wes on 2026-10-28, the third named by the 0.3.18.0 review panel, L12):
+
+    - A `k2` keypoint is matched once, as the map holds one point per keypoint. ORB-SLAM3 v1.0
+      tests ``vbMatched2`` but never sets it, so two `k1` keypoints taking one `k2` keypoint make
+      two points that both record that observation while the keyframe keeps only the later
+      (``LocalMapping.cc:698-702``), the earlier's left dangling. Its measurements were
+      inconclusive.
+    - A monocular keyframe triangulates against 20 neighbours, ORB-SLAM2's count, where
+      ORB-SLAM3's ``CreateNewMapPoints`` takes 30 (``mapping.mono_triangulation_neighbours``):
+      not measured on the test set.
+    - :func:`triangulate_new_points` matches against every neighbour, where ORB-SLAM stops after
+      the first once a new keyframe waits for mapping (``if(i>0 && CheckNewKeyFrames())
+      return;``, ``LocalMapping.cc:436-437``).
 
     Parameters
     ----------
@@ -908,6 +918,10 @@ def triangulate_new_points(
     gives, else from the keypoint with the better depth; keep it if it is in front of both,
     passes the chi-square test in both, and its distances agree with the keypoints' levels
     (``mapping.scale_ratio``).
+
+    Every neighbour is matched: ORB-SLAM stops after the first once a new keyframe waits for
+    mapping (``LocalMapping.cc:436-437``), a departure :func:`match_for_triangulation` names
+    with the others.
 
     Parameters
     ----------

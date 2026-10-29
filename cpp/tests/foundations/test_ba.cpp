@@ -88,7 +88,7 @@ std::tuple<ba::Problem, ba::Points, Eigen::VectorXd> scene() {
   return {problem, truth, inverse_depth};
 }
 
-/// @brief Points 1e-9 m in front of a held camera, at its centre (advio-01's local BA, B1):
+/// @brief Points 1e-9 m in front of a held camera, at its centre (advio-01's local BA):
 ///        camera 0, held, turned and off the origin, sees 101 points within 1e-16 m of 1e-9 m in
 ///        front of it (`camera::kMinDepth`) and 12 more two to three metres out; cameras 1 and
 ///        2, free, a metre behind it and 0.2 m to either side, see all of them; every point is
@@ -261,9 +261,9 @@ int main() {
   expect(scaled_ok, "solve: deviations scale by the root of the variance factor", failures);
 
   // The in-front test and the residuals take a point's depth from one computation, so an
-  // observation the projection would refuse is left out at the start: B1's Rust inline run of
-  // advio-01 kept one, 1e-9 m in front of its camera by the in-front test's formula and not by
-  // the projection's, and the solve refused its infinite starting cost.
+  // observation the projection would refuse is left out at the start: triangulation by node's
+  // Rust inline run of advio-01 kept one, 1e-9 m in front of its camera by the in-front test's
+  // formula and not by the projection's, and the solve refused its infinite starting cost.
   const auto plane = ba::solve(camera_plane_problem(), ba::Options{});
   expect(plane.has_value() && plane->summary.dropped_observations >= 1 &&
              plane->summary.dropped_observations <= 101 &&

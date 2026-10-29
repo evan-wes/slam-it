@@ -190,7 +190,8 @@ struct MappingOptions {
   std::int64_t min_new_points{100};
   /// @brief A new stereo or RGB-D keyframe triangulates against its best this many links.
   std::int64_t triangulation_neighbours{10};
-  /// @brief The same for monocular.
+  /// @brief The same for monocular: ORB-SLAM2's 20, where ORB-SLAM3 takes 30, a departure not
+  ///        measured on the test set (`Options.mapping`).
   std::int64_t mono_triangulation_neighbours{20};
   /// @brief A triangulation match's chi-square bound to its epipolar line (1 dof).
   double epipolar_chi2{3.84};
@@ -248,7 +249,7 @@ struct CovisibilityOptions {
 
 /// @brief Relocalising a failed frame against the whole map (`Options.relocalization`).
 struct RelocalizationOptions {
-  /// @brief Relocalise a failed frame through the keyframe database (needs a vocabulary).
+  /// @brief Relocalise a failed frame through the keyframe database (`keeps_keyframe_database`).
   bool enabled{true};
   /// @brief The descriptor ratio test of the fallback and of relocalisation's matching by word.
   double ratio{0.75};
@@ -429,8 +430,9 @@ struct Options {
 
 /// @brief Whether a pipeline with these settings keeps the keyframe database
 ///        (`Options.keeps_keyframe_database`): when relocalising or closing loops, either alone,
-///        as ORB-SLAM always keeps its `KeyFrameDatabase`. A vocabulary is then required, and
-///        refused otherwise; the one statement of the rule.
+///        as ORB-SLAM always keeps its `KeyFrameDatabase`. Every pipeline takes a vocabulary
+///        whatever this says, as mapping quantises each keyframe by it; the one statement of the
+///        rule.
 /// @param options The settings.
 /// @return `relocalization.enabled` or `loops.enabled`.
 [[nodiscard]] constexpr bool keeps_keyframe_database(const Options& options) {

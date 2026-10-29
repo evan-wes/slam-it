@@ -322,7 +322,7 @@ fn in_front(problem: &Problem, counts: &mut Counts) -> Vec<usize> {
         // at `camera::MIN_DEPTH`: a separate formula, `R_world_cam`'s column 2 dotted with the
         // offset from the centre, rounded differently, and kept an observation 1e-9 m in front
         // of its camera that the projection then refused, an infinite starting cost (advio-01,
-        // B1).
+        // triangulation by node's final measurement).
         let depth = to_camera(&invert(t_world_cam), &point).z;
         if depth > camera::MIN_DEPTH {
             kept.push(m);

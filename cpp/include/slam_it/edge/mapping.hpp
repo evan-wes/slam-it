@@ -154,8 +154,8 @@ struct Mapped {
 [[nodiscard]] foundations::Result<void> cull_points(Map& m, Mode mode, const Options& options);
 
 /// @brief Match two keyframes' free keypoints for triangulation, only under the same vocabulary
-///        node (`slam_it.edge.mapping.match_for_triangulation`, which names its departures from
-///        ORB-SLAM3's `SearchForTriangulation`).
+///        node (`slam_it.edge.mapping.match_for_triangulation`, which names its three departures
+///        from ORB-SLAM3).
 /// @param m The map.
 /// @param camera The camera.
 /// @param k1 The first keyframe's row.
@@ -167,7 +167,9 @@ struct Mapped {
     const Map& m, const Camera& camera, std::int64_t k1, std::int64_t k2, const Options& options);
 
 /// @brief Triangulate the newest keyframe's free keypoints against its best links
-///        (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).
+///        (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`):
+///        against every one, where ORB-SLAM stops after the first once a new keyframe waits for
+///        mapping (`LocalMapping.cc:436-437`), a departure `match_for_triangulation` names.
 /// @param m The map, changed in place.
 /// @param camera The camera.
 /// @param mode The pipeline's mode.

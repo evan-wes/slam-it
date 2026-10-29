@@ -320,8 +320,8 @@ class MappingOptions:
         A new stereo or RGB-D keyframe triangulates against its best this many links
         (``CreateNewMapPoints``' ``nn``: 10)...
     mono_triangulation_neighbours : int
-        ...20 for monocular (ORB-SLAM2's; ORB-SLAM3 takes 30, a departure kept: the online-SLAM
-        design's section 11, L2).
+        ...20 for monocular (ORB-SLAM2's; ORB-SLAM3 takes 30, a departure kept, not measured on
+        the test set: the online-SLAM design's section 11, L2).
     epipolar_chi2 : float
         A match for triangulation must lie within this chi-square (1 dof, 95%) of its
         epipolar line (``CheckDistEpipolarLine``'s 3.84)...
@@ -433,10 +433,10 @@ class RelocalizationOptions:
     Attributes
     ----------
     enabled : bool
-        Relocalise a failed frame against the whole map through its keyframe database, which
-        needs a vocabulary (on, as ORB-SLAM always is). Off, a failed frame tries only the motion
-        model and the local fallback, and a map is lost after ``loss.lost_frames`` failures in a
-        row, as before milestone 2B.
+        Relocalise a failed frame against the whole map through its keyframe database
+        (:meth:`Options.keeps_keyframe_database`; on, as ORB-SLAM always is). Off, a failed frame
+        tries only the motion model and the local fallback, and a map is lost after
+        ``loss.lost_frames`` failures in a row, as before milestone 2B.
     ratio : float
         The descriptor ratio test of the fallback and of relocalisation's matching by word
         (``Relocalization``'s ``ORBmatcher(0.75, true)``).
@@ -507,8 +507,8 @@ class LoopOptions:
     ----------
     enabled : bool
         Close loops in the map being tracked, each keyframe searched once it is mapped (on, as
-        ORB-SLAM always is). It needs the keyframe database, and so a vocabulary: on, it keeps
-        the database whether relocalisation is on or off (:meth:`Options.keeps_keyframe_database`).
+        ORB-SLAM always is). It needs the keyframe database: on, it keeps the database whether
+        relocalisation is on or off (:meth:`Options.keeps_keyframe_database`).
     min_keyframes : int
         A map of fewer keyframes is not searched (``KeyFramesInMap() < 12``).
     candidates : int
@@ -790,8 +790,9 @@ class Options:
         """Return whether a pipeline with these settings keeps the keyframe database.
 
         It does when relocalising or closing loops, either alone, as ORB-SLAM always keeps its
-        ``KeyFrameDatabase``: a vocabulary is then required, and refused otherwise (B3's review
-        panel, H7; the one statement of the rule, run 2, H23).
+        ``KeyFrameDatabase`` (B3's review panel, H7). Every pipeline takes a vocabulary whatever
+        this says, as mapping quantises each keyframe by it (since 0.3.18.0; the online-SLAM
+        design's section 11, L2): the one statement of the rule (B3's panel, run 2, H23).
 
         Returns
         -------

@@ -267,8 +267,7 @@ fn empty_frames_lose_the_track_and_the_next_frame_starts_a_new_map() {
         broken,
         Threading::Inline,
     )
-    .err()
-    .expect("a malformed vocabulary is refused");
+    .expect_err("a malformed vocabulary is refused");
     assert_eq!(refused.kind, ErrorKind::InvalidInput);
     assert!(refused.message.starts_with("vocabulary: "));
 }

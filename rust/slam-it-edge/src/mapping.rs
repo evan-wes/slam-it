@@ -494,8 +494,8 @@ fn triangulation_pairs(
 }
 
 /// Matches two keyframes' free keypoints for triangulation, only under the same vocabulary node
-/// (`slam_it.edge.mapping.match_for_triangulation`, which names its departures from ORB-SLAM3's
-/// `SearchForTriangulation`).
+/// (`slam_it.edge.mapping.match_for_triangulation`, which names its three departures from
+/// ORB-SLAM3).
 ///
 /// # Arguments
 ///
@@ -778,7 +778,9 @@ fn median_depth(m: &Map, k: usize) -> Option<f64> {
 }
 
 /// Triangulates the newest keyframe's free keypoints against its best links'
-/// (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).
+/// (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`): against
+/// every one, where ORB-SLAM stops after the first once a new keyframe waits for mapping
+/// (`LocalMapping.cc:436-437`), a departure `match_for_triangulation` names.
 ///
 /// # Arguments
 ///

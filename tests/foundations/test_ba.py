@@ -508,7 +508,7 @@ def test_strict_mode_raises(backend: str) -> None:
 
 
 def _camera_plane_problem() -> ba.BAProblem:
-    """Return points 1e-9 m in front of a held camera, at its centre: advio-01's local BA (B1).
+    """Return points 1e-9 m in front of a held camera, at its centre: advio-01's local BA.
 
     Camera 0, held, turned and off the origin, sees 101 points within 1e-16 m of 1e-9 m in front
     of it (its depth's bound, ``camera.MIN_DEPTH``) and 12 more two to three metres out; cameras
@@ -558,9 +558,10 @@ def test_a_point_at_a_cameras_centre_is_left_out(backend: str) -> None:
     """An observation the projection would refuse is left out at the start, in every backend.
 
     The in-front test and the residuals take a point's depth from one computation, so the two
-    cannot fall either side of ``camera.MIN_DEPTH``: B1's Rust inline run of advio-01 kept an
-    observation whose point lay 1e-9 m in front of its camera by the in-front test's formula
-    and not by the projection's, and the solve refused its infinite starting cost.
+    cannot fall either side of ``camera.MIN_DEPTH``: triangulation by node's Rust inline run of
+    advio-01 kept an observation whose point lay 1e-9 m in front of its camera by the in-front
+    test's formula and not by the projection's, and the solve refused its infinite starting
+    cost.
     """
     require_backend(backend)
     result = ba.solve(_camera_plane_problem(), backend=backend)

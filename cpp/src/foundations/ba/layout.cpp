@@ -217,7 +217,8 @@ IndexList in_front(const Problem& problem, Summary& counts) {
     // The bundle's own depth (its state's inverted pose, `R p + t`), so that the two agree at
     // camera::kMinDepth: a separate formula, `R_world_cam` column 2 dotted with the offset from
     // the centre, rounded differently, and kept an observation 1e-9 m in front of its camera
-    // that the projection then refused, an infinite starting cost (advio-01, B1).
+    // that the projection then refused, an infinite starting cost (advio-01, in triangulation
+    // by node's final measurement).
     const double depth = to_camera(inverse_pose(t_world_cam), point).z();
     if (depth > camera::kMinDepth) {
       kept.push_back(m);

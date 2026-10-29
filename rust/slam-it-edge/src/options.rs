@@ -305,7 +305,8 @@ pub struct MappingOptions {
     pub min_new_points: usize,
     /// Keyframes a new stereo or RGB-D keyframe triangulates against.
     pub triangulation_neighbours: usize,
-    /// The same for monocular.
+    /// The same for monocular: ORB-SLAM2's 20, where ORB-SLAM3 takes 30, a departure not
+    /// measured on the test set (`Options.mapping`).
     pub mono_triangulation_neighbours: usize,
     /// A triangulation match's chi-square bound to its epipolar line (1 dof).
     pub epipolar_chi2: f64,
@@ -403,7 +404,8 @@ impl Default for CovisibilityOptions {
 /// Relocalising a failed frame against the whole map (`Options.relocalization`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RelocalizationOptions {
-    /// Relocalise a failed frame through the keyframe database (needs a vocabulary).
+    /// Relocalise a failed frame through the keyframe database
+    /// ([`Options::keeps_keyframe_database`]).
     pub enabled: bool,
     /// The descriptor ratio test of the fallback and of relocalisation's matching by word.
     pub ratio: f64,
@@ -667,8 +669,8 @@ pub struct Options {
 impl Options {
     /// Whether a pipeline with these settings keeps the keyframe database
     /// (`Options.keeps_keyframe_database`): when relocalising or closing loops, either alone, as
-    /// ORB-SLAM always keeps its `KeyFrameDatabase`. A vocabulary is then required, and refused
-    /// otherwise; the one statement of the rule.
+    /// ORB-SLAM always keeps its `KeyFrameDatabase`. Every pipeline takes a vocabulary whatever
+    /// this says, as mapping quantises each keyframe by it; the one statement of the rule.
     ///
     /// # Returns
     ///
