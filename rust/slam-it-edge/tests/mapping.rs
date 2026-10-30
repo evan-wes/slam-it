@@ -1,20 +1,26 @@
 //! Integration tests of local mapping (`slam_it_edge::mapping`) on the exact scene: the
 //! keyframe decision, points from depth, culling points and keyframes, triangulation, fusion,
-//! and a whole mapping step. Parity with the Python reference is checked through the bindings
-//! by `tests/edge`. What fusion and local BA take from the graph (`fuse_targets`,
-//! `local_ba_keyframes`) is held to the covisibility fixture in `tests/covisibility.rs`.
+//! and a whole mapping step; and matching for triangulation held to the fixture
+//! `tests/fixtures/edge/triangulation_matches.json`, which the Python and C++ tests share.
+//! Parity with the Python reference is checked through the bindings by `tests/edge`. What
+//! fusion and local BA take from the graph (`fuse_targets`, `local_ba_keyframes`) is held to the
+//! covisibility fixture in `tests/covisibility.rs`.
 
 mod scene;
 
+use nalgebra::{Matrix4, Vector3};
+use serde_json::Value;
 use slam_it_edge::frames::Tracked;
-use slam_it_edge::map::{self, Map, check_map};
+use slam_it_edge::map::{self, Map, check_map, index_observations};
 use slam_it_edge::mapping::{
     create_points_from_depth, cull_keyframes, cull_points, fuse_points, fuse_targets,
     local_ba_keyframes, match_for_triangulation, need_keyframe, process, triangulate_new_points,
 };
 use slam_it_edge::options::{MappingOptions, Mode, Options, StereoOptions};
 
-use scene::{POINTS, camera, frame, frame_at, moved, points, pose, scene_map};
+use scene::{
+    POINTS, camera, frame, frame_at, moved, nodes, one_word, points, pose, push_point, scene_map,
+};
 
 /// Point ids `first` to `last - 1`, then -1 to the scene's size.
 #[allow(clippy::cast_possible_wrap, reason = "ids below 60")]
@@ -87,7 +93,14 @@ fn keyframes_and_points_follow_the_rules() {
     );
     let mut m = built.clone();
     let ahead = moved(0.1);
-    map::insert_keyframe(&mut m, &frame_at(&ahead, true, 0), &ahead, &[-1; POINTS]).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &frame_at(&ahead, true, 0),
+        &ahead,
+        &[-1; POINTS],
+        &nodes(&frame_at(&ahead, true, 0)),
+    )
+    .unwrap();
     let mut every = m.clone();
     create_points_from_depth(&mut every, &camera(), &Options::default()).unwrap();
     assert_eq!(every.points(), 2 * POINTS);
@@ -112,12 +125,42 @@ fn keyframes_and_points_follow_the_rules() {
     assert_eq!((counted.points(), counted.pt_id[0]), (POINTS - 1, 1));
 }
 
+/// The scene's first keyframe, making points at its scene points `0..made`, then its third,
+/// observing the first `shared` of them.
+///
+/// # Arguments
+///
+/// * `made` - The points the first keyframe makes.
+/// * `shared` - Those the third observes.
+///
+/// # Returns
+///
+/// The map.
+fn first_and_third(made: usize, shared: usize) -> Map {
+    let mut m = Map::empty(8, 1.2);
+    map::insert_keyframe(
+        &mut m,
+        &frame(0, false),
+        &pose(0),
+        &ids(0, 0),
+        &nodes(&frame(0, false)),
+    )
+    .unwrap();
+    add_scene_points(&mut m, 0, 0, made);
+    map::insert_keyframe(
+        &mut m,
+        &frame(2, false),
+        &pose(2),
+        &ids(0, shared),
+        &nodes(&frame(2, false)),
+    )
+    .unwrap();
+    m
+}
+
 #[test]
 fn triangulation_recovers_the_scene() {
-    let mut m = Map::empty(8, 1.2);
-    map::insert_keyframe(&mut m, &frame(0, false), &pose(0), &ids(0, 0)).unwrap();
-    add_scene_points(&mut m, 0, 0, 10);
-    map::insert_keyframe(&mut m, &frame(2, false), &pose(2), &ids(0, 10)).unwrap();
+    let mut m = first_and_third(10, 10);
     let pairs = match_for_triangulation(&m, &camera(), 1, 0, &Options::default()).unwrap();
     assert_eq!((pairs.len(), pairs[0]), (50, [70, 10]));
     triangulate_new_points(&mut m, &camera(), Mode::Monocular, &Options::default()).unwrap();
@@ -132,10 +175,7 @@ fn triangulation_recovers_the_scene() {
 #[test]
 fn fusion_merges_duplicates() {
     const SHARED: usize = 5;
-    let mut m = Map::empty(8, 1.2);
-    map::insert_keyframe(&mut m, &frame(0, false), &pose(0), &ids(0, 0)).unwrap();
-    add_scene_points(&mut m, 0, 0, POINTS);
-    map::insert_keyframe(&mut m, &frame(2, false), &pose(2), &ids(0, SHARED)).unwrap();
+    let mut m = first_and_third(POINTS, SHARED);
     add_scene_points(&mut m, 1, SHARED, POINTS);
     fuse_points(&mut m, &camera(), Mode::Rgbd, &Options::default()).unwrap();
     assert_eq!(m.points(), POINTS);
@@ -160,11 +200,29 @@ fn fusion_merges_duplicates() {
 #[test]
 fn culling_and_a_whole_step_keep_the_map_valid() {
     let built = scene_map();
-    let mut copy = built.clone();
-    map::insert_keyframe(&mut copy, &frame(2, true), &pose(2), &ids(0, 60)).unwrap();
-    cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &Options::default(), &[]).unwrap();
+    // A fourth keyframe seeing every point: each is seen by three keyframes besides keyframe 1.
+    let culled = |observers: usize| {
+        let mut copy = built.clone();
+        map::insert_keyframe(
+            &mut copy,
+            &frame(2, true),
+            &pose(2),
+            &ids(0, 60),
+            &nodes(&frame(2, true)),
+        )
+        .unwrap();
+        let mut options = Options::default();
+        options.mapping.redundant_observers = observers;
+        cull_keyframes(&mut copy, &camera(), Mode::Rgbd, &options, &[]).unwrap();
+        check_map(&copy).unwrap();
+        copy
+    };
+    // At ORB-SLAM2's 3 the first redundant keyframe goes; at ORB-SLAM3's rule, more than 3 other
+    // observers (`nObs > 3`), the default, every keyframe stays.
+    let copy = culled(3);
     assert_eq!(copy.kf_id, vec![0, 2, 3]);
-    check_map(&copy).unwrap();
+    assert_eq!(Options::default().mapping.redundant_observers, 4);
+    assert_eq!(culled(4).kf_id, vec![0, 1, 2, 3]);
     let mut none = Map::empty(8, 1.2);
     assert!(
         cull_keyframes(&mut none, &camera(), Mode::Rgbd, &Options::default(), &[]).is_err(),
@@ -190,10 +248,125 @@ fn culling_and_a_whole_step_keep_the_map_valid() {
         &tracked,
         Mode::Rgbd,
         &Options::default(),
+        &one_word(),
         &[],
         None,
     )
     .unwrap();
     assert_eq!(m.kf_id.last(), Some(&3));
     check_map(&m).unwrap();
+}
+
+/// Matching for triangulation's cases (`tests/fixtures/edge/triangulation_matches.json`), which
+/// the Python and C++ tests share.
+fn triangulation_fixture() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../tests/fixtures/edge/triangulation_matches.json"
+    ))
+    .expect("the fixture is valid JSON")
+}
+
+/// A JSON number.
+fn number(value: &Value) -> f64 {
+    value.as_f64().expect("a number")
+}
+
+/// A JSON integer.
+fn integer(value: &Value) -> i64 {
+    value.as_i64().expect("an integer")
+}
+
+/// A case's map: its two keyframes' columns and the points they observe, as the Python test
+/// builds it.
+fn triangulation_map(case: &Value) -> Map {
+    let levels = usize::try_from(integer(&case["levels"])).expect("levels");
+    let mut m = Map::empty(levels, number(&case["scale_factor"]));
+    for (id, k) in case["keyframes"]
+        .as_array()
+        .expect("keyframes")
+        .iter()
+        .enumerate()
+    {
+        let id = i64::try_from(id).expect("an id");
+        m.kf_id.push(id);
+        #[allow(clippy::cast_precision_loss, reason = "two keyframes")]
+        m.kf_time.push(id as f64);
+        m.kf_pose
+            .push(Matrix4::from_fn(|r, c| number(&k["pose"][r][c])));
+        m.kf_parent.push(-1);
+        for i in 0..k["level"].as_array().expect("levels").len() {
+            let b = &k["bearing"][i];
+            m.kp_xy.push([0.0, 0.0]);
+            m.kp_level
+                .push(usize::try_from(integer(&k["level"][i])).expect("a level"));
+            m.kp_angle.push(0);
+            let mut d = [0_u8; 32];
+            for (byte, value) in d
+                .iter_mut()
+                .zip(k["descriptor"][i].as_array().expect("bytes"))
+            {
+                *byte = u8::try_from(integer(value)).expect("a byte");
+            }
+            m.kp_descriptor.push(d);
+            m.kp_node.push(integer(&k["node"][i]));
+            m.kp_bearing
+                .push(Vector3::new(number(&b[0]), number(&b[1]), number(&b[2])));
+            m.kp_depth.push(k["depth"][i].as_f64().unwrap_or(f64::NAN));
+            m.kp_right.push(f64::NAN);
+            m.kp_point.push(integer(&k["point"][i]));
+        }
+        m.kf_start.push(m.kp_point.len());
+    }
+    for (p, x) in case["points"]
+        .as_array()
+        .expect("points")
+        .iter()
+        .enumerate()
+    {
+        m.pt_id.push(i64::try_from(p).expect("an id"));
+        push_point(
+            &mut m,
+            Vector3::new(number(&x[0]), number(&x[1]), number(&x[2])),
+        );
+    }
+    m.next_kf_id = i64::try_from(m.kf_id.len()).expect("ids");
+    m.next_pt_id = i64::try_from(m.pt_id.len()).expect("ids");
+    index_observations(&mut m);
+    check_map(&m).unwrap();
+    m
+}
+
+/// Each case pairs keypoints as the fixture's rules do: only under one vocabulary node, within
+/// `matching.th_low`, the epipolar band and away from the epipole without depth; the nearest
+/// candidate (the last among equals), each keyframe-2 keypoint kept by its nearest (the lower
+/// among equals).
+#[test]
+fn triangulation_matches_the_fixture() {
+    let fixture = triangulation_fixture();
+    for case in fixture["cases"].as_array().expect("cases") {
+        let m = triangulation_map(case);
+        let focal = number(&case["focal"]);
+        let mut camera = camera();
+        camera.intrinsics = vec![focal, focal, 320.0, 240.0];
+        let settings = &case["settings"];
+        let mut options = Options::default();
+        options.matching.th_low = integer(&settings["matching.th_low"]);
+        options.mapping.epipolar_chi2 = number(&settings["mapping.epipolar_chi2"]);
+        options.mapping.min_epipole_distance2 = number(&settings["mapping.min_epipole_distance2"]);
+        let k1 = usize::try_from(integer(&case["k1"])).unwrap();
+        let k2 = usize::try_from(integer(&case["k2"])).unwrap();
+        let found = match_for_triangulation(&m, &camera, k1, k2, &options).unwrap();
+        let expected: Vec<[usize; 2]> = case["pairs"]
+            .as_array()
+            .expect("pairs")
+            .iter()
+            .map(|p| {
+                [
+                    usize::try_from(integer(&p[0])).unwrap(),
+                    usize::try_from(integer(&p[1])).unwrap(),
+                ]
+            })
+            .collect();
+        assert_eq!(found, expected, "{}", case["name"]);
+    }
 }

@@ -67,6 +67,18 @@ Result<void> check_row(const Map& m, std::int64_t k) {
   return foundations::check_range("k", k, 0, static_cast<std::int64_t>(keyframe_count(m)) - 1);
 }
 
+/// @brief A keyframe's links of at least `min_points`, its row checked.
+/// @param m The map.
+/// @param k The keyframe's row.
+/// @param min_points The links' least weight.
+/// @return The links (`links_of`), or `InvalidInput` for a row out of range.
+Result<std::vector<Link>> checked_links(const Map& m, std::int64_t k, std::int64_t min_points) {
+  if (auto ok = check_row(m, k); !ok) {
+    return std::unexpected(ok.error());
+  }
+  return links_of(m, shared_points(m, static_cast<std::size_t>(k)), min_points);
+}
+
 /// @brief The rows whose parent is a keyframe, ascending.
 /// @param m The map.
 /// @param k The keyframe's row.
@@ -155,11 +167,11 @@ std::vector<Link> links_of(const Map& m, std::span<const std::int64_t> shared,
 }
 
 Result<std::vector<Link>> links(const Map& m, std::int64_t k, const Options& options) {
-  if (auto ok = check_row(m, k); !ok) {
-    return std::unexpected(ok.error());
-  }
-  return links_of(m, shared_points(m, static_cast<std::size_t>(k)),
-                  options.covisibility.min_points);
+  return checked_links(m, k, options.covisibility.min_points);
+}
+
+Result<std::vector<Link>> connected(const Map& m, std::int64_t k) {
+  return checked_links(m, k, 1);  // links of one point: every keyframe sharing one
 }
 
 Result<LocalMap> local_map(const Map& m, std::span<const std::int64_t> points,

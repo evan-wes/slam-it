@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import fields, replace
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -17,7 +18,7 @@ from slam_it.foundations.errors import InvalidInputError
 from slam_it.foundations.orb import DESCRIPTOR_BYTES
 from tests.conftest import protocol_members, require_function
 from tests.edge.conftest import Truth, _observe
-from tests.edge.support import assert_maps_match
+from tests.edge.support import assert_maps_match, keyframe_nodes
 
 FUNCTIONS = sorted(protocol_members(maps))
 
@@ -49,8 +50,17 @@ def _cases(truth: Truth) -> dict[str, list[tuple[tuple[object, ...], dict[str, o
     return {
         "predict_level": [((m, rows, rng.uniform(0.5, 8.0, p)), {})],
         "insert_keyframe": [
-            ((m, next_frame, pose, seen), {}),
-            ((m, next_frame, np.eye(4), np.full(next_frame.size, -1)), {}),
+            ((m, next_frame, pose, seen, keyframe_nodes(next_frame)), {}),
+            (
+                (
+                    m,
+                    next_frame,
+                    np.eye(4),
+                    np.full(next_frame.size, -1),
+                    np.arange(next_frame.size) % 7,
+                ),
+                {},
+            ),
         ],
         "add_points": [
             ((m, rng.uniform(-2.0, 2.0, (q, 3)) + np.array([0.0, 0.0, 4.0]), observers), {}),
@@ -256,6 +266,28 @@ def test_erasing_a_keyframe_moves_the_others_keypoints_up(truth: Truth) -> None:
     np.testing.assert_array_equal(np.diff(erased.kf_start), np.delete(np.diff(m.kf_start), k))
 
 
+def test_a_keypoint_keeps_its_node_through_insertion_sub_maps_and_culling(truth: Truth) -> None:
+    """Each keypoint's vocabulary node goes where its keypoint goes.
+
+    Inserted as given, kept in a sub-map for the keyframes it holds, and kept for every other
+    keyframe when one is culled (a merge's, ``tests/edge/test_merges.py``). The compiled
+    backends' maps match these exactly (:func:`test_matches_the_reference`).
+    """
+    m = truth.map
+    assert len(np.unique(m.kp_node)) > 1  # the room's keyframes, quantised: many nodes
+    frame = truth.frames[-1]
+    given = keyframe_nodes(frame)
+    inserted = maps.insert_keyframe(m, frame, np.eye(4), np.full(frame.size, -1), given)
+    np.testing.assert_array_equal(inserted.kp_node[: len(m.kp_node)], m.kp_node)
+    np.testing.assert_array_equal(inserted.kp_node[len(m.kp_node) :], given)
+    rows = np.arange(1, m.keyframes, 2)
+    viewed = maps.sub_map(m, rows)
+    kept = np.concatenate([m.kp_node[m.keypoint_rows(int(k))] for k in rows])
+    np.testing.assert_array_equal(viewed.kp_node, kept)
+    culled = maps.erase_keyframe(m, 1)
+    np.testing.assert_array_equal(culled.kp_node, np.delete(m.kp_node, m.keypoint_rows(1)))
+
+
 def test_a_point_loses_its_reference_to_its_earliest_observer(truth: Truth) -> None:
     """When the reference keyframe no longer observes a point, the lowest observer id takes over."""
     m = truth.map
@@ -300,6 +332,23 @@ def test_rejects_malformed_arguments(backend: str, truth: Truth) -> None:
         lambda: maps.distinctive_descriptor(
             np.zeros((0, DESCRIPTOR_BYTES), np.uint8), backend=backend
         ),
+        *(
+            partial(
+                maps.insert_keyframe,
+                m,
+                frame,
+                np.eye(4),
+                np.full(frame.size, -1),
+                nodes,
+                backend=backend,
+            )
+            for frame in truth.frames[-1:]
+            for nodes in (
+                np.zeros(frame.size - 1, dtype=np.int64),
+                np.full(frame.size, -1),
+                np.full(frame.size, 0.5),
+            )
+        ),
     ]
     for call in calls:
         with pytest.raises(InvalidInputError):
@@ -327,6 +376,10 @@ def test_a_map_checks_its_structure(truth: Truth) -> None:
     dangling[0] = m.next_pt_id + 3
     with pytest.raises(InvalidInputError, match="kp_point"):
         replace(m, kp_point=dangling)
+    negative = m.kp_node.copy()
+    negative[0] = -1
+    with pytest.raises(InvalidInputError, match="kp_node"):
+        replace(m, kp_node=negative)
     with pytest.raises(InvalidInputError, match="gone"):  # erased, yet still in the map
         replace(
             m,

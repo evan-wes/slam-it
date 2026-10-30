@@ -1,9 +1,9 @@
 """The covisibility graph and the spanning tree, held to the brute-force fixture.
 
 ``tests/fixtures/edge/covisibility.json`` (``generate_covisibility.py``) gives, for small maps
-of hand-picked and seeded points, each keyframe's links, tracking's local map for some frames,
-the parent :func:`~slam_it.edge.covisibility.adopt` gives, the parents
-:func:`~slam_it.edge.covisibility.reparent` leaves (and so what
+of hand-picked and seeded points, each keyframe's links and connected keyframes, tracking's
+local map for some frames, the parent :func:`~slam_it.edge.covisibility.adopt` gives, the
+parents :func:`~slam_it.edge.covisibility.reparent` leaves (and so what
 :func:`~slam_it.edge.covisibility.cull` leaves), the strong links, and the keyframes fusion and
 local BA take (:func:`~slam_it.edge.mapping.fuse_targets`,
 :func:`~slam_it.edge.mapping.local_ba_keyframes`), computed from point sets by the rules
@@ -30,6 +30,7 @@ from slam_it.foundations.errors import InvalidInputError
 from slam_it.foundations.orb import DESCRIPTOR_BYTES
 from tests.conftest import load_fixture, require_function
 from tests.edge.conftest import Run
+from tests.edge.support import point_columns
 
 CASES: list[dict[str, Any]] = load_fixture("edge/covisibility.json")["cases"]
 NAMES = [case["name"] for case in CASES]
@@ -57,20 +58,13 @@ def fixture_map(case: dict[str, Any]) -> Map:
         kp_level=np.zeros(t, dtype=np.int64),
         kp_angle=np.zeros(t, dtype=np.int64),
         kp_descriptor=np.zeros((t, DESCRIPTOR_BYTES), dtype=np.uint8),
+        kp_node=np.zeros(t, dtype=np.int64),
         kp_bearing=np.tile([0.0, 0.0, 1.0], (t, 1)),
         kp_depth=np.full(t, np.nan),
         kp_right=np.full(t, np.nan),
         kp_point=observed,
         pt_id=points,
-        pt_xyz=np.tile([0.0, 0.0, 1.0], (p, 1)),
-        pt_descriptor=np.zeros((p, DESCRIPTOR_BYTES), dtype=np.uint8),
-        pt_normal=np.tile([0.0, 0.0, 1.0], (p, 1)),
-        pt_min_distance=np.ones(p),
-        pt_max_distance=np.ones(p),
-        pt_visible=np.ones(p, dtype=np.int64),
-        pt_found=np.ones(p, dtype=np.int64),
-        pt_first_kf=np.zeros(p, dtype=np.int64),
-        pt_reference_kf=np.zeros(p, dtype=np.int64),
+        **point_columns(np.tile([0.0, 0.0, 1.0], (p, 1))),
         next_kf_id=int(max(k["id"] for k in keyframes)) + 1,
         next_pt_id=int(points.max()) + 1 if p else 0,
     )
@@ -86,12 +80,20 @@ def fixture_options(case: dict[str, Any]) -> Options:
 @pytest.mark.parametrize("backend", backends.BACKENDS)
 @pytest.mark.parametrize("case", CASES, ids=NAMES)
 def test_links_rank_the_shared_points(case: dict[str, Any], backend: str) -> None:
-    """Each keyframe's links: at least min_points, or its best, most shared first, ties by id."""
+    """Each keyframe's links, and its connected keyframes, most shared first, ties by id.
+
+    Its links: those sharing at least min_points, or its best; connected: every one sharing a
+    point, however few.
+    """
     chosen = require_function(backend, covisibility.__name__, "links")
+    joined = require_function(backend, covisibility.__name__, "connected")
     m, options = fixture_map(case), fixture_options(case)
-    for k, (rows, weights) in enumerate(case["links"]):
-        got = covisibility.links(m, k, options, backend=chosen)
-        assert (got[0].tolist(), got[1].tolist()) == (rows, weights), f"keyframe row {k}"
+    for k in range(m.keyframes):
+        for got, expected in (
+            (covisibility.links(m, k, options, backend=chosen), case["links"][k]),
+            (covisibility.connected(m, k, backend=joined), case["connected"][k]),
+        ):
+            assert [got[0].tolist(), got[1].tolist()] == expected, f"keyframe row {k}"
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -319,6 +321,8 @@ def test_a_bad_row_or_point_is_refused(backend: str) -> None:
     m, options = fixture_map(CASES[0]), fixture_options(CASES[0])
     with pytest.raises(InvalidInputError, match="k: "):
         covisibility.links(m, m.keyframes, options, backend=chosen)
+    with pytest.raises(InvalidInputError, match="k: "):
+        covisibility.connected(m, -1, backend=chosen)
     with pytest.raises(InvalidInputError, match="points: "):
         covisibility.local_map(m, np.array([3, -2]), options, backend=chosen)
 

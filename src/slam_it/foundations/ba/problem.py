@@ -380,6 +380,32 @@ class BAResult:
     summary: BASummary
 
 
+def to_camera(t_cam_world: Array, points: Array, cam: IndexArray, pt: IndexArray) -> Array:
+    """Return each observation's point in its camera's frame, ``R p + t``.
+
+    The one computation the layout's in-front test and the bundle's residuals both take a
+    point's depth from, so that an observation the projection would refuse
+    (``Z <= camera.MIN_DEPTH``) is never kept: C++'s ``ba/common.hpp`` and Rust's ``ba`` module
+    share theirs the same way (the in-front fix of 0.3.18.0).
+
+    Parameters
+    ----------
+    t_cam_world : ndarray of float64, shape (C, 4, 4)
+        The cameras' world-to-camera poses.
+    points : ndarray of float64, shape (P, 3)
+        The points in the world frame.
+    cam, pt : ndarray of int64, shape (M,)
+        Each observation's camera and point.
+
+    Returns
+    -------
+    ndarray of float64, shape (M, 3)
+        Each observation's point in its camera's frame.
+    """
+    in_camera = np.einsum("mij,mj->mi", t_cam_world[cam, :3, :3], points[pt])
+    return np.asarray(in_camera + t_cam_world[cam, :3, 3], dtype=np.float64)
+
+
 # --- validation ---------------------------------------------------------------------------
 
 

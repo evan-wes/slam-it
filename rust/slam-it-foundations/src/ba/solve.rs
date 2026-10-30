@@ -191,13 +191,36 @@ mod tests {
                 Vector3::new((1.3 * t).sin(), (0.7 * t).cos(), 5.0 + (0.9 * t).sin())
             })
             .collect();
+        let mut problem = every_point_seen(poses, points, |_, _, in_camera| {
+            camera::project(Model::Pinhole, &PINHOLE, in_camera).unwrap()
+        });
+        problem.fixed_poses = vec![true, true, false];
+        problem
+    }
+
+    /// A pinhole problem in which every camera sees every point.
+    ///
+    /// # Arguments
+    ///
+    /// * `poses` - The cameras' `T_world_cam`.
+    /// * `points` - The points.
+    /// * `pixel` - Each observation's pixel, from its camera's index, its point's and the point
+    ///   in the camera's frame.
+    ///
+    /// # Returns
+    ///
+    /// The problem, every other array at its default.
+    fn every_point_seen(
+        poses: Vec<Matrix4<f64>>,
+        points: Vec<Vector3<f64>>,
+        pixel: impl Fn(usize, usize, &Vector3<f64>) -> Vector2<f64>,
+    ) -> Problem {
         let mut observations = Vec::new();
         let (mut cam_idx, mut pt_idx) = (Vec::new(), Vec::new());
         for (c, pose) in poses.iter().enumerate() {
             let t_cam_world = se3::inverse(pose).unwrap();
             for (p, point) in points.iter().enumerate() {
-                let in_camera = se3::act(&t_cam_world, point).unwrap();
-                observations.push(camera::project(Model::Pinhole, &PINHOLE, &in_camera).unwrap());
+                observations.push(pixel(c, p, &se3::act(&t_cam_world, point).unwrap()));
                 cam_idx.push(i64::try_from(c).unwrap());
                 pt_idx.push(i64::try_from(p).unwrap());
             }
@@ -206,7 +229,7 @@ mod tests {
             values: PINHOLE.to_vec(),
             params: 4,
         };
-        let mut problem = Problem::with_defaults(
+        Problem::with_defaults(
             Model::Pinhole,
             intrinsics,
             poses,
@@ -214,9 +237,7 @@ mod tests {
             observations,
             cam_idx,
             pt_idx,
-        );
-        problem.fixed_poses = vec![true, true, false];
-        problem
+        )
     }
 
     /// Tight settings, so a noise-free solve reaches the truth.
@@ -280,6 +301,51 @@ mod tests {
         assert_eq!(solved.summary.dropped_points, 1);
         assert_eq!(solved.summary.dropped_observations, 1);
         assert_eq!(solved.points[20], problem.points[20]);
+    }
+
+    /// Points 1e-9 m in front of a held camera, at its centre (advio-01's local BA): camera
+    /// 0, held, turned and off the origin, sees 101 points within 1e-16 m of 1e-9 m in front of
+    /// it (`camera::MIN_DEPTH`) and 12 more two to three metres out; cameras 1 and 2, free, a
+    /// metre behind it and 0.2 m to either side, see all of them; every point is held. The
+    /// in-front test and the residuals take a point's depth from one computation, so an
+    /// observation the projection would refuse is left out at the start: the solve no longer
+    /// meets an infinite starting cost.
+    #[test]
+    fn a_point_at_a_cameras_centre_is_left_out() {
+        let rotation = crate::so3::exp(&Vector3::new(0.3, -0.5, 0.7));
+        let centre = Vector3::new(-0.0145, -0.0038, -0.0345);
+        let mut local: Vec<Vector3<f64>> = (0..101_i32)
+            .map(|k| Vector3::new(3.49e-11, 1.458e-10, 1e-9 + f64::from(k - 50) * 2e-18))
+            .collect();
+        for x in [-1.0, 0.0, 1.0] {
+            for y in [-0.5, 0.5] {
+                for z in [2.0, 3.0] {
+                    local.push(Vector3::new(x, y, z));
+                }
+            }
+        }
+        let points: Vec<Vector3<f64>> = local.iter().map(|l| centre + rotation * l).collect();
+        let poses: Vec<Matrix4<f64>> = [
+            centre,
+            centre - rotation * Vector3::new(-0.2, 0.0, 1.0),
+            centre - rotation * Vector3::new(0.2, 0.0, 1.0),
+        ]
+        .iter()
+        .map(|c| se3::from_parts(&rotation, c))
+        .collect();
+        // Camera 0's as meant; by hand, as `camera::project` refuses those behind 1e-9 m.
+        let mut problem = every_point_seen(poses, points, |c, p, in_camera| {
+            let x = if c == 0 { local[p] } else { *in_camera };
+            Vector2::new(
+                PINHOLE[0] * x.x / x.z + PINHOLE[2],
+                PINHOLE[1] * x.y / x.z + PINHOLE[3],
+            )
+        });
+        problem.fixed_poses = vec![true, false, false];
+        problem.fixed_points = vec![true; problem.points.len()];
+        let solved = solve(&problem, &Options::default()).unwrap();
+        assert!((1..=101).contains(&solved.summary.dropped_observations));
+        assert!(solved.summary.solve.final_cost.is_finite());
     }
 
     /// Each malformed problem is `InvalidInput`, naming what is wrong.

@@ -1,7 +1,8 @@
 //! Bindings for `slam_it.edge.mapping` (`slam_it_rs.edge.mapping`).
 //!
 //! Each step copies the map in, changes the copy, and returns it as a dict; the mode crosses
-//! by name, a tracked frame as `pose` and `points`. `process` also returns how each step went.
+//! by name, a tracked frame as `pose` and `points`, the vocabulary as
+//! `vocabulary_crossing::vocabulary_in` reads it. `process` also returns how each step went.
 
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
@@ -15,6 +16,7 @@ use super::edge_crossing::{
     solves_list, tracked_in, vector, vector_array,
 };
 use crate::common::{add_functions, contiguous, enum_codes, to_i64, unwrap};
+use crate::foundations::vocabulary_crossing::vocabulary_in;
 
 /// Decides whether a tracked frame becomes a keyframe.
 ///
@@ -339,6 +341,7 @@ fn match_for_triangulation<'py>(
 /// * `tracked` - Its pose and matches, as a dict.
 /// * `mode` - The mode's name.
 /// * `options` - The settings, as a dict.
+/// * `vocabulary` - The vocabulary, as a dict of its fields.
 /// * `held` - The ids of the keyframes loop detection holds.
 ///
 /// # Returns
@@ -350,7 +353,7 @@ fn match_for_triangulation<'py>(
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (m, camera, frame, tracked, mode, options, held))]
+#[pyo3(signature = (m, camera, frame, tracked, mode, options, vocabulary, held))]
 #[allow(
     clippy::too_many_arguments,
     reason = "the stage's state, as the reference takes it"
@@ -363,10 +366,12 @@ fn process<'py>(
     tracked: &Bound<'py, PyDict>,
     mode: &str,
     options: &Bound<'py, PyDict>,
+    vocabulary: &Bound<'py, PyDict>,
     held: PyReadonlyArray1<'py, i64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let (camera, frame, tracked) = (camera_in(camera)?, frame_in(frame)?, tracked_in(tracked)?);
     let (mode, options) = (mode_in(mode)?, options_in(options)?);
+    let vocabulary = vocabulary_in(py, vocabulary)?;
     let mut mapped = map_in(py, m)?;
     let done = unwrap(
         py,
@@ -377,6 +382,7 @@ fn process<'py>(
             &tracked,
             mode,
             &options,
+            &vocabulary,
             contiguous(&held)?,
             None,
         ),

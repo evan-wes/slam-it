@@ -28,6 +28,7 @@
 #include "common.hpp"
 #include "edge/edge.hpp"
 #include "edge/edge_crossing.hpp"
+#include "foundations/graphs_crossing.hpp"
 
 namespace nb = nanobind;
 
@@ -44,13 +45,11 @@ using edge_crossing::vector_array;
 
 /// @brief A solve's summary as it crosses.
 /// @param summary The summary.
-/// @return `initial_error`, `final_error`, `iterations` and `termination` (its code).
+/// @return `initial_error`, `final_error`, `iterations`, `termination` (its code),
+///         `left_out` and `ended_near`.
 nb::dict solve_dict(const graphs::Summary& summary) {
   nb::dict out;
-  out["initial_error"] = summary.initial_error;
-  out["final_error"] = summary.final_error;
-  out["iterations"] = summary.iterations;
-  out["termination"] = static_cast<int>(summary.termination);
+  write_graph_summary(summary, out);
   return out;
 }
 

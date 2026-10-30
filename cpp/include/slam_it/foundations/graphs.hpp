@@ -27,10 +27,27 @@ inline constexpr int kPoseDim = 6;
 /// @brief A similarity's tangent dimension, `(w, v, lambda)`.
 inline constexpr int kSimilarityDim = 7;
 
+/// @brief GTSAM's own damping's factor, its `lambdaFactor` default
+///        (`graphs.ABSOLUTE_DAMPING_FACTOR`): the damping divided by it after a step that lowers
+///        the error, multiplied by it after one that does not.
+inline constexpr double kAbsoluteDampingFactor = 10.0;
+/// @brief GTSAM's own damping's upper bound, its `lambdaUpperBound` default
+///        (`graphs.ABSOLUTE_DAMPING_LIMIT`): a search that reaches it gives up.
+inline constexpr double kAbsoluteDampingLimit = 1e5;
+/// @brief Nielsen's first factor for the scaled damping (`graphs.SCALED_DAMPING_FACTOR`): a failed
+///        trial multiplies the damping by 2, 4, 8, ..., as g2o's `_ni`; an accepted step by
+///        `max(1/3, 1 - (2 rho - 1)^3)` (GTSAM's `useFixedLambdaFactor = false`, without g2o's cap
+///        at 2/3).
+inline constexpr double kScaledDampingFactor = 2.0;
+/// @brief The scaled damping's upper bound, GTSAM's own for its Ceres-like parameters
+///        (`graphs.SCALED_DAMPING_LIMIT`): in practice none, as g2o has none.
+inline constexpr double kScaledDampingLimit = 1e32;
+
 /// @brief Why a solve stopped, with the codes it crosses the bindings as.
 enum class Termination : std::uint8_t {
-  /// @brief Converged: an iteration lowered the error by no more than the tolerances, or left
-  ///        it at zero.
+  /// @brief Converged: an iteration lowered the error by no more than the tolerances, or the
+  ///        error is zero; or there was nothing to solve (every pose of a pose graph held, or
+  ///        every observation of a bundle left out, `Summary::left_out`), after no iteration.
   kFunction = 0,
   /// @brief Not converged: `max_iterations` iterations ran.
   kMaxIterations = 1,
@@ -39,8 +56,11 @@ enum class Termination : std::uint8_t {
   kDampingLimit = 2,
   /// @brief Not converged: stopped from outside, between iterations (`Options::stop`).
   kStopped = 3,
+  /// @brief Converged: `Options::small_steps` iterations in a row each lowered the error by less
+  ///        than `Options::small_decrease` of it (ORB-SLAM3's stop).
+  kSmallSteps = 4,
   /// @brief The number of terminations (a sentinel, not a termination).
-  kCount = 4,
+  kCount = 5,
 };
 
 /// @brief The termination's name, as `slam_it.foundations.graphs.Termination` spells it.
@@ -50,7 +70,7 @@ enum class Termination : std::uint8_t {
 
 /// @brief Whether a termination counts as converged.
 /// @param termination The termination.
-/// @return True for `kFunction`.
+/// @return True for `kFunction` and `kSmallSteps`.
 [[nodiscard]] bool is_converged(Termination termination);
 
 /// @brief How a solve runs (`slam_it.foundations.graphs.Options`).
@@ -58,8 +78,9 @@ struct Options {
   /// @brief Iterations at most, at least 1: each linearises once and tries dampings until a
   ///        step lowers the error.
   int max_iterations = 10;
-  /// @brief Levenberg-Marquardt's first damping, added to the normal equations' diagonal
-  ///        (GTSAM's `lambdaInitial`), positive.
+  /// @brief GTSAM's own damping's first `lambda`, absolute: added to the normal equations'
+  ///        diagonal as it is (GTSAM's `lambdaInitial`). Read only without `scaled_damping`;
+  ///        positive.
   double initial_damping = 1e-5;
   /// @brief An iteration lowering the error by at most this fraction of it ends the solve as
   ///        converged; non-negative.
@@ -67,6 +88,24 @@ struct Options {
   /// @brief An iteration lowering the error by at most this ends the solve as converged;
   ///        non-negative.
   double absolute_tolerance = 0.0;
+  /// @brief Follow g2o's damping (`OptimizationAlgorithmLevenberg`, which ORB-SLAM3's BAs run)
+  ///        rather than GTSAM's own: the first damping `damping_scale` times the largest
+  ///        diagonal entry of the normal equations at the start, then Nielsen's schedule
+  ///        (`kScaledDampingFactor`) up to `kScaledDampingLimit`; GTSAM's own starts at
+  ///        `initial_damping`, divides it by 10 after a step that lowers the error and multiplies
+  ///        it by 10 after one that does not, up to `kAbsoluteDampingLimit`.
+  bool scaled_damping = false;
+  /// @brief g2o's `tau`: with `scaled_damping`, the first damping is this times the largest
+  ///        diagonal entry of the normal equations at the start (g2o's and ORB-SLAM3's 1e-5).
+  ///        Read only with `scaled_damping`; positive.
+  double damping_scale = 1e-5;
+  /// @brief End the solve as converged (`Termination::kSmallSteps`) once this many iterations in
+  ///        a row have each lowered the error by less than `small_decrease` of it (ORB-SLAM3's
+  ///        g2o: 3); 0, never.
+  int small_steps = 0;
+  /// @brief The fraction of the error an iteration must lower it by not to count as a small
+  ///        step towards `small_steps` (ORB-SLAM3's 1e-3); positive.
+  double small_decrease = 1e-3;
   /// @brief A flag another thread may set to stop the solve before its next iteration (a
   ///        global BA superseded, ORB-SLAM's `mbStopGBA`); not owned, null for never.
   const std::atomic<bool>* stop = nullptr;
@@ -89,6 +128,14 @@ struct Summary {
   Termination termination = Termination::kMaxIterations;
   /// @brief Whether `termination` counts as converged.
   bool converged = false;
+  /// @brief A bundle adjustment's observations left out at the start (`bundle_adjust`'s
+  ///        `near`): behind their camera or nearer than `near` times the median depth. 0 for
+  ///        another solve.
+  std::int64_t left_out = 0;
+  /// @brief A bundle adjustment's kept observations whose point ends behind its camera or nearer
+  ///        than that limit (behind, with `near` 0): those that crossed it during the solve,
+  ///        where they cost a constant. 0 for another solve.
+  std::int64_t ended_near = 0;
 };
 
 /// @brief A row-major (N, 3) matrix of points.
@@ -109,12 +156,14 @@ struct PoseGraph {
 /// @brief Optimise a pose graph, each edge's measured relative pose with unit information.
 ///
 /// ORB-SLAM's `OptimizeEssentialGraph` on GTSAM: edge `(i, j)` measures `T_i_j =
-/// T_world_i^-1 T_world_j` (`BetweenFactor`); the poses in `fixed` are held exactly
-/// (`NonlinearEquality`).
+/// T_world_i^-1 T_world_j` (`BetweenFactor`); the poses in `fixed` are held as constants, as
+/// g2o's fixed vertices hold ORB-SLAM's: an edge with one held end is a factor on its other end,
+/// and one with both ends held a constant error, counted in the summary's errors. With every
+/// pose held, nothing is solved: the poses come back as given, after no iteration.
 /// @param poses Each pose's start, camera-to-world: rigid, or a similarity with `similarity`.
 /// @param edges Each edge's two poses `(i, j)`, `i != j`.
 /// @param relatives Each edge's measured `T_i_j`, of the poses' kind.
-/// @param fixed The poses held fixed, at least one.
+/// @param fixed The poses held fixed, at least one; each comes back exactly as given.
 /// @param similarity Optimise Sim(3) rather than SE(3).
 /// @param options How the solve runs.
 /// @return The poses and summary; `InvalidInput` for a pose or relative not of the kind,
@@ -197,7 +246,18 @@ struct Observations {
 ///
 /// ORB-SLAM's `GlobalBundleAdjustemnt` as loop closing calls it (`bRobust` false), on GTSAM; with
 /// the observations' `huber`, each whitened error through a Huber loss at its threshold, as
-/// ORB-SLAM's local and welding BAs weigh theirs.
+/// ORB-SLAM's local and welding BAs weigh theirs. The cameras in `fixed` are held as constants,
+/// as g2o's fixed vertices hold ORB-SLAM's: each of their observations is a factor on its point
+/// alone. With `near`, the observations near their camera's plane at the start are left out:
+/// each whose point is behind its camera or nearer than `near` times the median of every
+/// observation's depth, the `floor(M/2)`-th smallest of the M counting from 0, each depth
+/// `R(0,2) dx + R(1,2) dy + R(2,2) dz` summed in that order, `(dx, dy, dz)` the point less the
+/// camera's centre, as every language takes it. Only the points and free cameras the others
+/// reach are solved, the rest coming back as given, and the summary's errors are the kept
+/// observations'; with none kept, nothing is solved: 0 iterations, converged
+/// (`Termination::kFunction`), errors of 0. The summary counts the observations left out and the
+/// kept ones whose point ends behind its camera or nearer than the limit (`Summary::left_out`,
+/// `Summary::ended_near`).
 /// @param poses Each camera's starting `T_world_cam`.
 /// @param points Each point's start, in the world (P x 3), P >= 1.
 /// @param observations The observations; every point must be observed.
@@ -205,19 +265,21 @@ struct Observations {
 /// @param intrinsics Its intrinsics.
 /// @param bf The baseline times the focal length, positive if any observation has a right
 ///        column.
-/// @param fixed The cameras held fixed.
+/// @param fixed The cameras held fixed; each comes back exactly as given.
+/// @param near Leave out each observation whose point, at the start, is behind its camera or
+///        nearer than this fraction of the median depth, non-negative; 0 leaves none out.
 /// @param options How the solve runs.
 /// @return The poses, points and summary; `InvalidInput` for a pose not rigid, mismatched
 ///         sizes, an index out of range, an unobserved point, a non-positive information or
-///         Huber threshold, a right column without `bf`, a bad camera or bad options;
-///         `NotConverged` if GTSAM fails.
+///         Huber threshold, a right column without `bf`, a negative `near`, a bad camera or
+///         bad options; `NotConverged` if GTSAM fails.
 [[nodiscard]] Result<Adjustment> bundle_adjust(std::span<const Eigen::Matrix4d> poses,
                                                const Eigen::Ref<const Points>& points,
                                                const Observations& observations,
                                                camera::Model model,
                                                const Eigen::Ref<const Eigen::VectorXd>& intrinsics,
                                                double bf, std::span<const std::int64_t> fixed,
-                                               const Options& options);
+                                               double near, const Options& options);
 
 /// @brief A point's reprojection error in one camera, and its Jacobians.
 struct ProjectionResidual {

@@ -4,6 +4,563 @@ All notable changes to this project are documented here. Format is a
 loose variant of [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 with 4-digit `MAJOR.MINOR.PATCH.MICRO` version numbers.
 
+## [0.3.18.0] - 2026-10-25
+
+Loop closing's global BA solves as ORB-SLAM3's does, with g2o's Levenberg-Marquardt: its first
+damping scaled to the Hessian, Nielsen's schedule, and ORB-SLAM3's stop after three small steps.
+Global and welding BA leave out the observations near their camera's plane, and keyframe culling
+takes ORB-SLAM3's rule, more than 3 other observers; loop closing's candidates leave out every
+keyframe sharing a point with the new one, as ORB-SLAM3's do: under the rule, keyframes sharing a
+few points with it closed monocular loops at a wrong place. In the three languages; design "G",
+decided by evan-wes on 2026-10-23 after the F2 split probe, the candidates on 2026-10-24. GTSAM's
+own damping (an absolute 1e-5, /10 a step, up to 1e5) let a monocular map's global BA slide along
+its free scale (the loop room's failing run: 0.5508) and, at its bound, tiny beside a BA's Hessian,
+accept no step on real maps (advio-20's; 0.3.17.2's review panel, L4 and L5). The rule fixes the
+starvation of monocular maps (2026-10-21); it waited for 0.3.17.2's held cameras, without which
+merges under it ran out of memory, and for this damping, without which global BA under it shrank
+monocular maps. Local BA is unchanged: its own near-plane guard is a later PR. Then triangulation
+by node (the keyframe-stream investigation's option B1; decided by evan-wes on 2026-10-28):
+triangulation pairs keypoints only within their vocabulary node, as ORB-SLAM3's
+`SearchForTriangulation` does, the map keeping each keypoint's node, so that mapping, far slower
+than ORB-SLAM3's, keeps up with more keyframes when threaded.
+
+### Changed
+
+- **Global BA's damping** is g2o's (`OptimizationAlgorithmLevenberg`, which ORB-SLAM3's BAs
+  run): the first `λ` is `loops.global_damping_scale` (1e-5, g2o's `τ`, relative, unlike
+  `loops.essential_damping`) times the largest diagonal entry of the normal equations at the
+  start, over the variables, as g2o's `computeLambdaInit` takes it over its free vertices; then
+  Nielsen's schedule, GTSAM's `useFixedLambdaFactor = false` policy from a factor of 2 (a failed
+  trial multiplies `λ` by 2, 4, 8, ...; an accepted step by `max(1/3, 1 - (2ρ - 1)³)`), up to
+  1e32, GTSAM's own bound for its Ceres-like parameters, in practice none
+  (`graphs.Options.scaled_damping` and `damping_scale`; `initial_damping` stays GTSAM's absolute
+  first `λ`, read only without `scaled_damping`).
+- **ORB-SLAM3's stop** ends global BA after `loops.global_small_steps` (3) iterations in a row
+  each lowering the error by less than `loops.global_small_decrease` (1e-3) of it, as its
+  modified g2o does (`optimization_algorithm_levenberg.cpp:157-166`), converged, with a
+  termination of its own (`graphs.Termination.SMALL_STEPS`; `graphs.Options.small_steps`,
+  `small_decrease`).
+- **The near-plane filter** (`graphs.bundle_adjust`'s `near`; `loops.min_depth_ratio`, 1e-3, in
+  [0, 1)): global and welding BA leave out each observation whose point, at the start, is
+  behind its camera or in front of it nearer than 1e-3 of every observation's median depth.
+  Only the points and free cameras the rest reach are solved; with none left, nothing is. The
+  solve summary counts the observations left out (`left_out`) and the kept ones whose point ends
+  behind its camera or nearer than the limit (`ended_near`), the filter acting at the start
+  only; loop closing's solve records hold both. Real maps hold points 1e-9 to 1e-4 of the median
+  depth in front of a camera, whose `(f/z)²` makes the Hessian's largest diagonal entry 1e13 to
+  1e23 and stalls every damping. ORB-SLAM3 has no such filter in its global BA.
+- **The merge's welding BA keeps GTSAM's own damping and no stop** (evan-wes, 2026-10-23), where
+  ORB-SLAM3's runs g2o's: with g2o's, its first solve (5 iterations) ended 0.2% to 1.7% above
+  GTSAM's cost on the five welds the F2 split probe dumped from the test set. L5's bound of 1e5
+  still applies there.
+- **Each BA's solve is named in one place per language:** `loops.global_ba_options` and
+  `loops.weld_options`.
+- **Keyframe culling takes ORB-SLAM3's rule:** `mapping.redundant_observers` 3 -> 4, ORB-SLAM3's
+  `nObs > 3` (`LocalMapping.cc:997, 1001`) where ORB-SLAM2 has `nObs >= 3`; our `weight > 4`,
+  stricter than its `Observations() > 3`, never decides, four other observers and the keyframe
+  already weighing 5.
+- **Loop closing's candidates share no point with the keyframe** (`covisibility.connected`, new
+  in the three languages and bound in both natives): ORB-SLAM3's `DetectNBestCandidates` leaves
+  out `GetConnectedKeyFrames`, every keyframe sharing a point with it (`KeyFrameDatabase.cc:613`),
+  where ours left out its links alone, those sharing 15 points or more. Under the rule,
+  keyframes a few seconds older sharing 1 to 14 points became candidates, and monocular runs
+  closed eight loops at a wrong place (advio-16's five, advio-13's two and advio-17's one, C++
+  and Rust inline). The near check, the group's widening and the correction's new loop links
+  keep our links, where ORB-SLAM3 reads the connected keyframes too: with them there as well, a
+  probe lost arkitscenes-42446137's right-place loop, its final ATE rising from 29.6 to 90.7 cm
+  (C++ inline). The online-SLAM design's section 10, item 2.
+- **Where it departs from g2o and ORB-SLAM3:** GTSAM's Nielsen policy takes the formula as
+  Nielsen gave it, without g2o's cap of 2/3 on an accepted step's factor; it accepts a step with
+  a gain ratio over 1e-3 (`minModelFidelity`), g2o over 0; it has no cap on failed trials (g2o's
+  `maxTrialsAfterFailure`, 10), only its bound, which 13 failed trials from `τ` times a diagonal
+  of 1e11 reach; the small-steps stop ends a solve as converged, where g2o returns `Terminate`;
+  Python computes the Hessian's diagonal from each factor's whitened Jacobian, GTSAM's wrapper
+  lacking `hessianDiagonal`.
+- **Settings:** 142, four more (`loops.global_damping_scale`, `loops.global_small_steps`,
+  `loops.global_small_decrease`, `loops.min_depth_ratio`), each read by every native.
+- **The Rust bridge** gains `largest_hessian_diagonal`; its `new_optimizer` takes the damping's
+  factor, whether Nielsen's schedule moves it, and its bound.
+- **Triangulation by node:** triangulation matches within vocabulary nodes, as ORB-SLAM3's
+  `SearchForTriangulation` walks the two keyframes' `FeatureVector`s node by node: a pair of free
+  keypoints is a candidate only under one node, in the three languages
+  (`mapping.match_for_triangulation`). The keyframe-stream investigation (2026-10-26) found our
+  threaded monocular runs making 0.51 (C++) and 0.67 (Rust) times ORB-SLAM3's keyframes over the
+  test set, one cause being mapping 2 to 7 times slower per keyframe, mostly in brute-force
+  matching for triangulation. The nearest candidate wins, the last of equally near ones, as
+  ORB-SLAM3's `dist > bestDist` keeps (the first won until the merge room's wall check, decided
+  by evan-wes on 2026-10-28; Tests below). Three departures from ORB-SLAM3, which
+  `match_for_triangulation` names in each language (the online-SLAM design's section 11, L2;
+  measuring 30 neighbours and porting the early return are in its section 12):
+  - A keyframe-2 keypoint is matched once, as our map holds one point per keypoint. ORB-SLAM3
+    v1.0 tests `vbMatched2` but never sets it, so two keyframe-1 keypoints can take one
+    keyframe-2 keypoint, the keyframe keeping the later point and the earlier's observation left
+    dangling (`LocalMapping.cc:698-702`). Its measurements were inconclusive: letting several
+    take it failed the merge room's monocular ATE bar (2.871 cm against 2.8, in every language),
+    a case that is a coin flip (Tests below), and on the eight threaded regression sequences
+    (C++, three runs each, 2026-10-28) it gave a lower median of the medians but a higher sum
+    (6.70 and 178.6 cm) than triangulation by node with the same tie rule (6.84 and 106.7 cm).
+  - A monocular keyframe triangulates against 20 neighbours, ORB-SLAM2's count, where ORB-SLAM3
+    takes 30: 30 changed little on the merge room; it is not measured on the test set.
+  - Every neighbour is matched, where ORB-SLAM stops after the first once a new keyframe waits
+    for mapping (`LocalMapping.cc:436-437`; the review panel's run 2, L12).
+- **The map keeps each keypoint's vocabulary node** (`Map.kp_node`: its node at `DIRECT_LEVEL` 2,
+  the depth of ORB-SLAM3's `FeatureVector` nodes), quantised as its keyframe enters the map, as
+  ORB-SLAM's `ComputeBoW` does, and carried through sub-maps, culled keyframes and merges, in the
+  three languages and both bindings. Mapping needs the vocabulary, so every pipeline holds one,
+  as ORB-SLAM always loads one: a vocabulary with relocalisation and loop closing both off is no
+  longer refused, every program's command line names one (`--vocabulary`), and `vo.run` passes
+  the committed one by default. A map keeps a keyframe database only with relocalisation or loop
+  closing on.
+- **Measured**, develop (8e9ae9c1, 0.3.17.2) against this version (789fe641; the per-call
+  measure on b67c3249, whose global BA is this version's), 2026-10-23 to 25; every run in its
+  own 8 GB scope, pinned to efficiency cores (one a run inline, three threaded), beside four or
+  five others and other programs on the machine (this version's first inline runs beside layer
+  1 as well):
+  - Per call, through the bindings, the 24 global BAs the F2 split and merge-cost probes dumped (23
+    from the test set's runs, one the loop room's failing one), each solved as develop's global BA
+    and as this version's: develop's accepts no step on 14 of them in C++ and Rust alike (one
+    iteration at the damping's bound of 1e5, advio-20's among them, L5), and ends at its bound on
+    18; this version's accepts steps on all 24 (advio-20's: 9 iterations, its cost 889,584 ->
+    200,725, converged), 12 converging and 12 running their 10 iterations, C++ and Rust agreeing to
+    3.3e-12 in cost and in every iteration count. The similarity carrying the cameras' centres onto
+    where they started stays within 0.974 to 1.004 on 22 of them, where develop's slid to 0.4227 on
+    zju-A0's (at a cost 4e-4 lower) and 0.5508 on the loop room's. On zju-A1's two, where develop
+    moved nothing, the map changes shape. On the first (0.637, its cost 1.97e8 -> 7.2e7) global BA,
+    with no robust loss, fits 4,879 of 73,017 observations that start over about 100 px off (χ² ≥
+    1e4) at the inliers' expense: the outliers' cost falls from 1.9e8 to 2.9e7, the inliers' rises
+    from 2.8e4 to 3.4e7, and 57 kept observations of 17 points cross behind their cameras, 30% of
+    the final cost (the review panel's L1); ORB-SLAM3's non-robust global BA would do the same. On
+    the second (0.842, 9.2e7 -> 1.5e6) it reconciles the map, half its observations at χ² 100 to 1e4
+    becoming inliers. The filter leaves out at most 125 observations of a dump (advio-19's, of
+    241,436). A call takes 0.27 to 51 s where develop's took 0.15 to 28 s, most of the difference
+    the steps develop never took.
+  - The monocular test set (58 sequences, seed 0), inline, C++ and Rust: frames tracked
+    168,270 -> 168,395 (C++) and 168,143 -> 168,152 (Rust); the median share 0.869 -> 0.871 and
+    0.868 -> 0.875; the median final ATE over the 56 sequences scored in both 29.39 -> 24.81 cm
+    and 29.39 -> 28.02 cm, the worst 1,235.5 -> 1,795.2 cm (advio-06's both) and 1,134.5
+    (advio-05) -> 1,346.7 cm (advio-20); maps 160 -> 161 in each, losses 143 -> 139 and
+    141 -> 138; loops closed 13 -> 13 and 13 -> 15, merges 21 -> 23 and 21 -> 21, of which the
+    measure judges at a wrong place 2 -> 1 in each, advio-03's merge as before (develop's
+    wrong-place loop on advio-13 is gone). No run failed or ran out of memory; the largest peak
+    RSS rose from 1,497 to 3,478 MiB (C++, advio-06) and from 1,458 to 2,682 MiB (Rust,
+    arkitscenes-42446016). The final ATE moved by more than 10% on 36 sequences in C++, better
+    on 18 and worse on 18, and on 34 in Rust, 16 and 18 (the measure's tables list them); among
+    the better, zju-B5 30.28 -> 0.50 cm in each, tum-freiburg2_360_kidnap 130.16 -> 41.11 and
+    44.64, advio-04 233.07 -> 96.13 and 137.39, arkitscenes-42446137 71.96 -> 29.60 and
+    72.08 -> 57.67, arkitscenes-42444966 28.50 -> 7.55 and 12.47. advio-19, zju-A1 and zju-B6,
+    whose merges ran out of memory under the rule before 0.3.17.2: no run failed; their merges'
+    loop-closing steps (the weld, the essential graph and global BA inline) took 13.8 s, 18.9 s
+    and 2.4 s in C++ (develop: 10.4 s, 4.6 s, 1.8 s) and 14.8 s, 1.4 and 8.6 s, and 2.5 s in Rust
+    (10.3 s, 4.9 s, 2.1 s), their runs peaking at 1,525, 1,587 and 847 MiB in C++ (790, 493,
+    300) and 1,522, 706 and 877 MiB in Rust (710, 506, 306).
+  - Which change makes which regression, inline (C++, the attribution probe's 20 sequences, the
+    rule and G each alone on develop, before the candidates' change): the culling rule makes the
+    five gains and most regressions, advio-03, -06, -10, -17, -19, -20 and -21, zju-B4,
+    arkitscenes-42445028 and -42446016 each as bad under the rule alone, while G alone lowers the
+    sum of the final ATE over the 20 from 5,363.6 to 4,617.0 cm (the rule alone 7,025.0, both
+    7,918.6); tum-freiburg2_360_hemisphere's (14.85 -> 24.74 cm) is G's (24.01 alone, 79.15 under
+    the rule alone); advio-11's and zju-A1's come from the two together (advio-11 181.97 cm under
+    G alone and 190.13 under the rule alone, 1,021.47 with both; zju-A1 15.94 and 27.19 alone,
+    89.08 with both, 24.88 with the candidates' change too).
+  - The same runs without the candidates' change (b67c3249, the rule and G alone) closed 24
+    loops in C++ and 29 in Rust, 9 at a wrong place in each: advio-16's five loops, about 7 m
+    apart, two of advio-13's, one of advio-17's, and advio-03's merge. The change leaves
+    advio-03's merge alone of them, and moves the final ATE by more than 10% on one sequence in
+    C++ (zju-A1, 89.08 -> 24.88 cm) and two in Rust (zju-A1, 49.12 -> 86.07 cm; advio-11,
+    190.06 -> 1,001.99 cm, as C++ had it under the rule, 1,021.47 cm).
+  - The same, threaded (three cores a run, its frames fed at their rate; one run a sequence, so a
+    run's own timing moves it: develop's C++ and Rust differed in median ATE by as much, 14.26
+    against 11.82 cm; develop's runs shared the machine with a test suite on the performance
+    cores, this version's with each other): frames tracked 162,558 -> 161,615 (C++) and
+    166,257 -> 165,230 (Rust); the median share 0.834 -> 0.831 and 0.843 -> 0.843; the median
+    final ATE over the 56 scored in both 14.26 -> 20.46 cm and 11.82 -> 29.95 cm (15.30 and
+    19.30 cm without the candidates' change), the worst 1,578.9 -> 1,193.8 cm and
+    574.1 -> 581.9 cm; maps 189 -> 206 and 177 -> 195, losses 201 -> 208 and 168 -> 180; loops
+    10 -> 10 and 13 -> 12, merges 21 -> 21 and 20 -> 23, at a wrong place 2 -> 1 and 1 -> 0
+    (advio-03's). No run failed; the largest peak RSS 966 -> 1,143 MiB and 957 -> 1,033 MiB.
+    The longest a frame waited for the map 1.77 -> 2.29 s (C++) and 2.04 -> 2.29 s (Rust), the
+    longest loop-closing step 1.74 -> 2.30 s and 2.06 -> 2.31 s, the longest global BA in its
+    thread 9.1 -> 9.7 s and 14.4 -> 8.2 s. advio-19's, zju-A1's and zju-B6's merges took 1.7 s,
+    1.0 and 1.8 s, and none (C++), and 2.3 s, 1.0 and 2.0 s, and 0.8 s (Rust), their runs peaking
+    at 451, 657 and 131 MiB and 633, 765 and 278 MiB. Not attributed: the median moves with the
+    candidates' change too (15.30 -> 20.46 cm in C++, 19.30 -> 29.95 in Rust), by more than the
+    two languages' develop runs differ, but these are single runs, which their timing moves.
+  - The test set's 19 RGB-D sequences (seed 0), inline, C++ and Rust alike to 0.01 cm in every
+    final ATE but develop's tum-freiburg2_360_hemisphere (11.31 and 12.09 cm): frames tracked
+    42,735 -> 42,754; the median share 0.946 in both; the median final ATE over the 18 scored
+    4.33 -> 5.37 cm, the worst 46.68 (arkitscenes-42445984) -> 55.70 cm (arkitscenes-42444946);
+    maps 31 -> 29, losses 18 in both, loops 7 -> 6, merges 4 -> 6, none at a wrong place; no run
+    failed; the largest peak RSS 673 -> 719 MiB (C++) and 699 -> 742 MiB (Rust). The final ATE
+    moved by more than 10% on seven: better on arkitscenes-42445984 (46.68 -> 29.83 cm),
+    arkitscenes-42446137 (8.60 -> 5.30) and tum-freiburg2_360_hemisphere (-> 9.30), worse on
+    arkitscenes-42444946 (15.20 -> 55.70), arkitscenes-42445021 (12.78 -> 14.79),
+    arkitscenes-42445028 (2.93 -> 6.70) and arkitscenes-42446016 (4.32 -> 7.88).
+    arkitscenes-42444946's last map now merges into its first at a poor pose (the measure: 1.77 m
+    and 166 degrees off, not at a wrong place), as develop's threaded Rust run did too. Not
+    attributed: no RGB-D run was made of G, the rule or the candidates' change alone.
+  - The same, threaded: frames tracked 42,416 -> 42,657 (C++) and 42,702 -> 42,690 (Rust); the
+    median share 0.946 in all; the median final ATE 6.40 -> 6.29 cm over the 17 scored in both
+    (develop's C++ run of tum-freiburg3_structure_notexture_far failed, its point lives refused
+    by the run format) and 6.47 -> 5.41 cm over 18, the worst 15.21 -> 55.01 cm and
+    55.53 -> 54.67 cm (arkitscenes-42444946's merge); maps 30 and 29 in both, losses 19 -> 19 and
+    18 -> 19, loops 9 -> 8 and 5 -> 5, merges 5 -> 6 and 6 -> 7, none at a wrong place; the
+    largest peak RSS 741 -> 742 MiB and 629 -> 646 MiB. The longest a frame waited for the map
+    1.60 -> 1.36 s and 2.08 -> 2.29 s, the longest loop-closing step 2.81 -> 6.38 s
+    (arkitscenes-42446137, C++) and 2.65 -> 2.29 s, the longest global BA in its thread
+    3.7 -> 3.8 s and 6.6 -> 5.5 s.
+  - **Why tum-freiburg2_360_hemisphere regresses** (2026-10-26, before triangulation by node): not
+    an implementation error, as the branch with its five changes switched off repeats develop
+    exactly inline (14.8 cm). Threaded, only the culling rule acts there, and the bad runs carry a
+    monocular merge whose detection similarity is about 1 m wrong, its scale 2 to 4 times too small
+    for the two maps' true ratio, which still passes the 80-match reprojection check: 4 of 6 runs
+    with the rule make it, none of 9 without. Inline, the branch's 24.74 cm is a loss at 32.4 s and
+    the new map's drift, and G's alone (24.01 cm) a wrong merge (a scale ratio of 0.17) that global
+    BA then starts from at a cost of 8.5e8. ORB-SLAM3 merges the same early pair to within 0.02 to
+    0.10 m, making 740 to 880 keyframes to our 300 to 390 threaded. Three fixes grounded in
+    ORB-SLAM3 (a merge verified on two-view correspondences only, no global BA after an inline
+    merge, its culling's candidates) each change which wrong merge passes; none fixes the sequence.
+  - **Triangulation by node, threaded, on the eight regression sequences** (the keyframe-stream
+    investigation's: five ARKitScenes captures, tum-freiburg2_360_hemisphere, zju-B0 and zju-B5;
+    C++, three runs a sequence, each batch beside its own runs before it, on different days): the
+    median over the sequences of each one's median final ATE, and their sum. The first batch
+    (2026-10-26; as a probe on a5b288ad, with the first tie rule): before it 11.49 and 145.4 cm,
+    with it 4.90 and 77.0 cm. The second (2026-10-28; as committed but with the first tie rule,
+    against the same build with its node rule switched off): before it 8.36 and 62.0 cm, with it
+    6.84 and 106.7 cm. What held in both: the lower median; more keyframes made (the sums of the
+    sequences' medians 3,209 -> 4,109 and 3,079 -> 3,889); and mapping faster per keyframe on seven
+    of the eight (18% to 57% in the first batch, from its probe's mapping log; 12% to 40% in the
+    second, from the runs' own timings, arkitscenes-42446016's gain the 12%), slower on zju-B5 in
+    both. The sums go both ways, dominated by two bimodal sequences (arkitscenes-42445028's runs
+    with it ranged 4.7 to 61.0 cm in the second batch, arkitscenes-42446016's 8.2 to 69.9 cm), and
+    three runs cannot separate the configurations: no gain is claimed in the sums. The five
+    ARKitScenes sequences are scored against ARKit's own visual-inertial poses, a reference rather
+    than truth, so small differences there are within its error (the ladder's L8 proposes ScanNet++
+    as an independent one).
+  - **Triangulation by node at the final head** (2b17bfae's code, 2026-10-28 and 29; C++ and Rust,
+    threaded three runs a sequence beside the branch's three before it, made 2026-10-24 to 26; every
+    run in its own 8 GB scope pinned to three cores, beside four others and other programs). The
+    monocular test set (58 sequences): frames tracked 161,615 -> 163,264 (C++) and 164,923 ->
+    164,656 (Rust), the median of the three runs; the median share 0.822 -> 0.839 and 0.843 ->
+    0.841; the median final ATE over the 56 scored by every run 15.34 cm [15.31 to 20.46] -> 18.69
+    [15.61 to 20.68] in C++ and 29.14 [29.09 to 29.95] -> 31.77 [19.75 to 32.38] in Rust, the ranges
+    overlapping; maps 206 -> 199 and 188 -> 187, losses 208 -> 178 and 170 -> 169, loops 10 -> 9 and
+    12 -> 12, merges 21 -> 21 and 23 -> 21; at a wrong place 1 [1 to 3] and 2 [1 to 3] against 1 and
+    0: advio-03's merge in every run, as in every C++ run before, and in three of the six one or two
+    more (a second merge or a loop on advio-03, a merge on advio-19); no run failed; the largest
+    peak RSS 1,143 -> 1,057 MiB and 1,033 -> 1,446 MiB. Keyframes made, against ORB-SLAM3's anchor
+    runs (the median over the 56 sequences of the ratio of the three runs' medians): 0.51 -> 0.71 in
+    C++ and 0.67 -> 0.81 in Rust. Mapping's time per keyframe (per sequence, the median of the three
+    runs' median time per mapped keyframe over the same before it; that ratio's median over the
+    same 56 [quartiles]): 0.61 [0.53 to 0.73] (C++) and 0.74 [0.67 to 0.85] (Rust), lower on 55 of the 56
+    (not on zju-B5). Sequences whose three runs do not overlap: in C++, the final ATE better on 3
+    and worse on 8, the share better on 8 and worse on 5; in Rust, the final ATE better on 7 and
+    worse on 3, the share better on 3 and worse on 1.
+  - The eight regression sequences, from the same runs (median [min to max] of three; median of
+    the medians and their sum): the five ARKitScenes ones 20.31 and 89.5 cm -> 10.07 and 82.1
+    (C++), 14.79 and 82.9 -> 11.72 and 105.6 (Rust), within their reference's error as above;
+    the three referenced independently, tum-freiburg2_360_hemisphere (motion capture) 37.37
+    [11.52 to 40.47] -> 9.80 [9.17 to 24.78] cm in C++ and 34.64 [30.77 to 38.93] -> 26.06
+    [10.39 to 26.89] in Rust, zju-B0 (VICON) 1.74 [1.51 to 2.49] -> 1.58 [1.34 to 2.95] and 3.06
+    [1.47 to 4.13] -> 1.28 [1.18 to 2.28], zju-B5 0.69 [0.53 to 1.45] -> 1.05 [0.59 to 2.55]
+    and 2.40 [1.78 to 9.33] -> 0.53 [0.53 to 1.81]. ORB-SLAM3's: 7.72, 0.79 and 0.60 cm. All
+    eight: 16.31 and 129.3 cm -> 9.74 and 94.5 (C++), 13.31 and 123.0 -> 10.62 and 133.5 (Rust).
+  - The monocular test set inline (one run each, every keyframe mapped before the next frame, so
+    mapping's speed buys nothing and only the matching differs; against the branch before it at
+    789fe641), C++ over the 58 sequences, Rust over the 57 both finished (its run of advio-01
+    failed; below): frames tracked 168,395 -> 166,035 (C++) and 163,067 -> 161,539 (Rust); the
+    median share 0.871 -> 0.851 and 0.878 -> 0.853; maps 161 -> 174 and 146 -> 157, losses 139 ->
+    153 and 124 -> 136, loops 13 -> 11 and 15 -> 12, merges 23 -> 24 and 21 -> 24, at a wrong place
+    1 in each, as before; the largest peak RSS 3,478 -> 2,583 MiB and 2,682 -> 2,015 MiB. The share
+    fell by more than 0.005 on 27 sequences and rose on 10 in C++ (a two-sided sign test, p 0.008),
+    fell on 22 and rose on 11 in Rust (p 0.080): with timing out of play, matching within nodes
+    costs tracking, consistent with its fewer points (the monocular rooms make 27.7% to 35.6% fewer;
+    Tests below). The median final ATE over the sequences both scored 24.81 -> 28.71 cm (56) and
+    24.74 -> 27.36 cm (55), but the geometric mean of the per-sequence ratio 0.982 and 0.928; the
+    final ATE better by more than 10% on 21 and worse on 12 in C++, on 20 and 11 in Rust; the worst
+    1,795.20 (advio-06) -> 906.25 cm (advio-20) and 1,346.67 -> 906.25 cm (advio-20's both). Rust's
+    run of advio-01 failed: its local BA refused to start, an observation's point lying 1e-9 m in
+    front of its camera, at the camera's centre, kept by the BA's in-front test and refused by its
+    projection, which compute the depth by different formulas either side of `camera.MIN_DEPTH`;
+    fixed since (Fixed, below), the run finishes.
+  - The test set's 19 RGB-D sequences inline, C++ and Rust alike to 0.01 cm in every final ATE
+    as before: frames tracked 42,754 -> 42,670; the median share 0.946 in both; the median final
+    ATE over the 18 scored 5.37 -> 5.30 cm, better by more than 10% on 4 and worse on 6, the
+    worst 55.70 (arkitscenes-42444946) -> 41.80 cm (arkitscenes-42445984); maps 29 -> 32, losses
+    18 -> 19, loops 6 -> 6, merges 6 -> 4, none at a wrong place; the largest peak RSS 719 ->
+    377 MiB (C++) and 742 -> 392 MiB (Rust).
+  - The test set's 19 RGB-D sequences, threaded, one run each: frames tracked 42,657 -> 42,762
+    (C++) and 42,690 -> 42,747 (Rust); the median share 0.946 in all; the median final ATE over
+    the 18 scored 5.86 -> 5.84 cm and 5.41 -> 5.70 cm; loops 8 -> 6 and 5 -> 5, merges 6 -> 3
+    and 7 -> 4, none at a wrong place; the largest peak RSS 742 -> 818 MiB and 646 -> 616 MiB.
+  - The loop sequences (loops-b3's 20 not in the test sets), threaded, three runs each: the median
+    final ATE 2.32 cm [2.32 to 2.47] -> 2.91 [2.91 to 2.94] in C++ and 2.81 [2.74 to 3.00] -> 2.93
+    [2.91 to 3.01] in Rust, against ORB-SLAM3's 2.94 [2.38 to 2.97]; the median share 0.976 in all
+    four; loops 7 [7 to 9] -> 7 [7 to 8] and 11 [10 to 18] -> 9 [8 to 10], against ORB-SLAM3's 11;
+    at a wrong place one loop on V1_03 monocular in two of the Rust runs with triangulation by node;
+    no run failed. euroc-V1_02_medium-monocular gains a map and a loss in all six runs (its share
+    0.947 -> 0.909, maps 1 -> 2, losses 0 -> 1), the losses summed over the 20 rising from 5 to 6 in
+    every C++ run, and from 5, 5 and 6 to 6 in each Rust run.
+  - Against ORB-SLAM3's anchor (`compare_anchor.py`'s rule: neither system's runs overlapping the
+    other's, by 0.02 of share or 10% of final ATE), the sequences where SLAM It! is clearly
+    behind and clearly ahead: monocular 12 and 8 -> 11 and 9, RGB-D 3 and 9 -> 4 and 7, the loop
+    sequences 4 and 2 -> 5 and 0.
+  - **Against develop** (8e9ae9c1, 0.3.17.2; its three threaded runs a sequence, made 2026-10-23
+    to 26, beside the branch's before triangulation by node and with it, above): per sequence,
+    the ratio of the three runs' median final ATE, its geometric mean over the 56 sequences
+    scored in every run, and how far run-to-run variation alone moves it (a permutation test
+    exchanging each sequence's six runs between the two configurations, 4,000 draws, seed 0: the
+    two-sided p and the null's 95%), with a bootstrap over the sequences (95%):
+    - develop -> the branch before it: 1.065 (C++; p 0.416) and 1.106 (Rust; p 0.141);
+    - the branch before it -> with it: 1.041 (p 0.611) and 1.009 (p 0.883);
+    - develop -> with it: 1.109 in C++ (p 0.172, the null's 95% [0.864, 1.157], the bootstrap
+      [0.967, 1.274]) and 1.116 in Rust (p 0.115, [0.874, 1.145], [0.966, 1.298]); the median of
+      the runs with it worse on 27 sequences and better on 29 in C++, worse on 30 and better on
+      26 in Rust. Sequences whose three runs do not overlap: in C++ better on 6 (advio-04, -07
+      and -22, zju-A7, -B2 and -B6) and worse on 6 (advio-02, -05, -08, -13 and -23,
+      arkitscenes-42445429); in Rust better on 5 (advio-06 and -16, zju-A6, -A7 and -B2) and
+      worse on 6 (advio-02, -03, -07 and -13, arkitscenes-42446016, tum-freiburg2_rpy), where
+      exchangeable runs would give 5.6, half each way.
+
+    Three threaded runs a sequence do not separate the branch from develop. Inline, where timing
+    plays no part, develop -> with it is 0.957 (C++, over the 56 sequences both scored) and 0.972
+    (Rust, over 55): there the branch is a little better per sequence. The median over the 56 of
+    each run's final ATE, the median of the three runs: develop 22.09 cm (C++) and 11.82 (Rust),
+    with it 18.69 and 31.77; ORB-SLAM3's anchor 21.81.
+    - tum-freiburg2_360_hemisphere's threaded runs fall in two modes, 8.2 to 11.5 cm and 21.6 to
+      40.5 cm. Above 20 cm: develop's in 2 of 6 (one in each language), the branch's before it in
+      5 of 6, with it in 3 of 6 (one in C++, two in Rust); three runs a language cannot tell the
+      languages apart. Inline its final ATE is develop's or better (develop 14.85 cm in C++ and
+      14.80 in Rust, before it 24.74 in each, with it 14.17 and 14.80), but over fewer frames: the
+      share tracked 0.455 and 0.491 against develop's 0.750 (0.488 before it).
+    - Develop made fewer keyframes than the branch with it: 0.55 (C++) and 0.76 (Rust) times
+      ORB-SLAM3's (the median ratio over the 56, as above), against 0.71 and 0.81. The keyframe
+      gap that remains is a lead for the distance to ORB-SLAM3, not for that to develop. Batches
+      of develop and the branch interleaved on the same day, with more runs a sequence, are
+      deferred (the online-SLAM design's section 12).
+
+### Fixed
+
+- **Bundle adjustment's in-front test takes a point's depth as its residuals do** (C++ and Rust,
+  `foundations.ba`; 6274b518). Triangulation by node's final measurement lost Rust's inline run of
+  advio-01: local BA refused to start, "solve: the initial cost is not finite", one of its 7,273
+  residual blocks infinite. The layout's in-front test had kept an observation of a point 1e-9 m in
+  front of its camera, at the camera's centre, its depth (`R_world_cam`'s column 2 dotted with the
+  point's offset from the centre) just over `camera.MIN_DEPTH`, which the residual's depth (the
+  bundle's inverted pose, `R p + t`, 0.99999999e-9 m) put under it, where the projection fails. One
+  inversion and one camera transform now serve both, so such an observation is left out at the start
+  and counted. Python's layout took the depth by another expression than its bundle, the two
+  agreeing bit for bit on 400,000 points within 2e-16 m of the bound by numpy's rounding, not by
+  construction: since 253f0596 one `to_camera` in `ba/problem.py` serves both (the review panel's
+  run 2, A11 and L15). The golden room records are unchanged in the three languages. At the fix, the
+  inline runs of advio-01 finish: Rust's tracking 4,586 of 7,795 frames (0.588), its final ATE
+  176.94 cm; C++'s 4,593 (0.589) and 157.18 cm, as in its run before the fix. Anchored points stay
+  outside the one computation in every language (no pipeline anchors points), and local BA's
+  near-plane filter is still to come (the online-SLAM design's section 7).
+- **A pipeline checks its vocabulary as it starts** (efd3b659; the review panel's run 2, A13):
+  Python's refuses anything that is not a `Vocabulary` with `InvalidInputError`, where
+  `vocabulary=None` constructed and the first keyframe's quantisation raised `AttributeError`;
+  C++'s `Pipeline::create` and Rust's `Pipeline::new` check the tree once (`vocabulary::check`),
+  where they documented it as checked and walked it unchecked. On the committed vocabulary
+  (111,070 nodes) the check takes 0.285 ms in C++ (-O3) and 0.327 ms in Rust (release), the mean
+  of 200 calls on one pinned core.
+- **The vocabulary's rule is stated as it now is** (the review panel's run 2, A10):
+  `keeps_keyframe_database`'s docs, in the three languages, said a vocabulary was required with
+  the keyframe database and refused without it; every pipeline takes one, as mapping quantises
+  each keyframe by it.
+
+### Tests
+
+- **The damping's schedules, in every language:** one point, two held cameras, started three
+  times too far: each of the first iterations lands where an emulation of GTSAM's search does,
+  the scaled damping's first failing at `λ0`, `2λ0` and `8λ0` before `64λ0` steps; the field the
+  other damping reads set far off, so each reads its own alone.
+- **The stop, in every language:** decreases growing from small through large, then shrinking:
+  with `small_decrease` between the second and the third, the solve ends at the third small one
+  in a row after the large ones, later than a count that ignored the reset would, as
+  `small_steps`; with every decrease small, after three iterations.
+- **The filter, in every language:** exactly the near and behind observations left out (the
+  starting error the kept ones', `left_out` their count), `ended_near` the recount from the
+  result's depths, the point and camera they alone reached and the held camera back bit for bit;
+  a bundle with every observation left out back as given, its 3 counted.
+- **The weld and global BA:** each language's `global_ba_options` and `weld_options`; a merge's
+  three BAs recorded in Python, the weld's two by `weld_options`, the global BA by
+  `global_ba_options`, each with `loops.min_depth_ratio`; each compiled backend reads the four
+  settings (H21's rule): global BA's against Python with all four moved, and the weld's
+  `loops.min_depth_ratio` against Python with it moved to 0.9, where the weld leaves
+  observations out and the map moves. `loops.min_depth_ratio` is refused outside [0, 1) in every
+  language.
+- **L4, global BA holds a monocular map's scale:** a tenth of the loop room's failing global BA
+  (`tests/fixtures/edge/global_ba_slide.json`, 103 keyframes, 537 points, 3,930 observations),
+  on which GTSAM's damping drifts the keyframes' centres along a near-flat valley beside the
+  free scale to a scale of 0.7322 in every language: global BA's solve keeps it within 1% of 1
+  (0.9968), its final cost 7.3e-5 relative above; both solves make the same gauge-free
+  correction (the cameras' mean step over the observations' median depth agrees within 1%).
+- **L8, graphs.json** gains the stereo BA with half its cameras held, the weld's typical case,
+  and the global BA's solve and the filter as parity cases; every case holding a camera or a
+  pose moved by at most 3.8e-11 in a pose and 1.9e-10 m in a point, now generated from the
+  constant form. Each case's codes hold the counts too (6 left out in the filter's case).
+- **The rule's default, in every language;** the C++ and Rust culling scene at both rules: at 3
+  its first redundant keyframe goes, at 4 every keyframe stays.
+- **The connected keyframes, in every language:** `covisibility.json` gains each keyframe's, by
+  brute force (they differ from its links on 35 of its first 52 keyframe rows), and a case whose
+  newest keyframe shares no point, with no links and nothing connected; every backend and the
+  C++ and Rust natives are held to them.
+- **A keyframe sharing 1 to 14 points with the new one, and so not linked to it, is never a loop
+  candidate; sharing none, it is,** in every language: C++ and Rust on the exact scene's map,
+  Python and every backend on the room's truth map, each with a keyframe's observations
+  forgotten down to that many points. The links-only exclusion returns it for every count from 1
+  to 14. Python's other loop-candidate tests move to the loop room's map, where every keyframe has
+  candidates (on the truth map each shares 26 points or more with every other).
+- **The rooms' golden records** are regenerated four times. Global BA's solve changes the loop room
+  alone, alike in every language: its global BA ends after 6 iterations where it ran 10
+  (monocular), 10 where 8 (RGB-D) and 9 as before (stereo), its cost 8.1e-6, 1.3e-8 and 4.8e-7
+  relative higher; in monocular 10 later frames track a different count of inliers, and the
+  final map holds 4,257 points, not 4,255. The rule changes five monocular cases, alike in every
+  language: the room and the found room keep 3 and 4 more keyframes (11 in each final map), the
+  loop room 40 more (101), its loop closing between keyframes 0 and 159; their states, maps and
+  loops' count as before. The loop room's final ATE, every language alike: monocular 1.189 ->
+  1.188 (the damping) -> 1.696 cm (the rule), under the bar's 2 cm; RGB-D 4.674 cm; stereo
+  3.636 -> 3.635 cm. The candidates' change changes no decision, no pose and no final ATE in any
+  case or language: the three loop rooms' detection summaries alone, by the same counts in every
+  language (candidates tried 274 -> 268 monocular, 27 -> 25 RGB-D, 31 -> 34 stereo). The review
+  panel's fixes change no decision or pose either: the loop rooms' global BA ends as
+  `small_steps` where it read `function`, and every solve record holds its counts (0 in each).
+- **A tolerance moves:** global BA on the exactly observed, nudged loop map ends its 10
+  iterations with the poses within 2e-6 of the truth (within 1e-6 under GTSAM's damping), its
+  cost 8e-14 of its start: the test takes 3e-6.
+- **A point at a camera's centre, in every language:** a held camera, turned and off the origin,
+  seeing 101 held points within 1e-16 m of 1e-9 m in front of it and 12 more two to three metres
+  out, two free cameras a metre behind seeing them all: the solve finishes, leaving 1 to 101
+  observations out, with a finite cost (`tests/foundations/test_ba.py` over every backend, and
+  the C++ and Rust native tests). Before the fix the C++ and Rust solves refused it.
+- **Triangulation by node's parity fixture** (`tests/fixtures/edge/triangulation_matches.json`,
+  new): 7 maps of two keyframes and their 154 matches, computed from the rules alone; a hand-built
+  case makes each rule decide, a near descriptor under another node and two candidates at the same
+  distance (the later wins) among them. Every Python backend, and the C++ and Rust tests, are held
+  to it.
+- **The node column,** in every language: through insertion, sub-maps and culling, and through a
+  merge (Python's, the compiled backends' maps held to it); the keyframe database kept exactly
+  with relocalisation or loop closing; every program refusing a command line without
+  `--vocabulary`, and every run recording the committed one.
+- **The rooms' golden records for triangulation by node:** 25 of the 27 cases decide differently
+  (the kept and lost rooms' EuRoC stereo cases do not), the three languages alike in every case.
+  Monocular cases make 27.7% to 35.6% fewer points; the found and gap rooms one keyframe fewer, and
+  the loop room 152 where it made 169 (91 in its final map, not 101). Cases with depth make 7.8%
+  fewer to 2.6% more points, and the loop room one more keyframe in RGB-D and stereo. Each loop room
+  still closes its loop.
+- **The rooms' bars with triangulation by node,** every one passing in every language, alike: the
+  merge room's monocular wall distance 0.0424 -> 0.0572 m (bar 0.09) and final ATE 1.341 -> 1.355 cm
+  (bar 2.8); RGB-D 0.0669 -> 0.0580 m and 5.457 -> 5.783 cm; stereo 0.0613 -> 0.0685 m and 5.119 ->
+  5.118 cm. The loop room's monocular wall distance gets slightly worse, 0.0386 -> 0.0406 m (bound
+  0.065), its final ATE 1.696 -> 1.309 cm (bar 2); RGB-D 0.0725 -> 0.0674 m and 4.674 -> 4.502 cm;
+  stereo 0.0707 -> 0.0576 m and 3.635 -> 3.874 cm. With the first tie rule the merge room's
+  monocular wall distance read 0.0964 m, over its bar. That case is a coin flip, not a measure of
+  matching: with 5% of the triangulation pairs dropped at random (ten seeds, C++), its two bars pass
+  in 5 of 10 draws before triangulation by node, 6 of 10 with it and its first tie rule and 7 of 10
+  with ORB-SLAM3's (the online-SLAM design's section 12, deferred from triangulation by node).
+- **A pipeline given what is not a vocabulary,** in every language: Python's refuses `None` and
+  a string with `InvalidInputError`; C++'s and Rust's refuse a tree whose first child names itself
+  as its parent, as invalid input naming the vocabulary.
+
+## [0.3.17.2] - 2026-10-23
+
+Bundle adjustment and the pose graph hold their fixed cameras and poses as constants, never
+variables, as g2o's fixed vertices hold ORB-SLAM's (`setFixed`), in the three languages. They
+were GTSAM's `NonlinearEquality`, a hard constraint whose `Constrained` noise model makes GTSAM's
+`EliminatePreferCholesky` eliminate every clique holding one by dense QR: zju-B6's merge, 52
+cameras held in its welding BA, took 658 s, and merges under ORB-SLAM3's culling rule, with more
+cameras held, ran out of memory (the merge-cost investigation of 2026-10-22). Local BA is
+unchanged: it runs on rung 0's own bundle adjustment (`slam_it.foundations.ba`), whose fixed
+poses were never variables.
+
+### Changed
+
+- **Held cameras in bundle adjustment** (`graphs.bundle_adjust`: global BA and the merge's welding
+  BA): a held camera is no variable, and each of its observations is a factor on its point alone.
+  C++ and Rust evaluate their projection factor with the pose a constant
+  (`HeldProjectionFactor`, `Factor::HeldProjection`); Python takes GTSAM's
+  `TriangulationFactorCal3_S2` through a pinhole camera, a custom factor through GTSAM's
+  `StereoCamera` with a right column (each giving the factor it replaces bit for bit, a point
+  behind the camera included), and its own custom factor through radtan.
+- **Held poses in the pose graph** (`graphs.optimize_pose_graph`: the essential graph): an edge
+  with one end held is GTSAM's `BetweenFactor` evaluated with that end at its value, a factor on
+  the other end; the edges with both ends held, whose residuals are constants, are stacked into
+  one factor on a free pose with unit noise and a zero Jacobian (C++ `HeldEdgesFactor`, Rust
+  `Factor::HeldEdges`, Python `_held_edges`), so that every error GTSAM reads, its own search
+  over dampings' included, and every error the summaries report hold theirs, as before. With
+  every pose held nothing is solved: the poses come back as given, after 0 iterations,
+  termination `function` (GTSAM ran 1 before, where the edges cost anything).
+- **Each held camera and pose comes back exactly as given:** a held Sim(3) pose came back through
+  GTSAM's `Similarity3`, its last bits changed.
+- **The Rust bridge** (`rust/slam-it-foundations/cxx/`) drops `fix_pose` and `fix_similarity`,
+  and gains `add_held_between_poses`, `add_held_between_similarities`, `between_residual_poses`
+  and `between_residual_similarities`.
+- **Python's one-end-held edge** (`_held_end`) wraps the edge's whitened Jacobian and residual
+  in unit noise, right for any Gaussian noise, where it wrapped them in the edge's own noise,
+  which whitened them twice unless it was unit (the essential graph's is).
+- **Measured**, develop (dfdc511a) against this version, each run on one P-core beside another
+  agent's four programs on four other P-cores:
+  - zju-B6, its first 1,070 frames, monocular, inline: the merge 657.9 s -> 1.41 s in C++ and
+    668.5 s -> 1.64 s in Rust; the run's peak RSS 2,509 -> 300 MiB and 2,515 -> 308 MiB; the
+    whole run 710.6 s -> 53.1 s and 709.5 s -> 42.3 s. The weld's and global BA's costs agree to
+    1.8e-14 (C++) and 5.6e-13 (Rust) relative, the essential graph's to 1.1e-12 and 3.1e-11:
+    from the poses it starts from (its initial error differs as much), not from how its held
+    edges' error is summed (carrying that error inside GTSAM's graph instead of adding it to the
+    solve's moved them by 4.4e-16 at most). The final ATE is 0.7390 -> 0.7235
+    cm in C++ and 0.7238 -> 0.7235 cm in Rust, and the two languages' final trajectories agree
+    to 9.2e-7, where they differed by 4.1e-3. These figures were measured before the held
+    edges' error was carried inside GTSAM's graph; run again after it (on a machine without the
+    other agent's programs), the trajectories are the same bit for bit, and the merges took
+    1.28 s (C++) and 1.56 s (Rust).
+  - Per call, through the bindings (the median of 3 calls where one took under 5 s): advio-20's
+    dumped global BA (84 cameras, camera 0 held, 51,626 observations) 360.7 s -> 1.07 s in C++
+    and 313.7 s -> 1.21 s in Rust, though neither version accepts a step there (1 iteration,
+    `damping_limit`, the cost unchanged); the same with cameras 0 to 41 held and a Huber loss,
+    112.0 s -> 0.51 s and 112.3 s -> 0.62 s; the loop room's dumped global BA 2.35 s -> 0.53 s
+    (C++), 2.52 s -> 0.64 s (Rust) and 2.02 s -> 0.50 s (Python).
+- **What changes in the answers:** the costs agree to roundoff, and so do the solutions where
+  the held cameras fix the gauge: graphs.json's pose-graph and BA cases, the constrained solves'
+  results, are matched in every language within 3.8e-11 in a pose and 1.9e-10 in a point, its
+  policy 1e-8. Where global BA holds one camera of a monocular map, the map's scale is free and
+  the solve slides along it at the same cost. Develop's constrained QR let roundoff move the
+  solve along that scale; with the cameras constants it stops at the same point in every
+  language: in the loop room's monocular run, the three agree to 2.2e-8 in a final position,
+  where develop's differed in scale by up to 35%. The scale is still not held (a later PR adds
+  g2o-style damping to the global BA). That run's map now comes out 7.4% larger in C++, and 5.5%
+  and 21% smaller in Rust and Python; its global BA's own cost is the same as develop's to
+  1.6e-10 relative (Python's 1.55e-10 the largest), the later solves', which run at the new
+  scale, to 2.2e-7 (C++'s local BA at frame 243). Its final ATE (the RMSE of the recorded
+  positions aligned to the truth by a similarity), 1.32, 1.34 and 1.14 cm in Python, C++ and
+  Rust, is 1.19 cm in each (the bar, 2 cm, holds in every language). The advio-20 weld-like
+  solve, capped at 5 iterations, ends 6.9e-5 (C++) and 1.9e-6 (Rust) relative higher; 10 of its
+  5,540 points moved more than 1e-3 in C++ and 3 in Rust (map units: half its points lie within
+  0.16 of their median), the most by 3.0, a point 9.9 from the median, as develop's C++ and Rust
+  solutions of it differed by 2.9.
+
+### Tests
+
+- **Held-heavy cases in graphs.json,** generated by the constrained solves on develop: the ring
+  in SE(3) and Sim(3) with poses 0 to 3 held (edges joining two held poses, a held pose to a free
+  one, and a free one to a held one), the monocular radtan and pinhole BAs with cameras 0 to 2 of
+  6 held, and the stereo BA with every camera held. Every language matches them within 6.2e-15.
+- **Held cameras and poses, in every language:** the stereo scene with one, three and all five
+  cameras held, the held ones back bit for bit; the pose graph with edges of each kind, its held
+  poses back bit for bit, its free ones on the truth, its final error the held edge's constant,
+  which the graph with every pose held reports after 0 iterations; and an edge between two held
+  poses beside a free pose in no edge, whose one iteration lowers nothing: the solve converges
+  (`function`), as develop's did. Before the held edges' error was carried inside GTSAM's graph,
+  it ended at `damping_limit`, not converged (0.3.17.2's review panel, L1): on the reviewer's
+  probe, that case and 150 random Sim(3) graphs of 30 poses, 15 held, now end as develop's
+  emulated form does, after as many iterations, in every language, where in the Python
+  reference 2 of the graphs ended at `damping_limit` and 2 ran one more iteration.
+- **Python's held stereo factor against GTSAM's:** at a point behind the camera, its error,
+  right-hand side and Jacobian on the point equal `GenericStereoFactor3D`'s with the pose a
+  variable, bit for bit.
+- **The rooms' golden records** are regenerated: the decisions are the same but for Rust's
+  loop room in monocular, whose global BA (frame 235) ends by the relative tolerance after its
+  10 iterations rather than at the cap; the loop room's monocular poses moved as above, its RGB-D
+  and stereo ones within 9.3e-10, the other 24 cases not at all.
+
 ## [0.3.17.1] - 2026-10-22
 
 The run viewer draws what it has as soon as it has it: a run's track at once, its map and its

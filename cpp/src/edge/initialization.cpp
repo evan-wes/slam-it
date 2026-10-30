@@ -51,14 +51,19 @@ Result<void> check_frames(const Frame& reference, const Frame& frame, const Opti
   return check_frame(frame, options, "frame");
 }
 
-/// @brief Add a keyframe that observes no point yet.
+/// @brief Add a keyframe that observes no point yet, its features quantised as it enters the map
+///        (ORB-SLAM's `ComputeBoW`).
 /// @param m The map.
 /// @param frame The frame.
 /// @param pose Its `T_cam_world`.
+/// @param vocabulary The vocabulary, checked.
 /// @return Nothing, or the map's error.
-Result<void> insert_unobserving(Map& m, const Frame& frame, const Eigen::Matrix4d& pose) {
+Result<void> insert_unobserving(Map& m, const Frame& frame, const Eigen::Matrix4d& pose,
+                                const foundations::vocabulary::Vocabulary& vocabulary) {
   const std::vector<std::int64_t> none(keypoint_count(frame), -1);
-  return insert_keyframe(m, frame, pose, none);
+  return insert_keyframe(
+      m, frame, pose, none,
+      foundations::vocabulary::quantize(vocabulary, frame.features.descriptors).nodes);
 }
 
 /// @brief Scale the map's translations and points, and refresh the points (a monocular map's
@@ -195,7 +200,9 @@ const char* name(Outcome outcome) {
   return "unknown";
 }
 
-Result<Initialization> initialize_from_depth(const Frame& frame, const Options& options) {
+Result<Initialization> initialize_from_depth(
+    const Frame& frame, const Options& options,
+    const foundations::vocabulary::Vocabulary& vocabulary) {
   if (auto ok = check_frame(frame, options, "frame"); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -210,7 +217,7 @@ Result<Initialization> initialize_from_depth(const Frame& frame, const Options& 
   }
   Started out{.map = empty_map(options.features.levels, options.features.scale_factor),
               .tracked = {}};
-  if (auto ok = insert_unobserving(out.map, frame, Eigen::Matrix4d::Identity()); !ok) {
+  if (auto ok = insert_unobserving(out.map, frame, Eigen::Matrix4d::Identity(), vocabulary); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   std::vector<Eigen::Vector3d> xyz;
@@ -276,7 +283,8 @@ Result<std::vector<matching::Match>> match_for_initialization(
 Result<Initialization> initialize_monocular(const Camera& camera, const Frame& reference,
                                             const Frame& frame,
                                             std::span<const std::array<std::int64_t, 2>> pairs,
-                                            const Options& options) {
+                                            const Options& options,
+                                            const foundations::vocabulary::Vocabulary& vocabulary) {
   if (auto ok = check_camera(camera); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
@@ -327,10 +335,10 @@ Result<Initialization> initialize_monocular(const Camera& camera, const Frame& r
   Started out{.map = empty_map(options.features.levels, options.features.scale_factor),
               .tracked = {}};
   Map& m = out.map;
-  if (auto ok = insert_unobserving(m, reference, Eigen::Matrix4d::Identity()); !ok) {
+  if (auto ok = insert_unobserving(m, reference, Eigen::Matrix4d::Identity(), vocabulary); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
-  if (auto ok = insert_unobserving(m, frame, result->relative_pose); !ok) {
+  if (auto ok = insert_unobserving(m, frame, result->relative_pose, vocabulary); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   auto kept = kept_points(*result, bearings1, bearings2, options);

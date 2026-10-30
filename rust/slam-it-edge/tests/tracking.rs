@@ -15,7 +15,7 @@ use slam_it_edge::tracking::{
 use slam_it_foundations::error::ErrorKind;
 use slam_it_foundations::ransac;
 
-use scene::{POINTS, camera, frame, frame_at, moved, points, pose, scene_map};
+use scene::{POINTS, camera, frame, frame_at, moved, nodes, points, pose, scene_map};
 
 /// The scene's point ids, one per keypoint.
 #[allow(clippy::cast_possible_wrap, reason = "ids below 60")]
@@ -77,7 +77,14 @@ fn every_point_is_in_view_and_none_from_behind() {
 fn level_scene() -> Map {
     let last = frame_at(&Matrix4::identity(), false, 2);
     let mut m = Map::empty(8, 1.2);
-    map::insert_keyframe(&mut m, &last, &Matrix4::identity(), &[-1; POINTS]).unwrap();
+    map::insert_keyframe(
+        &mut m,
+        &last,
+        &Matrix4::identity(),
+        &[-1; POINTS],
+        &nodes(&last),
+    )
+    .unwrap();
     let observers: Vec<Vec<usize>> = (0..POINTS).map(|p| vec![p]).collect();
     map::add_points(&mut m, &points(), &observers).unwrap();
     m

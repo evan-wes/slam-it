@@ -3,9 +3,10 @@
 After tracking decides a frame becomes a keyframe (:func:`need_keyframe`), :func:`process`
 runs ORB-SLAM's local mapping steps in order, single-threaded:
 
-1. **Insert the keyframe** with the points it tracked; a stereo or RGB-D keyframe also
-   creates points from its close depth (:func:`create_points_from_depth`,
-   ``CreateNewKeyFrame``).
+1. **Insert the keyframe** with the points it tracked and its features' vocabulary nodes,
+   quantised now (:attr:`slam_it.edge.map.Map.kp_node`, ``ComputeBoW`` in
+   ``ProcessNewKeyFrame``); a stereo or RGB-D keyframe also creates points from its close depth
+   (:func:`create_points_from_depth`, ``CreateNewKeyFrame``).
 2. **Cull new points** (:func:`cull_points`, ``MapPointCulling``).
 3. **Triangulate new points** between the keyframe and its best links
    (:func:`triangulate_new_points`, ``CreateNewMapPoints``).
@@ -32,9 +33,10 @@ threads; their bindings do not cross Python's callables, so a compiled backend g
 ``interrupts`` is refused.
 
 A keyframe's neighbours are its links in the covisibility graph
-(:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Lite: matching for triangulation has no
-bag of words: every free keypoint pair within the stricter distance and the epipolar band is a
-candidate (:func:`match_for_triangulation`).
+(:mod:`slam_it.edge.covisibility`), as ORB-SLAM's are. Matching for triangulation pairs only
+keypoints under the same vocabulary node (:attr:`slam_it.edge.map.Map.kp_node`), as ORB-SLAM3's
+``SearchForTriangulation`` walks the two keyframes' ``FeatureVector`` node by node
+(:func:`match_for_triangulation`, which names its three departures).
 """
 
 from __future__ import annotations
@@ -53,9 +55,10 @@ from slam_it.edge import map as maps
 from slam_it.edge.frames import Camera, Frame, Tracked, as_pose, checked_tracked
 from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options, check_mode
-from slam_it.foundations import matching, triangulation
+from slam_it.foundations import matching, triangulation, vocabulary
 from slam_it.foundations.arrays import as_count, as_flag, as_real
 from slam_it.foundations.errors import InvalidInputError
+from slam_it.foundations.vocabulary import Vocabulary
 
 Array = NDArray[np.float64]
 IntArray = NDArray[np.int64]
@@ -235,9 +238,10 @@ class Implementation(Protocol):
 
     The map crosses as :meth:`Map.as_dict`, a frame as
     :meth:`slam_it.edge.frames.Frame.as_dict`, a tracked frame as :meth:`Tracked.as_dict`, the
-    mode by name. A mapped keyframe crosses back as a dict of ``map``, the summary's counts,
-    ``solves`` (as :func:`slam_it.edge.adjust.decode_solves` reads them), ``made`` and
-    ``schedule`` (each step's :class:`Scheduled` by name).
+    mode by name, the vocabulary as :func:`slam_it.foundations.vocabulary.fields` gives it. A
+    mapped keyframe crosses back as a dict of ``map``, the summary's counts, ``solves`` (as
+    :func:`slam_it.edge.adjust.decode_solves` reads them), ``made`` and ``schedule`` (each step's
+    :class:`Scheduled` by name).
     """
 
     def codes(self) -> dict[str, list[str]]:
@@ -315,6 +319,7 @@ class Implementation(Protocol):
         tracked: Crossing,
         mode: str,
         options: Crossing,
+        vocabulary: Crossing,
         held: NDArray[np.int64],
     ) -> Crossing:
         """Insert a keyframe and run local mapping on it."""
@@ -710,9 +715,14 @@ def _match_for_triangulation(
         )
         no_depth = np.isnan(m.kp_depth[rows1])[:, None] & np.isnan(m.kp_depth[rows2])[None, :]
         band &= ~(no_depth & near[None, :])
+    same_node = m.kp_node[rows1][:, None] == m.kp_node[rows2][None, :]
     hamming = matching.distances(m.kp_descriptor[rows1], m.kp_descriptor[rows2])
-    hamming = np.where(band & (hamming <= options.matching.th_low), hamming, np.iinfo(np.int64).max)
-    best = np.argmin(hamming, axis=1)
+    hamming = np.where(
+        same_node & band & (hamming <= options.matching.th_low), hamming, np.iinfo(np.int64).max
+    )
+    # The nearest candidate, the last among equals: ORB-SLAM3's ``dist > bestDist`` skips only a
+    # farther one.
+    best = hamming.shape[1] - 1 - np.argmin(hamming[:, ::-1], axis=1)
     best_distance = hamming[np.arange(len(rows1)), best]
     claims: dict[int, tuple[int, int]] = {}
     for i in np.flatnonzero(best_distance <= options.matching.th_low):
@@ -726,13 +736,31 @@ def _match_for_triangulation(
 def match_for_triangulation(  # noqa: PLR0913 -- the map, its camera, two keyframes, the settings
     m: Map, camera: Camera, k1: int, k2: int, options: Options, *, backend: str = "python"
 ) -> IntArray:
-    """Match two keyframes' free keypoints for triangulation (``SearchForTriangulation``, lite).
+    """Match two keyframes' free keypoints for triangulation (``SearchForTriangulation``).
 
-    No bag of words: for each free keypoint of `k1` (one observing no point), the nearest
-    free keypoint of `k2` within ``matching.th_low`` (ties: the first) that lies within the epipolar
-    band (``mapping.epipolar_chi2`` of its level's variance, in pixels at the focal length) and,
-    when neither has depth, not near the epipole (``mapping.min_epipole_distance2``). One match per
-    keypoint of `k2`: the nearest keeps it (ties: the lower `k1` keypoint).
+    For each free keypoint of `k1` (one observing no point, with a bearing in front), the nearest
+    free keypoint of `k2` under the same vocabulary node (:attr:`slam_it.edge.map.Map.kp_node`;
+    ORB-SLAM3 walks the two keyframes' ``FeatureVector`` node by node) within
+    ``matching.th_low`` (ties: the last, as ORB-SLAM3's ``dist > bestDist`` keeps) that lies
+    within the epipolar band (``mapping.epipolar_chi2`` of its level's variance, in pixels at the
+    focal length) and, when neither has depth, not near the epipole
+    (``mapping.min_epipole_distance2``). One match per keypoint of `k2`: the nearest keeps it
+    (ties: the lower `k1` keypoint).
+
+    Three departures from ORB-SLAM3 (the online-SLAM design's section 11, L2; the first two
+    decided by evan-wes on 2026-10-28, the third named by the 0.3.18.0 review panel, L12):
+
+    - A `k2` keypoint is matched once, as the map holds one point per keypoint. ORB-SLAM3 v1.0
+      tests ``vbMatched2`` but never sets it, so two `k1` keypoints taking one `k2` keypoint make
+      two points that both record that observation while the keyframe keeps only the later
+      (``LocalMapping.cc:698-702``), the earlier's left dangling. Its measurements were
+      inconclusive.
+    - A monocular keyframe triangulates against 20 neighbours, ORB-SLAM2's count, where
+      ORB-SLAM3's ``CreateNewMapPoints`` takes 30 (``mapping.mono_triangulation_neighbours``):
+      not measured on the test set.
+    - :func:`triangulate_new_points` matches against every neighbour, where ORB-SLAM stops after
+      the first once a new keyframe waits for mapping (``if(i>0 && CheckNewKeyFrames())
+      return;``, ``LocalMapping.cc:436-437``).
 
     Parameters
     ----------
@@ -890,6 +918,10 @@ def triangulate_new_points(
     gives, else from the keypoint with the better depth; keep it if it is in front of both,
     passes the chi-square test in both, and its distances agree with the keypoints' levels
     (``mapping.scale_ratio``).
+
+    Every neighbour is matched: ORB-SLAM stops after the first once a new keyframe waits for
+    mapping (``LocalMapping.cc:436-437``), a departure :func:`match_for_triangulation` names
+    with the others.
 
     Parameters
     ----------
@@ -1261,11 +1293,13 @@ def _process(  # noqa: PLR0913 -- the stage's state
     *,
     mode: str,
     options: Options,
+    words: Vocabulary,
     held: IntArray,
     interrupts: Interrupts | None = None,
 ) -> Mapped:
     """Insert a keyframe and run local mapping on it (reference)."""
-    m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
+    nodes = vocabulary.quantize(words, frame.features.descriptors)[1]
+    m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points, nodes)
     # Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
     m = covisibility.adopt(m, m.keyframes - 1)
     start, first = m.points, m.next_pt_id
@@ -1325,6 +1359,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
     *,
     mode: str,
     options: Options,
+    words: Vocabulary,
     held: ArrayLike = (),
     interrupts: Interrupts | None = None,
     backend: str = "python",
@@ -1345,6 +1380,8 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
         The pipeline's mode.
     options : Options
         The settings.
+    words : slam_it.foundations.vocabulary.Vocabulary
+        The vocabulary the keyframe's features are quantised by (its nodes, step 1).
     held : array_like of int, optional
         The ids of the keyframes loop detection holds, which culling spares (default: none).
     interrupts : Interrupts, optional
@@ -1381,6 +1418,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
             checked,
             mode=mode,
             options=options,
+            words=words,
             held=kept,
             interrupts=interrupts,
         ),
@@ -1391,6 +1429,7 @@ def process(  # noqa: PLR0913 -- the stage's state, and the backend
             frame=frame.as_dict(),
             tracked=checked.as_dict(),
             mode=mode,
+            vocabulary=vocabulary.fields(words),
             held=kept,
         ),
         decode=_decode_mapped,

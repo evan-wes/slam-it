@@ -513,7 +513,9 @@ Result<eval::runs::JsonValue> graph_solve_json(const foundations::graphs::Summar
   return nested({{"initial_error", s.initial_error},
                  {"final_error", s.final_error},
                  {"iterations", static_cast<std::int64_t>(s.iterations)},
-                 {"termination", name_json(foundations::graphs::name(s.termination))}});
+                 {"termination", name_json(foundations::graphs::name(s.termination))},
+                 {"left_out", s.left_out},
+                 {"ended_near", s.ended_near}});
 }
 
 /// @brief A loop search's summary as JSON (`slam_it.edge.loops.DetectionSummary.as_dict`).
@@ -1489,7 +1491,8 @@ Result<Request> parse(std::span<const std::string> arguments) {
     }
     i += 2;
   }
-  for (const std::string_view required : {"--dataset", "--sequence", "--mode", "--out"}) {
+  for (const std::string_view required :
+       {"--dataset", "--sequence", "--mode", "--out", "--vocabulary"}) {
     if (std::ranges::find(seen, required) == seen.end()) {
       return fail(ErrorKind::kInvalidInput, std::string(required) + ": missing");
     }
@@ -1513,15 +1516,6 @@ Result<void> check(const Request& request) {
   }
   if (request.first < 0 || request.count.value_or(0) < 0) {
     return fail(ErrorKind::kInvalidInput, "first, count: must be at least 0");
-  }
-  const bool needed = edge::keeps_keyframe_database(request.options);
-  if (needed && !request.vocabulary) {
-    return fail(ErrorKind::kInvalidInput,
-                "--vocabulary: relocalization.enabled or loops.enabled needs one");
-  }
-  if (!needed && request.vocabulary) {
-    return fail(ErrorKind::kInvalidInput,
-                "--vocabulary: given, but relocalization.enabled and loops.enabled are both off");
   }
   if (request.locks && !request.threaded) {
     return fail(ErrorKind::kInvalidInput, "--locks: needs --threaded");
@@ -1566,18 +1560,13 @@ Result<eval::runs::Run> run(const Request& request) {
     }
     sources.push_back(*std::move(source));
   }
-  std::optional<foundations::vocabulary::Vocabulary> words;
-  std::optional<eval::vocabularies::Header> record;
-  if (request.vocabulary) {
-    auto read = eval::vocabularies::read(*request.vocabulary);
-    if (!read) {
-      return std::unexpected(read.error());
-    }
-    words = std::move(read->vocabulary);
-    record = read->header;
+  auto read = eval::vocabularies::read(request.vocabulary);
+  if (!read) {
+    return std::unexpected(read.error());
   }
+  const eval::vocabularies::Header record = read->header;
   auto pipeline = edge::Pipeline::create(request.mode, sources.front().camera, request.options,
-                                         std::move(words), threading_of(request));
+                                         std::move(read->vocabulary), threading_of(request));
   if (!pipeline) {
     return std::unexpected(pipeline.error());
   }

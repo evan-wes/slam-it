@@ -13,13 +13,30 @@ them, the solves' summaries included (B3's review panel, A2), under :data:`TOLER
 field's policy, applied by ``tests.conftest.assert_matches_fixture`` (run 2, H22 = A19). The
 cases:
 
-- ``optimize_pose_graph``: a ring of 8 poses with noisy relatives, in SE(3) and in Sim(3);
+- ``optimize_pose_graph``: a ring of 8 poses with noisy relatives, in SE(3) and in Sim(3), pose 0
+  held; and each again with poses 0 to 3 held, so that edges join two held poses, a held pose to a
+  free one, and a free pose to a held one;
 - ``refine_similarity``: ORB-SLAM's two rounds, monocular (scaled) and stereo (rigid): a first
   with a Huber loss on noisy matches and a few outliers, then, the matches past the bound
   dropped, a second with none, from the first's result;
 - ``bundle_adjust``: a monocular BA through a radtan camera (each language's own factor), two
   cameras held so its scale is fixed, and a stereo BA through a pinhole camera (GTSAM's own
-  factors in Python, each core's elsewhere).
+  factors in Python, each core's elsewhere); half their cameras held (as a merge's welding BA
+  holds the matched map's), the monocular radtan BA, a monocular pinhole one and the stereo one,
+  the weld's typical stereo case (0.3.17.2's review panel, L8), and the stereo one with every
+  camera held, its points alone adjusted; the monocular radtan BA solved as loop closing's global
+  BA solves (0.3.18.0): g2o's scaled damping and ORB-SLAM3's stop after three small steps; and
+  the stereo BA with a point 1 mm in front of a camera and one behind two, the observations near
+  their camera's plane left out (``near`` 1e-3).
+
+Regenerated in 0.3.18.0 with the new cases. Until then every case holding a camera or a pose
+held the results of solves that held them through GTSAM's ``NonlinearEquality``, before they were
+held as constants (0.3.17.2); regenerated from the constant form, they moved by at most 3.8e-11
+in a pose and 1.9e-10 m in a point (the stereo BA, camera 0 held; the others 5.9e-13 and 1.6e-14
+at most), their errors by 1.1e-14 relative, their iterations and terminations not at all; the
+similarity refinements, which hold nothing, not at all. The stereo case with half its cameras
+held was left out until then: with seed 11, the constrained C++ solve differed from Python's by
+2.4e-8 m in a point; with the cameras constants, the backends agree within 7.1e-15.
 
 NaN (a match image 2 does not observe, a monocular observation's right column) is written as
 null.
@@ -66,7 +83,7 @@ TOLERANCES = {
     },
     "codes": {
         "comparison": "exact", "rtol": 0.0, "atol": 0.0,
-        "reason": "iterations and termination: the backends' solves step alike",
+        "reason": "iterations, termination and counts: the backends' solves step alike",
     },
 }  # fmt: skip
 """Each field's policy (``tests.conftest.assert_matches_fixture``)."""
@@ -79,6 +96,10 @@ RADTAN = [517.3, 516.5, 318.6, 255.3, 0.2624, -0.9531, -0.0054, 0.0026, 1.1633]
 
 BF = 40.0
 """A stereo camera's baseline times its focal length."""
+
+GLOBAL_BA = graphs.Options(max_iterations=10, scaled_damping=True, small_steps=3)
+"""Loop closing's global BA's solve (0.3.18.0; ``slam_it.edge.loops.global_ba_options``): g2o's
+damping from ``τ`` 1e-5, and ORB-SLAM3's stop after three decreases in a row under 0.1%."""
 
 
 def _json(value: Any) -> Any:  # noqa: ANN401 -- any JSON-able value
@@ -95,15 +116,20 @@ def _json(value: Any) -> Any:  # noqa: ANN401 -- any JSON-able value
 
 
 def _summary(summary: graphs.Summary) -> dict[str, Any]:
-    """Return a solve's summary as the fixture holds it: its errors and its codes."""
+    """Return a solve's summary as the fixture holds it: its errors and its codes (the counts)."""
     return {
         "errors": [summary.initial_error, summary.final_error],
-        "codes": {"iterations": summary.iterations, "termination": str(summary.termination)},
+        "codes": {
+            "iterations": summary.iterations,
+            "termination": str(summary.termination),
+            "left_out": summary.left_out,
+            "ended_near": summary.ended_near,
+        },
     }
 
 
-def _ring(similarity: bool, seed: int) -> dict[str, Any]:
-    """Return a ring of 8 poses, its relatives noisy, a loop closing it; pose 0 held."""
+def _ring(similarity: bool, seed: int, held: int = 1) -> dict[str, Any]:
+    """Return a ring of 8 poses, its relatives noisy, a loop closing it; the first `held` held."""
     rng = np.random.default_rng(seed)
     count = 8
     truth = []
@@ -124,11 +150,12 @@ def _ring(similarity: bool, seed: int) -> dict[str, Any]:
     start[0] = truth[0]
     inputs: dict[str, Any] = {
         "poses": np.array(start), "edges": edges, "relatives": np.array(relatives),
-        "fixed": [0], "similarity": similarity,
+        "fixed": list(range(held)), "similarity": similarity,
     }  # fmt: skip
     solved = graphs.optimize_pose_graph(**inputs)
     return {
-        "name": f"ring, {'Sim(3)' if similarity else 'SE(3)'}",
+        "name": f"ring, {'Sim(3)' if similarity else 'SE(3)'}"
+        + (f", poses 0 to {held - 1} held" if held > 1 else ""),
         "input": _json(inputs),
         "expected": {"poses": _json(solved.poses), **_summary(solved.summary)},
     }
@@ -194,15 +221,28 @@ def _refinements(fixed_scale: bool, seed: int) -> list[dict[str, Any]]:
     ]
 
 
-def _bundle(stereo: bool, seed: int) -> dict[str, Any]:
+def _bundle(
+    stereo: bool,
+    seed: int,
+    held: int | None = None,
+    model: str | None = None,
+    *,
+    options: graphs.Options | None = None,
+    near: float = 0.0,
+) -> dict[str, Any]:
     """Return six cameras round a cloud of 40 points, the observations noisy.
 
     Stereo holds camera 0; monocular holds cameras 0 and 1, fixing the scale too: with one
     camera held, a monocular BA's scale is free, and the backends' solutions differ along it at
-    the same error (measured: 3e-5 in the points, the final errors equal to 1e-15).
+    the same error (measured: 3e-5 in the points, the final errors equal to 1e-15). `held`, if
+    given, holds the first `held` cameras instead; `model` overrides the camera (stereo's pinhole,
+    monocular's radtan). `options`, if given, is the solve's (written to the input as a dict);
+    `near` above 0 adds two points, 1 mm in front of camera 3 and 1 m behind camera 0, each seen
+    by cameras 0, 3 and 5, and leaves out the observations near their camera's plane.
     """
     rng = np.random.default_rng(seed)
-    model, intrinsics = ("pinhole", PINHOLE) if stereo else ("radtan", RADTAN)
+    model = model or ("pinhole" if stereo else "radtan")
+    intrinsics = PINHOLE if model == "pinhole" else RADTAN
     poses = np.stack([se3.exp([0.3 * k, 0.05 * k, 0.0, 0.0, 0.03 * k, 0.0]) for k in range(6)])
     points = np.column_stack(
         [rng.uniform(-1.5, 1.5, (40, 2)) + np.array([0.8, 0.0]), rng.uniform(4, 8, 40)]
@@ -218,16 +258,38 @@ def _bundle(stereo: bool, seed: int) -> dict[str, Any]:
             right.append(seen[p, 0] - BF / local[p, 2] + rng.normal(0, 0.5) if stereo else math.nan)
     start_poses = np.stack([pose @ se3.exp(rng.normal(0, 0.01, 6)) for pose in poses])
     start_poses[0] = poses[0]
+    start_points = points + rng.normal(0, 0.05, points.shape)
+    if near:
+        degenerate = [
+            poses[3][:3, :3] @ np.array([0.0, 0.0, 1e-3]) + poses[3][:3, 3],
+            poses[0][:3, :3] @ np.array([0.1, 0.0, -1.0]) + poses[0][:3, 3],
+        ]
+        start_points = np.concatenate([start_points, np.array(degenerate)])
+        for p in (40, 41):
+            for c in (0, 3, 5):
+                cameras.append(c)
+                point_ids.append(p)
+                pixels.append(np.array([300.0, 250.0]))
+                right.append(math.nan)
     inputs: dict[str, Any] = {
-        "poses": start_poses, "points": points + rng.normal(0, 0.05, points.shape),
+        "poses": start_poses, "points": start_points,
         "cameras": cameras, "point_ids": point_ids, "pixels": np.array(pixels),
         "right": np.array(right), "information": np.ones(len(cameras)), "model": model,
         "intrinsics": np.array(intrinsics), "bf": BF if stereo else 0.0,
-        "fixed": [0] if stereo else [0, 1],
+        "fixed": list(range(held)) if held else [0] if stereo else [0, 1],
     }  # fmt: skip
-    solved = graphs.bundle_adjust(**inputs)
+    if near:
+        inputs["near"] = near
+    solved = graphs.bundle_adjust(**inputs, options=options)
+    if options is not None:
+        inputs["options"] = options.as_dict()
+    which = "every camera" if held == len(poses) else f"cameras 0 to {held - 1}" if held else ""
+    how = ", global BA's damping and stop" if options is not None else ""
+    how += f", near {near:g}" if near else ""
     return {
-        "name": f"{'stereo, pinhole' if stereo else 'monocular, radtan'}",
+        "name": f"{'stereo' if stereo else 'monocular'}, {model}"
+        + (f", {which} held" if held else "")
+        + how,
         "input": _json(inputs),
         "expected": {
             "poses": _json(solved.poses),
@@ -247,9 +309,22 @@ def main() -> None:
         "oracle": "the Python reference; see the generator's docstring",
         "tolerance": TOLERANCES,
         "functions": {
-            "optimize_pose_graph": {"cases": [_ring(False, 1), _ring(True, 2)]},
+            "optimize_pose_graph": {
+                "cases": [_ring(False, 1), _ring(True, 2), _ring(False, 7, 4), _ring(True, 8, 4)]
+            },
             "refine_similarity": {"cases": _refinements(False, 3) + _refinements(True, 4)},
-            "bundle_adjust": {"cases": [_bundle(False, 5), _bundle(True, 6)]},
+            "bundle_adjust": {
+                "cases": [
+                    _bundle(False, 5),
+                    _bundle(True, 6),
+                    _bundle(False, 9, 3),
+                    _bundle(False, 10, 3, "pinhole"),
+                    _bundle(True, 11, 3, "pinhole"),
+                    _bundle(True, 12, 6),
+                    _bundle(False, 13, options=GLOBAL_BA),
+                    _bundle(True, 14, near=1e-3),
+                ]
+            },
         },
     }
     (HERE / "graphs.json").write_text(_layout.dumps(doc))

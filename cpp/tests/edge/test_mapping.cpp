@@ -1,14 +1,19 @@
 /// @file
 /// @brief Native tests for local mapping (slam_it/edge/mapping.hpp) on the exact scene: the
 ///        keyframe decision, points from depth, culling points and keyframes, triangulation,
-///        fusion, and a whole mapping step. Parity with the Python reference is checked through
-///        the bindings by tests/edge. What fusion and local BA take from the graph
+///        fusion, and a whole mapping step; and matching for triangulation held to the fixture
+///        `tests/fixtures/edge/triangulation_matches.json`, which the Python and Rust tests share.
+///        Parity with the Python reference is checked through the bindings by tests/edge. What
+///        fusion and local BA take from the graph
 ///        (`fuse_targets`, `local_ba_keyframes`) is held to the covisibility fixture in
 ///        test_covisibility.cpp.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -88,7 +93,8 @@ void check_keyframes_and_points(int& failures) {
   edge::Map m = *built;
   const std::vector<std::int64_t> none(scene::kPoints, -1);
   const Eigen::Matrix4d ahead = scene::moved(0.1);
-  if (!edge::insert_keyframe(m, scene::frame_at(ahead, true), ahead, none)) {
+  const edge::Frame ahead_frame = scene::frame_at(ahead, true);
+  if (!edge::insert_keyframe(m, ahead_frame, ahead, none, scene::nodes(ahead_frame))) {
     expect(false, "the new keyframe inserts", failures);
     return;
   }
@@ -115,9 +121,11 @@ void check_keyframes_and_points(int& failures) {
 /// @param failures Running failure count.
 void check_triangulation(int& failures) {
   edge::Map m = edge::empty_map(8, 1.2);
-  if (!edge::insert_keyframe(m, scene::frame(0, false), scene::pose(0), ids(0, 0)) ||
+  const edge::Frame first = scene::frame(0, false);
+  const edge::Frame second = scene::frame(2, false);
+  if (!edge::insert_keyframe(m, first, scene::pose(0), ids(0, 0), scene::nodes(first)) ||
       !add_scene_points(m, 0, first_points(10)) ||
-      !edge::insert_keyframe(m, scene::frame(2, false), scene::pose(2), ids(0, 10))) {
+      !edge::insert_keyframe(m, second, scene::pose(2), ids(0, 10), scene::nodes(second))) {
     expect(false, "the triangulation scene builds", failures);
     return;
   }
@@ -136,15 +144,94 @@ void check_triangulation(int& failures) {
   expect(worst < 1e-9, "the triangulated points are the scene's", failures);
 }
 
+/// @brief A triangulation case's map (`tests/fixtures/edge/triangulation_matches.json`): its two
+///        keyframes' columns and the points they observe, as the Python test builds it.
+/// @param c The case.
+/// @return The map, its observations indexed.
+edge::Map triangulation_map(const nlohmann::json& c) {
+  edge::Map m = edge::empty_map(c["levels"].get<std::int64_t>(), c["scale_factor"].get<double>());
+  std::int64_t id = 0;
+  for (const nlohmann::json& k : c["keyframes"]) {
+    m.kf_id.push_back(id);
+    m.kf_time.push_back(static_cast<double>(id));
+    ++id;
+    Eigen::Matrix4d pose;
+    for (int r = 0; r < 4; ++r) {
+      for (int col = 0; col < 4; ++col) {
+        pose(r, col) = k["pose"][r][col].get<double>();
+      }
+    }
+    m.kf_pose.push_back(pose);
+    m.kf_parent.push_back(-1);
+    for (std::size_t i = 0; i < k["level"].size(); ++i) {
+      const auto& b = k["bearing"][i];
+      m.kp_xy.push_back({0.0, 0.0});
+      m.kp_level.push_back(k["level"][i].get<std::int64_t>());
+      m.kp_angle.push_back(0);
+      slam_it::foundations::orb::Descriptor d{};
+      for (std::size_t byte = 0; byte < d.size(); ++byte) {
+        d.at(byte) = k["descriptor"][i][byte].get<std::uint8_t>();
+      }
+      m.kp_descriptor.push_back(d);
+      m.kp_node.push_back(k["node"][i].get<std::int64_t>());
+      m.kp_bearing.emplace_back(b[0].get<double>(), b[1].get<double>(), b[2].get<double>());
+      m.kp_depth.push_back(k["depth"][i].is_null() ? std::numeric_limits<double>::quiet_NaN()
+                                                   : k["depth"][i].get<double>());
+      m.kp_right.push_back(std::numeric_limits<double>::quiet_NaN());
+      m.kp_point.push_back(k["point"][i].get<std::int64_t>());
+    }
+    m.kf_start.push_back(static_cast<std::int64_t>(m.kp_point.size()));
+  }
+  for (const nlohmann::json& x : c["points"]) {
+    m.pt_id.push_back(static_cast<std::int64_t>(m.pt_id.size()));
+    scene::push_point(m,
+                      Eigen::Vector3d(x[0].get<double>(), x[1].get<double>(), x[2].get<double>()));
+  }
+  m.next_kf_id = id;
+  m.next_pt_id = static_cast<std::int64_t>(m.pt_id.size());
+  edge::index_observations(m);
+  return m;
+}
+/// @brief Check matching for triangulation against the fixture's rules
+///        (`tests/fixtures/edge/triangulation_matches.json`, which the Python and Rust tests
+///        share): only under one vocabulary node, within `matching.th_low`, the epipolar band and
+///        away from the epipole without depth; the nearest candidate (the last among equals),
+///        each keyframe-2 keypoint kept by its nearest (the lower among equals).
+/// @param failures Running failure count.
+void check_triangulation_fixture(int& failures) {
+  const nlohmann::json fixture = slam_it::testing::load_fixture("edge/triangulation_matches.json");
+  for (const nlohmann::json& c : fixture["cases"]) {
+    const edge::Map m = triangulation_map(c);
+    edge::Camera camera = scene::camera();
+    const auto focal = c["focal"].get<double>();
+    camera.intrinsics = Eigen::Vector4d(focal, focal, 320.0, 240.0);
+    edge::Options options;
+    options.matching.th_low = c["settings"]["matching.th_low"].get<std::int64_t>();
+    options.mapping.epipolar_chi2 = c["settings"]["mapping.epipolar_chi2"].get<double>();
+    options.mapping.min_epipole_distance2 =
+        c["settings"]["mapping.min_epipole_distance2"].get<double>();
+    const auto found = edge::match_for_triangulation(m, camera, c["k1"].get<std::int64_t>(),
+                                                     c["k2"].get<std::int64_t>(), options);
+    std::vector<std::array<std::int64_t, 2>> expected;
+    for (const nlohmann::json& pair : c["pairs"]) {
+      expected.push_back({pair[0].get<std::int64_t>(), pair[1].get<std::int64_t>()});
+    }
+    expect(edge::check_map(m).has_value() && found.has_value() && *found == expected,
+           ("the fixture's matches, " + c["name"].get<std::string>()).c_str(), failures);
+  }
+}
+
 /// @brief Check fusion: the keyframes share a few points, so they are linked, and each made its
 ///        own of the rest; fusing merges those.
 /// @param failures Running failure count.
 void check_fusion(int& failures) {
   constexpr std::int64_t kShared = 5;
   edge::Map m = edge::empty_map(8, 1.2);
-  if (!edge::insert_keyframe(m, scene::frame(0, false), scene::pose(0), ids(0, 0)) ||
+  const edge::Frame first = scene::frame(0, false);
+  const edge::Frame second = scene::frame(2, false);
+  if (!edge::insert_keyframe(m, first, scene::pose(0), ids(0, 0), scene::nodes(first)) ||
       !add_scene_points(m, 0, first_points(scene::kPoints)) ||
-      !edge::insert_keyframe(m, scene::frame(2, false), scene::pose(2), ids(0, kShared)) ||
+      !edge::insert_keyframe(m, second, scene::pose(2), ids(0, kShared), scene::nodes(second)) ||
       !add_scene_points(m, 1, first_points(scene::kPoints), kShared)) {
     expect(false, "the fusion scene builds", failures);
     return;
@@ -171,17 +258,28 @@ void check_culling_and_process(int& failures) {
     return;
   }
   edge::Map m = *built;
-  const auto culled = [&] {
+  // A fourth keyframe seeing every point: each is seen by three keyframes besides keyframe 1.
+  const auto culled = [&](std::int64_t observers) {
     edge::Map copy = m;
-    if (!edge::insert_keyframe(copy, scene::frame(2, true), scene::pose(2), ids(0, 60)) ||
-        !edge::cull_keyframes(copy, scene::camera(), edge::Mode::kRgbd, edge::Options{}) ||
+    edge::Options options;
+    options.mapping.redundant_observers = observers;
+    const edge::Frame again = scene::frame(2, true);
+    if (!edge::insert_keyframe(copy, again, scene::pose(2), ids(0, 60), scene::nodes(again)) ||
+        !edge::cull_keyframes(copy, scene::camera(), edge::Mode::kRgbd, options) ||
         !edge::check_map(copy)) {
       return std::vector<std::int64_t>{};
     }
     return copy.kf_id;
-  }();
-  expect(culled == std::vector<std::int64_t>{0, 2, 3},
-         "the first redundant keyframe goes, the first keyframe stays, the index kept", failures);
+  };
+  expect(culled(3) == std::vector<std::int64_t>{0, 2, 3},
+         "at ORB-SLAM2's 3 observers the first redundant keyframe goes, the first keyframe stays, "
+         "the index kept",
+         failures);
+  expect(edge::Options{}.mapping.redundant_observers == 4 &&
+             culled(edge::Options{}.mapping.redundant_observers) ==
+                 std::vector<std::int64_t>{0, 1, 2, 3},
+         "at ORB-SLAM3's rule, more than 3 other observers, the default, every keyframe stays",
+         failures);
   edge::Map none = edge::empty_map(8, 1.2);
   expect(is_invalid_input(
              edge::cull_keyframes(none, scene::camera(), edge::Mode::kRgbd, edge::Options{})),
@@ -200,7 +298,7 @@ void check_culling_and_process(int& failures) {
   // Half the keypoints tracked: depth makes points of the rest.
   const auto mapped =
       edge::process(m, scene::camera(), frame, {.pose = ahead, .points = ids(0, 30)},
-                    edge::Mode::kRgbd, edge::Options{});
+                    edge::Mode::kRgbd, edge::Options{}, scene::one_word());
   const bool processed = mapped.has_value();
   expect(processed && m.kf_id.back() == 3 && edge::check_map(m).has_value(),
          "a whole mapping step keeps the new keyframe and a valid map", failures);
@@ -217,6 +315,7 @@ int run() {
   int failures = 0;
   check_keyframes_and_points(failures);
   check_triangulation(failures);
+  check_triangulation_fixture(failures);
   check_fusion(failures);
   check_culling_and_process(failures);
   return slam_it::testing::finish("edge/mapping", failures);

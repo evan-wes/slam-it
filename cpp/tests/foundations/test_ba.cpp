@@ -6,10 +6,12 @@
 #include <cstdint>
 #include <limits>
 #include <tuple>
+#include <vector>
 
 #include "slam_it/foundations/ba.hpp"
 #include "slam_it/foundations/camera.hpp"
 #include "slam_it/foundations/se3.hpp"
+#include "slam_it/foundations/so3.hpp"
 #include "test_support.hpp"
 
 namespace {
@@ -17,6 +19,7 @@ namespace {
 namespace ba = slam_it::foundations::ba;
 namespace camera = slam_it::foundations::camera;
 namespace se3 = slam_it::foundations::se3;
+namespace so3 = slam_it::foundations::so3;
 using slam_it::foundations::ErrorKind;
 using slam_it::testing::expect;
 
@@ -83,6 +86,68 @@ std::tuple<ba::Problem, ba::Points, Eigen::VectorXd> scene() {
   problem.fixed_points.assign(kPoints, false);
   without_priors(problem);
   return {problem, truth, inverse_depth};
+}
+
+/// @brief Points 1e-9 m in front of a held camera, at its centre (advio-01's local BA):
+///        camera 0, held, turned and off the origin, sees 101 points within 1e-16 m of 1e-9 m in
+///        front of it (`camera::kMinDepth`) and 12 more two to three metres out; cameras 1 and
+///        2, free, a metre behind it and 0.2 m to either side, see all of them; every point is
+///        held.
+/// @return The problem.
+ba::Problem camera_plane_problem() {
+  const Eigen::Matrix3d rotation = so3::exp(Eigen::Vector3d(0.3, -0.5, 0.7));
+  const Eigen::Vector3d centre(-0.0145, -0.0038, -0.0345);
+  std::vector<Eigen::Vector3d> local;
+  local.reserve(113);  // 101 near, 12 far
+  for (int k = 0; k < 101; ++k) {
+    local.emplace_back(3.49e-11, 1.458e-10, 1e-9 + (static_cast<double>(k - 50) * 2e-18));
+  }
+  for (const double x : {-1.0, 0.0, 1.0}) {
+    for (const double y : {-0.5, 0.5}) {
+      for (const double z : {2.0, 3.0}) {
+        local.emplace_back(x, y, z);
+      }
+    }
+  }
+  const auto n_points = static_cast<Eigen::Index>(local.size());
+  ba::Problem problem;
+  problem.model = camera::Model::kPinhole;
+  problem.intrinsics.resize(1, 4);
+  problem.intrinsics << 500.0, 505.0, 320.0, 240.0;
+  problem.points.resize(n_points, 3);
+  for (Eigen::Index p = 0; p < n_points; ++p) {
+    problem.points.row(p) = (centre + (rotation * local[static_cast<std::size_t>(p)])).transpose();
+  }
+  for (const Eigen::Vector3d& offset :
+       {Eigen::Vector3d::Zero().eval(), Eigen::Vector3d(-0.2, 0.0, 1.0),
+        Eigen::Vector3d(0.2, 0.0, 1.0)}) {
+    Eigen::Matrix4d pose = Eigen::Matrix4d::Identity();
+    pose.topLeftCorner<3, 3>() = rotation;
+    pose.topRightCorner<3, 1>() = centre - (rotation * offset);
+    problem.poses.push_back(pose);
+  }
+  problem.observations.resize(3 * n_points, 2);
+  for (int c = 0; c < 3; ++c) {
+    const Eigen::Matrix4d t_cam_world = *se3::inverse(problem.poses[static_cast<std::size_t>(c)]);
+    for (Eigen::Index p = 0; p < n_points; ++p) {
+      // Camera 0's as meant; by hand, as camera::project refuses those behind 1e-9 m.
+      const Eigen::Vector3d x = c == 0 ? local[static_cast<std::size_t>(p)]
+                                       : Eigen::Vector3d((t_cam_world.topLeftCorner<3, 3>() *
+                                                          problem.points.row(p).transpose()) +
+                                                         t_cam_world.topRightCorner<3, 1>());
+      problem.observations.row((c * n_points) + p) << (500.0 * x.x() / x.z()) + 320.0,
+          (505.0 * x.y() / x.z()) + 240.0;
+      problem.cam_idx.emplace_back(c);
+      problem.pt_idx.emplace_back(p);
+    }
+  }
+  problem.intrinsics_idx.assign(3, 0);
+  problem.weights = Eigen::VectorXd::Ones(problem.observations.rows());
+  problem.fixed_poses = {true, false, false};
+  problem.fixed_intrinsics.assign(4, true);
+  problem.fixed_points.assign(static_cast<std::size_t>(n_points), true);
+  without_priors(problem);
+  return problem;
 }
 
 }  // namespace
@@ -194,6 +259,16 @@ int main() {
     }
   }
   expect(scaled_ok, "solve: deviations scale by the root of the variance factor", failures);
+
+  // The in-front test and the residuals take a point's depth from one computation, so an
+  // observation the projection would refuse is left out at the start: triangulation by node's
+  // Rust inline run of advio-01 kept one, 1e-9 m in front of its camera by the in-front test's
+  // formula and not by the projection's, and the solve refused its infinite starting cost.
+  const auto plane = ba::solve(camera_plane_problem(), ba::Options{});
+  expect(plane.has_value() && plane->summary.dropped_observations >= 1 &&
+             plane->summary.dropped_observations <= 101 &&
+             std::isfinite(plane->summary.solve.final_cost),
+         "solve: a point at a camera's centre is left out at the start", failures);
 
   return slam_it::testing::finish("test_ba", failures);
 }

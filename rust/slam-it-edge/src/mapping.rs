@@ -2,7 +2,7 @@
 //! mirror of `slam_it.edge.mapping` (ORB-SLAM's `LocalMapping`, lite), whose docstring states
 //! the steps. Mapping a keyframe also says how each step went, which a run records per keyframe.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use nalgebra::{Matrix3, Matrix4, Vector2, Vector3};
 use slam_it_foundations::error::{ErrorKind, Result, check_range, fail};
@@ -10,6 +10,7 @@ use slam_it_foundations::matching::FeatureGrid;
 use slam_it_foundations::nls::Stop;
 use slam_it_foundations::orb::{self, Keypoint};
 use slam_it_foundations::triangulation;
+use slam_it_foundations::vocabulary::{self, Vocabulary};
 
 use crate::adjust::{Adjustment, Solve, bundle_adjust};
 use crate::covisibility;
@@ -452,16 +453,27 @@ fn triangulation_pairs(
         chi2: options.mapping.epipolar_chi2,
         epipole_distance2: options.mapping.min_epipole_distance2,
     };
-    // For each keyframe-1 keypoint, the nearest candidate (ties: the first); then one match per
-    // keyframe-2 keypoint, the nearest keeping it (ties: the lower keyframe-1 keypoint).
+    // Keyframe 2's keypoints under each vocabulary node, in row order: a pair shares its node
+    // (ORB-SLAM3's SearchForTriangulation walks the two FeatureVectors node by node).
+    let mut by_node: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (j, &r2) in rows2.iter().enumerate() {
+        by_node.entry(m.kp_node[r2]).or_default().push(j);
+    }
+    // For each keyframe-1 keypoint, the nearest candidate (ties: the last, as ORB-SLAM3's
+    // `dist > bestDist` skips only a farther one); then one match per keyframe-2 keypoint, the
+    // nearest keeping it (ties: the lower keyframe-1 keypoint).
     let mut claims: BTreeMap<usize, (i64, usize)> = BTreeMap::new();
     for (i, &r1) in rows1.iter().enumerate() {
+        let Some(candidates) = by_node.get(&m.kp_node[r1]) else {
+            continue;
+        };
         let line = epipolar.essential * normalised(&m.kp_bearing[r1]);
         let mut best: Option<(i64, usize)> = None;
-        for (j, &r2) in rows2.iter().enumerate() {
+        for &j in candidates {
+            let r2 = rows2[j];
             let d = orb::distance(&m.kp_descriptor[r1], &m.kp_descriptor[r2]);
             if d <= options.matching.th_low
-                && best.is_none_or(|(b, _)| d < b)
+                && best.is_none_or(|(b, _)| d <= b)
                 && epipolar_ok(m, &epipolar, &line, r1, r2)
             {
                 best = Some((d, j));
@@ -481,9 +493,9 @@ fn triangulation_pairs(
     out
 }
 
-/// Matches two keyframes' free keypoints for triangulation
-/// (`slam_it.edge.mapping.match_for_triangulation`, ORB-SLAM's `SearchForTriangulation`,
-/// lite).
+/// Matches two keyframes' free keypoints for triangulation, only under the same vocabulary node
+/// (`slam_it.edge.mapping.match_for_triangulation`, which names its three departures from
+/// ORB-SLAM3).
 ///
 /// # Arguments
 ///
@@ -766,7 +778,9 @@ fn median_depth(m: &Map, k: usize) -> Option<f64> {
 }
 
 /// Triangulates the newest keyframe's free keypoints against its best links'
-/// (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).
+/// (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`): against
+/// every one, where ORB-SLAM stops after the first once a new keyframe waits for mapping
+/// (`LocalMapping.cc:436-437`), a departure `match_for_triangulation` names.
 ///
 /// # Arguments
 ///
@@ -1308,6 +1322,9 @@ pub struct Mapped {
 /// * `tracked` - Its pose and matches.
 /// * `mode` - The pipeline's mode.
 /// * `options` - The settings.
+/// * `vocabulary` - The vocabulary, checked, the keyframe's features are quantised by as it
+///   enters the map (its nodes, [`Map::kp_node`]; ORB-SLAM's `ComputeBoW` in
+///   `ProcessNewKeyFrame`).
 /// * `held` - The ids of the keyframes loop detection holds, which culling spares.
 /// * `interrupts` - What local mapping's thread is asked between the steps; `None` inline,
 ///   every step run.
@@ -1331,10 +1348,12 @@ pub fn process(
     tracked: &Tracked,
     mode: Mode,
     options: &Options,
+    vocabulary: &Vocabulary,
     held: &[i64],
     interrupts: Option<&dyn Interrupts>,
 ) -> Result<Mapped> {
-    map::insert_keyframe(m, frame, &tracked.pose, &tracked.points)?;
+    let nodes = vocabulary::quantize(vocabulary, &frame.features.descriptors).nodes;
+    map::insert_keyframe(m, frame, &tracked.pose, &tracked.points, &nodes)?;
     // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
     let newest = m.keyframes() - 1;
     covisibility::adopt(m, newest)?;

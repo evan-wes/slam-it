@@ -609,7 +609,11 @@ fn best_links(m: &Map, k: usize, options: &Options) -> Result<Vec<usize>> {
     Ok(out)
 }
 
-/// A keyframe's links' rows, all of them (`GetConnectedKeyFrames`).
+/// A keyframe's links' rows, all of them: those sharing `covisibility.min_points`
+/// (`slam_it.edge.loops._linked`). Not ORB-SLAM3's `GetConnectedKeyFrames`, every keyframe
+/// sharing a point ([`covisibility::connected`]), which its near check, its group's widening and
+/// its correction's new loop links read where these read this; the Python module's docstring
+/// says why.
 ///
 /// # Arguments
 ///
@@ -1165,7 +1169,7 @@ pub struct DetectionSummary {
     pub outcome: Outcome,
     /// The loop being confirmed, carried to it; `None` if there was none.
     pub confirmation: Option<ConfirmationSummary>,
-    /// The keyframes outside its links that share a word with it.
+    /// The keyframes sharing no point with it that share a word with it.
     pub sharing: usize,
     /// Those scored.
     pub scored: usize,
@@ -2670,6 +2674,56 @@ pub fn essential_graph(
     })
 }
 
+/// Global BA's solve (`slam_it.edge.loops.global_ba_options`): `loops.global_iterations`, g2o's
+/// damping from `loops.global_damping_scale` (its `tau`), as ORB-SLAM3's every BA runs it, and
+/// ORB-SLAM3's stop after `loops.global_small_steps` decreases in a row under
+/// `loops.global_small_decrease`. GTSAM's absolute damping let a monocular map's global BA slide
+/// along its free scale (the scale carrying its cameras' centres onto where they started: 0.55
+/// under GTSAM's damping, 0.99 under this one, on the loop room's failing run) and, at its bound,
+/// accept no step on real maps: the online-SLAM design, section 11's L2, and the CHANGELOG's
+/// 0.3.18.0 entry, Measured.
+///
+/// # Arguments
+///
+/// * `options` - The settings.
+/// * `stop` - Stops the solve before its next iteration.
+///
+/// # Returns
+///
+/// The solve's options.
+#[must_use]
+pub fn global_ba_options(options: &Options, stop: &Stop) -> graphs::Options {
+    graphs::Options {
+        max_iterations: options.loops.global_iterations,
+        scaled_damping: true,
+        damping_scale: options.loops.global_damping_scale,
+        small_steps: options.loops.global_small_steps,
+        small_decrease: options.loops.global_small_decrease,
+        stop: stop.clone(),
+        ..graphs::Options::default()
+    }
+}
+
+/// A welding BA's solve (`slam_it.edge.loops.weld_options`): `iterations`, GTSAM's own damping
+/// and no stop by small steps. ORB-SLAM3's welding BA runs g2o's damping and stop too, but here
+/// it keeps GTSAM's (decided by evan-wes on 2026-10-23): with g2o's, its first solve ended above
+/// GTSAM's cost on the welds dumped from the test set (the CHANGELOG's 0.3.18.0 entry, Measured).
+///
+/// # Arguments
+///
+/// * `iterations` - The solve's iterations.
+///
+/// # Returns
+///
+/// The solve's options.
+#[must_use]
+pub fn weld_options(iterations: usize) -> graphs::Options {
+    graphs::Options {
+        max_iterations: iterations,
+        ..graphs::Options::default()
+    }
+}
+
 /// Bundle-adjusts cameras and points through the camera (`graphs::bundle_adjust`): global BA's
 /// and the welding BA's solve.
 ///
@@ -2680,8 +2734,9 @@ pub fn essential_graph(
 /// * `observations` - The observations.
 /// * `camera` - The camera.
 /// * `fixed` - The cameras held.
-/// * `iterations` - The solve's iterations.
-/// * `stop` - Stops it before its next iteration (global BA in a thread of its own).
+/// * `near` - The fraction of the median depth nearer than which an observation is left out
+///   (`loops.min_depth_ratio`).
+/// * `solve` - How the solve runs (`global_ba_options` or `weld_options`).
 ///
 /// # Returns
 ///
@@ -2696,8 +2751,8 @@ fn adjust(
     observations: &graphs::Observations<'_>,
     camera: &Camera,
     fixed: &[usize],
-    iterations: usize,
-    stop: &Stop,
+    near: f64,
+    solve: &graphs::Options,
 ) -> Result<graphs::Adjustment> {
     graphs::bundle_adjust(
         poses,
@@ -2709,24 +2764,23 @@ fn adjust(
             bf: camera.focal() * camera.baseline,
         },
         fixed,
-        &graphs::Options {
-            max_iterations: iterations,
-            stop: stop.clone(),
-            ..graphs::Options::default()
-        },
+        near,
+        solve,
     )
 }
 
 /// Bundle-adjusts every keyframe and point (`slam_it.edge.loops.global_bundle_adjust`,
 /// `GlobalBundleAdjustemnt` as loop closing runs it): every observation, weighed by its
-/// level's information, with its right column where it has one; no robust loss; the map's
-/// first keyframe (id 0) held fixed; `loops.global_iterations`. Every point is refreshed after.
+/// level's information, with its right column where it has one, but those near their camera's
+/// plane (`loops.min_depth_ratio`); no robust loss; the map's first keyframe (id 0) held fixed;
+/// solved as `global_ba_options` says. Every point is refreshed after.
 ///
 /// # Arguments
 ///
 /// * `m` - The map, changed in place, with its first keyframe.
 /// * `camera` - The camera.
-/// * `options` - `loops.global_iterations`.
+/// * `options` - `loops.global_iterations`, `loops.global_damping_scale`,
+///   `loops.global_small_steps`, `loops.global_small_decrease` and `loops.min_depth_ratio`.
 /// * `stop` - Stops it before its next iteration (a global BA in a thread of its own,
 ///   superseded: ORB-SLAM's `mbStopGBA`).
 ///
@@ -2785,8 +2839,8 @@ pub fn global_bundle_adjust(
         },
         camera,
         &fixed,
-        options.loops.global_iterations,
-        stop,
+        options.loops.min_depth_ratio,
+        &global_ba_options(options, stop),
     )?;
     m.kf_pose = adjusted.poses.iter().map(sim3::inverse).collect();
     m.pt_xyz = adjusted.points;
@@ -3247,6 +3301,7 @@ fn absorb(into: &mut Map, other: &Map, keyframe_offset: i64, point_offset: i64) 
     into.kp_level.extend(&other.kp_level);
     into.kp_angle.extend(&other.kp_angle);
     into.kp_descriptor.extend(&other.kp_descriptor);
+    into.kp_node.extend(&other.kp_node);
     into.kp_bearing.extend(&other.kp_bearing);
     into.kp_depth.extend(&other.kp_depth);
     into.kp_right.extend(&other.kp_right);
@@ -3476,7 +3531,9 @@ struct WeldState {
 /// * `state` - The state, updated in place.
 /// * `used` - Which observations take part.
 /// * `robust` - With a Huber loss at each one's threshold's root.
-/// * `iterations` - The solve's iterations.
+/// * `iterations` - The solve's iterations (`weld_options`).
+/// * `near` - The fraction of the median depth nearer than which an observation is left out
+///   (`loops.min_depth_ratio`).
 ///
 /// # Returns
 ///
@@ -3492,6 +3549,7 @@ fn weld_solve(
     used: &[bool],
     robust: bool,
     iterations: usize,
+    near: f64,
 ) -> Result<graphs::Summary> {
     let mut cameras: BTreeSet<usize> = problem.fixed.iter().copied().collect();
     let mut points = BTreeSet::new();
@@ -3539,8 +3597,8 @@ fn weld_solve(
         },
         camera,
         &fixed,
-        iterations,
-        &Stop::never(),
+        near,
+        &weld_options(iterations),
     )?;
     for (c, pose) in used_cameras.iter().zip(&adjusted.poses) {
         state.poses[*c] = *pose;
@@ -3618,6 +3676,7 @@ fn weld(
         xyz: problem.points.iter().map(|&p| m.pt_xyz[p]).collect(),
     };
     let everything = vec![true; problem.rows.len()];
+    let near = options.loops.min_depth_ratio;
     let first = weld_solve(
         &problem,
         camera,
@@ -3625,6 +3684,7 @@ fn weld(
         &everything,
         true,
         options.adjustment.iterations,
+        near,
     )?;
     let inliers: Vec<bool> = weld_errors(&problem, camera, &state)?
         .iter()
@@ -3639,6 +3699,7 @@ fn weld(
             &inliers,
             false,
             options.adjustment.refine_iterations,
+            near,
         )?)
     } else {
         None

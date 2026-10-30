@@ -7,17 +7,18 @@ A run is a folder, written by any backend's pipeline (C++ and Rust write the sam
   "peak_memory", "cpus", "memory_cap"}``, ``mode`` one of :data:`MODES` and ``backend`` one of
   ``python``, ``cpp`` and ``rust``; ``settings`` holds the pipeline's options as JSON (the edge
   pipeline's an object per group, :meth:`slam_it.edge.options.Options.as_dict`); ``vocabulary``
-  the vocabulary a run relocalising or closing loops used, as its folder's header and checksums
-  record it (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k,
-  levels, words and each array's SHA-256), null for a run that did neither
-  (``relocalization.enabled`` and ``loops.enabled`` off); ``record_features`` whether the run
-  recorded its features (below); ``threaded`` whether its steps ran in threads of their own
-  (:class:`slam_it.edge.pipeline.Pipeline`'s ``threaded``), and ``locks`` whether those threads
-  shared the map by ORB-SLAM's locks, C++'s baseline (its program's ``--locks``; only threaded,
-  only C++). The last three describe the program that ran it, as it recorded them before writing
-  (:mod:`slam_it.eval.budgets`), and are null when the run was not a program's of its own
-  (Python's in-process run) or the system does not say: ``peak_memory``, its largest resident
-  set in bytes; ``cpus``, the CPUs it could run on, ascending (a budget pins them);
+  the vocabulary the run used, as its folder's header and checksums record it
+  (:func:`slam_it.eval.vocabularies.record`: its format and descriptor versions, k, levels, words
+  and each array's SHA-256): every program's run names one, as mapping quantises each keyframe's
+  features by it; null in a run that names none (one made before 0.3.18.0 with
+  ``relocalization.enabled`` and ``loops.enabled`` off, or not by a program); ``record_features``
+  whether the run recorded its features (below); ``threaded`` whether its steps ran in threads of
+  their own (:class:`slam_it.edge.pipeline.Pipeline`'s ``threaded``), and ``locks`` whether those
+  threads shared the map by ORB-SLAM's locks, C++'s baseline (its program's ``--locks``; only
+  threaded, only C++). The last three describe the program that ran it, as it recorded them
+  before writing (:mod:`slam_it.eval.budgets`), and are null when the run was not a program's of
+  its own (Python's in-process run) or the system does not say: ``peak_memory``, its largest
+  resident set in bytes; ``cpus``, the CPUs it could run on, ascending (a budget pins them);
   ``memory_cap``, its control group's memory cap in bytes (null without one).
 - ``trajectory.txt``: each tracked frame's final ``T_world_cam`` in TUM's format, one
   ``timestamp tx ty tz qx qy qz qw`` line per frame, ``#`` comments allowed: what ORB-SLAM and
@@ -247,8 +248,9 @@ class Run:
     settings : dict
         The pipeline's options, as JSON values.
     vocabulary : dict or None
-        The vocabulary a run relocalising or closing loops used, its header and checksums
-        (:func:`slam_it.eval.vocabularies.record`); None if it did neither.
+        The vocabulary the run used, its header and checksums
+        (:func:`slam_it.eval.vocabularies.record`); None if it names none (the module
+        docstring).
     diagnostics : list of dict
         One JSON object per frame, each with a ``timestamp``, and its ``map`` in a run with maps
         (the module docstring has the keys read across a run's maps).

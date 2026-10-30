@@ -54,6 +54,11 @@ and found in, a mapping step's result, a correction, the archive of removals emp
 A correction holds the map through the owner's handshake (:meth:`MapOwner.stopped`, ORB-SLAM's
 ``RequestStop``, its global BA's abort and ``Release``), which is nothing in one thread.
 
+**The vocabulary** is every pipeline's, whatever it relocalises or closes, as ORB-SLAM always loads
+one: a keyframe's features are quantised by it as it enters the map, each keypoint's node kept
+(:attr:`slam_it.edge.map.Map.kp_node`), and matching for triangulation pairs only keypoints under
+the same node.
+
 **The keyframe database** (:class:`slam_it.edge.database.Database`), kept whenever relocalisation
 or loop closing is on (B3's review panel, H7: ORB-SLAM always keeps its ``KeyFrameDatabase``),
 holds the words of the map being tracked, with the pipeline's vocabulary: a map's
@@ -797,16 +802,20 @@ class MapOwner:
 
     Attributes
     ----------
-    vocabulary : slam_it.foundations.vocabulary.Vocabulary or None
-        The database's words' vocabulary; None when neither relocalising nor closing loops, and
-        there is no database.
+    vocabulary : slam_it.foundations.vocabulary.Vocabulary
+        The vocabulary: each keyframe's features are quantised by it as it enters the map (its
+        nodes, :attr:`slam_it.edge.map.Map.kp_node`), and the database's words are of it.
+    keeps_database : bool
+        Whether a map keeps a keyframe database: with relocalisation or loop closing on
+        (:meth:`slam_it.edge.options.Options.keeps_keyframe_database`).
     writer : slam_it.edge.threads.Writer or None
         The handshake between the threads; None inline.
     corrections : int
         The corrections applied: loops corrected, and global BAs carried onto the map.
     """
 
-    vocabulary: Vocabulary | None = field(default=None, repr=False)
+    vocabulary: Vocabulary = field(repr=False)
+    keeps_database: bool
     writer: Writer | None = field(default=None, repr=False)
     corrections: int = field(default=0, init=False)
     _map: Map | None = field(default=None, init=False, repr=False)
@@ -850,7 +859,7 @@ class MapOwner:
             The new map.
         """
         self._map, self._view = m, View(m, self.corrections)
-        if self.vocabulary is not None:
+        if self.keeps_database:
             self._database = Database(self.vocabulary)
             self._sync_database()
 
@@ -966,7 +975,7 @@ class MapOwner:
         Returns
         -------
         tuple
-            The map, and its database (None when not relocalising).
+            The map, and its database (None when maps keep none).
         """
         m, db = self.read(), self._database
         self._map, self._view, self._database = None, None, None
@@ -1023,7 +1032,7 @@ class MapOwner:
     def _sync_database(self) -> None:
         """Bring the keyframe database to the map's keyframes: add the new, erase the culled."""
         m, db = self.read(), self._database
-        if db is None:  # not relocalising
+        if db is None:  # maps keep none
             return
         held = set(db.keyframes.tolist())
         for keyframe in sorted(held - set(m.kf_id.tolist())):
@@ -1181,7 +1190,7 @@ class _Inline:
 
 
 def _initialize_monocular(
-    state: TrackingState, camera: Camera, frame: Frame, options: Options
+    state: TrackingState, camera: Camera, frame: Frame, options: Options, words: Vocabulary
 ) -> Initialization:
     """Pair a monocular frame with the reference, or make it the reference."""
     if frame.size <= options.initialization.min_features:
@@ -1201,7 +1210,9 @@ def _initialize_monocular(
     # The search follows each matched keypoint (SearchForInitialization's vbPrevMatched).
     state.previous[matched.pairs[:, 0]] = frame.features.keypoints.xy[matched.pairs[:, 1]]
     # None keeps the reference: a later frame may have the parallax.
-    return initialization.initialize_monocular(camera, state.reference, frame, matched, options)
+    return initialization.initialize_monocular(
+        camera, state.reference, frame, matched, options, words
+    )
 
 
 def _place(  # noqa: PLR0913 -- tracking's state, the map's view and owner, the frame, the settings
@@ -1404,8 +1415,9 @@ def _map_keyframe(  # noqa: PLR0913 -- the map's owner, the keyframe, the settin
     The map goes back to `owner`; culling spares the `held` keyframes.
     """
     mapped = mapping.process(
-        owner.read(), camera, frame, tracked, mode=mode, options=options, held=held
-    )
+        owner.read(), camera, frame, tracked,
+        mode=mode, options=options, words=owner.vocabulary, held=held,
+    )  # fmt: skip
     owner.apply_mapping(mapped.map)
     return mapped
 
@@ -1789,8 +1801,8 @@ class _Threads:
             tracked = _still_mapped(self._placed(request), self.owner.read())
             mapped = mapping.process(
                 self.owner.read(), self.camera, request.frame, tracked,
-                mode=self.mode, options=self.options, held=self.closing.held(),
-                interrupts=_Interrupts(self),
+                mode=self.mode, options=self.options, words=self.owner.vocabulary,
+                held=self.closing.held(), interrupts=_Interrupts(self),
             )  # fmt: skip
             self.owner.apply_mapping(mapped.map)
             seconds = time.perf_counter() - start
@@ -1975,9 +1987,9 @@ class Pipeline:
         The camera.
     options : Options
         The settings.
-    vocabulary : slam_it.foundations.vocabulary.Vocabulary or None
-        The vocabulary the keyframe database's words are of: required with
-        ``relocalization.enabled`` or ``loops.enabled`` on, refused with both off.
+    vocabulary : slam_it.foundations.vocabulary.Vocabulary
+        The vocabulary: mapping quantises each keyframe's features by it, and the keyframe
+        database's words, kept with relocalisation or loop closing on, are of it.
     threaded : bool
         Whether the steps run in threads of their own (the module docstring); default, inline.
     state : State
@@ -1994,8 +2006,8 @@ class Pipeline:
 
     mode: str
     camera: Camera
-    options: Options = field(default_factory=Options)
-    vocabulary: Vocabulary | None = field(default=None, repr=False)
+    options: Options
+    vocabulary: Vocabulary = field(repr=False)
     threaded: bool = False
     state: State = field(default=State.NOT_INITIALIZED, init=False)
     tracking: TrackingState = field(default_factory=TrackingState, init=False, repr=False)
@@ -2012,22 +2024,20 @@ class Pipeline:
         Raises
         ------
         slam_it.foundations.errors.InvalidInputError
-            If the mode is unknown, a stereo or RGB-D camera has no baseline, or a vocabulary
-            is missing while relocalising or closing loops, or given while doing neither.
+            If the mode is unknown, a stereo or RGB-D camera has no baseline, or the vocabulary
+            is not a :class:`slam_it.foundations.vocabulary.Vocabulary` (one is checked as it is
+            made).
         """
         if self.mode not in MODES:
             raise InvalidInputError(f"mode: expected one of {MODES}, got {self.mode!r}")
+        if not isinstance(self.vocabulary, Vocabulary):
+            raise InvalidInputError(
+                f"vocabulary: expected a Vocabulary, got {type(self.vocabulary).__name__}"
+            )
         if self.mode != "monocular" and not self.camera.baseline > 0.0:
             raise InvalidInputError(f"camera.baseline: {self.mode} needs a positive baseline")
-        needed = self.options.keeps_keyframe_database()
-        if needed and self.vocabulary is None:
-            raise InvalidInputError("vocabulary: relocalization.enabled or loops.enabled needs one")
-        if not needed and self.vocabulary is not None:
-            raise InvalidInputError(
-                "vocabulary: given, but relocalization.enabled and loops.enabled are both off"
-            )
         writer = Writer() if self.threaded else None
-        self.owner = MapOwner(self.vocabulary, writer)
+        self.owner = MapOwner(self.vocabulary, self.options.keeps_keyframe_database(), writer)
         self.atlas = Atlas(self.options)
         if writer is not None:
             self._threads = _Threads(self, writer)
@@ -2285,9 +2295,11 @@ class Pipeline:
     def _initialize(self, frame: Frame) -> _Step:
         """Try to start the map with this frame."""
         if self.mode == "monocular":
-            attempt = _initialize_monocular(self.tracking, self.camera, frame, self.options)
+            attempt = _initialize_monocular(
+                self.tracking, self.camera, frame, self.options, self.vocabulary
+            )
         else:
-            attempt = initialization.initialize_from_depth(frame, self.options)
+            attempt = initialization.initialize_from_depth(frame, self.options, self.vocabulary)
         summary = FrameSummary(init=attempt.summary)
         if attempt.started is None:
             return _Step(tracked=None, keyframe=False, map_seconds=0.0, summary=summary)

@@ -239,7 +239,7 @@ Result<void> check_lengths(const Map& m) {
   const std::size_t p = m.pt_id.size();
   const bool ok = m.kf_time.size() == k && m.kf_pose.size() == k && m.kf_parent.size() == k &&
                   m.kf_start.size() == k + 1 && m.kp_xy.size() == t && m.kp_level.size() == t &&
-                  m.kp_angle.size() == t && m.kp_descriptor.size() == t &&
+                  m.kp_angle.size() == t && m.kp_descriptor.size() == t && m.kp_node.size() == t &&
                   m.kp_bearing.size() == t && m.kp_depth.size() == t && m.kp_right.size() == t &&
                   m.pt_xyz.size() == p && m.pt_descriptor.size() == p && m.pt_normal.size() == p &&
                   m.pt_min_distance.size() == p && m.pt_max_distance.size() == p &&
@@ -398,6 +398,9 @@ Result<void> check_map(const Map& m) {
   if (auto ok = check_links(m); !ok) {
     return ok;
   }
+  if (std::ranges::any_of(m.kp_node, [](std::int64_t node) { return node < 0; })) {
+    return fail(ErrorKind::kInvalidInput, "map.kp_node: every node must be at least 0");
+  }
   if (std::ranges::any_of(m.kp_point, [&](std::int64_t id) {
         return id < -1 || (id >= 0 && row_of(m.pt_id, id) < 0);
       })) {
@@ -452,6 +455,7 @@ Map sub_map(const Map& m, std::span<const std::int64_t> rows) {
       out.kp_level.push_back(m.kp_level[kp]);
       out.kp_angle.push_back(m.kp_angle[kp]);
       out.kp_descriptor.push_back(m.kp_descriptor[kp]);
+      out.kp_node.push_back(m.kp_node[kp]);
       out.kp_bearing.push_back(m.kp_bearing[kp]);
       out.kp_depth.push_back(m.kp_depth[kp]);
       out.kp_right.push_back(m.kp_right[kp]);
@@ -583,7 +587,8 @@ Result<std::vector<std::int64_t>> predict_level(const Map& m, std::span<const st
 }
 
 Result<void> insert_keyframe(Map& m, const Frame& frame, const Eigen::Matrix4d& pose,
-                             std::span<const std::int64_t> points) {
+                             std::span<const std::int64_t> points,
+                             std::span<const std::int64_t> nodes) {
   if (frame.features.levels != m.levels || frame.features.scale_factor != m.scale_factor) {
     return fail(ErrorKind::kInvalidInput, "frame: its pyramid must be the map's");
   }
@@ -594,6 +599,11 @@ Result<void> insert_keyframe(Map& m, const Frame& frame, const Eigen::Matrix4d& 
   if (points.size() != n || frame.features.descriptors.size() != n || frame.bearings.size() != n ||
       frame.depth.size() != n || frame.right.size() != n) {
     return fail(ErrorKind::kInvalidInput, "points: expected one id per keypoint");
+  }
+  if (nodes.size() != n || std::ranges::any_of(nodes, [](std::int64_t node) { return node < 0; })) {
+    return fail(ErrorKind::kInvalidInput,
+                "nodes: expected " + std::to_string(n) +
+                    " vocabulary nodes, one per keypoint, each at least 0");
   }
   std::set<std::int64_t> observed;
   for (const std::int64_t id : points) {
@@ -613,6 +623,7 @@ Result<void> insert_keyframe(Map& m, const Frame& frame, const Eigen::Matrix4d& 
     m.kp_level.push_back(k.level);
     m.kp_angle.push_back(k.angle);
     m.kp_descriptor.push_back(frame.features.descriptors[i]);
+    m.kp_node.push_back(nodes[i]);
     m.kp_bearing.push_back(frame.bearings[i]);
     m.kp_depth.push_back(frame.depth[i]);
     m.kp_right.push_back(frame.right[i]);
@@ -785,6 +796,7 @@ Result<void> erase_keyframe(Map& m, std::int64_t k) {
   keep_where(m.kp_level, keep);
   keep_where(m.kp_angle, keep);
   keep_where(m.kp_descriptor, keep);
+  keep_where(m.kp_node, keep);
   keep_where(m.kp_bearing, keep);
   keep_where(m.kp_depth, keep);
   keep_where(m.kp_right, keep);

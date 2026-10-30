@@ -12,6 +12,10 @@ V.D; ``KeyFrame::UpdateConnections``, ``KeyFrame::SetBadFlag``, ``Tracking::Upda
   ``covisibility.min_points`` (15) with, or, if it shares that many with none, to the one it
   shares most with; its links run most shared first, ties broken by the lower id. Its best are
   the first of its links.
+- **The connected keyframes** (:func:`connected`, ``GetConnectedKeyFrames``): every keyframe
+  sharing a point with it, however few, most shared first, ties broken by the lower id. Loop
+  closing's candidates are never one of them (:func:`slam_it.edge.database.loop_candidates`,
+  ORB-SLAM3's ``DetectNBestCandidates``).
 - **The spanning tree,** the one part stored: each keyframe's parent
   (:attr:`slam_it.edge.map.Map.kf_parent`) is the keyframe it shared the most points with when
   it was inserted (:func:`adopt`, ORB-SLAM's first ``UpdateConnections``); a map's first
@@ -37,8 +41,9 @@ K1 runs most shared first, ties by id, in the three languages alike. And ORB-SLA
 every keyframe sharing a point in the list it re-sorts (``UpdateBestCovisibles``), with no
 threshold of 15: ``SetBadFlag`` can join a child to a candidate it shares fewer with, where here
 it takes the culled keyframe's parent, and ORB-SLAM3's culling tests every keyframe sharing a
-point with the new one, up to 100. Here the paper's rule holds in every stage. The design is
-section 8 of ``docs/design/2026-10-14-online-slam.md``.
+point with the new one, up to 100. Here the paper's rule holds in every stage but one: loop
+closing's candidates leave out the connected keyframes, as ORB-SLAM3's source does (the design's
+section 10, item 2). The design is section 8 of ``docs/design/2026-10-14-online-slam.md``.
 """
 
 from __future__ import annotations
@@ -82,6 +87,10 @@ class Implementation(Protocol):
         self, m: dict[str, Any], k: int, options: dict[str, Any]
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
         """Return a keyframe's links' rows and weights."""
+        ...
+
+    def connected(self, m: dict[str, Any], k: int) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+        """Return a keyframe's connected keyframes' rows and weights."""
         ...
 
     def local_map(
@@ -209,6 +218,13 @@ def _links(m: Map, k: int, options: Options) -> tuple[IntArray, IntArray]:
     shared = _shared(m, k)
     linked = _links_of(m, shared, options.covisibility.min_points)
     return linked, shared[linked]
+
+
+def _connected(m: Map, k: int) -> tuple[IntArray, IntArray]:
+    """Return a keyframe's connected keyframes and their weights (reference)."""
+    shared = _shared(m, k)
+    rows = _ranked(m, shared)
+    return rows, shared[rows]
 
 
 def _local_map(m: Map, points: IntArray, options: Options) -> LocalMap:
@@ -410,6 +426,46 @@ def links(
         decode=lambda raw, codes: (
             backends.checked_array(raw[0], np.int64, 1, "links rows"),
             backends.checked_array(raw[1], np.int64, 1, "links weights"),
+        ),
+    )
+
+
+def connected(m: Map, k: int, *, backend: str = "python") -> tuple[IntArray, IntArray]:
+    """Return a keyframe's connected keyframes and their weights (``GetConnectedKeyFrames``).
+
+    Every keyframe sharing a point with it, however few: its links (:func:`links`) are those of
+    them sharing at least ``covisibility.min_points``.
+
+    Parameters
+    ----------
+    m : slam_it.edge.map.Map
+        The map, whose observations give the weights.
+    k : int
+        The keyframe's row.
+    backend : {"python", "cpp", "rust"}, optional
+        Which implementation computes the result (default: the Python reference).
+
+    Returns
+    -------
+    tuple of ndarray of int64
+        The rows of the keyframes sharing a point with it, most shared first (ties: the lower
+        id), and the points each shares; none if no keyframe shares a point.
+
+    Raises
+    ------
+    slam_it.foundations.errors.InvalidInputError
+        If `k` is not a keyframe row.
+    """
+    row = maps.as_keyframe_row(m, k)
+    return backends.call(
+        backend,
+        __name__,
+        "connected",
+        reference=lambda: _connected(m, row),
+        arguments={"m": m.as_dict(), "k": row},
+        decode=lambda raw, codes: (
+            backends.checked_array(raw[0], np.int64, 1, "connected rows"),
+            backends.checked_array(raw[1], np.int64, 1, "connected weights"),
         ),
     )
 

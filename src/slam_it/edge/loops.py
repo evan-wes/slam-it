@@ -16,8 +16,9 @@ in the pipeline's one worker. The design is section 10 of
    ``loops.temporal_matches`` needed. One more confirmation; ``loops.confirmations`` close the
    loop; ``loops.misses`` keyframes in a row without one drop it.
 2. **Otherwise, the keyframe database's candidates** (:func:`slam_it.edge.database
-   .loop_candidates`), each tried with its best ``loops.neighbours`` links
-   (``DetectCommonRegionsFromBoW``), unless one of them is linked to the keyframe:
+   .loop_candidates`), none sharing a point with the keyframe, each tried with its best
+   ``loops.neighbours`` links (``DetectCommonRegionsFromBoW``), unless one of them is linked to
+   the keyframe:
 
    - the keyframe's points matched by word to each of the group's (:func:`match_by_word`,
      ``loops.ratio``), ``loops.min_matches`` in all;
@@ -82,6 +83,15 @@ scale, so their similarities are rigid (``mbFixScale``).
   ORB-SLAM's ``SearchAndFuse`` defers its replacements (``vpReplacePoint``), so there the
   second finds the keypoint's first point already replaced and merges nothing (rare; B3's
   review panel, L5).
+
+**Unlike ORB-SLAM3's source, by choice:** the near check (a group holding one of the keyframe's
+links is passed over), the group's widening and the correction's new loop links read the
+keyframe's links, those sharing ``covisibility.min_points`` (``_linked``); ORB-SLAM3's read its
+connected keyframes (``GetConnectedKeyFrames``), every keyframe sharing a point, as the
+candidates' retrieval does here. With the connected keyframes there as well, a loop whose
+candidate shares no point with the keyframe, but whose group holds one sharing a single point, is
+passed over, right-place loops among them: the online-SLAM design's section 10, item 2, gives the
+measurements.
 """
 
 from __future__ import annotations
@@ -611,7 +621,7 @@ class DetectionSummary:
     confirmation : ConfirmationSummary or None
         The loop being confirmed, carried to it; None if there was none.
     sharing : int
-        The keyframes outside its links that share a word with it.
+        The keyframes sharing no point with it that share a word with it.
     scored : int
         Those scored.
     candidates : tuple of CandidateSummary
@@ -666,7 +676,12 @@ class Detection:
 
 
 def _linked(m: Map, k: int, options: Options) -> set[int]:
-    """Return a keyframe's links' rows, all of them (``GetConnectedKeyFrames``)."""
+    """Return a keyframe's links' rows, all of them: those sharing ``covisibility.min_points``.
+
+    Not ORB-SLAM3's ``GetConnectedKeyFrames``, every keyframe sharing a point
+    (:func:`slam_it.edge.covisibility.connected`), which its near check, its group's widening and
+    its correction's new loop links read where these read this; the module's docstring says why.
+    """
     return {int(r) for r in covisibility.links(m, k, options)[0]}
 
 
@@ -1331,12 +1346,18 @@ class CorrectionSummary:
 
 
 def _solve_record(summary: graphs.Summary) -> dict[str, Any]:
-    """Return a solve's summary as JSON values."""
+    """Return a solve's summary as JSON values.
+
+    Its errors, iterations and termination, and a bundle adjustment's counts (``left_out``,
+    ``ended_near``; 0 for the essential graph).
+    """
     return {
         "initial_error": summary.initial_error,
         "final_error": summary.final_error,
         "iterations": summary.iterations,
         "termination": summary.termination.value,
+        "left_out": summary.left_out,
+        "ended_near": summary.ended_near,
     }
 
 
@@ -1591,6 +1612,59 @@ def essential_graph(  # noqa: PLR0913 -- the map, the loop's state, the settings
     return [sim3.inverse(pose) for pose in solved.poses], len(graph.edges), solved.summary
 
 
+def global_ba_options(options: Options) -> graphs.Options:
+    """Return global BA's solve: ``loops.global_iterations``, g2o's damping, ORB-SLAM3's stop.
+
+    ORB-SLAM3's global BA runs g2o's Levenberg-Marquardt as its every BA does: ``λ`` from
+    ``loops.global_damping_scale`` (g2o's ``τ``) times the largest diagonal entry of the normal
+    equations, by Nielsen's schedule, ending after ``loops.global_small_steps`` iterations in a
+    row each lowering the error by under ``loops.global_small_decrease`` of it
+    (``optimization_algorithm_levenberg.cpp``). GTSAM's absolute damping let a monocular map's
+    global BA slide along its free scale (the scale carrying its cameras' centres onto where they
+    started: 0.55 under GTSAM's damping, 0.99 under this one, on the loop room's failing run) and,
+    at its bound, accept no step on real maps: the online-SLAM design, section 11's L2, and the
+    CHANGELOG's 0.3.18.0 entry, *Measured*.
+
+    Parameters
+    ----------
+    options : Options
+        The settings.
+
+    Returns
+    -------
+    slam_it.foundations.graphs.Options
+        The solve's options.
+    """
+    loops = options.loops
+    return graphs.Options(
+        max_iterations=loops.global_iterations,
+        scaled_damping=True,
+        damping_scale=loops.global_damping_scale,
+        small_steps=loops.global_small_steps,
+        small_decrease=loops.global_small_decrease,
+    )
+
+
+def weld_options(iterations: int) -> graphs.Options:
+    """Return a welding BA's solve: `iterations`, GTSAM's own damping, and no stop by small steps.
+
+    ORB-SLAM3's welding BA runs g2o's damping and stop too, but here it keeps GTSAM's (decided by
+    evan-wes on 2026-10-23): with g2o's, its first solve ended above GTSAM's cost on the welds
+    dumped from the test set (the CHANGELOG's 0.3.18.0 entry, *Measured*).
+
+    Parameters
+    ----------
+    iterations : int
+        The solve's iterations.
+
+    Returns
+    -------
+    slam_it.foundations.graphs.Options
+        The solve's options.
+    """
+    return graphs.Options(max_iterations=iterations)
+
+
 def _global_bundle_adjust(
     m: Map, camera: Camera, options: Options, stop: Callable[[], bool] | None = None
 ) -> tuple[Map, graphs.Summary]:
@@ -1608,7 +1682,8 @@ def _global_bundle_adjust(
         intrinsics=camera.intrinsics,
         bf=camera.focal * camera.baseline,
         fixed=np.flatnonzero(m.kf_id == 0),
-        options=graphs.Options(max_iterations=options.loops.global_iterations),
+        near=options.loops.min_depth_ratio,
+        options=global_ba_options(options),
         stop=stop,
     )
     poses = np.array([sim3.inverse(pose) for pose in adjusted.poses]).reshape(-1, 4, 4)
@@ -2055,10 +2130,10 @@ def _absorb(into: Map, other: Map, keyframe_offset: int, point_offset: int) -> M
     tables: dict[str, Any] = {
         name: np.concatenate([getattr(into, name), getattr(other, name)])
         for name in (
-            "kf_time", "kf_pose", "kp_xy", "kp_level", "kp_angle", "kp_descriptor", "kp_bearing",
-            "kp_depth", "kp_right", "pt_xyz", "pt_descriptor", "pt_normal", "pt_min_distance",
-            "pt_max_distance", "pt_visible", "pt_found", "gone_pt_xyz", "gone_pt_how",
-            "gone_kf_time", "gone_kf_pose", "gone_kf_relative",
+            "kf_time", "kf_pose", "kp_xy", "kp_level", "kp_angle", "kp_descriptor", "kp_node",
+            "kp_bearing", "kp_depth", "kp_right", "pt_xyz", "pt_descriptor", "pt_normal",
+            "pt_min_distance", "pt_max_distance", "pt_visible", "pt_found", "gone_pt_xyz",
+            "gone_pt_how", "gone_kf_time", "gone_kf_pose", "gone_kf_relative",
         )
     }  # fmt: skip
     return replace(
@@ -2184,11 +2259,13 @@ def _weld_solve(  # noqa: PLR0913 -- the problem, its state, which observations,
     *,
     robust: bool,
     iterations: int,
+    near: float,
 ) -> tuple[Array, Array, graphs.Summary]:
     """Solve the welding BA on the observations `use` marks, from `state` (poses, points).
 
     Only the cameras and points those observations reach take part, with the held cameras;
-    the rest keep their state.
+    the rest keep their state. GTSAM's own damping (:func:`weld_options`); the observations
+    `near` their camera's plane left out.
     """
     poses, xyz = state
     cameras = np.unique(np.concatenate([problem.camera[use], problem.fixed])).astype(np.int64)
@@ -2198,8 +2275,8 @@ def _weld_solve(  # noqa: PLR0913 -- the problem, its state, which observations,
         np.searchsorted(points, problem.point[use]), problem.xy[use], problem.right[use],
         1.0 / problem.variance[use], model=camera.model, intrinsics=camera.intrinsics,
         bf=camera.focal * camera.baseline, fixed=np.searchsorted(cameras, problem.fixed),
-        huber=np.sqrt(problem.limits[use]) if robust else None,
-        options=graphs.Options(max_iterations=iterations),
+        huber=np.sqrt(problem.limits[use]) if robust else None, near=near,
+        options=weld_options(iterations),
     )  # fmt: skip
     poses, xyz = poses.copy(), xyz.copy()
     poses[cameras], xyz[points] = result.poses, result.points
@@ -2235,15 +2312,17 @@ def _weld(
         m.pt_xyz[problem.points].copy(),
     )
     everything = np.ones(len(problem.rows), dtype=bool)
+    near = options.loops.min_depth_ratio
     poses, xyz, first = _weld_solve(
-        problem, camera, state, everything, robust=True, iterations=options.adjustment.iterations
-    )
+        problem, camera, state, everything, robust=True,
+        iterations=options.adjustment.iterations, near=near,
+    )  # fmt: skip
     inliers = _weld_errors(problem, camera, poses, xyz) <= problem.limits
     second: graphs.Summary | None = None
     if np.any(inliers):
         poses, xyz, second = _weld_solve(
             problem, camera, (poses, xyz), inliers, robust=False,
-            iterations=options.adjustment.refine_iterations,
+            iterations=options.adjustment.refine_iterations, near=near,
         )  # fmt: skip
     failing = ~(_weld_errors(problem, camera, poses, xyz) <= problem.limits)
     kf_pose, pt_xyz = m.kf_pose.copy(), m.pt_xyz.copy()
@@ -3111,7 +3190,8 @@ def global_bundle_adjust(
     """Bundle-adjust every keyframe and point (``GlobalBundleAdjustemnt``, as loop closing runs it).
 
     Every observation, weighed by its level's information, with its right column where it has
-    one; no robust loss; the map's first keyframe (id 0) held fixed; ``loops.global_iterations``
+    one, but those near their camera's plane (``loops.min_depth_ratio``); no robust loss; the map's
+    first keyframe (id 0) held fixed; solved as :func:`global_ba_options` says
     (:func:`slam_it.foundations.graphs.bundle_adjust`). Every point is refreshed after.
 
     Parameters
@@ -3121,7 +3201,8 @@ def global_bundle_adjust(
     camera : slam_it.edge.frames.Camera
         The camera.
     options : slam_it.edge.options.Options
-        ``loops.global_iterations``.
+        ``loops.global_iterations``, ``loops.global_damping_scale``, ``loops.global_small_steps``,
+        ``loops.global_small_decrease`` and ``loops.min_depth_ratio``.
     stop : callable, optional
         Asked before each iteration whether to stop (a global BA in a thread of its own,
         superseded: ORB-SLAM's ``mbStopGBA``); the Python reference's alone.

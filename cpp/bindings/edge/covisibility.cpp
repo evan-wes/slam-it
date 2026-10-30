@@ -1,9 +1,10 @@
 /// @file
 /// @brief Bindings for `slam_it.edge.covisibility` (`slam_it._cpp.edge.covisibility`).
 ///
-/// A map crosses as `Map.as_dict()`'s dict, the settings as `Options.as_dict()`'s. Links return
-/// as a pair of int64 arrays (rows, weights); the local map as a dict of `keyframes` and
-/// `reference`; the strong links as an (L, 3) int64 array; a changed map as its dict.
+/// A map crosses as `Map.as_dict()`'s dict, the settings as `Options.as_dict()`'s. Links and the
+/// connected keyframes return as a pair of int64 arrays (rows, weights); the local map as a dict
+/// of `keyframes` and `reference`; the strong links as an (L, 3) int64 array; a changed map as
+/// its dict.
 #include "slam_it/edge/covisibility.hpp"
 
 #include <nanobind/nanobind.h>
@@ -28,14 +29,10 @@ using edge_crossing::map_in;
 using edge_crossing::options_in;
 using edge_crossing::vector_array;
 
-/// @brief A keyframe's links.
-/// @param m The map, as a dict.
-/// @param k The keyframe's row.
-/// @param options The settings, as a dict.
-/// @return The linked rows and their weights.
-/// @throws CoreError for a row out of range.
-nb::tuple links(const nb::dict& m, std::int64_t k, const nb::dict& options) {
-  const std::vector<edge::Link> found = unwrap(edge::links(map_in(m), k, options_in(options)));
+/// @brief Links as Python takes them.
+/// @param found The links.
+/// @return Their rows and their weights, as int64 arrays.
+nb::tuple links_out(const std::vector<edge::Link>& found) {
   std::vector<std::int64_t> rows;
   std::vector<std::int64_t> weights;
   for (const edge::Link& link : found) {
@@ -43,6 +40,25 @@ nb::tuple links(const nb::dict& m, std::int64_t k, const nb::dict& options) {
     weights.push_back(link.weight);
   }
   return nb::make_tuple(vector_array(rows), vector_array(weights));
+}
+
+/// @brief A keyframe's links.
+/// @param m The map, as a dict.
+/// @param k The keyframe's row.
+/// @param options The settings, as a dict.
+/// @return The linked rows and their weights.
+/// @throws CoreError for a row out of range.
+nb::tuple links(const nb::dict& m, std::int64_t k, const nb::dict& options) {
+  return links_out(unwrap(edge::links(map_in(m), k, options_in(options))));
+}
+
+/// @brief A keyframe's connected keyframes.
+/// @param m The map, as a dict.
+/// @param k The keyframe's row.
+/// @return The rows of the keyframes sharing a point with it, and their weights.
+/// @throws CoreError for a row out of range.
+nb::tuple connected(const nb::dict& m, std::int64_t k) {
+  return links_out(unwrap(edge::connected(map_in(m), k)));
 }
 
 /// @brief Tracking's local map.
@@ -134,6 +150,8 @@ nb::ndarray<nb::numpy, std::int64_t> strong_links(const nb::dict& m, const nb::d
 void bind_covisibility(nb::module_& m) {
   m.def("links", &links, nb::arg("m"), nb::arg("k"), nb::arg("options"),
         "A keyframe's links: the rows and the points each shares.");
+  m.def("connected", &connected, nb::arg("m"), nb::arg("k"),
+        "A keyframe's connected keyframes: every one sharing a point, and the points each shares.");
   m.def("local_map", &local_map, nb::arg("m"), nb::arg("points").noconvert(), nb::arg("options"),
         "Tracking's local map: its keyframes and the reference keyframe.");
   m.def("view_keyframes", &view_keyframes, nb::arg("m"), nb::arg("last").noconvert(),

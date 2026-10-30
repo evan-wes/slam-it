@@ -128,13 +128,40 @@ inline foundations::vocabulary::Vocabulary one_word() {
           .weights = {1.0}};
 }
 
+/// @brief A frame's keypoints' vocabulary nodes by `one_word()`: one node for every keypoint
+///        (the vocabulary's one leaf, above the direct level), so matching by node compares every
+///        keypoint with every other, as these tests did before keyframes kept their nodes.
+/// @param f The frame.
+/// @return Its nodes.
+inline std::vector<std::int64_t> nodes(const edge::Frame& f) {
+  return foundations::vocabulary::quantize(one_word(), f.features.descriptors).nodes;
+}
+
+/// @brief Append a point with the columns a test map needs and the stages read: a blank
+///        descriptor, a normal along +z, distances of 1, seen and found once, first and
+///        referenced by keyframe 0. The caller sets its id.
+/// @param m The map.
+/// @param xyz The point.
+inline void push_point(edge::Map& m, const Eigen::Vector3d& xyz) {
+  m.pt_xyz.push_back(xyz);
+  m.pt_descriptor.emplace_back();
+  m.pt_normal.emplace_back(0.0, 0.0, 1.0);
+  m.pt_min_distance.push_back(1.0);
+  m.pt_max_distance.push_back(1.0);
+  m.pt_visible.push_back(1);
+  m.pt_found.push_back(1);
+  m.pt_first_kf.push_back(0);
+  m.pt_reference_kf.push_back(0);
+}
+
 /// @brief The scene's map: the first keyframe makes a point at each keypoint, the others
 ///        observe them all.
 /// @return The map, or the map's error.
 inline foundations::Result<edge::Map> map() {
   edge::Map m = edge::empty_map(8, 1.2);
   const std::vector<std::int64_t> none(kPoints, -1);
-  if (auto ok = edge::insert_keyframe(m, frame(0, true), pose(0), none); !ok) {
+  if (auto ok = edge::insert_keyframe(m, frame(0, true), pose(0), none, nodes(frame(0, true)));
+      !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   std::vector<std::vector<std::int64_t>> observers;
@@ -147,7 +174,8 @@ inline foundations::Result<edge::Map> map() {
     return std::unexpected(std::move(ok.error()));
   }
   for (std::size_t k = 1; k < kKeyframes; ++k) {
-    if (auto ok = edge::insert_keyframe(m, frame(k, true), pose(k), ids); !ok) {
+    if (auto ok = edge::insert_keyframe(m, frame(k, true), pose(k), ids, nodes(frame(k, true)));
+        !ok) {
       return std::unexpected(std::move(ok.error()));
     }
   }

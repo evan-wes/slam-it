@@ -305,7 +305,8 @@ pub struct MappingOptions {
     pub min_new_points: usize,
     /// Keyframes a new stereo or RGB-D keyframe triangulates against.
     pub triangulation_neighbours: usize,
-    /// The same for monocular.
+    /// The same for monocular: ORB-SLAM2's 20, where ORB-SLAM3 takes 30, a departure not
+    /// measured on the test set (`Options.mapping`).
     pub mono_triangulation_neighbours: usize,
     /// A triangulation match's chi-square bound to its epipolar line (1 dof).
     pub epipolar_chi2: f64,
@@ -335,9 +336,12 @@ pub struct MappingOptions {
     pub min_point_observations: usize,
     /// The same for stereo and RGB-D.
     pub min_point_observations_depth: usize,
-    /// A keyframe is redundant when this fraction of its points are seen elsewhere.
+    /// The fraction of a keyframe's points that must be redundant for culling to remove it
+    /// (`KeyFrameCulling`'s 0.9).
     pub redundant_fraction: f64,
-    /// By at least this many other keyframes.
+    /// How many other keyframes must see a point, at the same, a finer or the next coarser scale,
+    /// for it to count as redundant: ORB-SLAM3's `nObs > 3`, where ORB-SLAM2 has `>= 3`
+    /// (`slam_it.edge.options.MappingOptions`).
     pub redundant_observers: usize,
     /// With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is queued
     /// only while fewer than this many wait (`KeyframesInQueue() < 3`).
@@ -365,7 +369,7 @@ impl Default for MappingOptions {
             min_point_observations: 2,
             min_point_observations_depth: 3,
             redundant_fraction: 0.9,
-            redundant_observers: 3,
+            redundant_observers: 4,
             max_queued: 3,
         }
     }
@@ -400,7 +404,8 @@ impl Default for CovisibilityOptions {
 /// Relocalising a failed frame against the whole map (`Options.relocalization`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RelocalizationOptions {
-    /// Relocalise a failed frame through the keyframe database (needs a vocabulary).
+    /// Relocalise a failed frame through the keyframe database
+    /// ([`Options::keeps_keyframe_database`]).
     pub enabled: bool,
     /// The descriptor ratio test of the fallback and of relocalisation's matching by word.
     pub ratio: f64,
@@ -526,8 +531,23 @@ pub struct LoopOptions {
     pub essential_damping: f64,
     /// Bundle-adjust the whole map after each loop.
     pub global_ba: bool,
-    /// Its iterations.
+    /// Global BA's Levenberg-Marquardt iterations at most (`GlobalBundleAdjustemnt`'s 10).
     pub global_iterations: usize,
+    /// Global BA's `tau`, relative: its first damping is this times the largest diagonal entry of
+    /// its normal equations, then follows Nielsen's schedule (g2o's damping, which ORB-SLAM3's
+    /// global BA leaves at its default; `graphs::Options::damping_scale`). Unlike
+    /// `essential_damping`, which is absolute.
+    pub global_damping_scale: f64,
+    /// How many iterations in a row, each lowering global BA's error by less than
+    /// `global_small_decrease` of it, end the solve (ORB-SLAM3's g2o stop, 3); 0, never.
+    pub global_small_steps: usize,
+    /// The fraction of global BA's error an iteration must lower it by not to count as a small
+    /// step towards `global_small_steps` (ORB-SLAM3's 1e-3).
+    pub global_small_decrease: f64,
+    /// The fraction of every observation's median depth below which global and welding BA leave
+    /// an observation out at the start, with those behind their camera (`graphs::bundle_adjust`'s
+    /// `near`); 0 leaves none out. In [0, 1).
+    pub min_depth_ratio: f64,
     /// The best links of the merge's keyframe a welding window starts with, and the keyframes it
     /// is widened to while it holds fewer (`numTemporalKFs`).
     pub weld_neighbours: usize,
@@ -576,6 +596,10 @@ impl Default for LoopOptions {
             essential_damping: 1e-16,
             global_ba: true,
             global_iterations: 10,
+            global_damping_scale: 1e-5,
+            global_small_steps: 3,
+            global_small_decrease: 1e-3,
+            min_depth_ratio: 1e-3,
             weld_neighbours: 25,
             weld_widen: 12,
             weld_rounds: 5,
@@ -645,8 +669,8 @@ pub struct Options {
 impl Options {
     /// Whether a pipeline with these settings keeps the keyframe database
     /// (`Options.keeps_keyframe_database`): when relocalising or closing loops, either alone, as
-    /// ORB-SLAM always keeps its `KeyFrameDatabase`. A vocabulary is then required, and refused
-    /// otherwise; the one statement of the rule.
+    /// ORB-SLAM always keeps its `KeyFrameDatabase`. Every pipeline takes a vocabulary whatever
+    /// this says, as mapping quantises each keyframe by it; the one statement of the rule.
     ///
     /// # Returns
     ///
@@ -818,7 +842,7 @@ named_settings!(
         strong_points: Integer,
     },
     relocalization: RelocalizationOptions { enabled: Flag, ratio: Real, common_words: Real, neighbours: Integer, group_score: Real, min_matches: Integer, inlier_ratio: Real, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, window: Real, narrow_inliers: Integer, narrow_window: Real, narrow_distance: Integer },
-    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer, weld_neighbours: Integer, weld_widen: Integer, weld_rounds: Integer },
+    loops: LoopOptions { enabled: Flag, min_keyframes: Integer, candidates: Integer, common_words: Real, neighbours: Integer, ratio: Real, min_matches: Integer, min_inliers: Integer, confidence: Real, ransac_iterations: Integer, chi2: Real, coarse_window: Real, coarse_distance: Integer, coarse_matches: Integer, huber_chi2: Real, refine_iterations: Integer, refine_more: Integer, min_kept: Integer, min_refined: Integer, fine_window: Real, fine_distance: Integer, fine_matches: Integer, confirm_window: Real, confirm_distance: Integer, confirm_matches: Integer, confirmations: Integer, misses: Integer, temporal_refined: Integer, temporal_matches: Integer, fuse_window: Real, essential_points: Integer, essential_iterations: Integer, essential_damping: Real, global_ba: Flag, global_iterations: Integer, global_damping_scale: Real, global_small_steps: Integer, global_small_decrease: Real, min_depth_ratio: Real, weld_neighbours: Integer, weld_widen: Integer, weld_rounds: Integer },
     loss: LossOptions { relocalize_seconds: Real, lost_frames: Integer, reset_keyframes: Integer, session_keyframes: Integer },
 );
 
@@ -873,6 +897,7 @@ pub fn check_options(options: &Options) -> Result<()> {
         ("loss.reset_keyframes", options.loss.reset_keyframes),
         ("loss.session_keyframes", options.loss.session_keyframes),
         ("loops.weld_rounds", options.loops.weld_rounds),
+        ("loops.global_small_steps", options.loops.global_small_steps),
     ] {
         check_range(name, value, 0, MAX_SETTING)?;
     }
@@ -1107,6 +1132,10 @@ fn check_positive(options: &Options) -> Result<()> {
         ("loops.confirm_window", options.loops.confirm_window),
         ("loops.fuse_window", options.loops.fuse_window),
         ("loops.essential_damping", options.loops.essential_damping),
+        (
+            "loops.global_damping_scale",
+            options.loops.global_damping_scale,
+        ),
     ] {
         if !(value.is_finite() && value > 0.0) {
             return fail_setting(name, "must be finite and positive", value);
@@ -1119,6 +1148,10 @@ fn check_positive(options: &Options) -> Result<()> {
             "must be finite and not negative",
             seconds,
         );
+    }
+    let ratio = options.loops.min_depth_ratio;
+    if !(ratio.is_finite() && (0.0..1.0).contains(&ratio)) {
+        return fail_setting("loops.min_depth_ratio", "must be in [0, 1)", ratio);
     }
     Ok(())
 }
@@ -1184,6 +1217,10 @@ fn check_reals(options: &Options) -> Result<()> {
         ("loops.common_words", options.loops.common_words),
         ("loops.ratio", options.loops.ratio),
         ("loops.confidence", options.loops.confidence),
+        (
+            "loops.global_small_decrease",
+            options.loops.global_small_decrease,
+        ),
     ] {
         if !(value.is_finite() && value > 0.0 && value <= 1.0) {
             return fail_setting(name, "must be in (0, 1]", value);
@@ -1215,7 +1252,7 @@ mod tests {
     fn settings_by_name() {
         let mut options = Options::default();
         let settings = options.settings();
-        assert_eq!(settings.len(), 138);
+        assert_eq!(settings.len(), 142);
         assert_eq!(settings[0], ("features.n_features", Setting::Integer(1000)));
         assert_eq!(settings[2], ("features.scale_factor", Setting::Real(1.2)));
         options
@@ -1239,13 +1276,23 @@ mod tests {
         }
     }
 
-    /// The defaults pass, and a loss window of 0; settings out of range are `InvalidInput`.
+    /// The defaults pass, a loss window of 0 and a depth ratio of 0; settings out of range are
+    /// `InvalidInput`, a depth ratio of 1 among them.
     #[test]
     fn checks_ranges() {
         check_options(&Options::default()).unwrap();
         let mut at_once = Options::default();
         at_once.loss.relocalize_seconds = 0.0;
+        at_once.loops.min_depth_ratio = 0.0;
         check_options(&at_once).unwrap();
+        for ratio in [-1e-3, 1.0, f64::NAN] {
+            let mut bad = Options::default();
+            bad.loops.min_depth_ratio = ratio;
+            assert_eq!(
+                check_options(&bad).unwrap_err().kind,
+                ErrorKind::InvalidInput
+            );
+        }
         for bad in [
             Options {
                 covisibility: CovisibilityOptions {

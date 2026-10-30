@@ -353,6 +353,36 @@ fn at(index: i64) -> usize {
     usize::try_from(index).unwrap_or(usize::MAX)
 }
 
+/// Inverts a rigid pose (world-to-camera and back): `Rᵀ`, `-Rᵀ t`.
+///
+/// # Arguments
+///
+/// * `pose` - The pose (already checked).
+///
+/// # Returns
+///
+/// The inverse, as the bundle's state holds it.
+fn invert(pose: &Matrix4<f64>) -> Matrix4<f64> {
+    let rt = se3::rotation(pose).transpose();
+    se3::from_parts(&rt, &(-rt * se3::translation(pose)))
+}
+
+/// A world point in a camera's frame, `R p + t`: the one computation both the layout's
+/// in-front test and the bundle's residuals take a point's depth from, so that an observation
+/// the projection would refuse (`Z <= camera::MIN_DEPTH`) is never kept.
+///
+/// # Arguments
+///
+/// * `t_cam_world` - The camera's world-to-camera pose.
+/// * `point` - The point in the world frame.
+///
+/// # Returns
+///
+/// The point in the camera frame.
+fn to_camera(t_cam_world: &Matrix4<f64>, point: &Vector3<f64>) -> Vector3<f64> {
+    se3::rotation(t_cam_world) * point + se3::translation(t_cam_world)
+}
+
 /// Checks that every entry of an index array lies in `[0, bound)`.
 ///
 /// # Arguments

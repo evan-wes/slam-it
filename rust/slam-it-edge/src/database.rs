@@ -351,7 +351,8 @@ pub fn candidates(
 /// Finds the keyframes a keyframe may close a loop with (`slam_it.edge.database
 /// .loop_candidates`, ORB-SLAM3's `DetectNBestCandidates`): relocalisation's scoring of its
 /// words with `loops.common_words` and `loops.neighbours`, the keyframe and every keyframe
-/// linked to it left out, the best `loops.candidates` groups.
+/// sharing a point with it left out ([`covisibility::connected`]), the best `loops.candidates`
+/// groups.
 ///
 /// # Arguments
 ///
@@ -387,13 +388,9 @@ pub fn loop_candidates(
     };
     let mut excluded = vec![keyframe];
     excluded.extend(
-        covisibility::links_of(
-            m,
-            &covisibility::shared_points(m, k),
-            options.covisibility.min_points,
-        )
-        .iter()
-        .map(|link| m.kf_id[link.row]),
+        covisibility::connected(m, k)?
+            .iter()
+            .map(|link| m.kf_id[link.row]),
     );
     let settings = &options.loops;
     let found = scoring(

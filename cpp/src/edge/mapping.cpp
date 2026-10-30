@@ -11,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "slam_it/edge/adjust.hpp"
@@ -288,18 +289,29 @@ std::vector<std::array<std::int64_t, 2>> triangulation_pairs(const Map& m, const
   if (t.z() != 0.0) {
     epipolar.epipole = Eigen::Vector2d(t.x() / t.z(), t.y() / t.z());
   }
-  // For each keyframe-1 keypoint, the nearest candidate (ties: the first); then one match per
-  // keyframe-2 keypoint, the nearest keeping it (ties: the lower keyframe-1 keypoint).
+  // Keyframe 2's keypoints under each vocabulary node, in row order: a pair shares its node
+  // (ORB-SLAM3's SearchForTriangulation walks the two FeatureVectors node by node).
+  std::unordered_map<std::int64_t, std::vector<std::size_t>> by_node;
+  for (std::size_t j = 0; j < rows2.size(); ++j) {
+    by_node[m.kp_node[static_cast<std::size_t>(rows2[j])]].push_back(j);
+  }
+  // For each keyframe-1 keypoint, the nearest candidate (ties: the last, as ORB-SLAM3's
+  // `dist > bestDist` skips only a farther one); then one match per keyframe-2 keypoint, the
+  // nearest keeping it (ties: the lower keyframe-1 keypoint).
   std::map<std::size_t, std::pair<std::int64_t, std::size_t>> claims;
   for (std::size_t i = 0; i < rows1.size(); ++i) {
     const auto r1 = static_cast<std::size_t>(rows1[i]);
+    const auto node = by_node.find(m.kp_node[r1]);
+    if (node == by_node.end()) {
+      continue;
+    }
     const Eigen::Vector3d line = epipolar.essential * normalised(m.kp_bearing[r1]);
     std::int64_t best = std::numeric_limits<std::int64_t>::max();
     std::size_t best_j = 0;
-    for (std::size_t j = 0; j < rows2.size(); ++j) {
+    for (const std::size_t j : node->second) {
       const std::int64_t d = foundations::orb::distance(
           m.kp_descriptor[r1], m.kp_descriptor[static_cast<std::size_t>(rows2[j])]);
-      if (d <= options.matching.th_low && d < best &&
+      if (d <= options.matching.th_low && d <= best &&
           epipolar_ok(m, epipolar, line, rows1[i], rows2[j])) {
         best = d;
         best_j = j;
@@ -977,10 +989,14 @@ struct Made {
 /// @param tracked Its pose and matches.
 /// @param mode The sensor mode.
 /// @param options The settings.
+/// @param vocabulary The vocabulary, checked, the keyframe's features are quantised by.
 /// @return The point counts and the points made; a step's error.
 Result<Made> insert_and_make(Map& m, const Camera& camera, const Frame& frame,
-                             const Tracked& tracked, Mode mode, const Options& options) {
-  if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points); !ok) {
+                             const Tracked& tracked, Mode mode, const Options& options,
+                             const foundations::vocabulary::Vocabulary& vocabulary) {
+  const std::vector<std::int64_t> nodes =
+      foundations::vocabulary::quantize(vocabulary, frame.features.descriptors).nodes;
+  if (auto ok = insert_keyframe(m, frame, tracked.pose, tracked.points, nodes); !ok) {
     return std::unexpected(std::move(ok.error()));
   }
   // Its parent, as ORB-SLAM's first UpdateConnections sets it (after fusion if it shares none).
@@ -1019,9 +1035,10 @@ Result<Made> insert_and_make(Map& m, const Camera& camera, const Frame& frame,
 }  // namespace
 
 Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked,
-                       Mode mode, const Options& options, std::span<const std::int64_t> held,
-                       const Interrupts* interrupts) {
-  auto made = insert_and_make(m, camera, frame, tracked, mode, options);
+                       Mode mode, const Options& options,
+                       const foundations::vocabulary::Vocabulary& vocabulary,
+                       std::span<const std::int64_t> held, const Interrupts* interrupts) {
+  auto made = insert_and_make(m, camera, frame, tracked, mode, options, vocabulary);
   if (!made) {
     return std::unexpected(std::move(made.error()));
   }

@@ -235,7 +235,7 @@ struct DetectionSummary {
   Outcome outcome{Outcome::kNone};
   /// @brief The loop being confirmed, carried to it, if there was one.
   std::optional<ConfirmationSummary> confirmation;
-  /// @brief The keyframes outside its links that share a word with it.
+  /// @brief The keyframes sharing no point with it that share a word with it.
   std::int64_t sharing{0};
   /// @brief Those scored.
   std::int64_t scored{0};
@@ -288,12 +288,38 @@ struct Detection {
     Map& m, const Camera& camera, std::int64_t k, const Eigen::Matrix4d& similarity,
     std::span<const std::int64_t> point_ids, const Options& options);
 
+/// @brief Global BA's solve (`slam_it.edge.loops.global_ba_options`): `loops.global_iterations`,
+///        g2o's damping from `loops.global_damping_scale` (its `tau`), as ORB-SLAM3's every BA
+///        runs it, and ORB-SLAM3's stop after `loops.global_small_steps` decreases in a row under
+///        `loops.global_small_decrease`. GTSAM's absolute damping let a monocular map's global BA
+///        slide along its free scale (the scale carrying its cameras' centres onto where they
+///        started: 0.55 under GTSAM's damping, 0.99 under this one, on the loop room's failing
+///        run) and, at its bound, accept no step on real maps: the online-SLAM design, section
+///        11's L2, and the CHANGELOG's 0.3.18.0 entry, Measured.
+/// @param options The settings.
+/// @param stop A flag that stops the solve before its next iteration; not owned, null for never.
+/// @return The solve's options.
+[[nodiscard]] foundations::graphs::Options global_ba_options(const Options& options,
+                                                             const std::atomic<bool>* stop);
+
+/// @brief A welding BA's solve (`slam_it.edge.loops.weld_options`): `iterations`, GTSAM's own
+///        damping and no stop by small steps. ORB-SLAM3's welding BA runs g2o's damping and stop
+///        too, but here it keeps GTSAM's (decided by evan-wes on 2026-10-23): with g2o's, its
+///        first solve ended above GTSAM's cost on the welds dumped from the test set (the
+///        CHANGELOG's 0.3.18.0 entry, Measured).
+/// @param iterations The solve's iterations.
+/// @return The solve's options.
+[[nodiscard]] foundations::graphs::Options weld_options(std::int64_t iterations);
+
 /// @brief Bundle-adjust every keyframe and point (`slam_it.edge.loops.global_bundle_adjust`,
 ///        `GlobalBundleAdjustemnt` as loop closing runs it): no robust loss, the map's first
-///        keyframe held fixed; every point refreshed after.
+///        keyframe held fixed, the observations near their camera's plane left out
+///        (`loops.min_depth_ratio`), solved as `global_ba_options` says; every point refreshed
+///        after.
 /// @param m The map, changed in place.
 /// @param camera The camera.
-/// @param options `loops.global_iterations`.
+/// @param options `loops.global_iterations`, `loops.global_damping_scale`,
+///        `loops.global_small_steps`, `loops.global_small_decrease` and `loops.min_depth_ratio`.
 /// @param stop A flag that stops it before its next iteration (a global BA in a thread of its
 ///        own, superseded: ORB-SLAM's `mbStopGBA`); not owned, null for never.
 /// @return The solve's summary; `InvalidInput` for a map without its first keyframe;

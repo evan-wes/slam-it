@@ -39,10 +39,7 @@ Poses invert(const Poses& poses) {
   Poses out;
   out.reserve(poses.size());
   for (const Eigen::Matrix4d& pose : poses) {
-    Eigen::Matrix4d inv = Eigen::Matrix4d::Identity();
-    inv.topLeftCorner<3, 3>() = pose.topLeftCorner<3, 3>().transpose();
-    inv.topRightCorner<3, 1>() = -inv.topLeftCorner<3, 3>() * pose.topRightCorner<3, 1>();
-    out.push_back(inv);
+    out.push_back(inverse_pose(pose));
   }
   return out;
 }
@@ -660,7 +657,7 @@ class Bundle {
   [[nodiscard]] Eigen::Vector3d in_camera(const State& state, const Eigen::Vector3d& point,
                                           Index m) const {
     const auto c = static_cast<std::size_t>(problem_->cam_idx[static_cast<std::size_t>(m)]);
-    return (state.poses[c].topLeftCorner<3, 3>() * point) + state.poses[c].topRightCorner<3, 1>();
+    return to_camera(state.poses[c], point);
   }
 
   /// @brief An observation's world point.

@@ -1217,7 +1217,11 @@ shared with the owner's other projects.
     nearly every frame in the failing runs. Measured on the test set, after B4: threaded on the
     efficiency cores against the performance cores, and with 30 neighbours. In the loop room's worst
     miss B3b's panel examined (15.22 cm), a global BA shrank the map (scale 0.276), a lead that
-    stays with B3's damping item (the 2B design's section 11).
+    stays with B3's damping item (the 2B design's section 11). *Since 0.3.18.0:* culling takes
+    ORB-SLAM3's rule, more than 3 others (`mapping.redundant_observers` 4), which rescued the
+    revisit room's deferred keyframe inline in all three languages (the investigation of
+    2026-10-21), and global BA runs g2o's damping (the 2B design's section 11, L2); the threaded
+    rooms' failure rates have not been measured again.
   - **Python's run-id tables rebuilt per call (H9).** `Atlas._runs_of` builds an array from a
     map's run-id list on every call, up to about five a frame (the reviewer measured 2.3 ms for
     100,000 entries, 3.5 ms for 300,000): grow the tables as arrays, or cache one until

@@ -53,34 +53,56 @@ edge::Frame frame_of(std::size_t n, bool with_depth) {
       .value();
 }
 
+/// @brief Vocabulary nodes for `n` keypoints, each its own, from `first` on.
+/// @param n The keypoints.
+/// @param first The first's node.
+/// @return The nodes.
+std::vector<std::int64_t> nodes_of(std::size_t n, std::int64_t first = 0) {
+  std::vector<std::int64_t> out(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    out[i] = first + static_cast<std::int64_t>(i);
+  }
+  return out;
+}
+
+/// @brief A map of one keyframe with depth, its four keypoints observing no point, its nodes 0
+///        to 3.
+/// @param failures Running failure count.
+/// @return The map.
+edge::Map one_keyframe(int& failures) {
+  edge::Map m = edge::empty_map(8, 1.2);
+  const std::vector<std::int64_t> none(4, -1);
+  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none, nodes_of(4))
+             .has_value(),
+         "the setup succeeds", failures);
+  return m;
+}
+
 /// @brief A map of two keyframes: the first, with depth, creating points at its first two
-///        keypoints; the second, 0.2 m along x, observing them.
+///        keypoints, its nodes 0 to 3; the second, 0.2 m along x, observing them, its nodes 10
+///        to 13.
 /// @param failures Running failure count.
 /// @return The map.
 edge::Map two_keyframes(int& failures) {
-  edge::Map m = edge::empty_map(8, 1.2);
-  const std::vector<std::int64_t> none(4, -1);
-  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none).has_value(),
-         "the setup succeeds", failures);
+  edge::Map m = one_keyframe(failures);
   expect(edge::add_points(m, std::vector<Eigen::Vector3d>{{0.0, 0.0, 2.0}, {0.1, 0.0, 2.0}},
                           std::vector<std::vector<std::int64_t>>{{0}, {1}})
              .has_value(),
          "the setup succeeds", failures);
   Eigen::Matrix4d moved = Eigen::Matrix4d::Identity();
   moved(0, 3) = -0.2;
-  expect(
-      edge::insert_keyframe(m, frame_of(4, false), moved, std::vector<std::int64_t>{0, 1, -1, -1})
-          .has_value(),
-      "the setup succeeds", failures);
+  expect(edge::insert_keyframe(m, frame_of(4, false), moved,
+                               std::vector<std::int64_t>{0, 1, -1, -1}, nodes_of(4, 10))
+             .has_value(),
+         "the setup succeeds", failures);
   return m;
 }
 
 /// @brief Check building a map: keyframes, points, ids, links and counts.
 /// @param failures Running failure count.
 void check_building(int& failures) {
-  edge::Map m = edge::empty_map(8, 1.2);
-  const std::vector<std::int64_t> none(4, -1);
-  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none).has_value(),
+  edge::Map m = one_keyframe(failures);
+  expect(edge::keyframe_count(m) == 1 && m.kf_start == std::vector<std::int64_t>{0, 4},
          "insert_keyframe adds the first keyframe", failures);
   const std::vector<Eigen::Vector3d> xyz{{0.0, 0.0, 2.0}, {0.1, 0.0, 2.0}};
   const std::vector<std::vector<std::int64_t>> observers{{0}, {1}};
@@ -94,7 +116,7 @@ void check_building(int& failures) {
   const std::vector<std::int64_t> sees{0, 1, -1, -1};
   Eigen::Matrix4d moved = Eigen::Matrix4d::Identity();
   moved(0, 3) = -0.2;
-  expect(edge::insert_keyframe(m, frame_of(4, false), moved, sees).has_value() &&
+  expect(edge::insert_keyframe(m, frame_of(4, false), moved, sees, nodes_of(4)).has_value() &&
              edge::keyframe_count(m) == 2 && m.kf_start == std::vector<std::int64_t>{0, 4, 8},
          "a second keyframe observes the points", failures);
   const auto weights = edge::observation_weight(m, std::vector<std::int64_t>{0, 1});
@@ -144,6 +166,41 @@ void check_removing(int& failures) {
       "erase_points rejects flags that are not one per point", failures);
 }
 
+/// @brief Check the keypoints' vocabulary nodes: inserted as given, refused when not one per
+///        keypoint or negative, kept by a sub-map and by the keyframes a culled one leaves (a
+///        merge's are held to Python's by tests/edge/test_merges.py).
+/// @param failures Running failure count.
+void check_nodes(int& failures) {
+  edge::Map m = two_keyframes(failures);
+  const auto both = [](std::vector<std::int64_t> first, const std::vector<std::int64_t>& second) {
+    first.insert(first.end(), second.begin(), second.end());
+    return first;
+  };
+  expect(m.kp_node == both(nodes_of(4), nodes_of(4, 10)), "each keypoint keeps its node as given",
+         failures);
+  const std::vector<std::int64_t> none(4, -1);
+  expect(
+      is_invalid_input(edge::insert_keyframe(m, frame_of(4, false), Eigen::Matrix4d::Identity(),
+                                             none, nodes_of(3))) &&
+          is_invalid_input(edge::insert_keyframe(m, frame_of(4, false), Eigen::Matrix4d::Identity(),
+                                                 none, std::vector<std::int64_t>{0, 1, -1, 3})) &&
+          edge::keyframe_count(m) == 2,
+      "insert_keyframe rejects nodes that are not one per keypoint, or a negative one", failures);
+  const edge::Map second = edge::sub_map(m, std::vector<std::int64_t>{1});
+  expect(second.kp_node == nodes_of(4, 10) && edge::check_map(second).has_value(),
+         "a sub-map keeps its keyframes' keypoints' nodes", failures);
+  edge::Map negative = m;
+  negative.kp_node[5] = -1;
+  expect(is_invalid_input(edge::check_map(negative)), "check_map rejects a negative node",
+         failures);
+  edge::Map shorter = m;
+  shorter.kp_node.pop_back();
+  expect(is_invalid_input(edge::check_map(shorter)), "check_map rejects a node column too short",
+         failures);
+  expect(edge::erase_keyframe(m, 0).has_value() && m.kp_node == nodes_of(4, 10),
+         "culling a keyframe moves the next one's nodes up with its keypoints", failures);
+}
+
 /// @brief Check the observation index: kept by the operations, refused by `check_map` stale.
 /// @param failures Running failure count.
 void check_index(int& failures) {
@@ -153,11 +210,11 @@ void check_index(int& failures) {
          failures);
   Eigen::Matrix4d further = Eigen::Matrix4d::Identity();
   further(0, 3) = -0.4;
-  expect(
-      edge::insert_keyframe(m, frame_of(4, false), further, std::vector<std::int64_t>{0, 1, -1, -1})
-              .has_value() &&
-          edge::erase_keyframe(m, 1).has_value(),
-      "the setup succeeds", failures);
+  expect(edge::insert_keyframe(m, frame_of(4, false), further,
+                               std::vector<std::int64_t>{0, 1, -1, -1}, nodes_of(4))
+                 .has_value() &&
+             edge::erase_keyframe(m, 1).has_value(),
+         "the setup succeeds", failures);
   expect(m.pt_observations == Lists{{0, 4}, {1, 5}} && edge::check_map(m).has_value(),
          "erasing a keyframe moves the later keyframes' rows up", failures);
   expect(edge::observe(m, 4, -1).has_value() && m.kp_point[4] == -1 &&
@@ -184,10 +241,7 @@ void check_index(int& failures) {
 /// @brief Check the checks: a map's structure, arguments, options, cameras, depth lookup.
 /// @param failures Running failure count.
 void check_checks(int& failures) {
-  edge::Map m = edge::empty_map(8, 1.2);
-  const std::vector<std::int64_t> none(4, -1);
-  expect(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(), none).has_value(),
-         "the setup succeeds", failures);
+  edge::Map m = one_keyframe(failures);
   edge::Map dangling = m;
   dangling.kp_point[0] = 9;
   expect(is_invalid_input(edge::check_map(dangling)), "check_map rejects a dangling observation",
@@ -196,7 +250,8 @@ void check_checks(int& failures) {
                                            std::vector<std::vector<std::int64_t>>{{0, 1}})),
          "add_points rejects two observers in one keyframe", failures);
   expect(is_invalid_input(edge::insert_keyframe(m, frame_of(4, true), Eigen::Matrix4d::Identity(),
-                                                std::vector<std::int64_t>{3, -1, -1, -1})),
+                                                std::vector<std::int64_t>{3, -1, -1, -1},
+                                                nodes_of(4))),
          "insert_keyframe rejects a point that is not in the map", failures);
   expect(
       is_invalid_input(edge::check_options(edge::Options{.covisibility = {.local_neighbours = 0}})),
@@ -207,6 +262,11 @@ void check_checks(int& failures) {
       is_invalid_input(edge::check_options(edge::Options{.loss = {.relocalize_seconds = -1.0}})) &&
           edge::check_options(edge::Options{.loss = {.relocalize_seconds = 0.0}}).has_value(),
       "check_options takes a loss window of 0, not below", failures);
+  expect(is_invalid_input(edge::check_options(edge::Options{.loops = {.min_depth_ratio = 1.0}})) &&
+             is_invalid_input(
+                 edge::check_options(edge::Options{.loops = {.min_depth_ratio = -1e-3}})) &&
+             edge::check_options(edge::Options{.loops = {.min_depth_ratio = 0.0}}).has_value(),
+         "check_options takes a depth ratio in [0, 1)", failures);
   const edge::Camera bad{.model = slam_it::foundations::camera::Model::kPinhole,
                          .intrinsics = Eigen::Vector4d(250.0, 250.0, 160.0, 120.0),
                          .width = 320,
@@ -233,10 +293,10 @@ void check_loops(int& failures) {
   Eigen::Matrix4d further = Eigen::Matrix4d::Identity();
   further(0, 3) = -0.4;
   further(1, 3) = 0.1;
-  expect(
-      edge::insert_keyframe(m, frame_of(4, false), further, std::vector<std::int64_t>{0, 1, -1, -1})
-          .has_value(),
-      "the setup succeeds", failures);
+  expect(edge::insert_keyframe(m, frame_of(4, false), further,
+                               std::vector<std::int64_t>{0, 1, -1, -1}, nodes_of(4))
+             .has_value(),
+         "the setup succeeds", failures);
   m.kf_parent = {-1, 0, 0};
   edge::Map looped = m;
   expect(edge::add_loop_edge(looped, 1, 0).has_value() &&
@@ -325,6 +385,7 @@ int run() {
   check_building(failures);
   check_removing(failures);
   check_index(failures);
+  check_nodes(failures);
   check_checks(failures);
   check_loops(failures);
   check_every_setting(failures);

@@ -91,8 +91,8 @@ struct Candidates {
 /// @brief Find the keyframes a keyframe may close a loop with
 ///        (`slam_it.edge.database.loop_candidates`, ORB-SLAM3's `DetectNBestCandidates`):
 ///        relocalisation's scoring of its words with `loops.common_words` and
-///        `loops.neighbours`, the keyframe and every keyframe linked to it left out, the best
-///        `loops.candidates` groups.
+///        `loops.neighbours`, the keyframe and every keyframe sharing a point with it left out
+///        (`connected`), the best `loops.candidates` groups.
 /// @param db The map's keyframe database, holding the keyframe.
 /// @param m The map, holding the keyframe.
 /// @param keyframe The keyframe's id.

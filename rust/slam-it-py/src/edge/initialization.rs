@@ -1,6 +1,7 @@
 //! Bindings for `slam_it.edge.initialization` (`slam_it_rs.edge.initialization`).
 //!
-//! A started map crosses back as a dict of `map`, `pose` and `points`, or None.
+//! The vocabulary crosses as `vocabulary_crossing::vocabulary_in` reads it; a started map crosses
+//! back as a dict of `map`, `pose` and `points`, or None.
 
 use numpy::IntoPyArray;
 use numpy::ndarray::Array2;
@@ -14,6 +15,7 @@ use super::edge_crossing::{
     camera_in, frame_in, initialization_dict, options_in, rows, vector_array,
 };
 use crate::common::{add_functions, enum_codes, to_i64, unwrap};
+use crate::foundations::vocabulary_crossing::vocabulary_in;
 
 /// Starts the map from a stereo or RGB-D frame.
 ///
@@ -21,6 +23,7 @@ use crate::common::{add_functions, enum_codes, to_i64, unwrap};
 ///
 /// * `frame` - The frame, as a dict.
 /// * `options` - The settings, as a dict.
+/// * `vocabulary` - The vocabulary, as a dict of its fields.
 ///
 /// # Returns
 ///
@@ -30,15 +33,20 @@ use crate::common::{add_functions, enum_codes, to_i64, unwrap};
 ///
 /// `ValueError` for a malformed argument; `InvalidInputError` from the core.
 #[pyfunction]
-#[pyo3(signature = (frame, options))]
+#[pyo3(signature = (frame, options, vocabulary))]
 fn initialize_from_depth<'py>(
     py: Python<'py>,
     frame: &Bound<'py, PyDict>,
     options: &Bound<'py, PyDict>,
+    vocabulary: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let attempt = unwrap(
         py,
-        core::initialize_from_depth(&frame_in(frame)?, &options_in(options)?),
+        core::initialize_from_depth(
+            &frame_in(frame)?,
+            &options_in(options)?,
+            &vocabulary_in(py, vocabulary)?,
+        ),
     )?;
     initialization_dict(py, attempt)
 }
@@ -99,6 +107,7 @@ fn match_for_initialization<'py>(
 /// * `frame` - The later frame, as a dict.
 /// * `pairs` - The matches, (M, 2) int64.
 /// * `options` - The settings, as a dict.
+/// * `vocabulary` - The vocabulary, as a dict of its fields.
 ///
 /// # Returns
 ///
@@ -109,7 +118,7 @@ fn match_for_initialization<'py>(
 /// `ValueError` for a malformed argument or a negative keypoint; `InvalidInputError` from the
 /// core.
 #[pyfunction]
-#[pyo3(signature = (camera, reference, frame, pairs, options))]
+#[pyo3(signature = (camera, reference, frame, pairs, options, vocabulary))]
 fn initialize_monocular<'py>(
     py: Python<'py>,
     camera: &Bound<'py, PyDict>,
@@ -117,6 +126,7 @@ fn initialize_monocular<'py>(
     frame: &Bound<'py, PyDict>,
     pairs: &Bound<'py, PyAny>,
     options: &Bound<'py, PyDict>,
+    vocabulary: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let matches = rows::<i64, 2>(pairs)?
         .into_iter()
@@ -135,6 +145,7 @@ fn initialize_monocular<'py>(
             &frame_in(frame)?,
             &matches,
             &options_in(options)?,
+            &vocabulary_in(py, vocabulary)?,
         ),
     )?;
     initialization_dict(py, attempt)

@@ -56,7 +56,7 @@ pub fn changed<'py>(
 }
 
 /// The map's fields, as the dict's keys.
-const MAP_KEYS: [&str; 37] = [
+const MAP_KEYS: [&str; 38] = [
     "levels",
     "scale_factor",
     "kf_id",
@@ -68,6 +68,7 @@ const MAP_KEYS: [&str; 37] = [
     "kp_level",
     "kp_angle",
     "kp_descriptor",
+    "kp_node",
     "kp_bearing",
     "kp_depth",
     "kp_right",
@@ -277,6 +278,7 @@ pub fn map_in(py: Python<'_>, values: &Bound<'_, PyDict>) -> PyResult<Map> {
         kp_level: indices(&get("kp_level")?)?,
         kp_angle: indices(&get("kp_angle")?)?,
         kp_descriptor: rows::<u8, DESCRIPTOR_BYTES>(&get("kp_descriptor")?)?,
+        kp_node: vector(&get("kp_node")?)?,
         kp_bearing: vectors(&get("kp_bearing")?)?,
         kp_depth: vector(&get("kp_depth")?)?,
         kp_right: vector(&get("kp_right")?)?,
@@ -438,6 +440,7 @@ pub fn map_dict<'py>(py: Python<'py>, m: &Map) -> PyResult<Bound<'py, PyDict>> {
     out.set_item("kp_level", indices_array(py, &m.kp_level))?;
     out.set_item("kp_angle", indices_array(py, &m.kp_angle))?;
     out.set_item("kp_descriptor", rows_array(py, &m.kp_descriptor)?)?;
+    out.set_item("kp_node", vector_array(py, &m.kp_node))?;
     out.set_item("kp_bearing", vectors_array(py, &m.kp_bearing)?)?;
     out.set_item("kp_depth", vector_array(py, &m.kp_depth))?;
     out.set_item("kp_right", vector_array(py, &m.kp_right))?;

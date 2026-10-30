@@ -37,7 +37,14 @@ from slam_it.foundations.ba.gauge import (
     plan,
     remaining,
 )
-from slam_it.foundations.ba.problem import Array, BAOptions, BAProblem, IndexArray, Mask
+from slam_it.foundations.ba.problem import (
+    Array,
+    BAOptions,
+    BAProblem,
+    IndexArray,
+    Mask,
+    to_camera,
+)
 from slam_it.foundations.errors import InvalidInputError
 
 # --- setup: what is optimised ---------------------------------------------------------------
@@ -189,12 +196,11 @@ def _unplaceable_anchors(problem: BAProblem, candidates: IndexArray) -> IndexArr
 
 def _kept_observations(problem: BAProblem, options: BAOptions) -> tuple[IndexArray, Mask, int]:
     """Return the kept observations, the degenerate points, and how many were dropped."""
-    t_cam_world = se3.inverse(problem.poses)
+    t_cam_world = se3.inverse(problem.poses)  # as the bundle's starting state holds them
     obs = np.flatnonzero(problem.weights > 0.0)
     cam, pt = problem.cam_idx[obs], problem.pt_idx[obs]
-    depth = (
-        np.einsum("mj,mj->m", t_cam_world[cam, 2, :3], problem.points[pt]) + t_cam_world[cam, 2, 3]
-    )
+    # The bundle's own depth, so that the two agree at camera.MIN_DEPTH (C++ and Rust likewise).
+    depth = to_camera(t_cam_world, problem.points, cam, pt)[:, 2]
     in_front = depth > camera.MIN_DEPTH
     obs, cam, pt = obs[in_front], cam[in_front], pt[in_front]
     views = np.bincount(pt, minlength=problem.points.shape[0])

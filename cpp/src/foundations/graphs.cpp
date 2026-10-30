@@ -6,12 +6,13 @@
 #include <gtsam/geometry/Pose3.h>
 #include <gtsam/geometry/Rot3.h>
 #include <gtsam/geometry/Similarity3.h>
+#include <gtsam/linear/GaussianFactorGraph.h>
 #include <gtsam/linear/LossFunctions.h>
 #include <gtsam/linear/NoiseModel.h>
+#include <gtsam/linear/VectorValues.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/nonlinear/LevenbergMarquardtParams.h>
 #include <gtsam/nonlinear/NoiseModelFactorN.h>
-#include <gtsam/nonlinear/NonlinearEquality.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
@@ -36,7 +37,7 @@ namespace {
 
 /// @brief Each termination's name, in code order (`graphs.Termination`).
 constexpr std::array<const char*, static_cast<std::size_t>(Termination::kCount)> kTerminationNames =
-    {"function", "max_iterations", "damping_limit", "stopped"};
+    {"function", "max_iterations", "damping_limit", "stopped", "small_steps"};
 
 /// @brief A similarity's rotation, translation and scale.
 struct Parts {
@@ -131,6 +132,30 @@ Motion to_motion(const Eigen::Matrix4d& matrix) {
   }
 }
 
+/// @brief One observation of a point, as a projection factor holds it.
+struct Sighting {
+  /// @brief The observed `(u, v)`, and the right column for a stereo observation.
+  Eigen::VectorXd measured;
+  /// @brief The camera model.
+  camera::Model model;
+  /// @brief Its intrinsics, checked.
+  Eigen::VectorXd intrinsics;
+  /// @brief The baseline times the focal length.
+  double bf;
+};
+
+/// @brief An observation's reprojection error in a camera at a pose (`projection_residual`).
+/// @param sighting The observation, checked.
+/// @param pose The camera's `T_world_cam`.
+/// @param point The point.
+/// @return The residual and its Jacobians.
+ProjectionResidual reproject(const Sighting& sighting, const Eigen::Matrix4d& pose,
+                             const Eigen::Vector3d& point) {
+  // The measurement's size was checked when the bundle was, so this cannot fail.
+  return *projection_residual(pose, point, sighting.measured, sighting.model, sighting.intrinsics,
+                              sighting.bf);
+}
+
 /// @brief A point's reprojection in a camera: a factor on the camera's pose and the point.
 class ProjectionFactor final : public gtsam::NoiseModelFactorN<gtsam::Pose3, gtsam::Point3> {
  public:
@@ -141,19 +166,12 @@ class ProjectionFactor final : public gtsam::NoiseModelFactorN<gtsam::Pose3, gts
   /// @brief Build the factor.
   /// @param pose The camera's key.
   /// @param point The point's key.
-  /// @param measured The observed `(u, v)`, and the right column for a stereo observation.
-  /// @param model The camera model.
-  /// @param intrinsics Its intrinsics, checked.
-  /// @param bf The baseline times the focal length.
+  /// @param sighting The observation.
   /// @param noise The observation's noise model.
   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): (pose, point), GTSAM's key order
-  ProjectionFactor(gtsam::Key pose, gtsam::Key point, Eigen::VectorXd measured, camera::Model model,
-                   Eigen::VectorXd intrinsics, double bf, const gtsam::SharedNoiseModel& noise)
-      : Base(noise, pose, point),
-        measured_(std::move(measured)),
-        model_(model),
-        intrinsics_(std::move(intrinsics)),
-        bf_(bf) {}
+  ProjectionFactor(gtsam::Key pose, gtsam::Key point, Sighting sighting,
+                   const gtsam::SharedNoiseModel& noise)
+      : Base(noise, pose, point), sighting_(std::move(sighting)) {}
 
   /// @brief The residual and, where asked, its Jacobians (`projection_residual`).
   /// @param pose The camera's `T_world_cam`.
@@ -165,9 +183,7 @@ class ProjectionFactor final : public gtsam::NoiseModelFactorN<gtsam::Pose3, gts
   gtsam::Vector evaluateError(const gtsam::Pose3& pose, const gtsam::Point3& point,
                               gtsam::OptionalMatrixType d_pose,
                               gtsam::OptionalMatrixType d_point) const override {
-    // The measurement's size was checked when the bundle was, so this cannot fail.
-    const ProjectionResidual result =
-        *projection_residual(pose.matrix(), point, measured_, model_, intrinsics_, bf_);
+    const ProjectionResidual result = reproject(sighting_, pose.matrix(), point);
     if (d_pose != nullptr) {
       *d_pose = result.d_pose;
     }
@@ -180,13 +196,120 @@ class ProjectionFactor final : public gtsam::NoiseModelFactorN<gtsam::Pose3, gts
 
  private:
   /// @brief The observation.
-  Eigen::VectorXd measured_;
-  /// @brief The camera model.
-  camera::Model model_;
-  /// @brief Its intrinsics.
-  Eigen::VectorXd intrinsics_;
-  /// @brief The baseline times the focal length.
-  double bf_;
+  Sighting sighting_;
+};
+
+/// @brief A point's reprojection in a held camera: a factor on the point alone, the camera's
+///        pose a constant (g2o's fixed vertex, as ORB-SLAM holds a camera).
+class HeldProjectionFactor final : public gtsam::NoiseModelFactorN<gtsam::Point3> {
+ public:
+  /// @brief The factor's base.
+  using Base = gtsam::NoiseModelFactorN<gtsam::Point3>;
+  using Base::evaluateError;
+
+  /// @brief Build the factor.
+  /// @param point The point's key.
+  /// @param pose The held camera's `T_world_cam`.
+  /// @param sighting The observation.
+  /// @param noise The observation's noise model.
+  HeldProjectionFactor(gtsam::Key point, Eigen::Matrix4d pose, Sighting sighting,
+                       const gtsam::SharedNoiseModel& noise)
+      : Base(noise, point), pose_(std::move(pose)), sighting_(std::move(sighting)) {}
+
+  /// @brief The residual and, where asked, its Jacobian on the point (`projection_residual`).
+  /// @param point The point.
+  /// @param d_point Where to write the Jacobian on the point, if asked.
+  /// @return The residual.
+  gtsam::Vector evaluateError(const gtsam::Point3& point,
+                              gtsam::OptionalMatrixType d_point) const override {
+    const ProjectionResidual result = reproject(sighting_, pose_, point);
+    if (d_point != nullptr) {
+      *d_point = result.d_point;
+    }
+    return result.residual;
+  }
+
+ private:
+  /// @brief The held camera's `T_world_cam`.
+  Eigen::Matrix4d pose_;
+  /// @brief The observation.
+  Sighting sighting_;
+};
+
+/// @brief A pose graph's edge with one end held: GTSAM's between factor, its held end a
+///        constant, so a factor on the free end alone.
+/// @tparam Motion `gtsam::Pose3` (rigid) or `gtsam::Similarity3`.
+template <typename Motion>
+class HeldBetweenFactor final : public gtsam::NoiseModelFactorN<Motion> {
+ public:
+  /// @brief The factor's base.
+  using Base = gtsam::NoiseModelFactorN<Motion>;
+  using Base::evaluateError;
+
+  /// @brief Build the factor.
+  /// @param edge The edge's between factor, on both its ends' keys.
+  /// @param held The held end's pose, checked.
+  /// @param held_first Whether the held end is the edge's first.
+  HeldBetweenFactor(const gtsam::BetweenFactor<Motion>& edge, const Eigen::Matrix4d& held,
+                    bool held_first)
+      : Base(edge.noiseModel(), held_first ? edge.key2() : edge.key1()),
+        edge_(edge),
+        held_(to_motion<Motion>(held)),
+        held_first_(held_first) {}
+
+  /// @brief The edge's residual and, where asked, its Jacobian on the free end, as GTSAM's
+  ///        between factor computes them with its held end at the held value.
+  /// @param free The free end's value.
+  /// @param d_free Where to write the Jacobian on the free end, if asked.
+  /// @return The residual.
+  gtsam::Vector evaluateError(const Motion& free, gtsam::OptionalMatrixType d_free) const override {
+    if (held_first_) {
+      return edge_.evaluateError(held_, free, nullptr, d_free);
+    }
+    return edge_.evaluateError(free, held_, d_free, nullptr);
+  }
+
+ private:
+  /// @brief The edge's between factor.
+  gtsam::BetweenFactor<Motion> edge_;
+  /// @brief The held end's value.
+  Motion held_;
+  /// @brief Whether the held end is the edge's first.
+  bool held_first_;
+};
+
+/// @brief A pose graph's edges whose ends are both held: their stacked residuals, a constant,
+///        as one factor on a free pose with a zero Jacobian. It moves nothing, but every error
+///        GTSAM reads, its search over dampings' included, holds their error, as when the held
+///        poses were variables.
+/// @tparam Motion `gtsam::Pose3` (rigid) or `gtsam::Similarity3`.
+template <typename Motion>
+class HeldEdgesFactor final : public gtsam::NoiseModelFactorN<Motion> {
+ public:
+  /// @brief The factor's base.
+  using Base = gtsam::NoiseModelFactorN<Motion>;
+  using Base::evaluateError;
+
+  /// @brief Build the factor, with unit information.
+  /// @param key A free pose's key, which the residuals do not depend on.
+  /// @param residuals The edges' residuals, stacked.
+  HeldEdgesFactor(gtsam::Key key, const Eigen::VectorXd& residuals)
+      : Base(gtsam::noiseModel::Unit::Create(residuals.size()), key), residuals_(residuals) {}
+
+  /// @brief The stacked residuals and, where asked, their Jacobian on the free pose: zero.
+  /// @param d_free Where to write the Jacobian, if asked.
+  /// @return The residuals.
+  gtsam::Vector evaluateError(const Motion& /*free*/,
+                              gtsam::OptionalMatrixType d_free) const override {
+    if (d_free != nullptr) {
+      *d_free = gtsam::Matrix::Zero(residuals_.size(), gtsam::traits<Motion>::dimension);
+    }
+    return residuals_;
+  }
+
+ private:
+  /// @brief The edges' residuals, stacked.
+  Eigen::VectorXd residuals_;
 };
 
 /// @brief One side of a match carried through the motion: a unary factor on the motion.
@@ -257,6 +380,50 @@ struct Solved {
   Summary summary;
 };
 
+/// @brief The largest diagonal entry of a graph's normal equations at its values
+///        (`graphs._largest_hessian_diagonal`): g2o's `computeLambdaInit`'s maximum, over the
+///        variables as g2o's over its free vertices.
+/// @param graph The factor graph.
+/// @param values Its variables' values.
+/// @return The largest entry, 0 for a graph with no factor.
+/// @throws std::exception if GTSAM fails to linearise the graph.
+double largest_hessian_diagonal(const gtsam::NonlinearFactorGraph& graph,
+                                const gtsam::Values& values) {
+  double largest = 0.0;
+  for (const auto& [key, entries] : graph.linearize(values)->hessianDiagonal()) {
+    if (entries.size() > 0) {
+      largest = std::max(largest, entries.cwiseAbs().maxCoeff());
+    }
+  }
+  return largest;
+}
+
+/// @brief GTSAM's parameters for a solve: its tolerances and damping (`graphs._params`).
+/// @param graph The factor graph.
+/// @param values The starting values.
+/// @param options How the solve runs, checked.
+/// @return The parameters.
+/// @throws std::exception if GTSAM fails to linearise the graph (scaled damping).
+gtsam::LevenbergMarquardtParams solve_params(const gtsam::NonlinearFactorGraph& graph,
+                                             const gtsam::Values& values, const Options& options) {
+  gtsam::LevenbergMarquardtParams params;
+  params.setRelativeErrorTol(options.relative_tolerance);
+  params.setAbsoluteErrorTol(options.absolute_tolerance);
+  if (!options.scaled_damping) {
+    params.setlambdaInitial(options.initial_damping);
+    params.setlambdaFactor(kAbsoluteDampingFactor);
+    params.setlambdaUpperBound(kAbsoluteDampingLimit);
+    return params;
+  }
+  const double largest = largest_hessian_diagonal(graph, values);
+  // With no gradient anywhere (every Jacobian zero), the damping cannot be scaled to it: tau alone.
+  params.setlambdaInitial(options.damping_scale * (largest > 0.0 ? largest : 1.0));
+  params.setlambdaFactor(kScaledDampingFactor);
+  params.setUseFixedLambdaFactor(false);
+  params.setlambdaUpperBound(kScaledDampingLimit);
+  return params;
+}
+
 /// @brief Run Levenberg-Marquardt by `Termination`'s rule (`graphs._solve`).
 /// @param graph The factor graph.
 /// @param values The starting values.
@@ -265,15 +432,13 @@ struct Solved {
 Result<Solved> solve(const gtsam::NonlinearFactorGraph& graph, const gtsam::Values& values,
                      const Options& options) {
   try {
-    gtsam::LevenbergMarquardtParams params;
-    params.setlambdaInitial(options.initial_damping);
-    params.setRelativeErrorTol(options.relative_tolerance);
-    params.setAbsoluteErrorTol(options.absolute_tolerance);
+    const gtsam::LevenbergMarquardtParams params = solve_params(graph, values, options);
     gtsam::LevenbergMarquardtOptimizer optimizer(graph, values, params);
     const double initial = optimizer.error();
     double current = initial;
     Termination termination = Termination::kMaxIterations;
     int iterations = 0;
+    int small = 0;  // iterations in a row each lowering the error by under small_decrease of it
     while (current > 0.0 && iterations < options.max_iterations) {
       if (options.stop != nullptr && options.stop->load(std::memory_order_relaxed)) {
         termination = Termination::kStopped;
@@ -292,6 +457,11 @@ Result<Solved> solve(const gtsam::NonlinearFactorGraph& graph, const gtsam::Valu
       if (decrease <= options.absolute_tolerance ||
           decrease <= options.relative_tolerance * previous) {
         termination = Termination::kFunction;
+        break;
+      }
+      small = decrease < options.small_decrease * previous ? small + 1 : 0;
+      if (options.small_steps > 0 && small >= options.small_steps) {
+        termination = Termination::kSmallSteps;
         break;
       }
     }
@@ -408,43 +578,91 @@ std::vector<std::int64_t> distinct(std::span<const std::int64_t> indices) {
   return out;
 }
 
+/// @brief Which of `count` indices are held.
+/// @param fixed The held indices, checked.
+/// @param count How many there are.
+/// @return A flag per index.
+std::vector<bool> held_flags(std::span<const std::int64_t> fixed, std::size_t count) {
+  std::vector<bool> out(count, false);
+  for (const std::int64_t k : fixed) {
+    out[static_cast<std::size_t>(k)] = true;
+  }
+  return out;
+}
+
 /// @brief Solve a pose graph whose poses are all of one kind (`optimize_pose_graph`'s solve).
+///
+/// The held poses are constants, not variables (g2o's fixed vertices, as ORB-SLAM holds them):
+/// an edge with one held end is a factor on its free end, and the edges with both ends held,
+/// whose error is a constant, one factor with a zero Jacobian (`HeldEdgesFactor`), so that the
+/// solve's errors are the whole graph's. With every pose held, nothing is solved.
 /// @tparam Motion `gtsam::Pose3` (rigid) or `gtsam::Similarity3`.
 /// @param poses The starting poses, checked.
 /// @param edges The edges, checked.
 /// @param relatives Each edge's measured relative pose, checked.
 /// @param fixed The poses held fixed, checked.
 /// @param options How the solve runs, checked.
-/// @return The solved poses, or `NotConverged` if GTSAM fails.
+/// @return The solved poses, the held ones as given, or `NotConverged` if GTSAM fails.
 template <typename Motion>
 Result<PoseGraph> solve_pose_graph(std::span<const Eigen::Matrix4d> poses,
                                    const Eigen::Ref<const IndexPairs>& edges,
                                    std::span<const Eigen::Matrix4d> relatives,
                                    std::span<const std::int64_t> fixed, const Options& options) {
+  const std::vector<bool> held = held_flags(fixed, poses.size());
   gtsam::NonlinearFactorGraph graph;
   gtsam::Values values;
   for (std::size_t k = 0; k < poses.size(); ++k) {
-    values.insert(k, to_motion<Motion>(poses[k]));
+    if (!held[k]) {
+      values.insert(k, to_motion<Motion>(poses[k]));
+    }
   }
   const auto unit = gtsam::noiseModel::Unit::Create(
       std::is_same_v<Motion, gtsam::Pose3> ? kPoseDim : kSimilarityDim);
+  std::vector<gtsam::Vector> parts;
   for (Eigen::Index e = 0; e < edges.rows(); ++e) {
-    graph.emplace_shared<gtsam::BetweenFactor<Motion>>(
-        static_cast<gtsam::Key>(edges(e, 0)), static_cast<gtsam::Key>(edges(e, 1)),
-        to_motion<Motion>(relatives[static_cast<std::size_t>(e)]), unit);
+    const auto first = static_cast<std::size_t>(edges(e, 0));
+    const auto second = static_cast<std::size_t>(edges(e, 1));
+    const gtsam::BetweenFactor<Motion> edge(
+        first, second, to_motion<Motion>(relatives[static_cast<std::size_t>(e)]), unit);
+    if (held[first] && held[second]) {
+      parts.emplace_back(edge.evaluateError(to_motion<Motion>(poses[first]),
+                                            to_motion<Motion>(poses[second]), nullptr, nullptr));
+    } else if (held[first] || held[second]) {
+      graph.emplace_shared<HeldBetweenFactor<Motion>>(edge, poses[held[first] ? first : second],
+                                                      held[first]);
+    } else {
+      graph.emplace_shared<gtsam::BetweenFactor<Motion>>(edge);
+    }
   }
-  for (const std::int64_t k : distinct(fixed)) {
-    graph.emplace_shared<gtsam::NonlinearEquality<Motion>>(
-        static_cast<gtsam::Key>(k), to_motion<Motion>(poses[static_cast<std::size_t>(k)]));
+  constexpr Eigen::Index kDimension = gtsam::traits<Motion>::dimension;
+  Eigen::VectorXd residuals(static_cast<Eigen::Index>(parts.size()) * kDimension);
+  for (std::size_t k = 0; k < parts.size(); ++k) {
+    residuals.segment(static_cast<Eigen::Index>(k) * kDimension, kDimension) = parts[k];
+  }
+  // With every pose held nothing is solved: the error is the held edges', as the factor's.
+  const double held_error = 0.5 * residuals.squaredNorm();
+  PoseGraph out{.poses = {poses.begin(), poses.end()},
+                .summary = Summary{.initial_error = held_error,
+                                   .final_error = held_error,
+                                   .iterations = 0,
+                                   .termination = Termination::kFunction,
+                                   .converged = true}};
+  if (values.empty()) {
+    return out;
+  }
+  if (residuals.size() > 0) {
+    const auto free = static_cast<gtsam::Key>(std::ranges::find(held, false) - held.begin());
+    graph.emplace_shared<HeldEdgesFactor<Motion>>(free, residuals);
   }
   auto solved = solve(graph, values, options);
   if (!solved) {
     return std::unexpected(solved.error());
   }
-  PoseGraph out{.poses = {}, .summary = solved->summary};
-  out.poses.reserve(poses.size());
+  out.summary = solved->summary;
   for (std::size_t k = 0; k < poses.size(); ++k) {
-    out.poses.push_back(motion_matrix(solved->values.at<Motion>(k)));
+    if (!held[k]) {
+      out.poses[k] = motion_matrix(solved->values.at<Motion>(k));
+    }
   }
   return out;
 }
@@ -456,7 +674,9 @@ const char* name(Termination termination) {
   return index < kTerminationNames.size() ? kTerminationNames.at(index) : "unknown";
 }
 
-bool is_converged(Termination termination) { return termination == Termination::kFunction; }
+bool is_converged(Termination termination) {
+  return termination == Termination::kFunction || termination == Termination::kSmallSteps;
+}
 
 Result<void> check_options(const Options& options) {
   if (options.max_iterations < 1) {
@@ -465,11 +685,20 @@ Result<void> check_options(const Options& options) {
   if (!std::isfinite(options.initial_damping) || options.initial_damping <= 0.0) {
     return fail_setting("initial_damping", "expected > 0", options.initial_damping);
   }
+  if (!std::isfinite(options.damping_scale) || options.damping_scale <= 0.0) {
+    return fail_setting("damping_scale", "expected > 0", options.damping_scale);
+  }
   if (!std::isfinite(options.relative_tolerance) || options.relative_tolerance < 0.0) {
     return fail_setting("relative_tolerance", "expected >= 0", options.relative_tolerance);
   }
   if (!std::isfinite(options.absolute_tolerance) || options.absolute_tolerance < 0.0) {
     return fail_setting("absolute_tolerance", "expected >= 0", options.absolute_tolerance);
+  }
+  if (options.small_steps < 0) {
+    return fail_setting("small_steps", "expected >= 0", options.small_steps);
+  }
+  if (!std::isfinite(options.small_decrease) || options.small_decrease <= 0.0) {
+    return fail_setting("small_decrease", "expected > 0", options.small_decrease);
   }
   return {};
 }
@@ -734,6 +963,155 @@ Result<void> check_bundle(std::span<const Eigen::Matrix4d> poses,
   return camera::check_intrinsics(model, intrinsics);
 }
 
+/// @brief Each observation's depth: its point in front of its camera along the optical axis,
+///        `R(0,2) dx + R(1,2) dy + R(2,2) dz` summed in that order, `(dx, dy, dz)` the point less
+///        the camera's centre, as every language takes it (`graphs._depths`).
+/// @param poses Each camera's `T_world_cam`, checked.
+/// @param points Each point, checked.
+/// @param observations The observations, checked.
+/// @return A depth per observation.
+std::vector<double> depths(std::span<const Eigen::Matrix4d> poses,
+                           const Eigen::Ref<const Points>& points,
+                           const Observations& observations) {
+  std::vector<double> out(observations.cameras.size());
+  for (std::size_t m = 0; m < out.size(); ++m) {
+    const Eigen::Matrix4d& pose = poses[static_cast<std::size_t>(observations.cameras[m])];
+    const Eigen::Vector3d offset =
+        points.row(static_cast<Eigen::Index>(observations.point_ids[m])).transpose() -
+        pose.topRightCorner<3, 1>();
+    out[m] = pose(0, 2) * offset.x() + pose(1, 2) * offset.y() + pose(2, 2) * offset.z();
+  }
+  return out;
+}
+
+/// @brief Which observations a bundle adjustment keeps, and its depth limit.
+struct Kept {
+  /// @brief A flag per observation.
+  std::vector<bool> flags;
+  /// @brief `near` times the median depth at the start; 0 with `near` 0.
+  double limit = 0.0;
+};
+
+/// @brief Which observations a bundle adjustment keeps (`graphs._kept_observations`): with `near`
+///        0, every one; otherwise those whose depth at the start is positive and not below `near`
+///        times the median of every observation's depth, the `floor(M/2)`-th smallest of the M
+///        counting from 0.
+/// @param poses Each camera's `T_world_cam`, checked.
+/// @param points Each point, checked.
+/// @param observations The observations, checked, at least one.
+/// @param near The fraction of the median depth, non-negative.
+/// @return The flags and the limit.
+Kept kept_observations(std::span<const Eigen::Matrix4d> poses,
+                       const Eigen::Ref<const Points>& points, const Observations& observations,
+                       double near) {
+  const std::size_t count = observations.cameras.size();
+  Kept out{.flags = std::vector<bool>(count, true), .limit = 0.0};
+  if (near == 0.0 || count == 0) {
+    return out;
+  }
+  const std::vector<double> depth = depths(poses, points, observations);
+  std::vector<double> sorted = depth;
+  const auto middle = static_cast<std::ptrdiff_t>(count / 2);
+  std::ranges::nth_element(sorted, sorted.begin() + middle);
+  out.limit = near * sorted[static_cast<std::size_t>(middle)];
+  for (std::size_t m = 0; m < count; ++m) {
+    out.flags[m] = depth[m] > 0.0 && !(depth[m] < out.limit);
+  }
+  return out;
+}
+
+/// @brief How many kept observations' points end behind their camera or below the limit
+///        (`graphs._ended_near`).
+/// @param poses Each camera's `T_world_cam` at the end.
+/// @param points Each point at the end.
+/// @param observations The observations, checked.
+/// @param kept Which were kept, and the limit.
+/// @return The count.
+std::int64_t ended_near(std::span<const Eigen::Matrix4d> poses,
+                        const Eigen::Ref<const Points>& points, const Observations& observations,
+                        const Kept& kept) {
+  const std::vector<double> depth = depths(poses, points, observations);
+  std::int64_t out = 0;
+  for (std::size_t m = 0; m < depth.size(); ++m) {
+    if (kept.flags[m] && (!(depth[m] > 0.0) || depth[m] < kept.limit)) {
+      ++out;
+    }
+  }
+  return out;
+}
+
+/// @brief The free cameras and the points a bundle adjustment's kept observations reach: those
+///        it solves.
+struct Reached {
+  /// @brief A flag per camera.
+  std::vector<bool> cameras;
+  /// @brief A flag per point.
+  std::vector<bool> points;
+};
+
+/// @brief What the kept observations reach.
+/// @param observations The observations, checked.
+/// @param kept Which are kept.
+/// @param held Which cameras are held.
+/// @param point_count The points.
+/// @return The cameras and points reached, the held cameras never.
+Reached reached(const Observations& observations, const std::vector<bool>& kept,
+                const std::vector<bool>& held, std::size_t point_count) {
+  Reached out{.cameras = std::vector<bool>(held.size(), false),
+              .points = std::vector<bool>(point_count, false)};
+  for (std::size_t m = 0; m < kept.size(); ++m) {
+    if (kept[m]) {
+      const auto c = static_cast<std::size_t>(observations.cameras[m]);
+      out.cameras[c] = !held[c];
+      out.points[static_cast<std::size_t>(observations.point_ids[m])] = true;
+    }
+  }
+  return out;
+}
+
+/// @brief A bundle adjustment's factors: one per kept observation, on its camera and point, or
+///        on its point alone through a held camera (g2o's fixed vertex, as ORB-SLAM holds one).
+/// @param poses The cameras' `T_world_cam`, checked.
+/// @param held Which cameras are held.
+/// @param observations The observations, checked.
+/// @param kept Which are kept.
+/// @param sighting The camera model, its intrinsics and `bf`, each observation's `measured` set
+///        here.
+/// @return The graph, the points keyed from `poses.size()`.
+gtsam::NonlinearFactorGraph bundle_graph(std::span<const Eigen::Matrix4d> poses,
+                                         const std::vector<bool>& held,
+                                         const Observations& observations,
+                                         const std::vector<bool>& kept, const Sighting& sighting) {
+  gtsam::NonlinearFactorGraph graph;
+  const std::size_t first_point = poses.size();
+  for (std::size_t m = 0; m < kept.size(); ++m) {
+    if (!kept[m]) {
+      continue;
+    }
+    const bool has_right = !std::isnan(observations.right[m]);
+    Sighting one = sighting;
+    one.measured.resize(has_right ? 3 : 2);
+    one.measured.head<2>() = observations.pixels.row(static_cast<Eigen::Index>(m)).transpose();
+    if (has_right) {
+      one.measured(2) = observations.right[m];
+    }
+    gtsam::SharedNoiseModel noise =
+        gtsam::noiseModel::Isotropic::Precision(one.measured.size(), observations.information[m]);
+    if (!observations.huber.empty()) {
+      noise = gtsam::noiseModel::Robust::Create(
+          gtsam::noiseModel::mEstimator::Huber::Create(observations.huber[m]), noise);
+    }
+    const auto c = static_cast<std::size_t>(observations.cameras[m]);
+    const std::size_t p = first_point + static_cast<std::size_t>(observations.point_ids[m]);
+    if (held[c]) {
+      graph.emplace_shared<HeldProjectionFactor>(p, poses[c], std::move(one), noise);
+    } else {
+      graph.emplace_shared<ProjectionFactor>(c, p, std::move(one), noise);
+    }
+  }
+  return graph;
+}
+
 }  // namespace
 
 Result<SimilarityRefinement> refine_similarity(
@@ -784,61 +1162,70 @@ Result<Adjustment> bundle_adjust(std::span<const Eigen::Matrix4d> poses,
                                  const Eigen::Ref<const Points>& points,
                                  const Observations& observations, camera::Model model,
                                  const Eigen::Ref<const Eigen::VectorXd>& intrinsics, double bf,
-                                 std::span<const std::int64_t> fixed, const Options& options) {
+                                 std::span<const std::int64_t> fixed, double near,
+                                 const Options& options) {
   if (auto checked =
           check_bundle(poses, points, observations, model, intrinsics, bf, fixed, options);
       !checked) {
     return std::unexpected(checked.error());
   }
-  const std::size_t count = observations.cameras.size();
+  if (!std::isfinite(near) || near < 0.0) {
+    return fail_setting("near", "expected >= 0", near);
+  }
   const auto point_count = static_cast<std::size_t>(points.rows());
-  gtsam::NonlinearFactorGraph graph;
+  // Only the kept observations take part, and only the points and free cameras they reach are
+  // solved. The held cameras are constants, not variables (g2o's fixed vertices, as ORB-SLAM
+  // holds them): each of their observations is a factor on its point alone.
+  const Kept kept = kept_observations(poses, points, observations, near);
+  const std::vector<bool> held = held_flags(fixed, poses.size());
+  const Reached solving = reached(observations, kept.flags, held, point_count);
+  Adjustment out{.poses = {poses.begin(), poses.end()},
+                 .points = points,
+                 .summary = Summary{.initial_error = 0.0,
+                                    .final_error = 0.0,
+                                    .iterations = 0,
+                                    .termination = Termination::kFunction,
+                                    .converged = true,
+                                    .left_out = std::ranges::count(kept.flags, false),
+                                    .ended_near = 0}};
+  if (std::cmp_equal(out.summary.left_out, kept.flags.size())) {
+    return out;  // nothing left to solve: the input as given, no error counted
+  }
   gtsam::Values values;
   const std::size_t first_point = poses.size();
   for (std::size_t c = 0; c < poses.size(); ++c) {
-    values.insert(c, gtsam::Pose3(poses[c]));
+    if (solving.cameras[c]) {
+      values.insert(c, gtsam::Pose3(poses[c]));
+    }
   }
   for (std::size_t p = 0; p < point_count; ++p) {
-    values.insert(first_point + p,
-                  gtsam::Point3(points.row(static_cast<Eigen::Index>(p)).transpose()));
-  }
-  for (const std::int64_t c : distinct(fixed)) {
-    graph.emplace_shared<gtsam::NonlinearEquality<gtsam::Pose3>>(
-        static_cast<gtsam::Key>(c), gtsam::Pose3(poses[static_cast<std::size_t>(c)]));
-  }
-  const Eigen::VectorXd camera = intrinsics;
-  for (std::size_t m = 0; m < count; ++m) {
-    const auto row = static_cast<Eigen::Index>(m);
-    const bool has_right = !std::isnan(observations.right[m]);
-    Eigen::VectorXd measured(has_right ? 3 : 2);
-    measured.head<2>() = observations.pixels.row(row).transpose();
-    if (has_right) {
-      measured(2) = observations.right[m];
+    if (solving.points[p]) {
+      values.insert(first_point + p,
+                    gtsam::Point3(points.row(static_cast<Eigen::Index>(p)).transpose()));
     }
-    gtsam::SharedNoiseModel noise =
-        gtsam::noiseModel::Isotropic::Precision(measured.size(), observations.information[m]);
-    if (!observations.huber.empty()) {
-      noise = gtsam::noiseModel::Robust::Create(
-          gtsam::noiseModel::mEstimator::Huber::Create(observations.huber[m]), noise);
-    }
-    graph.emplace_shared<ProjectionFactor>(
-        static_cast<gtsam::Key>(observations.cameras[m]),
-        first_point + static_cast<std::size_t>(observations.point_ids[m]), measured, model, camera,
-        bf, noise);
   }
+  const gtsam::NonlinearFactorGraph graph =
+      bundle_graph(poses, held, observations, kept.flags,
+                   Sighting{.measured = {}, .model = model, .intrinsics = intrinsics, .bf = bf});
   auto solved = solve(graph, values, options);
   if (!solved) {
     return std::unexpected(solved.error());
   }
-  Adjustment out{.poses = {}, .points = Points(points.rows(), 3), .summary = solved->summary};
-  out.poses.reserve(poses.size());
+  const std::int64_t left_out = out.summary.left_out;
+  out.summary = solved->summary;
   for (std::size_t c = 0; c < poses.size(); ++c) {
-    out.poses.push_back(solved->values.at<gtsam::Pose3>(c).matrix());
+    if (solving.cameras[c]) {
+      out.poses[c] = solved->values.at<gtsam::Pose3>(c).matrix();
+    }
   }
   for (std::size_t p = 0; p < point_count; ++p) {
-    out.points.row(static_cast<Eigen::Index>(p)) =
-        solved->values.at<gtsam::Point3>(first_point + p).transpose();
+    if (solving.points[p]) {
+      out.points.row(static_cast<Eigen::Index>(p)) =
+          solved->values.at<gtsam::Point3>(first_point + p).transpose();
+    }
   }
+  out.summary.left_out = left_out;
+  out.summary.ended_near = ended_near(out.poses, out.points, observations, kept);
   return out;
 }
 

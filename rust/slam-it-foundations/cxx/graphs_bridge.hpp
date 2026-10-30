@@ -3,9 +3,10 @@
 ///        values and Levenberg-Marquardt, with factors that call back into Rust.
 ///
 /// Rust builds a problem through these functions: its variables (poses, similarities, points),
-/// GTSAM's own between and equality factors, and Rust factors, whose residual and Jacobians a
-/// Rust `Evaluator` computes (`evaluate`, declared by the bridge). The solve is driven from
-/// Rust one iteration at a time, so the stopping rule is Rust's own, as in
+/// GTSAM's own between factors (with one end held at a value, a factor on the other end alone),
+/// and Rust factors, whose residual and Jacobians a Rust `Evaluator` computes (`evaluate`,
+/// declared by the bridge). A held pose is never a variable: Rust leaves it out. The solve is
+/// driven from Rust one iteration at a time, so the stopping rule is Rust's own, as in
 /// `slam_it.foundations.graphs`. Every function that evaluates the factors takes the evaluator,
 /// and holds it only for the call. A pose crosses as 16 row-major doubles, `T_world_cam`; a
 /// similarity as GTSAM's own 4x4, `[[R, t'], [0, 1/s]]` (mapping `p` to `s (R p + t')`), which
@@ -103,17 +104,49 @@ void add_between_poses(Problem& problem, std::uint64_t first, std::uint64_t seco
 void add_between_similarities(Problem& problem, std::uint64_t first, std::uint64_t second,
                               rust::Slice<const double> relative);
 
-/// @brief Hold a pose exactly at a value (GTSAM's `NonlinearEquality`).
+/// @brief Add GTSAM's between factor on two poses, one of them held at a value, with unit
+///        information: a factor on the other pose alone, the held one a constant.
 /// @param problem The problem.
-/// @param key The pose's key.
-/// @param matrix The value, 16 row-major.
-void fix_pose(Problem& problem, std::uint64_t key, rust::Slice<const double> matrix);
+/// @param first The first pose's key.
+/// @param second The second's.
+/// @param relative The measured `T_first_second`, 16 row-major.
+/// @param held The held pose's value, 16 row-major.
+/// @param first_held Whether the first pose is the held one; else the second is.
+void add_held_between_poses(Problem& problem, std::uint64_t first, std::uint64_t second,
+                            rust::Slice<const double> relative, rust::Slice<const double> held,
+                            bool first_held);
 
-/// @brief Hold a similarity exactly at a value.
+/// @brief Add GTSAM's between factor on two similarities, one of them held at a value, with unit
+///        information: a factor on the other alone.
 /// @param problem The problem.
-/// @param key The similarity's key.
-/// @param matrix The value, 16 row-major.
-void fix_similarity(Problem& problem, std::uint64_t key, rust::Slice<const double> matrix);
+/// @param first The first similarity's key.
+/// @param second The second's.
+/// @param relative The measured relative similarity, 16 row-major (GTSAM's matrix).
+/// @param held The held similarity's value, 16 row-major (GTSAM's matrix).
+/// @param first_held Whether the first similarity is the held one; else the second is.
+void add_held_between_similarities(Problem& problem, std::uint64_t first, std::uint64_t second,
+                                   rust::Slice<const double> relative,
+                                   rust::Slice<const double> held, bool first_held);
+
+/// @brief GTSAM's residual of its between factor on two poses at given values: what an edge
+///        between two held poses gives, a constant.
+/// @param first The first pose, 16 row-major.
+/// @param second The second.
+/// @param relative The measured `T_first_second`, 16 row-major.
+/// @param out Where to write the residual, `Local(relative, first^-1 second)`, 6 long.
+/// @throws std::invalid_argument for room of another length.
+void between_residual_poses(rust::Slice<const double> first, rust::Slice<const double> second,
+                            rust::Slice<const double> relative, rust::Slice<double> out);
+
+/// @brief GTSAM's residual of its between factor on two similarities at given values.
+/// @param first The first similarity, 16 row-major (GTSAM's matrix).
+/// @param second The second.
+/// @param relative The measured relative similarity, 16 row-major (GTSAM's matrix).
+/// @param out Where to write the residual, 7 long.
+/// @throws std::invalid_argument for room of another length.
+void between_residual_similarities(rust::Slice<const double> first,
+                                   rust::Slice<const double> second,
+                                   rust::Slice<const double> relative, rust::Slice<double> out);
 
 /// @brief Add a factor Rust evaluates.
 /// @param problem The problem.
@@ -127,17 +160,31 @@ void add_rust_factor(Problem& problem, rust::Slice<const std::uint64_t> keys,
                      rust::Slice<const std::uint8_t> kinds, std::size_t dimension,
                      double information, double huber, std::size_t index);
 
+/// @brief The largest diagonal entry of a problem's normal equations at its values: g2o's
+///        `computeLambdaInit`'s maximum, over the variables as g2o's over its free vertices.
+/// @param problem The problem.
+/// @param evaluator The Rust factors' evaluator.
+/// @return The largest entry, 0 for a problem with no factor.
+/// @throws std::exception (a Rust `cxx::Exception`) if GTSAM fails to linearise it.
+double largest_hessian_diagonal(const Problem& problem, const Evaluator& evaluator);
+
 /// @brief Start Levenberg-Marquardt on a problem; its starting error is evaluated here.
 /// @param problem The problem.
 /// @param evaluator The Rust factors' evaluator.
 /// @param initial_damping The first damping.
+/// @param damping_factor The damping's factor (`lambdaFactor`): the fixed one, or with `nielsen`
+///        the first.
+/// @param nielsen Nielsen's schedule (GTSAM's `useFixedLambdaFactor` false): each further failed
+///        trial doubles the factor, and an accepted step scales the damping by its gain ratio.
+/// @param damping_limit The damping at which a search gives up (`lambdaUpperBound`).
 /// @param relative_tolerance GTSAM's relative error tolerance.
 /// @param absolute_tolerance GTSAM's absolute error tolerance.
 /// @return The optimizer.
 /// @throws std::exception (a Rust `cxx::Exception`) if GTSAM fails.
 std::unique_ptr<Optimizer> new_optimizer(const Problem& problem, const Evaluator& evaluator,
-                                         double initial_damping, double relative_tolerance,
-                                         double absolute_tolerance);
+                                         double initial_damping, double damping_factor,
+                                         bool nielsen, double damping_limit,
+                                         double relative_tolerance, double absolute_tolerance);
 
 /// @brief Run one Levenberg-Marquardt iteration.
 /// @param optimizer The optimizer.
