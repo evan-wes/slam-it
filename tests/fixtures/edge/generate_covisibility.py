@@ -10,6 +10,7 @@ Each case is a map given as its keyframes, each with its id, the point each keyp
 and none of the module's code:
 
 - each keyframe's links and their weights;
+- each keyframe's connected keyframes (every one sharing a point) and their weights;
 - tracking's local map for some frames' matched points;
 - each keyframe's parent from :func:`~slam_it.edge.covisibility.adopt`, with its own unset;
 - each keyframe's children given new parents by :func:`~slam_it.edge.covisibility.reparent`;
@@ -18,10 +19,11 @@ and none of the module's code:
   ``fusion``: fusion's targets (:func:`slam_it.edge.mapping.fuse_targets`), monocular and not,
   and local BA's keyframes (:func:`slam_it.edge.mapping.local_ba_keyframes`).
 
-Two cases are built by hand: ties between equal weights and the link kept when none reaches
-``min_points``; and a culled keyframe whose children are joined in rounds, one becoming the
-parent of the next, ids not their rows. The rest are maps of points seen along a path, from a
-fixed seed, read with the local map's caps both far and near. The Python, C++ and Rust tests
+Three cases are built by hand: ties between equal weights and the link kept when none reaches
+``min_points``; a culled keyframe whose children are joined in rounds, one becoming the parent
+of the next, ids not their rows; and a keyframe sharing no point, which has no links and nothing
+connected. The rest are maps of points seen along a path, from a fixed seed, read with the local
+map's caps both far and near. The Python, C++ and Rust tests
 hold their backends to the file (``tests/edge/test_covisibility.py``,
 ``cpp/tests/edge/test_covisibility.cpp``, ``rust/slam-it-edge/tests/covisibility.rs``).
 """
@@ -192,6 +194,7 @@ def _case(
         "keyframes": keyframes,
         "settings": settings,
         "links": [_links(keyframes, a, settings["min_points"]) for a in rows],
+        "connected": [_links(keyframes, a, 1) for a in rows],  # links of one point: all sharing
         "local_maps": [
             {"points": points, **_local_map(keyframes, points, settings)} for points in frames
         ],
@@ -239,6 +242,20 @@ def repair() -> dict[str, Any]:
     return case
 
 
+def isolated() -> dict[str, Any]:
+    """Return a case whose newest keyframe shares no point: no links, nothing connected."""
+    keyframes = [
+        _kf(0, list(range(8)), -1),
+        _kf(1, [*range(4), 8, 9, -1], 0),
+        _kf(2, [*range(4, 8), 10, 11], 0),
+        _kf(4, [20, 21, 22, -1], 0),
+    ]
+    settings = {"min_points": 3, "local_keyframes": 80, "local_neighbours": 10, "strong_points": 4}
+    case = _case("isolated", keyframes, settings, [[0, 20, -1], [21, 22]])
+    assert case["connected"][3] == case["links"][3] == [[], []]
+    return case
+
+
 def path(seed: int, settings: dict[str, int]) -> dict[str, Any]:
     """Return keyframes along a path, each seeing a stretch of the points, parents as inserted."""
     rng = random.Random(seed)
@@ -260,7 +277,7 @@ def main() -> None:
     """Write the fixture."""
     near = {"min_points": 3, "local_keyframes": 4, "local_neighbours": 2, "strong_points": 6}
     far = {"min_points": 2, "local_keyframes": 80, "local_neighbours": 10, "strong_points": 8}
-    cases = [ties(), repair(), path(1, far), path(2, near), path(3, near)]
+    cases = [ties(), repair(), path(1, far), path(2, near), path(3, near), isolated()]
     capped = [m for c in cases[2:] for m in c["local_maps"] if len(m["keyframes"]) > 4]
     assert capped, "no local map reached its cap"
     assert all(ADDED.values()), f"K2 never took a keyframe some way: {ADDED}"
@@ -274,6 +291,8 @@ def main() -> None:
         ]
         assert moved, f"fusion's {name} binds on no case"
     assert any(c["fuse_targets"]["monocular"] != c["fuse_targets"]["other"] for c in cases)
+    assert any(c["connected"] != c["links"] for c in cases), "no keyframe shares too few to link"
+    assert any(not rows for c in cases for rows, _ in c["connected"]), "no keyframe shares nothing"
     doc = {
         "description": "The covisibility graph, by brute force (generate_covisibility.py).",
         "oracle": "brute force over each keyframe's point set, by the rules alone",

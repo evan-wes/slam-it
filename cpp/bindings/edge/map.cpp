@@ -43,13 +43,14 @@ nb::ndarray<nb::numpy, std::int64_t> predict_level(const nb::dict& m, const Int6
 /// @param frame The frame, as a dict.
 /// @param pose Its `T_cam_world`.
 /// @param points The point id each keypoint observes, or -1.
+/// @param nodes Each keypoint's vocabulary node.
 /// @return The new map, as a dict.
 /// @throws CoreError for invalid input.
 nb::dict insert_keyframe(const nb::dict& m, const nb::dict& frame, const Matrix4In& pose,
-                         const Int64In& points) {
+                         const Int64In& points, const Int64In& nodes) {
   edge::Map out = map_in(m);
-  unwrap(
-      edge::insert_keyframe(out, edge_crossing::frame_in(frame), matrix4(pose), int64_in(points)));
+  unwrap(edge::insert_keyframe(out, edge_crossing::frame_in(frame), matrix4(pose), int64_in(points),
+                               int64_in(nodes)));
   return map_dict(out);
 }
 
@@ -181,7 +182,8 @@ void bind_map(nb::module_& m) {
   m.def("predict_level", &predict_level, nb::arg("m"), nb::arg("rows").noconvert(),
         nb::arg("distance").noconvert(), "Predict points' levels from their distances.");
   m.def("insert_keyframe", &insert_keyframe, nb::arg("m"), nb::arg("frame"),
-        nb::arg("pose").noconvert(), nb::arg("points").noconvert(), "Add a keyframe.");
+        nb::arg("pose").noconvert(), nb::arg("points").noconvert(), nb::arg("nodes").noconvert(),
+        "Add a keyframe.");
   m.def("add_points", &add_points, nb::arg("m"), nb::arg("xyz").noconvert(),
         nb::arg("observers").noconvert(), "Create map points.");
   m.def("distinctive_descriptor", &distinctive_descriptor, nb::arg("descriptors").noconvert(),

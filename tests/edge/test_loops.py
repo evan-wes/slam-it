@@ -10,9 +10,11 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import replace
+from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from slam_it import backends
 from slam_it.edge import covisibility, loops
@@ -21,9 +23,9 @@ from slam_it.edge.database import Database
 from slam_it.edge.loops import Outcome, Pending
 from slam_it.edge.map import Map, Removal
 from slam_it.edge.options import Options
-from slam_it.foundations import graphs, matching, se3, so3
+from slam_it.foundations import alignment, graphs, matching, se3, so3
 from slam_it.foundations.errors import InvalidInputError
-from tests.conftest import require_function
+from tests.conftest import load_fixture, require_function
 from tests.edge.conftest import Loop
 from tests.edge.support import (
     CAMERA,
@@ -411,7 +413,13 @@ def test_global_ba_follows_the_correction(loop: Loop, loop_database: Database) -
 
 
 def test_global_ba_finds_an_exact_map_from_a_nudged_one(loop_rigid: Loop) -> None:
-    """Every keyframe but the first nudged: global BA puts them back, the observations exact."""
+    """Every keyframe but the first nudged: global BA puts them back, the observations exact.
+
+    Its damping, g2o's, scaled to the Hessian (:func:`slam_it.edge.loops.global_ba_options`),
+    takes the last digits more slowly than GTSAM's own, whose ``λ`` fell to 1e-15 in 10
+    iterations: after its 10, the cost is 8e-14 of its start and the poses within 2e-6 of the
+    truth (since 0.3.18.0; within 1e-6 before).
+    """
     exact = loop_rigid.truth
     rng = np.random.default_rng(0)
     poses = exact.kf_pose.copy()
@@ -421,7 +429,7 @@ def test_global_ba_finds_an_exact_map_from_a_nudged_one(loop_rigid: Loop) -> Non
         )
     adjusted, summary = loops.global_bundle_adjust(replace(exact, kf_pose=poses), CAMERA, OPTIONS)
     assert summary.final_error < 1e-6 * summary.initial_error
-    np.testing.assert_allclose(adjusted.kf_pose, exact.kf_pose, atol=1e-6)
+    np.testing.assert_allclose(adjusted.kf_pose, exact.kf_pose, atol=3e-6)
     np.testing.assert_allclose(adjusted.pt_xyz, exact.pt_xyz, atol=1e-5)
 
 
@@ -723,6 +731,129 @@ def test_every_backend_adjusts_the_whole_map_as_python_does(backend: str, loop: 
         expected[1].termination,
     )
     assert got[1].final_error == pytest.approx(expected[1].final_error, rel=GRAPH_TOLERANCE["rtol"])
+
+
+MOVED_GLOBAL_BA = {
+    "loops.global_damping_scale": 1e-2,
+    "loops.global_small_steps": 1,
+    "loops.global_small_decrease": 0.5,
+    "loops.min_depth_ratio": 0.9,
+}
+"""Global BA's settings off their defaults: a heavier first damping, a solve ended by its first
+iteration's decrease under half, and the observations nearer than 0.9 of the median depth left
+out."""
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_reads_global_ba_s_settings(backend: str, loop: Loop) -> None:
+    """Off their defaults, global BA's settings change each backend's solve, as Python's.
+
+    So each native reads them (review panel finding H21: a native that hard-coded them would
+    solve alike either way).
+    """
+    require_function(backend, loops.__name__, "global_bundle_adjust")
+    moved = OPTIONS.with_settings(MOVED_GLOBAL_BA)
+    expected, got = (
+        loops.global_bundle_adjust(loop.map, CAMERA, moved, backend=chosen)
+        for chosen in ("python", backend)
+    )
+    assert_maps_match(got[0], expected[0], GRAPH_TOLERANCE)
+    assert (got[1].iterations, got[1].termination) == (1, expected[1].termination)
+    assert got[1].initial_error == pytest.approx(expected[1].initial_error, rel=1e-12)
+    _, default = loops.global_bundle_adjust(loop.map, CAMERA, OPTIONS, backend=backend)
+    assert got[1].initial_error < default.initial_error  # the near-plane filter left some out
+    assert default.iterations > 1
+
+
+SLIDE = load_fixture("edge/global_ba_slide.json")
+"""A monocular global BA whose scale GTSAM's damping lets slide (generate_global_ba_slide.py)."""
+
+SCALE_TOLERANCE = 0.01
+"""How far global BA may change a monocular map's scale: the scale of the similarity that carries
+its keyframes' centres onto where they started, within 1% of 1. On :data:`SLIDE` its own
+correction of the map moves it by 0.3% (0.9968); GTSAM's damping slid it to 0.7322."""
+
+
+def _slide_problem() -> dict[str, Any]:
+    """Return :data:`SLIDE`'s bundle as ``graphs.bundle_adjust`` takes it."""
+    problem = SLIDE["problem"]
+    count = len(problem["cameras"])
+    return {
+        "poses": np.array(problem["poses"]), "points": np.array(problem["points"]),
+        "cameras": np.array(problem["cameras"], dtype=np.int64),
+        "point_ids": np.array(problem["point_ids"], dtype=np.int64),
+        "pixels": np.array(problem["pixels"]), "right": np.full(count, np.nan),
+        "information": np.array(problem["information"]), "model": SLIDE["camera"],
+        "intrinsics": np.array(problem["intrinsics"]), "bf": 0.0,
+        "fixed": np.array(problem["fixed"], dtype=np.int64),
+    }  # fmt: skip
+
+
+def _centres_scale(before: NDArray[np.float64], after: NDArray[np.float64]) -> float:
+    """Return the scale of the similarity carrying the cameras' centres `before` onto `after`."""
+    return alignment.align(before[:, :3, 3], after[:, :3, 3], with_scale=True).scale
+
+
+def _shape_ratio(
+    poses: NDArray[np.float64], points: NDArray[np.float64], bundle: dict[str, Any]
+) -> float:
+    """Return a map's gauge-free shape: its cameras' mean step over its observations' median depth.
+
+    A similarity of the whole map (the monocular gauge) leaves it unchanged.
+    """
+    step = float(np.mean(np.linalg.norm(np.diff(poses[:, :3, 3], axis=0), axis=1)))
+    cameras, ids = bundle["cameras"], bundle["point_ids"]
+    depth = np.einsum("mi,mi->m", poses[cameras, :3, 2], points[ids] - poses[cameras, :3, 3])
+    return step / float(np.median(depth))
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+def test_global_ba_holds_a_monocular_map_s_scale(backend: str) -> None:
+    """Global BA's solve keeps a monocular map's scale where GTSAM's damping let it slide (L4).
+
+    A monocular global BA holding one keyframe has a free scale, the exact gauge, which no
+    Levenberg-Marquardt step moves along (each step is orthogonal to it); beside it lies a
+    near-flat valley, the cameras and the well-constrained points rescaling while far, weakly
+    constrained points barely move, at almost no cost. From GTSAM's absolute ``λ`` of 1e-5,
+    divided by 10 a step, the solve drifts along that valley (the centres' scale 0.7322 here,
+    0.5508 on the whole problem); from g2o's, scaled to the Hessian's largest diagonal entry,
+    with ORB-SLAM3's stop and the near-plane filter
+    (:func:`slam_it.edge.loops.global_ba_options`), the damping holds those near-null directions
+    and the scale stays within :data:`SCALE_TOLERANCE` (0.3.17.2's review panel, L4; the
+    0.3.18.0 panel's L2). Both make the same gauge-free correction (:func:`_shape_ratio` agrees
+    within 1% and moves by over 10%) and end at the same cost: the difference is drift alone.
+    """
+    chosen = require_function(backend, graphs.__name__, "bundle_adjust")
+    bundle = _slide_problem()
+    settings = Options()
+    held = graphs.bundle_adjust(
+        **bundle, near=settings.loops.min_depth_ratio, options=loops.global_ba_options(settings),
+        backend=chosen,
+    )  # fmt: skip
+    assert abs(_centres_scale(bundle["poses"], held.poses) - 1.0) < SCALE_TOLERANCE
+    slid = graphs.bundle_adjust(
+        **bundle, options=graphs.Options(max_iterations=settings.loops.global_iterations),
+        backend=chosen,
+    )  # fmt: skip
+    # Far past the tolerance, so the test tells the two dampings apart (0.7322 measured).
+    assert _centres_scale(bundle["poses"], slid.poses) < 1.0 - 20 * SCALE_TOLERANCE
+    assert slid.summary.final_error == pytest.approx(held.summary.final_error, rel=1e-3)
+    start = _shape_ratio(bundle["poses"], bundle["points"], bundle)
+    corrected = _shape_ratio(held.poses, held.points, bundle)
+    assert _shape_ratio(slid.poses, slid.points, bundle) == pytest.approx(corrected, rel=1e-2)
+    assert abs(corrected / start - 1.0) > 0.1
+
+
+def test_global_ba_damps_as_g2o_and_stops_as_orb_slam3_and_the_weld_does_neither() -> None:
+    """Global BA's solve: g2o's damping, ORB-SLAM3's stop; a welding BA's: GTSAM's damping alone."""
+    settings = Options()
+    assert loops.global_ba_options(settings) == graphs.Options(
+        max_iterations=10, scaled_damping=True, damping_scale=1e-5, small_steps=3,
+        small_decrease=1e-3,
+    )  # fmt: skip
+    assert loops.weld_options(5) == graphs.Options(max_iterations=5)
+    assert not loops.weld_options(5).scaled_damping
+    assert loops.weld_options(5).small_steps == 0
 
 
 def _assert_same_detection(got: loops.Detection, expected: loops.Detection) -> None:

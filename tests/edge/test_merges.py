@@ -23,7 +23,8 @@ from slam_it.edge.database import Indexed
 from slam_it.edge.loops import Merge, MergeDetection, Merging, Outcome, Pending
 from slam_it.edge.map import Map
 from slam_it.edge.options import Options
-from slam_it.foundations import sim3, vocabulary
+from slam_it.eval import vocabularies
+from slam_it.foundations import graphs, sim3, vocabulary
 from slam_it.foundations.errors import InvalidInputError
 from tests.conftest import require_function
 from tests.edge.conftest import MERGE_SCALE, SPLIT, TwoMaps, keyframe_database
@@ -270,9 +271,10 @@ def test_the_merge_puts_the_active_map_where_it_belongs(two: TwoMaps) -> None:
 
     Here each welding window holds all of its map, so the matched map has no keyframe outside
     to hold, and its window is held: the matched map stays where it was. The active map's
-    keyframes and points follow the matched map's, every id moved on by the matched map's next;
-    its tree hangs under the matched keyframe, the matched map's root the merged map's; the
-    merge edge joins the two keyframes, and culling spares them.
+    keyframes and points follow the matched map's, every id moved on by the matched map's next,
+    each keypoint with its vocabulary node; its tree hangs under the matched keyframe, the
+    matched map's root the merged map's; the merge edge joins the two keyframes, and culling
+    spares them.
     """
     found = _found(two)
     merged = loops.merge(
@@ -287,6 +289,8 @@ def test_the_merge_puts_the_active_map_where_it_belongs(two: TwoMaps) -> None:
         m.kf_id, np.concatenate([two.matched.kf_id, two.active.kf_id + merged.keyframe_offset])
     )
     np.testing.assert_array_equal(m.kf_time[two.matched.keyframes :], two.active.kf_time)
+    nodes = np.concatenate([two.matched.kp_node, two.active.kp_node])
+    np.testing.assert_array_equal(m.kp_node, nodes)
     assert _errors(two, merged).max() < 0.03
     np.testing.assert_allclose(
         m.kf_pose[: two.matched.keyframes], two.matched.kf_pose, rtol=0, atol=1e-12
@@ -343,6 +347,32 @@ def test_global_ba_follows_the_merge(two: TwoMaps) -> None:
     np.testing.assert_allclose(
         adjusted.map.kf_pose[0], graph_only.map.kf_pose[0], rtol=0, atol=1e-12
     )
+
+
+def test_the_weld_keeps_gtsam_s_damping_and_global_ba_takes_g2o_s(
+    two: TwoMaps, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A merge's welding BA solves by GTSAM's own damping, no stop; its global BA by g2o's.
+
+    The weld's two solves take :func:`slam_it.edge.loops.weld_options`, the global BA after the
+    merge :func:`slam_it.edge.loops.global_ba_options` (decided with evan-wes on 2026-10-23);
+    each leaves out the observations nearer than ``loops.min_depth_ratio`` of the median depth.
+    """
+    solves: list[tuple[graphs.Options, float]] = []
+    adjust = graphs.bundle_adjust
+
+    def recorded(*args: Any, **kwargs: Any) -> graphs.Adjustment:  # noqa: ANN401 -- passed on
+        solves.append((kwargs["options"], kwargs["near"]))
+        return adjust(*args, **kwargs)
+
+    monkeypatch.setattr(graphs, "bundle_adjust", recorded)
+    loops.merge(two.active, two.matched, CAMERA, _found(two), mode=_mode(two), options=OPTIONS)
+    assert [options for options, _ in solves] == [
+        loops.weld_options(OPTIONS.adjustment.iterations),
+        loops.weld_options(OPTIONS.adjustment.refine_iterations),
+        loops.global_ba_options(OPTIONS),
+    ]
+    assert {near for _, near in solves} == {OPTIONS.loops.min_depth_ratio}
 
 
 def test_the_merge_refuses_what_it_cannot_join(two_rigid: TwoMaps) -> None:
@@ -531,6 +561,35 @@ def test_every_backend_merges_as_python_does(
 
 
 @pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
+def test_every_backend_welds_by_its_depth_ratio_as_python_does(backend: str, two: TwoMaps) -> None:
+    """Each core's weld reads ``loops.min_depth_ratio``, as Python's does (H21's rule).
+
+    With the ratio moved to 0.9 and global BA off, so that the weld alone acts: each backend's
+    merged map and records are Python's, the weld leaves observations out where the default
+    leaves none, and the map differs from the default's.
+    """
+    require_function(backend, loops.__name__, "merge")
+    options = OPTIONS.with_settings({"loops.global_ba": False})
+    moved = options.with_settings({"loops.min_depth_ratio": 0.9})
+    found = _found(two)
+    expected, got = (
+        loops.merge(
+            two.active, two.matched, CAMERA, found, mode=_mode(two), options=moved,
+            backend=chosen,
+        )
+        for chosen in ("python", backend)
+    )  # fmt: skip
+    assert_maps_match(got.map, expected.map, GRAPH_TOLERANCE)
+    assert_records_match(got.summary.as_dict(), expected.summary.as_dict(), GRAPH_TOLERANCE)
+    default = loops.merge(
+        two.active, two.matched, CAMERA, found, mode=_mode(two), options=options, backend=backend
+    )
+    assert default.summary.weld.first.left_out == 0 < got.summary.weld.first.left_out
+    same_shape = got.map.pt_xyz.shape == default.map.pt_xyz.shape
+    assert not (same_shape and np.allclose(got.map.pt_xyz, default.map.pt_xyz, rtol=0, atol=1e-9))
+
+
+@pytest.mark.parametrize("backend", backends.COMPILED_BACKENDS)
 def test_every_core_refuses_a_merge_it_cannot_make(backend: str, two_rigid: TwoMaps) -> None:
     """Python refuses a keyframe outside its map, or an unknown mode, first; each core does too."""
     require_function(backend, loops.__name__, "merge")
@@ -570,6 +629,6 @@ def test_a_merge_with_a_map_not_kept_is_refused_by_its_number(two_rigid: TwoMaps
     atlas.start()
     with pytest.raises(InvalidInputError, match=f"merge: map {found.map} is not kept"):
         pipeline._merged(
-            pipeline.LoopState(), pipeline.MapOwner(), atlas, found, two_rigid.active,
-            camera=CAMERA, mode=_mode(two_rigid), options=OPTIONS,
+            pipeline.LoopState(), pipeline.MapOwner(vocabularies.default(), True), atlas, found,
+            two_rigid.active, camera=CAMERA, mode=_mode(two_rigid), options=OPTIONS,
         )  # fmt: skip

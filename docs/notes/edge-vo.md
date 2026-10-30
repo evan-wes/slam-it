@@ -90,7 +90,9 @@ has a compiled twin that the tests call on the same state.
    that should have seen them; triangulate its free keypoints against the window's other
    keyframes; fuse duplicates; once the map holds three keyframes, run local BA over the
    window with the first keyframe fixed (ORB-SLAM's `KeyFramesInMap() > 2`); and cull
-   keyframes 90% of whose points three others see at the same or a finer scale.
+   keyframes 90% of whose points three others see at the same, a finer or the next coarser
+   scale (ORB-SLAM2's rule; since 0.3.18.0, ORB-SLAM3's: more than three others,
+   `mapping.redundant_observers` 4).
 
 The **chi-square test** is one function for every stage: a keypoint on pyramid level `l` is
 located to `s^l` pixels, so an observation is an outlier when its squared reprojection error
@@ -133,7 +135,10 @@ depths read 2.5 times too far (the largest keyframe-centre error 58 mm with it, 
   next frame is predicted with no motion. A draft kept the last velocity through failures.
 - **No ratio test for triangulation**: ORB-SLAM's `SearchForTriangulation` has none, so the
   setting was removed. Without a bag of words, every pair of free keypoints within the
-  stricter descriptor distance and the epipolar band is a candidate, the nearest kept.
+  stricter descriptor distance and the epipolar band was a candidate, the nearest kept; since
+  0.3.18.0 a pair must also share its vocabulary node, as ORB-SLAM3's search walks the two
+  keyframes' `FeatureVector` node by node, and the last of equally near candidates wins, as its
+  `dist > bestDist` keeps (the online-SLAM design's section 11, L2).
 - **A homography of rank below 3 is refused** by H-RANSAC itself (its smallest singular value
   below 1e-4 of its largest, in the normalised frame the DLT fits in), so two-view no longer
   needs its own rank check.

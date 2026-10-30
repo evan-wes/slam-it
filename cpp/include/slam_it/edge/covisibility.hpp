@@ -60,6 +60,13 @@ struct LocalMap {
 [[nodiscard]] foundations::Result<std::vector<Link>> links(const Map& m, std::int64_t k,
                                                            const Options& options);
 
+/// @brief A keyframe's connected keyframes (`slam_it.edge.covisibility.connected`, ORB-SLAM's
+///        `GetConnectedKeyFrames`): every keyframe sharing a point with it, however few.
+/// @param m The map.
+/// @param k The keyframe's row.
+/// @return Them, most shared first, ties by the lower id; `InvalidInput` for a row out of range.
+[[nodiscard]] foundations::Result<std::vector<Link>> connected(const Map& m, std::int64_t k);
+
 /// @brief Tracking's local map, ORB-SLAM's K1 and K2 (`slam_it.edge.covisibility.local_map`).
 /// @param m The map.
 /// @param points The point each of the frame's keypoints was matched to, -1 for none.

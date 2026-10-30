@@ -144,16 +144,17 @@ source (`KeyFrameDatabase.cc`, `Tracking.cc`):
    at least 15. A neighbour that shares words but was not scored adds nothing to the group
    (ORB-SLAM adds the score it kept from an earlier query, which the three languages could not
    reproduce alike).
-5. **The loss flow:** a frame that fails, as now (the motion model, then PnP against the local
-   map), is relocalised against the whole active map, while `relocalize` is on (by default, as
-   ORB-SLAM always relocalises; on, a run needs a vocabulary: `vo.run` takes the committed one
-   unless told another, and a program needs `--vocabulary`; off, it refuses one, and a map is
-   lost as A2 loses it). A run is recently lost from its first failed frame: it is tracked
-   again on a frame that succeeds,
-   and lost, its map closed as A2 closes it, once `relocalize_seconds` (3.0) have passed since
-   that frame with no success. A map of `reset_keyframes` or fewer is lost after `lost_frames`
-   (5) failures instead, as section 6 has it. The pipeline's own state stays tracking or not
-   initialised between frames, the loss flagged on the frame's step (the A2 panel's A8).
+5. **The loss flow:** a frame that fails, as now (the motion model, then PnP against the local map),
+   is relocalised against the whole active map, while `relocalize` is on (by default, as ORB-SLAM
+   always relocalises; off, a map is lost as A2 loses it). A run relocalising needed a vocabulary,
+   `vo.run` taking the committed one unless told another and a program needing `--vocabulary`, and a
+   run with relocalisation off refused one; since 0.3.18.0 every run names a vocabulary, as mapping
+   quantises each keyframe by it (section 11's L2). A run is recently lost from its first failed
+   frame: it is tracked again on a frame that succeeds, and lost, its map closed as A2 closes it,
+   once `relocalize_seconds` (3.0) have passed since that frame with no success. A map of
+   `reset_keyframes` or fewer is lost after `lost_frames` (5) failures instead, as section 6 has it.
+   The pipeline's own state stays tracking or not initialised between frames, the loss flagged on
+   the frame's step (the A2 panel's A8).
 6. **The run format,** version 5, a clean break with 0.3.9.0's runs (B1's panel, H9): `run.json`'s
    `vocabulary` is required, null or the vocabulary's record; a frame relocalised is placed by
    `relocalization`, and
@@ -282,7 +283,32 @@ Each gets its own section here before its PR, its forks put to the owner then.
   before the merge.
 - **Global BA's damping** (after B3, its own PR; B3's review panel, L2, section 11): scaled
   Levenberg-Marquardt damping in the three languages, measured on the loop sequences and the
-  test set, the records regenerated.
+  test set, the records regenerated. *As built* (0.3.18.0, with ORB-SLAM3's culling rule): see
+  section 11's L2.
+- **Local BA's near-plane guard** (after 0.3.18.0, a PR of its own; the 0.3.18.0 review panel,
+  A7): local BA (`foundations.ba`, its own solver, which drops an observation only behind its
+  camera, at `camera.MIN_DEPTH`) leaves out the observations nearer than a fraction of the median
+  depth at the start, as global and welding BA do since 0.3.18.0 (section 11's L2). The rule is
+  to be one rung-0 function in each language, which `foundations.ba` and `foundations.graphs`
+  both call, not a second implementation of it; whether `loops.min_depth_ratio` then moves to
+  the `adjustment` settings is decided in that PR (the panel's A5). The final measurement of
+  triangulation by node (section 11's L2; the keyframe-stream investigation's option B1) met
+  the case (2026-10-29): Rust's inline run of advio-01 ended in a local BA whose start held an
+  observation of a point 1e-9 m in front of its camera, kept by the BA's in-front test and
+  refused by its projection, which compute the depth by different formulas either side of
+  `camera.MIN_DEPTH`; the solve refused an infinite starting cost. Since 6274b518 (C++ and
+  Rust) and 253f0596 (Python, whose two formulas agreed by numpy's rounding, not by
+  construction) the in-front test and the residuals take a point's depth from one function, so
+  such an observation is left out at the start; the filter of near observations is still that
+  PR's. Three more for it (the 0.3.18.0 review panel, run 2, A11 and L14):
+  - **Anchored points** stay outside that one function in every language: an anchored point's
+    residual places it on its host camera's ray at its inverse depth, which the in-front test
+    does not, so it could pass the test and fail the projection (no pipeline anchors points).
+  - **The bound is absolute:** a point 2e-9 m in front of its camera still passes, its
+    Jacobian of order f/z²; only the relative guard removes it.
+  - **How a point came to sit at a camera's centre** in local BA is unexplained: one probe of
+    which step put it there (fusion, a merge, or local BA sliding a low-parallax point along
+    its ray), beside the guard.
 - **B3b** (0.3.13.0 -> 0.3.14.0, section 12): the seams, which change no decision; the threads,
   our design and ORB-SLAM's scheme in our C++; global BA's thread; the run format 8; the tests
   and ThreadSanitizer; the latency bar, and the loop sequences and the test set threaded. The
@@ -464,6 +490,22 @@ everything has until now; B3b gives it a thread. Three decisions of that day rea
      not linked to it; those sharing more than 80% of the most words any shares are scored; each
      score accumulated over the keyframe's 10 best neighbours that were scored, the best-scored
      standing for the group; the `loop.candidates` (3) best groups, best first, ties by id.
+     *As built (0.3.18.0; decided by evan-wes on 2026-10-24):* the keyframes left out are every
+     one sharing a point with the new one, however few (`covisibility.connected`), as ORB-SLAM3
+     leaves out `GetConnectedKeyFrames` (`KeyFrameDatabase.cc:613`; `KeyFrame.cc:461`, every
+     keyframe sharing a point), not its links of 15 or more alone. Under ORB-SLAM3's culling
+     rule (section 11, L2), which keeps more keyframes each sharing fewer of a new keyframe's
+     points, keyframes a few seconds older sharing 1 to 14 points became candidates, and
+     monocular runs closed loops at a wrong place, perceptual aliasing along one viewing
+     direction (advio-16, -13 and -17, C++ and Rust inline, before this change). **The
+     remaining departure:** the near check (a candidate whose group holds one of the new
+     keyframe's links is not tried), the group's widening and the correction's new loop links
+     still read its links (`loops._linked`, C++ `linked_rows`, Rust `linked`), where ORB-SLAM3
+     reads the connected keyframes in all three (`LoopClosing.cc:587` and 628-637, 922 and 932,
+     1152). With them there too, arkitscenes-42446137 loses its right-place loop, its final ATE
+     rising from 29.6 to 90.7 cm (C++ inline, a probe of 2026-10-24): its candidate shares no
+     point with the new keyframe, but its group holds one that shares exactly one, so the near
+     check passes it over. zju-A1's would fall from 24.9 to 18.9 cm.
    - **Each candidate,** with its 10 best neighbours, unless one of them is linked to the new
      keyframe: features matched by word against each (a ratio of 0.9), at least 20 in all; the
      loop's Sim(3) (item 3); the group's points projected through it (8 pixels, a ratio of 1.5),
@@ -631,6 +673,121 @@ alone, and runs on real data only when asked.
     the records (section 7). It measures B4's merges' welding BAs too, which solve on the same
     damping and apply their result whatever its termination (B4's review panel, L7; decided by
     evan-wes on 2026-10-19).
+    *As built (0.3.18.0; design "G", decided by evan-wes on 2026-10-23):* global BA runs g2o's
+    damping, `λ0` = 1e-5 times the Hessian's largest diagonal entry, by Nielsen's schedule with
+    no practical bound, and ORB-SLAM3's stop after three iterations in a row each lowering the
+    error by under 0.1% (`loops.global_damping_scale`, g2o's `τ`; `loops.global_small_steps`,
+    `loops.global_small_decrease`; a solve so ended reports `small_steps`); the welding BA
+    keeps GTSAM's own damping and no stop, g2o's having left its first solve 0.2% to 1.7% above
+    GTSAM's cost; both leave out each observation behind its camera or nearer than 1e-3 of the
+    median depth at the start (`loops.min_depth_ratio`), which no damping could solve past, and
+    record how many they left out and how many kept ones ended behind or nearer than that
+    (`left_out`, `ended_near`). With them keyframe culling takes ORB-SLAM3's rule
+    (`mapping.redundant_observers` 4), and loop closing's candidates leave out every keyframe
+    sharing a point with the new one (section 10, item 2). Local BA's near-plane guard is a
+    later PR (section 7).
+    *Measured* (2026-10-23 to 25, at 789fe641, before the review panel's fixes, which change no
+    decision in the rooms' records; the CHANGELOG's 0.3.18.0 entry gives each figure's
+    conditions):
+    - Per call, the 24 global BAs dumped from runs: develop's damping accepted no step on 14; this
+      one steps on all 24, the cameras' centres staying within 0.974 to 1.004 of where they started
+      on 22. On the other two, zju-A1's, the map changes shape. The first (the centres' scale 0.637)
+      is not a correction: the solve, with no robust loss, bends the map towards 4,879 of its 73,017
+      observations that start over about 100 px off (χ² ≥ 1e4), their cost falling from 1.9e8 to
+      2.9e7 while the inliers' rises from 2.8e4 to 3.4e7, and 57 kept observations of 17 points
+      cross behind their cameras, 30% of the final cost. The second (0.842) reconciles the map: half
+      its observations at χ² 100 to 1e4 become inliers, none crossing (the review panel's L1).
+      ORB-SLAM3's global BA, non-robust too, would fit such a map the same way; section 12 asks
+      where its gross outliers come from.
+    - The test sets, monocular and RGB-D, C++ and Rust, inline and threaded, one run each at
+      seed 0: inline, the monocular median final ATE 29.39 to 24.81 cm (C++) and 28.02 cm
+      (Rust), loops at a wrong place 2 to 1 in each; the RGB-D median 4.33 to 5.37 cm, none at
+      a wrong place. None of this version's runs failed or ran out of memory.
+    - The loop sequences (`loops-b3.toml`'s 20 not in the test sets: EuRoC monocular and
+      stereo, TUM's fr1_desk and fr3_long_office), threaded, three runs each in C++ and Rust,
+      beside ORB-SLAM3's own three (its anchor, run by SLAM It!'s scoring): the median final
+      ATE 2.32 cm [2.32 to 2.47] in C++ and 2.81 cm [2.74 to 3.00] in Rust against ORB-SLAM3's
+      2.94 cm [2.38 to 2.97]; the median share tracked 0.976 against 0.985; loops 7 [7 to 9]
+      and 11 [10 to 18] against 11 [11 to 12]; none at a wrong place but in one Rust run, which
+      closed one on V1_03 monocular and one on V1_03 stereo; no run failed. B3's bar was
+      measured inline (above); these runs are threaded.
+
+    *As built, triangulation by node (0.3.18.0; decided by evan-wes on 2026-10-28):* triangulation
+    matches within vocabulary nodes, as ORB-SLAM3's `SearchForTriangulation` walks the two
+    keyframes' `FeatureVector` node by node. The keyframe-stream investigation (2026-10-26) found
+    our threaded monocular runs making 0.51 (C++) and 0.67 (Rust) times ORB-SLAM3's keyframes over
+    the test set, one cause being mapping 2 to 7 times slower per keyframe, mostly brute-force
+    matching for triangulation; the other, c2's inputs, is in section 12's backlog (A).
+    - **The map keeps each keypoint's node** (`Map.kp_node`): its node at the vocabulary's
+      direct level (`DIRECT_LEVEL` 2, the depth of the `FeatureVector` nodes ORB-SLAM3 takes
+      four levels above its 6-level ORBvoc's leaves), quantised as the keyframe enters the map,
+      as ORB-SLAM's `ComputeBoW` does, and carried with its keypoints through sub-maps, culled
+      keyframes and merges. Mapping needs the vocabulary, so every pipeline holds one, as
+      ORB-SLAM always loads one; a map keeps a keyframe database only with relocalisation or
+      loop closing on. A Python pipeline refuses anything but a vocabulary, and the C++ and Rust
+      pipelines check theirs once as they start (the 0.3.18.0 review panel, run 2, A13).
+    - **ORB-SLAM3's rules,** its tie rule among them: of a keyframe-1 keypoint's candidates under
+      its node, within `matching.th_low`, the epipolar band and away from the epipole, the
+      nearest wins, the last of equally near ones (its `dist > bestDist` skips only a farther
+      one).
+    - **Three departures kept** (`match_for_triangulation` names them in each language):
+      - **A keyframe-2 keypoint is matched once,** the nearest keyframe-1 keypoint keeping it, as
+        our map holds one point per keypoint. ORB-SLAM3 v1.0 tests `vbMatched2` but never sets
+        it (neither does ORB-SLAM2; the original ORB-SLAM does), so two keyframe-1 keypoints can
+        take one keyframe-2 keypoint: both points record the observation, and the keyframe keeps
+        the later, the earlier's observation left dangling (`LocalMapping.cc:698-702`). Its
+        measurements were inconclusive (the 0.3.18.0 review panel, run 2, L11). Letting several
+        take it, as ORB-SLAM3 does, was measured and rejected (before the tie rule, 2026-10-28):
+        the merge room's monocular wall 0.0752 m but its ATE 2.871 cm, over the 2.8 cm bar, in
+        the three languages, a case that is a coin flip (section 12); on the eight threaded
+        regression sequences (C++, three runs each) the median of the medians 6.70 cm and their
+        sum 178.6 cm, against 6.84 and 106.7 cm for triangulation by node with the same tie rule
+        on the same day (4.90 and 77.0 in the batch of 2026-10-26).
+      - **A monocular keyframe triangulates against 20 neighbours,** ORB-SLAM2's count, where
+        ORB-SLAM3's `CreateNewMapPoints` takes 30: 30 changed little on the merge room (0.0970 m
+        and 2.113 cm against 0.0964 and 2.110, C++, the same code otherwise). Not measured on
+        the test set (section 12).
+      - **Every neighbour is matched,** where ORB-SLAM's `CreateNewMapPoints` stops after the
+        first once a new keyframe waits for mapping (`if(i>0 && CheckNewKeyFrames()) return;`,
+        `LocalMapping.cc:436-437`, as ORB-SLAM2's line 239), so that its 30 is a ceiling reached
+        only when no keyframe waits (the panel's L12; porting it is in section 12).
+    - **The ties departed too,** the first of equally near candidates winning, until
+      the merge-room dig (2026-10-28; section 12's backlog): with ORB-SLAM3's rule every room
+      bar passes in the three languages, the merge room's monocular wall 0.0572 m and ATE
+      1.355 cm against the first rule's 0.0964 m, over the 0.09 m bar, and 2.110 cm. That pass is
+      a favourable draw, not a fix: with 5% of the triangulation pairs dropped at random, the
+      room's monocular bars pass in 7 of 10 draws with the last rule and 6 of 10 with the first.
+
+    *Measured (triangulation by node, 2026-10-28 and 29, at 2b17bfae's code; the CHANGELOG's
+    0.3.18.0 entry gives each figure's conditions):* threaded, three runs a sequence in C++ and Rust
+    against the branch's three before it, keyframes made over the monocular test set rose from 0.51
+    to 0.71 (C++) and 0.67 to 0.81 (Rust) times ORB-SLAM3's (the median ratio over 56 sequences),
+    and mapping's time per keyframe fell to 0.61 and 0.74 times what it was (the median ratio over
+    the same 56, lower on 55); the median final ATE over the test set moved within the runs' ranges
+    (15.34 to 18.69 cm in C++, 29.14 to 31.77 cm in Rust). On the eight regression sequences the
+    median of the medians fell from 16.31 to 9.74 cm (C++) and 13.31 to 10.62 cm (Rust), and on the
+    three referenced independently of ARKit (tum-freiburg2_360_hemisphere, zju-B0, zju-B5) from 1.74
+    to 1.58 cm and 3.06 to 1.28 cm; the five ARKitScenes sequences are scored against ARKit's own
+    visual-inertial poses, so small differences there are within their reference's error (the
+    ladder's L8). Inline, where mapping's speed buys nothing and only the matching differs, it costs
+    tracking: the share tracked fell by more than 0.005 on 27 sequences and rose on 10 in C++ (a
+    sign test's p 0.008), on 22 and 11 in Rust (p 0.080), and the losses rose from 139 to 153 (C++,
+    the 58 sequences) and 124 to 136 (Rust, the 57 both finished: its run of advio-01 failed,
+    section 7, fixed since); the median final ATE rose from 24.81 to 28.71 cm (C++) and 24.74 to
+    27.36 cm (Rust), though the geometric mean of the per-sequence ratio fell to 0.982 and 0.928.
+    The loop sequences: 2.32 to 2.91 cm (C++) and 2.81 to 2.93 cm (Rust), ORB-SLAM3's 2.94;
+    euroc-V1_02_medium-monocular gains a map and a loss in all six runs, its share 0.947 to 0.909.
+    Against develop, three threaded runs a sequence do not separate the branch from it: the
+    geometric mean over the 56 of the per-sequence ratio of median final ATE, develop to the branch,
+    is 1.109 in C++ (a permutation test exchanging each sequence's runs: p 0.172, the null's 95%
+    [0.864, 1.157]) and 1.116 in Rust (p 0.115, [0.874, 1.145]), and inline, where timing plays no
+    part, the branch is a little better, 0.957 (C++, 56) and 0.972 (Rust, 55).
+    tum-freiburg2_360_hemisphere's threaded runs fall in two modes, 8.2 to 11.5 cm and 21.6 to 40.5
+    cm, above 20 cm in 2 of develop's six, 5 of the branch's six before triangulation by node and 3
+    of six with it; inline its final ATE is develop's or better, but over fewer frames, 0.455 (C++)
+    and 0.491 (Rust) of them against develop's 0.750. Develop made fewer keyframes than the branch,
+    0.55 (C++) and 0.76 (Rust) times ORB-SLAM3's against 0.71 and 0.81, so the keyframe gap in
+    section 12's backlog is a lead for the distance to ORB-SLAM3, not for that to develop.
 
 ## 12. B3b: the threads (0.3.13.0 -> 0.3.14.0)
 
@@ -794,9 +951,98 @@ the ladder's open items):
   correction and the global BA gives a scale of 0.276 (0.821 in the narrow miss, 0.93 to 1.32
   in the other 31). The investigation starts from that copy: dump it from such a run, solve it
   inline, and compare GTSAM's absolute initial damping (`lambdaInitial`) with g2o's,
-  τ·max(diag H), which ORB-SLAM3's global BA starts from.
+  τ·max(diag H), which ORB-SLAM3's global BA starts from. *As built (0.3.18.0):* a tenth of the
+  loop room's failing global BA is `tests/fixtures/edge/global_ba_slide.json`; GTSAM's damping
+  slides its cameras' centres to a scale of 0.7322, g2o's holds them at 0.9968 (section 11's
+  L2; L4's test, `tests/edge/test_loops.py`).
 - **A failed correction (item 14) is still open,** with no decision yet: whether a GTSAM failure
   inside a loop's correction should be recorded and the loop skipped.
+
+**Deferred from 0.3.18.0's review panel** (global BA's damping, the culling rule and loop
+retrieval, section 11's L2;
+[the report](../reviews/2026-10-25-feature-global-ba-damping-culling-rule.md), decided by
+evan-wes on 2026-10-25):
+- **A dump script for a run's global BA (H9).** `tests/fixtures/edge/global_ba_slide.json` was
+  cut from a probe's dump that the repository cannot make again; a script that dumps a run's
+  global BA would let its tenth of the points be chosen again.
+- **The remaining departure in loop detection, counted (L4).** Over the test set, in C++ and
+  Rust: how often the near check passes a candidate's group that holds a keyframe connected to
+  the new one but not linked to it, and whether those loops land at the right place (section
+  10, item 2).
+- **Culling's candidates against ORB-SLAM3's (L7).** Culling tests the new keyframe's 15-point
+  links, where ORB-SLAM3 tests every covisible keyframe, up to 100 (`LocalMapping.cc:910,
+  1060`): compare the keyframe counts with the ORB-SLAM3 anchor's.
+- **What global BA fits on a map like zju-A1's (L1).** Where its first dump's starting cost of
+  1.97e8 comes from (the weld, the fusion or the essential graph); a gate on gross outliers
+  before global BA, as ORB-SLAM3's local BA drops observations with `chi2 > 5.991` or a
+  non-positive depth between its passes and COLMAP filters observations over 4 px between its
+  global BA's refinements; and a point crossing its camera's plane during a solve counted as a
+  failed trial.
+- **The near filter's median per keyframe (L3).** One median over every observation, where
+  ORB-SLAM's own depth statistic is per keyframe (`ComputeSceneMedianDepth`): a merged map's
+  parts at different scales would each have their own.
+
+**Deferred from triangulation by node** (section 11's L2; decided by evan-wes on 2026-10-28, and
+from the 0.3.18.0 review panel's run 2 on 2026-10-29):
+- **A: the new keyframe's outlier matches.** ORB-SLAM3's new keyframe takes the frame's outlier
+  matches too, so the reference keyframe's tracked points (`nRefMatches`) stay above the next
+  frames' inliers (0.74 to 0.88 of them), where ours, holding the inliers only, reach 1.0 to 1.2,
+  and c2 holds on 25% to 66% of our keyframe decisions against ORB-SLAM3's 75% to 90% (the
+  keyframe-stream investigation, 2026-10-26). A keyframe holding them made more keyframes, with
+  no gain in accuracy, and with triangulation by node failed 16 room checks.
+- **The keyframe gap that remains.** With triangulation by node our threaded runs still make
+  fewer keyframes than ORB-SLAM3's: over the monocular test set 0.71 (C++) and 0.81 (Rust) times
+  as many (the median ratio over 56 sequences, three runs each, 2026-10-29); on the eight
+  threaded regression sequences, 4,109 (the sum of each sequence's median over three runs, C++,
+  2026-10-26) against its 6,186, c2 holding on 21% to 38% of the decisions. It is a lead for the
+  distance to ORB-SLAM3 only: develop made fewer keyframes still (0.55 and 0.76 times
+  ORB-SLAM3's), and the branch is not separated from it (section 11's L2; the panel's L9). Two
+  of ORB-SLAM3's own rules to measure here (the panel's L11 and L12):
+  - **30 monocular neighbours,** ORB-SLAM3's count, against our 20: first inline on the
+    monocular test set, deterministic, so that it isolates the matching (inline, triangulation
+    by node lowered the share tracked on most sequences it moved).
+  - **ORB-SLAM's early return** from triangulation once a new keyframe waits
+    (`LocalMapping.cc:436-437`), ported and measured threaded together with 30 neighbours,
+    which it makes a ceiling reached only when no keyframe waits.
+- **Develop against the branch, interleaved** (the panel's L9): threaded, in batches interleaved
+  on the same day, with more than three runs a sequence. Three runs did not separate them (the
+  permutation test's p 0.172 in C++ and 0.115 in Rust; section 11's L2), and the batches
+  compared were made on different days beside different loads. Needed if a decision turns on
+  that comparison.
+- **The keyframe database reusing the words, with or before the threaded merge** (the panel's
+  A14; B4's panel's H14, the database re-quantised in the merge's pause, is the same work). A
+  keyframe is quantised up to three times: by mapping for `Map.kp_node`, by the database to
+  index it (`Database.insert`, which keeps its own copy of the nodes, read by relocalisation and
+  loop closing while triangulation reads the map's), and again for a merge's absorbed keyframes
+  inside its pause (`apply_merge`). The map could keep each keypoint's word beside its node for
+  the database to take, as ORB-SLAM's one `ComputeBoW` serves both: one direct index, nothing
+  re-quantised in the pause. With it, a visitor over the per-keypoint columns: the C++ and Rust
+  maps list each column by hand at about ten sites (the field, its checks, `sub_map`,
+  `insert_keyframe`, `erase_keyframe`, `absorb`, `size_of`, the bindings), so a new column would
+  be one edit a language, and `absorb`, which the threaded merge reworks, could not miss one.
+- **The merge room's monocular judgement is a coin flip** (the merge-room dig, 2026-10-28, with
+  triangulation by node and on the branch before it). `tests/orchestration/test_merge_room.py`
+  judges one run a case. On the TUM monocular case its two bars, the wall distance under 0.09 m and
+  the final ATE under 2.8 cm, turn on the matching's details: with 5% of the triangulation pairs
+  dropped at random (ten seeds, C++), both pass in 5 of 10 draws before triangulation by node, 6 of
+  10 with it and its first tie rule, and 7 of 10 with ORB-SLAM3's; with 1% dropped before it, the
+  wall ranged 0.050 to 0.119 m and the ATE 1.47 to 6.28 cm over four draws. The run before it
+  (0.0424 m, 1.341 cm) was a favourable draw and its run with the first tie rule (0.0964 m, 2.110
+  cm) an unfavourable one.
+  - Why: the first map, 90° of an outward-looking arc, holds 70% of its points at 1° to 2° of
+    triangulation parallax. Its local BAs converge (a single solve of 10 iterations and 50 + 50
+    end where ours does) to an optimum costing less than the truth (at keyframe 17, 1,318
+    against 1,335 with the true cameras and the points solved), so the noise turns its
+    keyframes by 0.1° to 0.4° and the points follow their cameras: the same observations
+    re-triangulated with the true cameras lie 0.04 m from the walls whichever the run.
+  - Options: judge the case by the median of several seeded draws, or lengthen the first map's
+    arc. Until then, a change to matching that moves this case either way says little on its
+    own: look at it over several perturbed draws before reading it.
+- **A private, local dashcam test set** (scoped later). Kept outside the repository with the
+  recordings, as the dashcam's rule has it: per drive, the GPS drift
+  (`slam_it.eval.gnss.score`), the share tracked, the maps and merges, and the places loops
+  close at, judged by the owner, optionally beside COLMAP reconstructions of chosen stretches
+  as a reference. No drive's specifics enter the repository.
 
 ## 13. Measurements (B3b)
 
@@ -1042,7 +1288,8 @@ the ladder's open items):
     beside an ORB-SLAM3-faithful staged merge;
   - section 15 measures, with its runs, the relocalisation candidates per failed frame and how
     often the track leaves a healthy map (L5);
-  - the damping PR from B3's review panel (section 11, L2) measures the welds too (L7);
+  - the damping PR from B3's review panel (section 11, L2) measures the welds too (L7; built in
+    0.3.18.0, the welds keeping GTSAM's damping);
   - Python's run-id tables, rebuilt per call (H9), a minor open item.
 
 **Known gaps, for B4's review panel** (noted, not fixed in this PR):

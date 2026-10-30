@@ -216,15 +216,15 @@ inline nanobind::ndarray<nanobind::numpy, std::uint8_t> descriptors_array(
 }
 
 /// @brief The map's fields, as the dict's keys.
-inline constexpr std::array<const char*, 37> kMapKeys = {
-    "levels",          "scale_factor", "kf_id",         "kf_time",        "kf_pose",
-    "kf_parent",       "kf_start",     "kp_xy",         "kp_level",       "kp_angle",
-    "kp_descriptor",   "kp_bearing",   "kp_depth",      "kp_right",       "kp_point",
-    "pt_id",           "pt_xyz",       "pt_descriptor", "pt_normal",      "pt_min_distance",
-    "pt_max_distance", "pt_visible",   "pt_found",      "pt_first_kf",    "pt_reference_kf",
-    "next_kf_id",      "next_pt_id",   "gone_pt_id",    "gone_pt_xyz",    "gone_pt_how",
-    "gone_kf_id",      "gone_kf_time", "gone_kf_pose",  "gone_kf_parent", "gone_kf_relative",
-    "loop_edges",      "merge_edges"};
+inline constexpr std::array<const char*, 38> kMapKeys = {
+    "levels",           "scale_factor",    "kf_id",        "kf_time",       "kf_pose",
+    "kf_parent",        "kf_start",        "kp_xy",        "kp_level",      "kp_angle",
+    "kp_descriptor",    "kp_node",         "kp_bearing",   "kp_depth",      "kp_right",
+    "kp_point",         "pt_id",           "pt_xyz",       "pt_descriptor", "pt_normal",
+    "pt_min_distance",  "pt_max_distance", "pt_visible",   "pt_found",      "pt_first_kf",
+    "pt_reference_kf",  "next_kf_id",      "next_pt_id",   "gone_pt_id",    "gone_pt_xyz",
+    "gone_pt_how",      "gone_kf_id",      "gone_kf_time", "gone_kf_pose",  "gone_kf_parent",
+    "gone_kf_relative", "loop_edges",      "merge_edges"};
 
 /// @brief Read a map from a dict of its fields, its observations indexed, checked.
 /// @param values The dict.
@@ -244,6 +244,7 @@ inline edge::Map map_in(const nanobind::dict& values) {
               .kp_level = vector_item<std::int64_t>(values, "kp_level"),
               .kp_angle = vector_item<std::int64_t>(values, "kp_angle"),
               .kp_descriptor = descriptors_item(values, "kp_descriptor"),
+              .kp_node = vector_item<std::int64_t>(values, "kp_node"),
               .kp_bearing = vectors_item(values, "kp_bearing"),
               .kp_depth = vector_item<double>(values, "kp_depth"),
               .kp_right = vector_item<double>(values, "kp_right"),
@@ -292,6 +293,7 @@ inline nanobind::dict map_dict(const edge::Map& m) {
   out["kp_level"] = vector_array(m.kp_level);
   out["kp_angle"] = vector_array(m.kp_angle);
   out["kp_descriptor"] = descriptors_array(m.kp_descriptor);
+  out["kp_node"] = vector_array(m.kp_node);
   out["kp_bearing"] = vectors_array(m.kp_bearing);
   out["kp_depth"] = vector_array(m.kp_depth);
   out["kp_right"] = vector_array(m.kp_right);

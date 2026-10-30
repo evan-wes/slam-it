@@ -2,10 +2,12 @@
 /// @brief Native tests for loop closing (slam_it/edge/loops.hpp) on the exact scene's map:
 ///        similarities' scale and rigid part, the RANSAC budget, the keyframes a loop holds, a
 ///        keyframe's points found through its own pose, a small map not searched, global BA
-///        leaving an exact map where it is, a merge's priority over a loop, and the refusals.
+///        leaving an exact map where it is, global and welding BAs' solves, a merge's priority
+///        over a loop, and the refusals.
 ///        Python's tests hold every stage to the reference on the loop room
 ///        (tests/edge/test_loops.py).
 #include <Eigen/Geometry>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -49,6 +51,29 @@ void check_budget(int& failures) {
          "every match an inlier: one sample", failures);
   expect(loops::ransac_budget(30, options) == 35, "half the matches inliers: 35 samples", failures);
   expect(loops::ransac_budget(1000, options) == 300, "at most 300 samples", failures);
+}
+
+/// @brief Check the BAs' solves: global BA's g2o's damping and ORB-SLAM3's stop, from its
+///        settings; a welding BA's GTSAM's own damping and no stop by small steps; and the
+///        near-plane filter's default.
+/// @param failures Running failure count.
+void check_solves(int& failures) {
+  namespace graphs = slam_it::foundations::graphs;
+  const edge::Options options;
+  const std::atomic<bool> stop{false};
+  const graphs::Options global = loops::global_ba_options(options, &stop);
+  expect(global.max_iterations == 10 && global.damping_scale == 1e-5 && global.scaled_damping &&
+             global.small_steps == 3 && global.small_decrease == 1e-3 && global.stop == &stop,
+         "global BA: 10 iterations, g2o's damping from tau 1e-5, three small steps end it",
+         failures);
+  const graphs::Options weld = loops::weld_options(5);
+  const graphs::Options gtsam{};
+  expect(weld.max_iterations == 5 && !weld.scaled_damping && weld.small_steps == 0 &&
+             weld.initial_damping == gtsam.initial_damping,
+         "a welding BA: GTSAM's own damping, no stop by small steps", failures);
+  expect(options.loops.min_depth_ratio == 1e-3,
+         "global and welding BA leave out the observations nearer than 1e-3 of the median depth",
+         failures);
 }
 
 /// @brief Check the keyframes a loop being confirmed holds, and the outcomes' names.
@@ -179,6 +204,7 @@ int run() {
   check_similarities(failures);
   check_budget(failures);
   check_held(failures);
+  check_solves(failures);
   check_merge_first(failures);
   if (const std::optional<edge::Map> m = scene_map(failures)) {
     check_scene(*m, failures);

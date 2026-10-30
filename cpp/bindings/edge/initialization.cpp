@@ -1,7 +1,8 @@
 /// @file
 /// @brief Bindings for `slam_it.edge.initialization` (`slam_it._cpp.edge.initialization`).
 ///
-/// An attempt crosses back as `edge_crossing::initialization_dict` builds it.
+/// The vocabulary crosses as `vocabulary_crossing::vocabulary_in` reads it; an attempt crosses
+/// back as `edge_crossing::initialization_dict` builds it.
 #include "slam_it/edge/initialization.hpp"
 
 #include <nanobind/nanobind.h>
@@ -15,6 +16,7 @@
 #include "common.hpp"
 #include "edge/edge.hpp"
 #include "edge/edge_crossing.hpp"
+#include "foundations/vocabulary_crossing.hpp"
 
 namespace nb = nanobind;
 
@@ -32,11 +34,13 @@ using Pairs = nb::ndarray<const std::int64_t, nb::shape<-1, 2>, nb::c_contig, nb
 /// @brief Start the map from a stereo or RGB-D frame.
 /// @param frame The frame, as a dict.
 /// @param options The settings, as a dict.
+/// @param vocabulary The vocabulary, as a dict of its fields.
 /// @return The attempt, as a dict.
 /// @throws CoreError for invalid input.
-nb::dict initialize_from_depth(const nb::dict& frame, const nb::dict& options) {
-  return initialization_dict(
-      unwrap(edge::initialize_from_depth(frame_in(frame), options_in(options))));
+nb::dict initialize_from_depth(const nb::dict& frame, const nb::dict& options,
+                               const nb::dict& vocabulary) {
+  return initialization_dict(unwrap(edge::initialize_from_depth(
+      frame_in(frame), options_in(options), vocabulary_crossing::vocabulary_in(vocabulary))));
 }
 
 /// @brief Match a monocular reference frame to a later one.
@@ -75,17 +79,20 @@ nb::dict match_for_initialization(const nb::dict& reference, const nb::dict& fra
 /// @param frame The later frame, as a dict.
 /// @param pairs The matches (M, 2), int64.
 /// @param options The settings, as a dict.
+/// @param vocabulary The vocabulary, as a dict of its fields.
 /// @return The attempt, as a dict.
 /// @throws CoreError for invalid input.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): every argument crosses by keyword
 nb::dict initialize_monocular(const nb::dict& camera, const nb::dict& reference,
-                              const nb::dict& frame, const Pairs& pairs, const nb::dict& options) {
+                              const nb::dict& frame, const Pairs& pairs, const nb::dict& options,
+                              const nb::dict& vocabulary) {
   std::vector<std::array<std::int64_t, 2>> matches(pairs.shape(0));
   for (std::size_t i = 0; i < matches.size(); ++i) {
     matches[i] = {pairs(i, 0), pairs(i, 1)};
   }
-  return initialization_dict(
-      unwrap(edge::initialize_monocular(edge_crossing::camera_in(camera), frame_in(reference),
-                                        frame_in(frame), matches, options_in(options))));
+  return initialization_dict(unwrap(edge::initialize_monocular(
+      edge_crossing::camera_in(camera), frame_in(reference), frame_in(frame), matches,
+      options_in(options), vocabulary_crossing::vocabulary_in(vocabulary))));
 }
 
 /// @brief The enum tables: the outcomes and the solves' terminations, names in code order.
@@ -105,12 +112,12 @@ nb::dict codes() {
 void bind_initialization(nb::module_& m) {
   m.def("codes", &codes, "Each enum's names in code order.");
   m.def("initialize_from_depth", &initialize_from_depth, nb::arg("frame"), nb::arg("options"),
-        "Start the map from a stereo or RGB-D frame.");
+        nb::arg("vocabulary"), "Start the map from a stereo or RGB-D frame.");
   m.def("match_for_initialization", &match_for_initialization, nb::arg("reference"),
         nb::arg("frame"), nb::arg("previous").noconvert(), nb::arg("options"),
         "Match a monocular reference frame to a later one, where each was last matched.");
   m.def("initialize_monocular", &initialize_monocular, nb::arg("camera"), nb::arg("reference"),
-        nb::arg("frame"), nb::arg("pairs").noconvert(), nb::arg("options"),
+        nb::arg("frame"), nb::arg("pairs").noconvert(), nb::arg("options"), nb::arg("vocabulary"),
         "Start the map from two monocular frames and their matches.");
 }
 

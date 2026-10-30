@@ -82,7 +82,7 @@ void check_level_rule(int& failures) {
   for (std::size_t p = 0; p < scene::kPoints; ++p) {
     observers.push_back({static_cast<std::int64_t>(p)});
   }
-  if (!edge::insert_keyframe(m, last, Eigen::Matrix4d::Identity(), none) ||
+  if (!edge::insert_keyframe(m, last, Eigen::Matrix4d::Identity(), none, scene::nodes(last)) ||
       !edge::add_points(m, scene::points(), observers)) {
     expect(false, "the level scene builds", failures);
     return;

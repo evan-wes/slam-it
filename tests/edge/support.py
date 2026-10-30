@@ -17,6 +17,7 @@ from slam_it.edge.map import Map
 from slam_it.edge.options import Options
 from slam_it.eval import vocabularies
 from slam_it.foundations import vocabulary
+from slam_it.foundations.orb import DESCRIPTOR_BYTES
 from tests.edge import room
 
 FRAMES = 40
@@ -60,21 +61,52 @@ global BA): each language builds its own factors on it, so their solves agree to
 convergence, not their last bits; the decisions still exactly."""
 
 
-def words_for(options: Options) -> vocabulary.Vocabulary | None:
-    """Return the vocabulary a pipeline with these settings needs: the committed one, or none.
+def keyframe_nodes(frame: frames.Frame) -> NDArray[np.int64]:
+    """Return a frame's features' vocabulary nodes, as it enters a map as a keyframe.
 
     Parameters
     ----------
-    options : slam_it.edge.options.Options
-        The settings.
+    frame : slam_it.edge.frames.Frame
+        The frame.
 
     Returns
     -------
-    slam_it.foundations.vocabulary.Vocabulary or None
-        The committed vocabulary with ``relocalization.enabled`` or ``loops.enabled`` on, None
-        with both off.
+    ndarray of int64, shape (N,)
+        Each keypoint's node by the committed vocabulary
+        (:func:`slam_it.foundations.vocabulary.quantize`'s ``nodes``).
     """
-    return vocabularies.default() if options.keeps_keyframe_database() else None
+    return vocabulary.quantize(vocabularies.default(), frame.features.descriptors)[1]
+
+
+def point_columns(xyz: NDArray[np.float64]) -> dict[str, Any]:
+    """Return a test map's point columns for points at `xyz`, but their ids.
+
+    The columns the stages read, blank where a test does not care: a blank descriptor, a normal
+    along +z, distances of 1, seen and found once, first and referenced by keyframe 0.
+
+    Parameters
+    ----------
+    xyz : ndarray of float64, shape (P, 3)
+        The points.
+
+    Returns
+    -------
+    dict of str to ndarray
+        :class:`slam_it.edge.map.Map`'s ``pt_*`` columns but ``pt_id``, by name, to pass to
+        :func:`dataclasses.replace` (typed ``Any`` so that it unpacks into any map's fields).
+    """
+    p = len(xyz)
+    return {
+        "pt_xyz": xyz,
+        "pt_descriptor": np.zeros((p, DESCRIPTOR_BYTES), dtype=np.uint8),
+        "pt_normal": np.tile([0.0, 0.0, 1.0], (p, 1)),
+        "pt_min_distance": np.ones(p),
+        "pt_max_distance": np.ones(p),
+        "pt_visible": np.ones(p, dtype=np.int64),
+        "pt_found": np.ones(p, dtype=np.int64),
+        "pt_first_kf": np.zeros(p, dtype=np.int64),
+        "pt_reference_kf": np.zeros(p, dtype=np.int64),
+    }
 
 
 def assert_close(

@@ -36,4 +36,24 @@ using BlockPoint = Eigen::Matrix<double, Eigen::Dynamic, 3, Eigen::ColMajor, kMa
 /// @return The same value.
 inline Index at(std::int64_t value) { return static_cast<Index>(value); }
 
+/// @brief Invert a rigid pose, `T_world_cam` to `T_cam_world` and back: `R^T`, `-R^T t`.
+/// @param pose The pose.
+/// @return Its inverse, as the bundle's state holds it.
+inline Eigen::Matrix4d inverse_pose(const Eigen::Matrix4d& pose) {
+  Eigen::Matrix4d inv = Eigen::Matrix4d::Identity();
+  inv.topLeftCorner<3, 3>() = pose.topLeftCorner<3, 3>().transpose();
+  inv.topRightCorner<3, 1>() = -inv.topLeftCorner<3, 3>() * pose.topRightCorner<3, 1>();
+  return inv;
+}
+
+/// @brief A world point in a camera's frame, `R p + t`: the one computation both the layout's
+///        in-front test and the bundle's residuals take a point's depth from, so that an
+///        observation the projection would refuse (`Z <= camera::kMinDepth`) is never kept.
+/// @param t_cam_world The camera's world-to-camera pose.
+/// @param point The point in the world frame.
+/// @return The point in the camera frame.
+inline Eigen::Vector3d to_camera(const Eigen::Matrix4d& t_cam_world, const Eigen::Vector3d& point) {
+  return (t_cam_world.topLeftCorner<3, 3>() * point) + t_cam_world.topRightCorner<3, 1>();
+}
+
 }  // namespace slam_it::foundations::ba::detail

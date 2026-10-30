@@ -119,7 +119,7 @@ MODULE = "slam_it.orchestration.vo"
 USAGE = (
     f"usage: python -m {MODULE} --dataset tum|euroc --sequence PATH [--sequence PATH ...] "
     "--mode monocular|stereo|rgbd --out RUN_DIR [--first I] [--count N] "
-    "[--vocabulary FOLDER] [--record-features] [--threaded [--locks] | --views] "
+    "--vocabulary FOLDER [--record-features] [--threaded [--locks] | --views] "
     "[--option KEY=VALUE ...]"
 )
 """Python's program's command line: the native programs' (their ``kUsage``/``USAGE``)."""
@@ -136,7 +136,7 @@ EXIT_FAILED = 3
 _ERRORS: tuple[type[SlamItError], ...] = (InvalidInputError, DegenerateError, NotConvergedError)
 """The exceptions a failed run's exit code names, from :data:`EXIT_FAILED` on."""
 
-_REQUIRED = ("--dataset", "--sequence", "--mode", "--out")
+_REQUIRED = ("--dataset", "--sequence", "--mode", "--out", "--vocabulary")
 """The flags every command line gives."""
 
 _RECORD_FEATURES = "--record-features"
@@ -179,9 +179,10 @@ class Request:
         The pipeline's settings.
     record_features : bool
         Whether the run records each frame's keypoints, with their fates.
-    vocabulary : pathlib.Path or None
-        The vocabulary's folder: required with ``relocalization.enabled`` or ``loops.enabled``
-        on, refused with both off.
+    vocabulary : pathlib.Path
+        The vocabulary's folder, which every run needs (default: the committed one,
+        :data:`slam_it.eval.vocabularies.DEFAULT`): mapping quantises each keyframe's features by
+        it, and relocalisation and loop closing find keyframes by its words.
     threaded : bool
         Whether the steps run in threads of their own.
     locks : bool
@@ -199,7 +200,7 @@ class Request:
     count: int | None = None
     options: Options = field(default_factory=Options)
     record_features: bool = False
-    vocabulary: Path | None = None
+    vocabulary: Path = vocabularies.DEFAULT
     threaded: bool = False
     locks: bool = False
     views: bool = False
@@ -211,7 +212,7 @@ class Request:
         -------
         list of str
             The arguments after the program's name: every flag (``--sequence`` once per
-            sequence, in turn; ``--vocabulary`` if given; ``--record-features``,
+            sequence, in turn; ``--record-features``,
             ``--threaded``, ``--locks`` and ``--views`` if asked), and ``--option KEY=VALUE``
             for each setting that differs from its default (flags as ``true`` or ``false``,
             integers as integers, reals round-tripping).
@@ -229,8 +230,7 @@ class Request:
         ]
         if self.count is not None:
             out += ["--count", str(self.count)]
-        if self.vocabulary is not None:
-            out += ["--vocabulary", str(self.vocabulary)]
+        out += ["--vocabulary", str(self.vocabulary)]
         if self.record_features:
             out.append(_RECORD_FEATURES)
         if self.threaded:
@@ -265,8 +265,7 @@ def check(request: Request) -> None:
     ------
     slam_it.foundations.errors.InvalidInputError
         For no sequence, an unknown dataset or mode, a mode the dataset does not record (TUM
-        has no stereo pairs, EuRoC no depth maps), a negative `first` or `count`, a vocabulary
-        missing while relocalising or closing loops, or given while doing neither, ``locks``
+        has no stereo pairs, EuRoC no depth maps), a negative `first` or `count`, ``locks``
         without ``threaded``, or ``views`` with it. (The options checked themselves when they
         were made; the vocabulary's folder is checked when it is read.)
     """
@@ -283,13 +282,6 @@ def check(request: Request) -> None:
         raise InvalidInputError("mode: a euroc sequence has no depth maps")
     if request.first < 0 or (request.count is not None and request.count < 0):
         raise InvalidInputError("first, count: must be at least 0")
-    needed = request.options.keeps_keyframe_database()
-    if needed and request.vocabulary is None:
-        raise InvalidInputError("--vocabulary: relocalization.enabled or loops.enabled needs one")
-    if not needed and request.vocabulary is not None:
-        raise InvalidInputError(
-            "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
-        )
     if request.locks and not request.threaded:
         raise InvalidInputError("--locks: needs --threaded")
     if request.views and request.threaded:
@@ -400,7 +392,7 @@ def parse(arguments: Sequence[str]) -> Request:
             continue
         if flag in values:
             raise UsageError(f"{flag}: given twice")
-        if flag not in (*_REQUIRED, "--first", "--count", "--vocabulary"):
+        if flag not in (*_REQUIRED, "--first", "--count"):
             raise UsageError(f"unknown argument '{flag}'")
         if flag == "--mode" and value not in MODES:
             raise UsageError(f"--mode: expected monocular, stereo or rgbd, got '{value}'")
@@ -419,7 +411,7 @@ def parse(arguments: Sequence[str]) -> Request:
         count=numbers.get("--count"),
         options=Options().with_settings(changes),
         record_features=_RECORD_FEATURES in values,
-        vocabulary=Path(values["--vocabulary"]) if "--vocabulary" in values else None,
+        vocabulary=Path(values["--vocabulary"]),
         threaded=_THREADED in values,
         locks=_LOCKS in values,
         views=_VIEWS in values,
@@ -531,10 +523,9 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         Whether to record each frame's keypoints, with their fates
         (:func:`slam_it.eval.runs.read_features` reads them; default: no).
     vocabulary : str or pathlib.Path, optional
-        The vocabulary's folder, which a run relocalising or closing loops needs (default: the
-        committed one when ``relocalization.enabled`` or ``loops.enabled`` is on, none when both
-        are off; one given while both are off is refused). It is read once, here, its checksums
-        checked before any program runs (:func:`slam_it.eval.vocabularies.read`).
+        The vocabulary's folder, which every run maps with (default: the committed one,
+        :data:`slam_it.eval.vocabularies.DEFAULT`). It is read once, here, its checksums checked
+        before any program runs (:func:`slam_it.eval.vocabularies.read`).
     threaded : bool, optional
         Whether the steps run in threads of their own (default: inline, as the records run).
     locks : bool, optional
@@ -577,13 +568,11 @@ def run(  # noqa: PLR0913 -- the sequence, its mode, the run's folder; the rest 
         count=count,
         options=Options() if options is None else options,
         record_features=record_features,
-        vocabulary=None if vocabulary is None else Path(vocabulary),
+        vocabulary=vocabularies.DEFAULT if vocabulary is None else Path(vocabulary),
         threaded=threaded,
         locks=locks,
         views=views,
     )
-    if request.vocabulary is None and request.options.keeps_keyframe_database():
-        request = replace(request, vocabulary=vocabularies.DEFAULT)
     backends.check_name(backend)
     check(request)
     if request.locks and backend != "cpp":
@@ -827,9 +816,9 @@ def _same_camera(first: frames.Camera, other: frames.Camera) -> bool:
     )
 
 
-def _read_vocabulary(request: Request) -> Vocabulary | None:
-    """Read the request's vocabulary, if it names one (:func:`slam_it.eval.vocabularies.read`)."""
-    return None if request.vocabulary is None else vocabularies.read(request.vocabulary)
+def _read_vocabulary(request: Request) -> Vocabulary:
+    """Read the request's vocabulary (:func:`slam_it.eval.vocabularies.read`)."""
+    return vocabularies.read(request.vocabulary)
 
 
 def _world_cam(poses: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -883,7 +872,7 @@ def _start_session(
     }
 
 
-def _run_here(request: Request, words: Vocabulary | None) -> runs.Run:
+def _run_here(request: Request, words: Vocabulary) -> runs.Run:
     """Run the request with the Python pipeline, in-process, with its vocabulary as read.
 
     A run that fails ends its threads (:meth:`slam_it.edge.pipeline.Pipeline.close`).
@@ -988,7 +977,7 @@ def _track_here(
         keyframe_poses=_world_cam(keyframes),
         points=lives.points,
         settings=request.options.as_dict(),
-        vocabulary=None if request.vocabulary is None else vocabularies.record(request.vocabulary),
+        vocabulary=vocabularies.record(request.vocabulary),
         diagnostics=diagnostics,
         point_lives=lives.point_lives,
         keyframe_lives=lives.keyframe_lives,

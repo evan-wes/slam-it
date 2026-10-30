@@ -18,13 +18,15 @@ import numpy as np
 import pytest
 
 from slam_it import backends
+from slam_it.edge import frames, mapping, residuals, tracking
 from slam_it.edge import map as maps
-from slam_it.edge import mapping, residuals, tracking
 from slam_it.edge.frames import Frame, Tracked
 from slam_it.edge.map import Map
+from slam_it.eval import vocabularies
 from slam_it.foundations import matching
 from slam_it.foundations.errors import InvalidInputError
-from tests.conftest import require_function
+from slam_it.foundations.orb import DESCRIPTOR_BYTES
+from tests.conftest import load_fixture, require_function
 from tests.edge.conftest import Truth
 from tests.edge.support import (
     CAMERA,
@@ -32,10 +34,15 @@ from tests.edge.support import (
     SOLVER_TOLERANCE,
     assert_maps_match,
     assert_records_match,
+    keyframe_nodes,
+    point_columns,
 )
 
 LAST, CURRENT = 36, 39
 """The room's last keyframe, and the frame tracked from it and inserted."""
+
+TRIANGULATION: list[dict[str, Any]] = load_fixture("edge/triangulation_matches.json")["cases"]
+"""Matching for triangulation's cases (``generate_triangulation_matches.py``)."""
 
 MODES = ("monocular", "stereo", "rgbd")
 """Every mode (the frames are RGB-D's; the mode decides the steps' rules)."""
@@ -64,7 +71,9 @@ def mapped(truth: Truth) -> Mapped:
     ).tracked  # fmt: skip
     assert found is not None
     local = tracking.track_local_map(m, CAMERA, frame, found, mode="rgbd", options=OPTIONS)
-    inserted = maps.insert_keyframe(m, frame, local.tracked.pose, local.tracked.points)
+    inserted = maps.insert_keyframe(
+        m, frame, local.tracked.pose, local.tracked.points, keyframe_nodes(frame)
+    )
     return Mapped(m, frame, local.tracked, inserted, local.reference)
 
 
@@ -116,7 +125,7 @@ def test_matching_and_counts_match_the_reference(backend: str, mapped: Mapped) -
 def test_process_matches_the_reference(backend: str, mode: str, mapped: Mapped) -> None:
     """Every backend runs the whole of local mapping as the reference does."""
     _same(backend, "process", mapped.map, CAMERA, mapped.frame, mapped.tracked,
-          mode=mode, options=OPTIONS)  # fmt: skip
+          mode=mode, options=OPTIONS, words=vocabularies.default())  # fmt: skip
 
 
 @pytest.mark.parametrize("backend", backends.BACKENDS)
@@ -124,16 +133,74 @@ def test_local_ba_waits_for_enough_keyframes(backend: str, mapped: Mapped) -> No
     """Before the map holds ``adjustment.min_keyframes``, no local BA: the poses stay as tracked."""
     waiting = OPTIONS.with_settings({"adjustment.min_keyframes": mapped.map.keyframes + 2})
     args = (mapped.map, CAMERA, mapped.frame, mapped.tracked)
-    waited = mapping.process(*args, mode="rgbd", options=waiting)
+    words = vocabularies.default()
+    waited = mapping.process(*args, mode="rgbd", options=waiting, words=words)
     held = waited.map
     np.testing.assert_array_equal(held.kf_pose[-1], mapped.tracked.pose)
     rows = mapped.map.keyframe_rows(held.kf_id[:-1])
     np.testing.assert_array_equal(held.kf_pose[:-1], mapped.map.kf_pose[rows])
     assert (waited.summary.solves, waited.summary.outliers) == ((), 0)
-    ran = mapping.process(*args, mode="rgbd", options=OPTIONS)
+    ran = mapping.process(*args, mode="rgbd", options=OPTIONS, words=words)
     assert not np.array_equal(ran.map.kf_pose[-1], mapped.tracked.pose)
     assert len(ran.summary.solves) == 2
-    _same(backend, "process", *args, mode="rgbd", options=waiting)
+    _same(backend, "process", *args, mode="rgbd", options=waiting, words=words)
+
+
+def _fixture_map(case: dict[str, Any]) -> Map:
+    """Return a case's map: its two keyframes' columns, and the points they observe."""
+    keyframes = case["keyframes"]
+
+    def column(name: str) -> list[Any]:
+        return [v for k in keyframes for v in k[name]]
+
+    t = len(column("level"))
+    observed = np.array(column("point"), dtype=np.int64)
+    points = np.array(case["points"], dtype=np.float64).reshape(-1, 3)
+    p = len(points)
+    depth = [np.nan if d is None else d for d in column("depth")]
+    sizes = [len(k["level"]) for k in keyframes]
+    m = replace(
+        maps.empty(case["levels"], case["scale_factor"]),
+        kf_id=np.arange(len(keyframes), dtype=np.int64),
+        kf_time=np.arange(len(keyframes), dtype=np.float64),
+        kf_pose=np.array([k["pose"] for k in keyframes], dtype=np.float64),
+        kf_parent=np.full(len(keyframes), -1, dtype=np.int64),
+        kf_start=np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64),
+        kp_xy=np.zeros((t, 2)),
+        kp_level=np.array(column("level"), dtype=np.int64),
+        kp_angle=np.zeros(t, dtype=np.int64),
+        kp_descriptor=np.array(column("descriptor"), dtype=np.uint8).reshape(t, DESCRIPTOR_BYTES),
+        kp_node=np.array(column("node"), dtype=np.int64),
+        kp_bearing=np.array(column("bearing"), dtype=np.float64),
+        kp_depth=np.array(depth, dtype=np.float64),
+        kp_right=np.full(t, np.nan),
+        kp_point=observed,
+        pt_id=np.arange(p, dtype=np.int64),
+        **point_columns(points),
+        next_kf_id=len(keyframes),
+        next_pt_id=p,
+    )
+    return m
+
+
+@pytest.mark.parametrize("backend", backends.BACKENDS)
+@pytest.mark.parametrize("case", TRIANGULATION, ids=lambda c: c["name"])
+def test_triangulation_matches_the_fixture(backend: str, case: dict[str, Any]) -> None:
+    """Every backend pairs keypoints for triangulation as the fixture's rules do.
+
+    Only under one vocabulary node, within ``matching.th_low``, the epipolar band and away from
+    the epipole without depth; the nearest candidate (the last among equals), each keyframe-2
+    keypoint kept by its nearest (the lower among equals).
+    """
+    chosen = require_function(backend, mapping.__name__, "match_for_triangulation")
+    camera = frames.Camera(
+        "pinhole", np.array([case["focal"], case["focal"], 320.0, 240.0]), 640, 480, 0.0
+    )
+    options = OPTIONS.with_settings(case["settings"])
+    found = mapping.match_for_triangulation(
+        _fixture_map(case), camera, case["k1"], case["k2"], options, backend=chosen
+    )
+    np.testing.assert_array_equal(found, np.array(case["pairs"], dtype=np.int64).reshape(-1, 2))
 
 
 def test_keyframe_needed_when_tracking_thins(mapped: Mapped) -> None:
@@ -270,7 +337,7 @@ def test_a_redundant_keyframe_is_culled(mapped: Mapped) -> None:
     """A keyframe whose every point three others see at its level goes; the first stays."""
     m, frame, tracked = mapped.map, mapped.frame, mapped.tracked
     for _ in range(4):  # the same view, four times: each copy redundant to the others
-        m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points)
+        m = maps.insert_keyframe(m, frame, tracked.pose, tracked.points, keyframe_nodes(frame))
     culled = mapping.cull_keyframes(m, CAMERA, "monocular", OPTIONS)
     assert culled.keyframes < m.keyframes
     assert culled.kf_id[0] == 0
@@ -281,7 +348,10 @@ def test_a_redundant_keyframe_is_culled(mapped: Mapped) -> None:
 def test_process_adds_a_keyframe(mode: str, mapped: Mapped) -> None:
     """Local mapping keeps the new keyframe newest, and adds points from it."""
     m = mapped.map
-    result = mapping.process(m, CAMERA, mapped.frame, mapped.tracked, mode=mode, options=OPTIONS)
+    result = mapping.process(
+        m, CAMERA, mapped.frame, mapped.tracked,
+        mode=mode, options=OPTIONS, words=vocabularies.default(),
+    )  # fmt: skip
     out = result.map
     assert out.kf_id[-1] == m.next_kf_id
     newest = out.kp_point[out.keypoint_rows(out.keyframes - 1)]
@@ -326,7 +396,14 @@ def test_rejects_malformed_arguments(backend: str, mapped: Mapped) -> None:
             for reference in (-1, m.keyframes)
         ),
         lambda: mapping.process(
-            m, CAMERA, mapped.frame, short, mode="rgbd", options=OPTIONS, backend=backend
+            m,
+            CAMERA,
+            mapped.frame,
+            short,
+            mode="rgbd",
+            options=OPTIONS,
+            words=vocabularies.default(),
+            backend=backend,
         ),
     ]
     for call in calls:
@@ -364,7 +441,7 @@ def _scheduled(mapped: Mapped, asked: _Asked | None) -> mapping.Mapped:
     """Map the frame with `asked` interrupting (None: inline)."""
     return mapping.process(
         mapped.map, CAMERA, mapped.frame, mapped.tracked, mode="rgbd", options=OPTIONS,
-        interrupts=asked,
+        words=vocabularies.default(), interrupts=asked,
     )  # fmt: skip
 
 
@@ -411,7 +488,7 @@ def test_a_compiled_backend_refuses_interrupts(mapped: Mapped) -> None:
     with pytest.raises(InvalidInputError, match="interrupts"):
         mapping.process(
             mapped.map, CAMERA, mapped.frame, mapped.tracked, mode="rgbd", options=OPTIONS,
-            interrupts=_Asked(), backend="cpp",
+            words=vocabularies.default(), interrupts=_Asked(), backend="cpp",
         )  # fmt: skip
 
 

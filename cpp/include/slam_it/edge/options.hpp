@@ -190,7 +190,8 @@ struct MappingOptions {
   std::int64_t min_new_points{100};
   /// @brief A new stereo or RGB-D keyframe triangulates against its best this many links.
   std::int64_t triangulation_neighbours{10};
-  /// @brief The same for monocular.
+  /// @brief The same for monocular: ORB-SLAM2's 20, where ORB-SLAM3 takes 30, a departure not
+  ///        measured on the test set (`Options.mapping`).
   std::int64_t mono_triangulation_neighbours{20};
   /// @brief A triangulation match's chi-square bound to its epipolar line (1 dof).
   double epipolar_chi2{3.84};
@@ -220,10 +221,13 @@ struct MappingOptions {
   std::int64_t min_point_observations{2};
   /// @brief The same for stereo and RGB-D.
   std::int64_t min_point_observations_depth{3};
-  /// @brief A keyframe is redundant when this fraction of its points are seen elsewhere.
+  /// @brief The fraction of a keyframe's points that must be redundant for culling to remove it
+  ///        (`KeyFrameCulling`'s 0.9).
   double redundant_fraction{0.9};
-  /// @brief By at least this many other keyframes.
-  std::int64_t redundant_observers{3};
+  /// @brief How many other keyframes must see a point, at the same, a finer or the next coarser
+  ///        scale, for it to count as redundant: ORB-SLAM3's `nObs > 3`, where ORB-SLAM2 has
+  ///        `>= 3` (`slam_it.edge.options.MappingOptions`).
+  std::int64_t redundant_observers{4};
   /// @brief With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is
   ///        queued only while fewer than this many wait (`KeyframesInQueue() < 3`).
   std::int64_t max_queued{3};
@@ -245,7 +249,7 @@ struct CovisibilityOptions {
 
 /// @brief Relocalising a failed frame against the whole map (`Options.relocalization`).
 struct RelocalizationOptions {
-  /// @brief Relocalise a failed frame through the keyframe database (needs a vocabulary).
+  /// @brief Relocalise a failed frame through the keyframe database (`keeps_keyframe_database`).
   bool enabled{true};
   /// @brief The descriptor ratio test of the fallback and of relocalisation's matching by word.
   double ratio{0.75};
@@ -350,8 +354,23 @@ struct LoopOptions {
   double essential_damping{1e-16};
   /// @brief Bundle-adjust the whole map after each loop.
   bool global_ba{true};
-  /// @brief Its iterations.
+  /// @brief Global BA's Levenberg-Marquardt iterations at most (`GlobalBundleAdjustemnt`'s 10).
   std::int64_t global_iterations{10};
+  /// @brief Global BA's `tau`, relative: its first damping is this times the largest diagonal
+  ///        entry of its normal equations, then follows Nielsen's schedule (g2o's damping, which
+  ///        ORB-SLAM3's global BA leaves at its default; `graphs::Options::damping_scale`).
+  ///        Unlike `essential_damping`, which is absolute.
+  double global_damping_scale{1e-5};
+  /// @brief How many iterations in a row, each lowering global BA's error by less than
+  ///        `global_small_decrease` of it, end the solve (ORB-SLAM3's g2o stop, 3); 0, never.
+  std::int64_t global_small_steps{3};
+  /// @brief The fraction of global BA's error an iteration must lower it by not to count as a
+  ///        small step towards `global_small_steps` (ORB-SLAM3's 1e-3).
+  double global_small_decrease{1e-3};
+  /// @brief The fraction of every observation's median depth below which global and welding BA
+  ///        leave an observation out at the start, with those behind their camera
+  ///        (`graphs::bundle_adjust`'s `near`); 0 leaves none out. In [0, 1).
+  double min_depth_ratio{1e-3};
   /// @brief The best links of the merge's keyframe a welding window starts with, and the
   ///        keyframes it is widened to while it holds fewer (`numTemporalKFs`).
   std::int64_t weld_neighbours{25};
@@ -411,8 +430,9 @@ struct Options {
 
 /// @brief Whether a pipeline with these settings keeps the keyframe database
 ///        (`Options.keeps_keyframe_database`): when relocalising or closing loops, either alone,
-///        as ORB-SLAM always keeps its `KeyFrameDatabase`. A vocabulary is then required, and
-///        refused otherwise; the one statement of the rule.
+///        as ORB-SLAM always keeps its `KeyFrameDatabase`. Every pipeline takes a vocabulary
+///        whatever this says, as mapping quantises each keyframe by it; the one statement of the
+///        rule.
 /// @param options The settings.
 /// @return `relocalization.enabled` or `loops.enabled`.
 [[nodiscard]] constexpr bool keeps_keyframe_database(const Options& options) {
@@ -561,6 +581,10 @@ constexpr void for_each_setting(Settings& options, Visit visit) {
   visit("loops.essential_damping", options.loops.essential_damping);
   visit("loops.global_ba", options.loops.global_ba);
   visit("loops.global_iterations", options.loops.global_iterations);
+  visit("loops.global_damping_scale", options.loops.global_damping_scale);
+  visit("loops.global_small_steps", options.loops.global_small_steps);
+  visit("loops.global_small_decrease", options.loops.global_small_decrease);
+  visit("loops.min_depth_ratio", options.loops.min_depth_ratio);
   visit("loops.weld_neighbours", options.loops.weld_neighbours);
   visit("loops.weld_widen", options.loops.weld_widen);
   visit("loops.weld_rounds", options.loops.weld_rounds);

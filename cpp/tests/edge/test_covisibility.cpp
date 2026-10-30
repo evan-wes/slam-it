@@ -1,8 +1,9 @@
 /// @file
 /// @brief Native tests for the covisibility graph (slam_it/edge/covisibility.hpp), against the
 ///        brute-force fixture `tests/fixtures/edge/covisibility.json` that the Python and Rust
-///        tests share: each keyframe's links, tracking's local map, the parent a keyframe adopts,
-///        the parents a culled keyframe's children get, a keyframe culled, and the strong links.
+///        tests share: each keyframe's links and connected keyframes, tracking's local map, the
+///        parent a keyframe adopts, the parents a culled keyframe's children get, a keyframe
+///        culled, and the strong links.
 #include <Eigen/Core>
 #include <algorithm>
 #include <array>
@@ -15,6 +16,7 @@
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
+#include "scene.hpp"
 #include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/mapping.hpp"
@@ -44,6 +46,7 @@ edge::Map map_of(const nlohmann::json& keyframes) {
       m.kp_level.push_back(0);
       m.kp_angle.push_back(0);
       m.kp_descriptor.emplace_back();
+      m.kp_node.push_back(0);
       m.kp_bearing.emplace_back(0.0, 0.0, 1.0);
       m.kp_depth.push_back(std::numeric_limits<double>::quiet_NaN());
       m.kp_right.push_back(std::numeric_limits<double>::quiet_NaN());
@@ -57,15 +60,8 @@ edge::Map map_of(const nlohmann::json& keyframes) {
   const auto [first, last] = std::ranges::unique(points);
   points.erase(first, last);
   for (std::size_t p = 0; p < points.size(); ++p) {
-    m.pt_xyz.emplace_back(0.0, 0.0, 1.0);  // in front of every camera, so normals stay finite
-    m.pt_descriptor.emplace_back();
-    m.pt_normal.emplace_back(0.0, 0.0, 1.0);
-    m.pt_min_distance.push_back(1.0);
-    m.pt_max_distance.push_back(1.0);
-    m.pt_visible.push_back(1);
-    m.pt_found.push_back(1);
-    m.pt_first_kf.push_back(0);
-    m.pt_reference_kf.push_back(0);
+    // In front of every camera, so normals stay finite.
+    slam_it::testing::scene::push_point(m, Eigen::Vector3d(0.0, 0.0, 1.0));
   }
   m.next_kf_id = std::ranges::max(m.kf_id) + 1;
   m.next_pt_id = points.empty() ? 0 : points.back() + 1;
@@ -134,6 +130,25 @@ edge::Options options_of(const nlohmann::json& settings) {
   return out;
 }
 
+/// @brief Whether links found are those expected.
+/// @param found The links found, or an error.
+/// @param expected The fixture's rows and weights.
+/// @return Whether they were found and are the same, in the same order.
+bool same_links(const slam_it::foundations::Result<std::vector<edge::Link>>& found,
+                const nlohmann::json& expected) {
+  if (!found) {
+    return false;
+  }
+  std::vector<std::int64_t> rows;
+  std::vector<std::int64_t> weights;
+  for (const edge::Link& link : *found) {
+    rows.push_back(link.row);
+    weights.push_back(link.weight);
+  }
+  return rows == expected[0].get<std::vector<std::int64_t>>() &&
+         weights == expected[1].get<std::vector<std::int64_t>>();
+}
+
 /// @brief Check one case.
 /// @param c The case.
 /// @param failures The failure count.
@@ -142,16 +157,11 @@ void check_case(const nlohmann::json& c, int& failures) {
   const edge::Map m = map_of(c["keyframes"]);
   const edge::Options options = options_of(c["settings"]);
   for (std::size_t k = 0; k < m.kf_id.size(); ++k) {
-    const auto found = edge::links(m, static_cast<std::int64_t>(k), options);
-    std::vector<std::int64_t> rows;
-    std::vector<std::int64_t> weights;
-    for (const edge::Link& link : found.value()) {
-      rows.push_back(link.row);
-      weights.push_back(link.weight);
-    }
-    expect(rows == c["links"][k][0].get<std::vector<std::int64_t>>() &&
-               weights == c["links"][k][1].get<std::vector<std::int64_t>>(),
+    const auto row = static_cast<std::int64_t>(k);
+    expect(same_links(edge::links(m, row, options), c["links"][k]),
            (name + ": links of row " + std::to_string(k)).c_str(), failures);
+    expect(same_links(edge::connected(m, row), c["connected"][k]),
+           (name + ": the keyframes connected to row " + std::to_string(k)).c_str(), failures);
     edge::Map orphaned = m;
     for (std::size_t r = 0; r < orphaned.kf_parent.size(); ++r) {
       if (r == k || orphaned.kf_parent[r] == m.kf_id[k]) {
@@ -209,6 +219,8 @@ int run() {
   const edge::Options options;
   expect(is_invalid_input(edge::links(m, static_cast<std::int64_t>(m.kf_id.size()), options)),
          "a keyframe row out of range is refused", failures);
+  expect(is_invalid_input(edge::connected(m, -1)),
+         "a keyframe row out of range is refused for its connected keyframes", failures);
   const std::vector<std::int64_t> bad{3, -2};
   expect(is_invalid_input(edge::local_map(m, bad, options)), "a point id below -1 is refused",
          failures);

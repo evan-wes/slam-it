@@ -40,7 +40,7 @@ from slam_it.eval import vocabularies
 from slam_it.foundations import matching, so3, vocabulary
 from tests.conftest import require_backend
 from tests.edge import room
-from tests.edge.support import CAMERA, FRAMES, OPTIONS, words_for
+from tests.edge.support import CAMERA, FRAMES, OPTIONS, keyframe_nodes
 
 KEYFRAMES = (0, 12, 24, 36)
 """The frames the truth map makes keyframes."""
@@ -140,7 +140,7 @@ def truth_map(built: list[frames.Frame], poses: list[np.ndarray]) -> Map:
     m = maps.empty(OPTIONS.features.levels, OPTIONS.features.scale_factor)
     for i in KEYFRAMES:
         observed = _observe(m, built[i], poses[i])
-        m = maps.insert_keyframe(m, built[i], poses[i], observed)
+        m = maps.insert_keyframe(m, built[i], poses[i], observed, keyframe_nodes(built[i]))
         m = _points_from_depth(m, poses[i])
     return m
 
@@ -234,6 +234,10 @@ def exact_observations(m: Map) -> Map:
     return replace(m, kp_xy=xy, kp_right=right, kp_bearing=bearing)
 
 
+LoopKeyframes = tuple[list[frames.Frame], list[np.ndarray], Map]
+"""The loop room's keyframes: their frames, their true ``T_cam_world`` and their map."""
+
+
 def loop_map(built: list[frames.Frame], poses: list[np.ndarray]) -> Map:
     """Build a map of the loop room from its true poses, each keyframe seeing only its window.
 
@@ -256,7 +260,7 @@ def loop_map(built: list[frames.Frame], poses: list[np.ndarray]) -> Map:
     m = maps.empty(OPTIONS.features.levels, OPTIONS.features.scale_factor)
     for i, (frame, pose) in enumerate(zip(built, poses, strict=True)):
         observed = _observe(m, frame, pose, among=m.pt_first_kf >= i - LOOP_WINDOW)
-        m = maps.insert_keyframe(m, frame, pose, observed)
+        m = maps.insert_keyframe(m, frame, pose, observed, keyframe_nodes(frame))
         m = _points_from_depth(m, pose)
         m = covisibility.adopt(m, m.keyframes - 1)
     return exact_observations(m)
@@ -285,7 +289,7 @@ def _without_depth(m: Map) -> Map:
 
 
 @pytest.fixture(scope="session")
-def loop_keyframes() -> tuple[list[frames.Frame], list[np.ndarray], Map]:
+def loop_keyframes() -> LoopKeyframes:
     """Render the loop room's keyframes, build them in RGB-D, and map them from the truth."""
     path = room.loop_path(room.LOOP_FRAMES)[::LOOP_EVERY]
     scene = room.Room()
@@ -298,7 +302,7 @@ def loop_keyframes() -> tuple[list[frames.Frame], list[np.ndarray], Map]:
     return built, poses, loop_map(built, poses)
 
 
-def _loop(keyframes: tuple[list[frames.Frame], list[np.ndarray], Map], *, scaled: bool) -> Loop:
+def _loop(keyframes: LoopKeyframes, *, scaled: bool) -> Loop:
     """Drift the loop map, rigidly or in scale too."""
     built, poses, truth = keyframes
     drift = [loop_drift(k / (truth.keyframes - 1), scaled=scaled) for k in range(truth.keyframes)]
@@ -309,13 +313,13 @@ def _loop(keyframes: tuple[list[frames.Frame], list[np.ndarray], Map], *, scaled
 
 
 @pytest.fixture(scope="session")
-def loop_rigid(loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map]) -> Loop:
+def loop_rigid(loop_keyframes: LoopKeyframes) -> Loop:
     """Return the loop map in RGB-D, drifted rigidly."""
     return _loop(loop_keyframes, scaled=False)
 
 
 @pytest.fixture(scope="session")
-def loop_scaled(loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map]) -> Loop:
+def loop_scaled(loop_keyframes: LoopKeyframes) -> Loop:
     """Return the loop map as monocular, drifted in scale too."""
     return _loop(loop_keyframes, scaled=True)
 
@@ -343,7 +347,7 @@ def keyframe_database(m: Map, words: vocabulary.Vocabulary) -> Database:
 
 @pytest.fixture(scope="session")
 def loop_database(
-    loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map],
+    loop_keyframes: LoopKeyframes,
     words: vocabulary.Vocabulary,
 ) -> Database:
     """Put the loop map's keyframes in a database (tests must not change it)."""
@@ -386,7 +390,7 @@ class TwoMaps:
 
 
 def _two_maps(
-    keyframes: tuple[list[frames.Frame], list[np.ndarray], Map],
+    keyframes: LoopKeyframes,
     words: vocabulary.Vocabulary,
     *,
     scaled: bool,
@@ -409,7 +413,7 @@ def _two_maps(
 
 @pytest.fixture(scope="session")
 def two_rigid(
-    loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map],
+    loop_keyframes: LoopKeyframes,
     words: vocabulary.Vocabulary,
 ) -> TwoMaps:
     """Return the two maps in RGB-D, the active one's world turned and shifted."""
@@ -418,7 +422,7 @@ def two_rigid(
 
 @pytest.fixture(scope="session")
 def two_scaled(
-    loop_keyframes: tuple[list[frames.Frame], list[np.ndarray], Map],
+    loop_keyframes: LoopKeyframes,
     words: vocabulary.Vocabulary,
 ) -> TwoMaps:
     """Return the two maps as monocular, the active one's world scaled too."""
@@ -505,7 +509,7 @@ def run_room(mode: str, rendered: list[room.Frame]) -> Run:
     camera = frames.Camera(
         "pinhole", room.SMALL.intrinsics, room.SMALL.width, room.SMALL.height, baseline
     )
-    run = pipeline.Pipeline(mode, camera, OPTIONS, words_for(OPTIONS))
+    run = pipeline.Pipeline(mode, camera, OPTIONS, vocabularies.default())
     results = []
     for f in rendered:
         if mode == "monocular":

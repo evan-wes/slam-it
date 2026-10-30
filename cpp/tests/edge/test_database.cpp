@@ -1,17 +1,24 @@
 /// @file
 /// @brief Native tests for the keyframe database (slam_it/edge/database.hpp) on the exact
 ///        scene's map: the inverted index as keyframes enter and leave it, relocalisation's
-///        candidates without an erased keyframe, loop closing's outside a keyframe's links, and
-///        the refusals (a keyframe given twice, one erased that is not there, a malformed
-///        vector, a keyframe outside the map or the database).
+///        candidates without an erased keyframe, loop closing's sharing no point with the
+///        keyframe, and the refusals (a keyframe given twice, one erased that is not there, a
+///        malformed vector, a keyframe outside the map or the database).
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <expected>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "../foundations/fixture_support.hpp"
 #include "../foundations/test_support.hpp"
 #include "scene.hpp"
+#include "slam_it/edge/covisibility.hpp"
 #include "slam_it/edge/database.hpp"
+#include "slam_it/edge/map.hpp"
+#include "slam_it/edge/options.hpp"
 
 namespace {
 
@@ -95,29 +102,65 @@ void check_refusals(int& failures) {
          "a frame vector whose words do not ascend is refused", failures);
 }
 
-/// @brief Check loop closing's candidates: never the keyframe or one linked to it; with every
-///        keyframe linked to its best alone, the third keyframe the one left; a keyframe outside
-///        the map or the database refused.
+/// @brief The scene's map with its first keyframe seeing only the first `n` points: its other
+///        observations forgotten, it shares `n` points with each other keyframe, and those two
+///        still share all 60.
+/// @param n The points it keeps seeing.
+/// @return The map, or the map's error.
+slam_it::foundations::Result<edge::Map> first_sharing(std::size_t n) {
+  auto m = scene::map();
+  if (!m) {
+    return m;
+  }
+  std::vector<std::int64_t> rows;
+  for (std::size_t r = n; r < scene::kPoints; ++r) {
+    rows.push_back(static_cast<std::int64_t>(r));  // the first keyframe's keypoints come first
+  }
+  if (auto ok = edge::forget_observations(*m, rows); !ok) {
+    return std::unexpected(std::move(ok.error()));
+  }
+  return m;
+}
+
+/// @brief Check loop closing's candidates: never the keyframe or one sharing a point with it,
+///        however few. The first keyframe, sharing 1 to 14 points with the third and so not
+///        linked to it (`covisibility.min_points` 15), is never the third's candidate; sharing
+///        none, it is. A keyframe outside the map or the database is refused.
 /// @param failures Running failure count.
 void check_loop_candidates(int& failures) {
+  edge::Database db;
+  for (std::int64_t k = 0; k < 3; ++k) {
+    expect(edge::insert(db, k, words_of(k)).has_value(), "the setup succeeds", failures);
+  }
+  const edge::Options options;
+  for (std::size_t n = 0; n < 15; ++n) {
+    const auto m = first_sharing(n);
+    if (!m) {
+      expect(false, "the map is built", failures);
+      continue;
+    }
+    const auto linked = edge::links(*m, 2, options);
+    const auto found = edge::loop_candidates(db, *m, 2, options);
+    const bool second_alone = linked && linked->size() == 1 && linked->front().row == 1;
+    const bool expected = n == 0 ? found && found->keyframes == std::vector<std::int64_t>{0}
+                                 : found && found->keyframes.empty() && found->sharing == 0;
+    expect(second_alone && expected,
+           ("the first keyframe, sharing " + std::to_string(n) +
+            " points and not linked: a candidate only when it shares none")
+               .c_str(),
+           failures);
+  }
   const auto m = scene::map();
   if (!m) {
     expect(false, "the scene's map is built", failures);
     return;
   }
-  edge::Database db;
-  for (std::int64_t k = 0; k < 3; ++k) {
-    expect(edge::insert(db, k, words_of(k)).has_value(), "the setup succeeds", failures);
-  }
-  const auto linked = edge::loop_candidates(db, *m, 2, edge::Options{});
-  expect(linked.has_value() && linked->keyframes.empty() && linked->sharing == 0,
-         "every other keyframe linked: no candidate", failures);
   edge::Options best_only;
-  best_only.covisibility.min_points = 1'048'576;  // 2^20: no keyframe shares that many
+  best_only.covisibility.min_points = 1'048'576;  // 2^20: linked to its best alone
   const auto found = edge::loop_candidates(db, *m, 2, best_only);
-  expect(found.has_value() && found->sharing == 1 && found->keyframes.size() == 1 &&
-             found->keyframes.front() != 2,
-         "linked to its best alone, the other keyframe is the candidate", failures);
+  expect(found.has_value() && found->keyframes.empty() && found->sharing == 0,
+         "linked to its best alone, the other keyframe still shares points: no candidate",
+         failures);
   expect(is_invalid_input(edge::loop_candidates(db, *m, 7, best_only)),
          "a keyframe outside the map is refused", failures);
   expect(edge::erase(db, 2).has_value() &&

@@ -18,6 +18,7 @@
 #include "slam_it/edge/map.hpp"
 #include "slam_it/edge/options.hpp"
 #include "slam_it/foundations/error.hpp"
+#include "slam_it/foundations/vocabulary.hpp"
 
 namespace slam_it::edge {
 
@@ -152,9 +153,9 @@ struct Mapped {
 /// @return Nothing; `InvalidInput` for a map without keyframes, or invalid settings.
 [[nodiscard]] foundations::Result<void> cull_points(Map& m, Mode mode, const Options& options);
 
-/// @brief Match two keyframes' free keypoints for triangulation
-///        (`slam_it.edge.mapping.match_for_triangulation`, ORB-SLAM's `SearchForTriangulation`,
-///        lite).
+/// @brief Match two keyframes' free keypoints for triangulation, only under the same vocabulary
+///        node (`slam_it.edge.mapping.match_for_triangulation`, which names its three departures
+///        from ORB-SLAM3).
 /// @param m The map.
 /// @param camera The camera.
 /// @param k1 The first keyframe's row.
@@ -166,7 +167,9 @@ struct Mapped {
     const Map& m, const Camera& camera, std::int64_t k1, std::int64_t k2, const Options& options);
 
 /// @brief Triangulate the newest keyframe's free keypoints against its best links
-///        (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`).
+///        (`slam_it.edge.mapping.triangulate_new_points`, ORB-SLAM's `CreateNewMapPoints`):
+///        against every one, where ORB-SLAM stops after the first once a new keyframe waits for
+///        mapping (`LocalMapping.cc:436-437`), a departure `match_for_triangulation` names.
 /// @param m The map, changed in place.
 /// @param camera The camera.
 /// @param mode The pipeline's mode.
@@ -229,16 +232,18 @@ struct Mapped {
 /// @param tracked Its pose and matches.
 /// @param mode The pipeline's mode.
 /// @param options The settings.
+/// @param vocabulary The vocabulary, checked, the keyframe's features are quantised by as it
+///        enters the map (its nodes, `map.hpp`'s `kp_node`; ORB-SLAM's `ComputeBoW` in
+///        `ProcessNewKeyFrame`).
 /// @param held The ids of the keyframes loop detection holds, which culling spares.
 /// @param interrupts What local mapping's thread is asked between the steps; null inline, every
 ///        step run.
 /// @return How each step went and was scheduled, and the points made for the keyframe's
 ///         keypoints; `InvalidInput` for matches that are not one per keypoint, or an invalid
 ///         camera or settings.
-[[nodiscard]] foundations::Result<Mapped> process(Map& m, const Camera& camera, const Frame& frame,
-                                                  const Tracked& tracked, Mode mode,
-                                                  const Options& options,
-                                                  std::span<const std::int64_t> held = {},
-                                                  const Interrupts* interrupts = nullptr);
+[[nodiscard]] foundations::Result<Mapped> process(
+    Map& m, const Camera& camera, const Frame& frame, const Tracked& tracked, Mode mode,
+    const Options& options, const foundations::vocabulary::Vocabulary& vocabulary,
+    std::span<const std::int64_t> held = {}, const Interrupts* interrupts = nullptr);
 
 }  // namespace slam_it::edge

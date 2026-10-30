@@ -17,6 +17,7 @@
 #include "slam_it/edge/options.hpp"
 #include "slam_it/foundations/error.hpp"
 #include "slam_it/foundations/matching.hpp"
+#include "slam_it/foundations/vocabulary.hpp"
 
 namespace slam_it::edge {
 
@@ -84,12 +85,14 @@ struct Initialization {
 ///        (`slam_it.edge.initialization.initialize_from_depth`).
 /// @param frame The frame.
 /// @param options The minimum keypoints, and the pyramid.
-/// @return The map of one keyframe at the origin with a point at every keypoint with depth
-///         (and a bearing), or none unless it has more than `initialization.min_features_depth`
-///         keypoints, and the outcome; `InvalidInput` for a frame whose pyramid is not the
-///         settings', or invalid settings.
-[[nodiscard]] foundations::Result<Initialization> initialize_from_depth(const Frame& frame,
-                                                                        const Options& options);
+/// @param vocabulary The vocabulary, checked, its features' nodes are of (`map.hpp`'s `kp_node`).
+/// @return The map of one keyframe at the origin with its nodes and a point at every keypoint
+///         with depth (and a bearing), or none unless it has more than
+///         `initialization.min_features_depth` keypoints, and the outcome; `InvalidInput` for a
+///         frame whose pyramid is not the settings', or invalid settings.
+[[nodiscard]] foundations::Result<Initialization> initialize_from_depth(
+    const Frame& frame, const Options& options,
+    const foundations::vocabulary::Vocabulary& vocabulary);
 
 /// @brief Match a monocular reference frame to a later one
 ///        (`slam_it.edge.initialization.match_for_initialization`, ORB-SLAM's
@@ -113,7 +116,10 @@ match_for_initialization(const Frame& reference, const Frame& frame,
 /// @param frame The later frame.
 /// @param pairs `(reference keypoint, frame keypoint)` matches.
 /// @param options The minimum matches, the parallax, the seed, and the pyramid.
-/// @return The map of two keyframes and their points (the chosen motion's inliers in front of both
+/// @param vocabulary The vocabulary, checked, the keyframes' nodes are of (`map.hpp`'s
+///        `kp_node`).
+/// @return The map of two keyframes, their nodes and their points (the chosen motion's inliers in
+/// front of both
 ///         views with rays whose cosine is below `initialization.parallax_cos`, `CheckRT`), scaled
 ///         so the first's median depth is 1, or none if too few keypoints match, the views do not
 ///         initialise, or too few points survive the adjustment; with the pairs given, the outcome
@@ -122,6 +128,7 @@ match_for_initialization(const Frame& reference, const Frame& frame,
 ///         settings.
 [[nodiscard]] foundations::Result<Initialization> initialize_monocular(
     const Camera& camera, const Frame& reference, const Frame& frame,
-    std::span<const std::array<std::int64_t, 2>> pairs, const Options& options);
+    std::span<const std::array<std::int64_t, 2>> pairs, const Options& options,
+    const foundations::vocabulary::Vocabulary& vocabulary);
 
 }  // namespace slam_it::edge

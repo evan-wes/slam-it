@@ -320,7 +320,8 @@ class MappingOptions:
         A new stereo or RGB-D keyframe triangulates against its best this many links
         (``CreateNewMapPoints``' ``nn``: 10)...
     mono_triangulation_neighbours : int
-        ...20 for monocular.
+        ...20 for monocular (ORB-SLAM2's; ORB-SLAM3 takes 30, a departure kept, not measured on
+        the test set: the online-SLAM design's section 11, L2).
     epipolar_chi2 : float
         A match for triangulation must lie within this chi-square (1 dof, 95%) of its
         epipolar line (``CheckDistEpipolarLine``'s 3.84)...
@@ -362,10 +363,15 @@ class MappingOptions:
     min_point_observations_depth : int
         ...3 for stereo and RGB-D.
     redundant_fraction : float
-        A keyframe is culled when this fraction of its points are seen by
-        ``mapping.redundant_observers`` other keyframes at the same or a finer scale (0.9, 3).
+        The fraction of a keyframe's points that must be redundant for culling to remove it,
+        each seen by ``mapping.redundant_observers`` other keyframes at the same, a finer or the
+        next coarser scale (``KeyFrameCulling``'s 0.9).
     redundant_observers : int
-        See ``mapping.redundant_fraction``.
+        How many other keyframes must see a point, at the same, a finer or the next coarser
+        scale, for it to count as redundant (4): ORB-SLAM3's ``nObs > 3`` (``KeyFrameCulling``),
+        where ORB-SLAM2 has ``>= 3``. The point must also weigh more than this (``Observations()
+        > 3`` there), which so many other keyframes and its own already make it. Why ORB-SLAM3's
+        and not ORB-SLAM2's: the online-SLAM design, section 11's L2.
     max_queued : int
         With local mapping busy, in threads of their own, a stereo or RGB-D keyframe is queued
         only while fewer than this many wait (``NeedNewKeyFrame``'s ``KeyframesInQueue() < 3``).
@@ -389,7 +395,7 @@ class MappingOptions:
     min_point_observations: int = 2
     min_point_observations_depth: int = 3
     redundant_fraction: float = 0.9
-    redundant_observers: int = 3
+    redundant_observers: int = 4
     max_queued: int = 3
 
 
@@ -427,10 +433,10 @@ class RelocalizationOptions:
     Attributes
     ----------
     enabled : bool
-        Relocalise a failed frame against the whole map through its keyframe database, which
-        needs a vocabulary (on, as ORB-SLAM always is). Off, a failed frame tries only the motion
-        model and the local fallback, and a map is lost after ``loss.lost_frames`` failures in a
-        row, as before milestone 2B.
+        Relocalise a failed frame against the whole map through its keyframe database
+        (:meth:`Options.keeps_keyframe_database`; on, as ORB-SLAM always is). Off, a failed frame
+        tries only the motion model and the local fallback, and a map is lost after
+        ``loss.lost_frames`` failures in a row, as before milestone 2B.
     ratio : float
         The descriptor ratio test of the fallback and of relocalisation's matching by word
         (``Relocalization``'s ``ORBmatcher(0.75, true)``).
@@ -501,8 +507,8 @@ class LoopOptions:
     ----------
     enabled : bool
         Close loops in the map being tracked, each keyframe searched once it is mapped (on, as
-        ORB-SLAM always is). It needs the keyframe database, and so a vocabulary: on, it keeps
-        the database whether relocalisation is on or off (:meth:`Options.keeps_keyframe_database`).
+        ORB-SLAM always is). It needs the keyframe database: on, it keeps the database whether
+        relocalisation is on or off (:meth:`Options.keeps_keyframe_database`).
     min_keyframes : int
         A map of fewer keyframes is not searched (``KeyFramesInMap() < 12``).
     candidates : int
@@ -583,7 +589,25 @@ class LoopOptions:
         Bundle-adjust the whole map after each loop (on, as visual-only ORB-SLAM3 always does;
         off measures what it adds).
     global_iterations : int
-        Its iterations (``GlobalBundleAdjustemnt``'s 10).
+        Global BA's Levenberg-Marquardt iterations at most (``GlobalBundleAdjustemnt``'s 10).
+    global_damping_scale : float
+        Global BA's ``τ``, relative: its first damping is this times the largest diagonal entry
+        of its normal equations, then follows Nielsen's schedule (g2o's damping, its ``τ`` 1e-5,
+        which ORB-SLAM3's global BA leaves at its default;
+        :attr:`slam_it.foundations.graphs.Options.damping_scale`). Unlike
+        ``loops.essential_damping``, which is absolute.
+    global_small_steps : int
+        How many iterations in a row, each lowering global BA's error by less than
+        ``loops.global_small_decrease`` of it, end the solve (ORB-SLAM3's g2o stop, 3); 0, never.
+    global_small_decrease : float
+        The fraction of global BA's error an iteration must lower it by not to count as a small
+        step towards ``loops.global_small_steps`` (ORB-SLAM3's 1e-3).
+    min_depth_ratio : float
+        The fraction of every observation's median depth below which global and welding BA leave
+        an observation out at the start, with those behind their camera
+        (:func:`slam_it.foundations.graphs.bundle_adjust`'s ``near``, 1e-3; 0 leaves none out).
+        In [0, 1). ORB-SLAM3 has no such filter; why it is here: the online-SLAM design, section
+        11's L2.
     weld_neighbours : int
         The best links of the merge's keyframe a welding window starts with, and the keyframes
         it is widened to while it holds fewer (ORB-SLAM3's ``numTemporalKFs``, 25, which
@@ -630,6 +654,10 @@ class LoopOptions:
     essential_damping: float = 1e-16
     global_ba: bool = True
     global_iterations: int = 10
+    global_damping_scale: float = 1e-5
+    global_small_steps: int = 3
+    global_small_decrease: float = 1e-3
+    min_depth_ratio: float = 1e-3
     weld_neighbours: int = 25
     weld_widen: int = 12
     weld_rounds: int = 5
@@ -762,8 +790,9 @@ class Options:
         """Return whether a pipeline with these settings keeps the keyframe database.
 
         It does when relocalising or closing loops, either alone, as ORB-SLAM always keeps its
-        ``KeyFrameDatabase``: a vocabulary is then required, and refused otherwise (B3's review
-        panel, H7; the one statement of the rule, run 2, H23).
+        ``KeyFrameDatabase`` (B3's review panel, H7). Every pipeline takes a vocabulary whatever
+        this says, as mapping quantises each keyframe by it (since 0.3.18.0; the online-SLAM
+        design's section 11, L2): the one statement of the rule (B3's panel, run 2, H23).
 
         Returns
         -------
@@ -891,6 +920,9 @@ def _checked(name: str, kind: str, value: Any) -> bool | int | float:  # noqa: A
     if name in _MAY_BE_ZERO:
         if not (math.isfinite(number) and number >= 0.0):
             raise InvalidInputError(f"{name}: must be finite and not negative, got {number}")
+    elif name in _BELOW_ONE:
+        if not (math.isfinite(number) and 0.0 <= number < 1.0):
+            raise InvalidInputError(f"{name}: must be in [0, 1), got {number}")
     elif name in _FRACTIONS:
         if not (math.isfinite(number) and 0.0 < number <= 1.0):
             raise InvalidInputError(f"{name}: must be in (0, 1], got {number}")
@@ -907,10 +939,14 @@ _MAY_BE_ZERO = frozenset(
         "loss.reset_keyframes",
         "loss.session_keyframes",
         "loops.weld_rounds",
+        "loops.global_small_steps",
         "loss.relocalize_seconds",
     }
 )
 """The settings that may be 0: integers, and one real."""
+
+_BELOW_ONE = frozenset({"loops.min_depth_ratio"})
+"""The real settings in [0, 1)."""
 
 _FRACTIONS = frozenset(
     {
@@ -936,6 +972,7 @@ _FRACTIONS = frozenset(
         "loops.common_words",
         "loops.ratio",
         "loops.confidence",
+        "loops.global_small_decrease",
     }
 )
 """The real settings in (0, 1]."""

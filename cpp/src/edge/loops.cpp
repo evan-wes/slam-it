@@ -314,7 +314,11 @@ Result<Ids> best_links(const Map& m, std::size_t k, const Options& options) {
   return link_rows(m, k, options, options.loops.neighbours);
 }
 
-/// @brief A keyframe's links' rows, all of them (`slam_it.edge.loops._linked`).
+/// @brief A keyframe's links' rows, all of them: those sharing `covisibility.min_points`
+///        (`slam_it.edge.loops._linked`). Not ORB-SLAM3's `GetConnectedKeyFrames`, every keyframe
+///        sharing a point (`connected`), which its near check, its group's widening and its
+///        correction's new loop links read where these read this; the Python module's docstring
+///        says why.
 /// @param m The map.
 /// @param k The keyframe's row.
 /// @param options The settings.
@@ -1676,6 +1680,7 @@ void absorb(Map& into, const Map& other, std::int64_t keyframe_offset, std::int6
   append<std::int64_t>(into.kp_level, other.kp_level);
   append<std::int64_t>(into.kp_angle, other.kp_angle);
   append<foundations::orb::Descriptor>(into.kp_descriptor, other.kp_descriptor);
+  append<std::int64_t>(into.kp_node, other.kp_node);
   append<Eigen::Vector3d>(into.kp_bearing, other.kp_bearing);
   append<double>(into.kp_depth, other.kp_depth);
   append<double>(into.kp_right, other.kp_right);
@@ -1875,11 +1880,13 @@ struct WeldState {
 /// @param state The state, updated in place.
 /// @param use Which observations take part.
 /// @param robust With a Huber loss at each one's threshold's root.
-/// @param iterations The solve's iterations.
+/// @param iterations The solve's iterations (`weld_options`).
+/// @param near The fraction of the median depth nearer than which an observation is left out
+///        (`loops.min_depth_ratio`).
 /// @return The solve's summary; GTSAM's failure.
 Result<graphs::Summary> weld_solve(const Weld& problem, const Camera& camera, WeldState& state,
                                    const std::vector<bool>& use, bool robust,
-                                   std::int64_t iterations) {
+                                   std::int64_t iterations, double near) {
   std::set<std::int64_t> cameras(problem.fixed.begin(), problem.fixed.end());
   std::set<std::int64_t> points;
   for (std::size_t i = 0; i < use.size(); ++i) {
@@ -1932,9 +1939,9 @@ Result<graphs::Summary> weld_solve(const Weld& problem, const Camera& camera, We
                                           .right = right,
                                           .information = information,
                                           .huber = huber};
-  auto adjusted = graphs::bundle_adjust(poses, start, observations, camera.model, camera.intrinsics,
-                                        focal(camera) * camera.baseline, fixed,
-                                        {.max_iterations = static_cast<int>(iterations)});
+  auto adjusted =
+      graphs::bundle_adjust(poses, start, observations, camera.model, camera.intrinsics,
+                            focal(camera) * camera.baseline, fixed, near, weld_options(iterations));
   if (!adjusted) {
     return std::unexpected(std::move(adjusted.error()));
   }
@@ -1988,7 +1995,9 @@ Result<WeldSummary> weld(Map& m, const Camera& camera, std::span<const std::int6
     state.xyz.push_back(m.pt_xyz[static_cast<std::size_t>(p)]);
   }
   const std::vector<bool> everything(problem.rows.size(), true);
-  auto first = weld_solve(problem, camera, state, everything, true, options.adjustment.iterations);
+  const double near = options.loops.min_depth_ratio;
+  auto first =
+      weld_solve(problem, camera, state, everything, true, options.adjustment.iterations, near);
   if (!first) {
     return std::unexpected(std::move(first.error()));
   }
@@ -2004,8 +2013,8 @@ Result<WeldSummary> weld(Map& m, const Camera& camera, std::span<const std::int6
   }
   std::optional<graphs::Summary> second;
   if (std::ranges::any_of(inliers, [](bool inlier) { return inlier; })) {
-    auto solved =
-        weld_solve(problem, camera, state, inliers, false, options.adjustment.refine_iterations);
+    auto solved = weld_solve(problem, camera, state, inliers, false,
+                             options.adjustment.refine_iterations, near);
     if (!solved) {
       return std::unexpected(std::move(solved.error()));
     }
@@ -2257,6 +2266,19 @@ Result<std::optional<graphs::Summary>> global_ba_after(Map& m, const Camera& cam
 
 }  // namespace
 
+graphs::Options global_ba_options(const Options& options, const std::atomic<bool>* stop) {
+  return graphs::Options{.max_iterations = static_cast<int>(options.loops.global_iterations),
+                         .scaled_damping = true,
+                         .damping_scale = options.loops.global_damping_scale,
+                         .small_steps = static_cast<int>(options.loops.global_small_steps),
+                         .small_decrease = options.loops.global_small_decrease,
+                         .stop = stop};
+}
+
+graphs::Options weld_options(std::int64_t iterations) {
+  return graphs::Options{.max_iterations = static_cast<int>(iterations)};
+}
+
 Result<graphs::Summary> global_bundle_adjust(Map& m, const Camera& camera, const Options& options,
                                              const std::atomic<bool>* stop) {
   if (!std::ranges::contains(m.kf_id, std::int64_t{0})) {
@@ -2302,7 +2324,7 @@ Result<graphs::Summary> global_bundle_adjust(Map& m, const Camera& camera, const
                                           .huber = {}};
   auto adjusted = graphs::bundle_adjust(
       poses, points, observations, camera.model, camera.intrinsics, focal(camera) * camera.baseline,
-      fixed, {.max_iterations = static_cast<int>(options.loops.global_iterations), .stop = stop});
+      fixed, options.loops.min_depth_ratio, global_ba_options(options, stop));
   if (!adjusted) {
     return std::unexpected(std::move(adjusted.error()));
   }

@@ -23,7 +23,7 @@ use std::time::Instant;
 use nalgebra::Matrix4;
 use slam_it_foundations::error::{Error, ErrorKind, Result, fail};
 use slam_it_foundations::nls::Stop;
-use slam_it_foundations::vocabulary::Vocabulary;
+use slam_it_foundations::vocabulary::{self, Vocabulary};
 use slam_it_foundations::{orb, se3, sim3};
 
 use crate::atlas::{Atlas, Lifetimes, Trajectory};
@@ -199,6 +199,10 @@ pub struct LoopSummary {
 /// # Returns
 ///
 /// The correction, the matched keyframe's run id first.
+#[allow(
+    clippy::large_types_passed_by_value,
+    reason = "moved into the record it returns"
+)]
 fn corrected(atlas: &Atlas, summary: CorrectionSummary) -> Corrected {
     let run_ids = [atlas.run_id(summary.matched), atlas.run_id(summary.current)];
     Corrected { summary, run_ids }
@@ -327,6 +331,7 @@ pub fn size_of(m: &Map) -> ViewSize {
             + bytes(&m.kp_level)
             + bytes(&m.kp_angle)
             + bytes(&m.kp_descriptor)
+            + bytes(&m.kp_node)
             + bytes(&m.kp_bearing)
             + bytes(&m.kp_depth)
             + bytes(&m.kp_right)
@@ -745,8 +750,11 @@ impl Held {
 /// is never shared with a reader while it is changed, so it is never copied whole.
 #[derive(Debug)]
 pub struct MapOwner {
-    /// The vocabulary, when relocalising or closing loops.
-    vocabulary: Option<Vocabulary>,
+    /// The vocabulary: each keyframe's features are quantised by it, and the database's words
+    /// are of it.
+    vocabulary: Vocabulary,
+    /// Whether a map keeps a keyframe database: with relocalisation or loop closing on.
+    keeps_database: bool,
     /// The handshake between the threads; `None` inline.
     writer: Option<Arc<Writer>>,
     /// The settings: the local map's, which a view's keyframes follow.
@@ -775,18 +783,21 @@ impl MapOwner {
     ///
     /// # Arguments
     ///
-    /// * `vocabulary` - The database's vocabulary; `None` when neither relocalising nor closing
-    ///   loops, and there is no database.
+    /// * `vocabulary` - The vocabulary, checked: local mapping quantises each keyframe's features
+    ///   by it, and the database's words are of it.
     /// * `threading` - How the steps run: threaded, a writer is made.
-    /// * `options` - The settings: the local map's, which a view's keyframes follow.
+    /// * `options` - The settings: whether a map keeps a keyframe database (with relocalisation
+    ///   or loop closing on, [`Options::keeps_keyframe_database`]), and the local map's, which a
+    ///   view's keyframes follow.
     ///
     /// # Returns
     ///
     /// The owner.
     #[must_use]
-    pub fn new(vocabulary: Option<Vocabulary>, threading: Threading, options: Options) -> Self {
+    pub fn new(vocabulary: Vocabulary, threading: Threading, options: Options) -> Self {
         Self {
             vocabulary,
+            keeps_database: options.keeps_keyframe_database(),
             writer: threading.threaded().then(|| Arc::new(Writer::default())),
             options,
             views: threading == Threading::InlineView,
@@ -946,14 +957,15 @@ impl MapOwner {
         lock(&self.held).map.clone()
     }
 
-    /// The database's vocabulary, when relocalising or closing loops.
+    /// The vocabulary: each keyframe's features are quantised by it, and the database's words
+    /// are of it.
     ///
     /// # Returns
     ///
-    /// The vocabulary, if any.
+    /// The vocabulary.
     #[must_use]
-    pub const fn vocabulary(&self) -> Option<&Vocabulary> {
-        self.vocabulary.as_ref()
+    pub const fn vocabulary(&self) -> &Vocabulary {
+        &self.vocabulary
     }
 
     /// The corrections applied: loops corrected, and global BAs carried onto the map.
@@ -977,7 +989,7 @@ impl MapOwner {
     pub fn start(&self, m: Map) -> Result<()> {
         let mut held = lock(&self.held);
         held.map = Some(Arc::new(m));
-        if self.vocabulary.is_some() {
+        if self.keeps_database {
             held.database = Some(Database::default());
         }
         self.changed(&mut held)
@@ -1218,7 +1230,7 @@ impl MapOwner {
         let mut held = lock(&self.held);
         self.corrections.fetch_add(1, Ordering::SeqCst);
         held.map = Some(Arc::new(m));
-        held.database = self.vocabulary.is_some().then_some(database);
+        held.database = self.keeps_database.then_some(database);
     }
 
     /// Takes a merge's map, and brings the matched map's database to its keyframes; threaded,
@@ -1245,7 +1257,7 @@ impl MapOwner {
     ) -> Result<()> {
         let mut held = lock(&self.held);
         held.map = Some(Arc::new(m));
-        if self.vocabulary.is_some() {
+        if self.keeps_database {
             held.database = Some(database);
         }
         {
@@ -1269,7 +1281,7 @@ impl MapOwner {
     ///
     /// A quantisation's error.
     fn changed(&self, held: &mut Held) -> Result<()> {
-        sync_database(self.vocabulary.as_ref(), held)?;
+        sync_database(&self.vocabulary, held)?;
         if self.writer.is_some()
             && let Some(m) = held.map.as_deref()
         {
@@ -1307,16 +1319,14 @@ fn writable(m: &mut Arc<Map>) -> Result<&mut Map> {
 ///
 /// # Arguments
 ///
-/// * `vocabulary` - The vocabulary, when relocalising or closing loops.
+/// * `vocabulary` - The vocabulary.
 /// * `held` - The map and its database.
 ///
 /// # Errors
 ///
 /// A quantisation's error.
-fn sync_database(vocabulary: Option<&Vocabulary>, held: &mut Held) -> Result<()> {
-    let (Some(vocabulary), Some(m), Some(database)) =
-        (vocabulary, held.map.as_deref(), &mut held.database)
-    else {
+fn sync_database(vocabulary: &Vocabulary, held: &mut Held) -> Result<()> {
+    let (Some(m), Some(database)) = (held.map.as_deref(), &mut held.database) else {
         return Ok(()); // no keyframe database
     };
     let culled: Vec<i64> = database
@@ -1362,6 +1372,7 @@ fn add_counts(m: &mut Map, visible: &[i64], found: &[i64]) -> Result<()> {
 /// * `camera` - The camera.
 /// * `frame` - The frame.
 /// * `options` - The settings.
+/// * `vocabulary` - The vocabulary the keyframes' nodes are of.
 ///
 /// # Returns
 ///
@@ -1375,6 +1386,7 @@ fn initialize_monocular(
     camera: &Camera,
     frame: &Frame,
     options: &Options,
+    vocabulary: &Vocabulary,
 ) -> Result<Initialization> {
     if frame.size() <= options.initialization.min_features {
         state.reference = None; // too few features: ORB-SLAM drops its initializer
@@ -1409,7 +1421,7 @@ fn initialize_monocular(
     }
     let pairs: Vec<[usize; 2]> = matched.iter().map(|m| [m.first, m.second]).collect();
     // `None` keeps the reference: a later frame may have the parallax.
-    initialization::initialize_monocular(camera, reference, frame, &pairs, options)
+    initialization::initialize_monocular(camera, reference, frame, &pairs, options, vocabulary)
 }
 
 /// Tracks the last frame against the view, or recovers by PnP, or relocalises. Relocalisation
@@ -1487,10 +1499,7 @@ fn place(
     let recovery = tracking::relocalize_locally(&m, camera, frame, &last_tracked.points, options)?;
     summary.pnp = Some(recovery.summary);
     // The database relocalises only with relocalization.enabled: loop closing alone keeps it.
-    let relocalizing = owner
-        .vocabulary()
-        .filter(|_| options.relocalization.enabled);
-    let (Some(vocabulary), None) = (relocalizing, &recovery.tracked) else {
+    if recovery.tracked.is_some() || !options.relocalization.enabled {
         // Placed by the fallback, or not relocalising.
         if recovery.tracked.is_some() {
             summary.placed_by = Some(Placement::LocalPnp);
@@ -1502,7 +1511,7 @@ fn place(
             waited: 0.0,
             moved: None,
         });
-    };
+    }
     let asked = Instant::now();
     let mut held_at = asked;
     let found = owner.reading(|held| -> Result<_> {
@@ -1517,7 +1526,8 @@ fn place(
             database,
             kept: &kept,
         };
-        let (found, moved) = relocalize_everywhere(&searched, vocabulary, camera, frame, options)?;
+        let (found, moved) =
+            relocalize_everywhere(&searched, owner.vocabulary(), camera, frame, options)?;
         // A view holds the part of the map its frame may read: the frame goes on with the view
         // of where it was placed; one placed in a kept map goes on in that map, once tracking
         // has taken it up.
@@ -2406,6 +2416,7 @@ fn map_keyframe(
                 &tracked,
                 mode,
                 options,
+                owner.vocabulary(),
                 &holding,
                 Some(&asked),
             )?;
@@ -2976,8 +2987,9 @@ impl Pipeline {
     /// * `mode` - The sensor mode.
     /// * `camera` - The camera.
     /// * `options` - The settings.
-    /// * `vocabulary` - The keyframe database's vocabulary: required with `relocalization.enabled`
-    ///   or `loops.enabled` on, refused with both off.
+    /// * `vocabulary` - The vocabulary, checked: mapping quantises each keyframe's features by it,
+    ///   and the keyframe database's words, kept with relocalisation or loop closing on, are of
+    ///   it.
     /// * `threading` - How the steps run: inline, a run repeats exactly.
     ///
     /// # Returns
@@ -2986,14 +2998,13 @@ impl Pipeline {
     ///
     /// # Errors
     ///
-    /// `InvalidInput` for an invalid camera or settings, a stereo or RGB-D camera without a
-    /// baseline, or a vocabulary missing while relocalising or closing loops, or given while
-    /// doing neither.
+    /// `InvalidInput` for an invalid camera, settings or vocabulary (`vocabulary::check`, once),
+    /// or a stereo or RGB-D camera without a baseline.
     pub fn new(
         mode: Mode,
         camera: Camera,
         options: Options,
-        vocabulary: Option<Vocabulary>,
+        vocabulary: Vocabulary,
         threading: Threading,
     ) -> Result<Self> {
         check_setup(&camera, &options)?;
@@ -3003,17 +3014,11 @@ impl Pipeline {
                 format!("camera.baseline: {} needs a positive baseline", mode.name()),
             );
         }
-        let needed = options.keeps_keyframe_database();
-        if needed && vocabulary.is_none() {
+        // Once, here: every keyframe is quantised by it, and quantisation walks the tree unchecked.
+        if let Err(error) = vocabulary::check(&vocabulary) {
             return fail(
                 ErrorKind::InvalidInput,
-                "vocabulary: relocalization.enabled or loops.enabled needs one",
-            );
-        }
-        if !needed && vocabulary.is_some() {
-            return fail(
-                ErrorKind::InvalidInput,
-                "vocabulary: given, but relocalization.enabled and loops.enabled are both off",
+                format!("vocabulary: {}", error.message),
             );
         }
         let shared = Arc::new(Shared {
@@ -3305,10 +3310,17 @@ impl Pipeline {
     ///
     /// A stage's error.
     fn initialize(&mut self, frame: &Frame) -> Result<Step> {
+        let vocabulary = self.shared.owner.vocabulary();
         let attempt = if self.mode == Mode::Monocular {
-            initialize_monocular(&mut self.tracking, &self.camera, frame, &self.options)?
+            initialize_monocular(
+                &mut self.tracking,
+                &self.camera,
+                frame,
+                &self.options,
+                vocabulary,
+            )?
         } else {
-            initialization::initialize_from_depth(frame, &self.options)?
+            initialization::initialize_from_depth(frame, &self.options, vocabulary)?
         };
         let mut summary = FrameSummary {
             init: Some(attempt.summary),
@@ -3534,8 +3546,12 @@ impl Pipeline {
         let holding = lock(&self.shared.closing).held();
         let (camera, mode, options) = (&self.camera, self.mode, &self.options);
         // Local mapping's step: insert the frame as a keyframe and map around it.
-        let mapped = self.shared.owner.apply_mapping(|m| {
-            mapping::process(m, camera, frame, tracked, mode, options, &holding, None)
+        let owner = &self.shared.owner;
+        let mapped = owner.apply_mapping(|m| {
+            let vocabulary = owner.vocabulary();
+            mapping::process(
+                m, camera, frame, tracked, mode, options, vocabulary, &holding, None,
+            )
         })?;
         let mut out = KeyframeMapped {
             map_seconds: start.elapsed().as_secs_f64(),

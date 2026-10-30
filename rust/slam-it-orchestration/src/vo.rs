@@ -32,7 +32,7 @@ pub const DATASETS: [&str; 2] = ["tum", "euroc"];
 /// The program's command line.
 pub const USAGE: &str = "usage: slam_it_vo --dataset tum|euroc --sequence PATH \
                          [--sequence PATH ...] --mode monocular|stereo|rgbd --out RUN_DIR \
-                         [--first I] [--count N] [--vocabulary FOLDER] [--record-features] \
+                         [--first I] [--count N] --vocabulary FOLDER [--record-features] \
                          [--threaded | --views] \
                          [--option KEY=VALUE ...]";
 
@@ -71,9 +71,9 @@ pub struct Request {
     pub options: Options,
     /// Whether the run records each frame's keypoints, with their fates.
     pub record_features: bool,
-    /// The vocabulary's folder: required with `relocalization.enabled` or `loops.enabled` on,
-    /// refused with both off.
-    pub vocabulary: Option<PathBuf>,
+    /// The vocabulary's folder, which every run needs: mapping quantises each keyframe's
+    /// features by it, and relocalisation and loop closing find keyframes by its words.
+    pub vocabulary: PathBuf,
     /// Whether the steps run in threads of their own, the frames fed at their recorded rate.
     pub threaded: bool,
     /// In turn, whether each frame is tracked on the view a writer would publish then: a test
@@ -91,12 +91,19 @@ impl Request {
     /// * `sequences` - The sequences' folders.
     /// * `mode` - The sensor mode.
     /// * `out` - The run's folder.
+    /// * `vocabulary` - The vocabulary's folder.
     ///
     /// # Returns
     ///
     /// The request.
     #[must_use]
-    pub fn new(dataset: &str, sequences: &[PathBuf], mode: Mode, out: &Path) -> Self {
+    pub fn new(
+        dataset: &str,
+        sequences: &[PathBuf],
+        mode: Mode,
+        out: &Path,
+        vocabulary: &Path,
+    ) -> Self {
         Self {
             dataset: dataset.to_owned(),
             sequences: sequences.to_vec(),
@@ -106,7 +113,7 @@ impl Request {
             count: None,
             options: Options::default(),
             record_features: false,
-            vocabulary: None,
+            vocabulary: vocabulary.to_path_buf(),
             threaded: false,
             views: false,
         }
@@ -574,13 +581,15 @@ fn termination_json(degenerate: bool, termination: Option<ransac::Termination>) 
 ///
 /// # Returns
 ///
-/// Its errors, iterations and termination by name.
+/// Its errors, iterations, termination by name and a bundle adjustment's counts.
 fn graph_solve_json(summary: &graphs::Summary) -> JsonValue {
     object([
         ("initial_error", JsonValue::Number(summary.initial_error)),
         ("final_error", JsonValue::Number(summary.final_error)),
         ("iterations", count(summary.iterations)),
         ("termination", name_json(summary.termination.name())),
+        ("left_out", count(summary.left_out)),
+        ("ended_near", count(summary.ended_near)),
     ])
 }
 
@@ -1484,7 +1493,7 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
         "--mode" => out.mode = mode_named(value)?,
         "--first" => out.first = integer_of(flag, value)?,
         "--count" => out.count = Some(integer_of(flag, value)?),
-        "--vocabulary" => out.vocabulary = Some(PathBuf::from(value)),
+        "--vocabulary" => out.vocabulary = PathBuf::from(value),
         "--option" => read_option(value, &mut out.options)?,
         _ => return invalid(format!("unknown argument '{flag}'")),
     }
@@ -1508,7 +1517,7 @@ fn read_flag(out: &mut Request, flag: &str, value: &str) -> Result<()> {
 /// `InvalidInput` for an unknown, repeated or missing flag, a flag without its value, an
 /// unknown mode or setting, or a value that is not a number.
 pub fn parse(arguments: &[String]) -> Result<Request> {
-    let mut out = Request::new("", &[], Mode::Monocular, Path::new(""));
+    let mut out = Request::new("", &[], Mode::Monocular, Path::new(""), Path::new(""));
     let mut seen: Vec<&str> = Vec::new();
     let mut rest = arguments;
     while let Some((flag, after)) = rest.split_first() {
@@ -1528,7 +1537,7 @@ pub fn parse(arguments: &[String]) -> Result<Request> {
         read_flag(&mut out, flag, value)?;
         rest = after;
     }
-    for required in ["--dataset", "--sequence", "--mode", "--out"] {
+    for required in ["--dataset", "--sequence", "--mode", "--out", "--vocabulary"] {
         if !seen.contains(&required) {
             return invalid(format!("{required}: missing"));
         }
@@ -1565,7 +1574,7 @@ fn switch<'a>(request: &'a mut Request, flag: &str) -> Option<&'a mut bool> {
 ///
 /// `InvalidInput` for no sequence, an unknown dataset, a mode it does not record (TUM has no
 /// stereo pairs, EuRoC no depth maps), a negative `first` or `count`, `views` with `threaded`,
-/// settings out of range, or a vocabulary missing while relocalising or given while not.
+/// or settings out of range.
 pub fn check(request: &Request) -> Result<()> {
     if request.sequences.is_empty() {
         return invalid("--sequence: missing".to_owned());
@@ -1584,18 +1593,6 @@ pub fn check(request: &Request) -> Result<()> {
     }
     if request.first < 0 || request.count.unwrap_or(0) < 0 {
         return invalid("first, count: must be at least 0".to_owned());
-    }
-    let needed = request.options.keeps_keyframe_database();
-    if needed && request.vocabulary.is_none() {
-        return invalid(
-            "--vocabulary: relocalization.enabled or loops.enabled needs one".to_owned(),
-        );
-    }
-    if !needed && request.vocabulary.is_some() {
-        return invalid(
-            "--vocabulary: given, but relocalization.enabled and loops.enabled are both off"
-                .to_owned(),
-        );
     }
     if request.views && request.threaded {
         return invalid("--views: tracks in turn, not with --threaded".to_owned());
@@ -1692,19 +1689,13 @@ pub fn run(request: &Request) -> Result<Run> {
         }
         sources.push(source);
     }
-    let (words, record) = match &request.vocabulary {
-        Some(folder) => {
-            let read = vocabularies::read(folder)?;
-            (Some(read.vocabulary), Some(read.header))
-        }
-        None => (None, None),
-    };
+    let read = vocabularies::read(&request.vocabulary)?;
     let camera = sources[0].camera.clone();
     let mut pipeline = Pipeline::new(
         request.mode,
         camera,
         request.options,
-        words,
+        read.vocabulary,
         if request.threaded {
             Threading::View
         } else if request.views {
@@ -1724,7 +1715,7 @@ pub fn run(request: &Request) -> Result<Run> {
         mode: request.mode.name().to_owned(),
         backend: "rust".to_owned(),
         settings: settings(&request.options),
-        vocabulary: record,
+        vocabulary: Some(read.header),
         record_features: request.record_features,
         threaded: request.threaded,
         ..Run::default()
@@ -1771,6 +1762,11 @@ mod tests {
             .join(name)
     }
 
+    /// The vocabulary reader's fixture folder, a vocabulary every run here maps with.
+    fn words() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/eval/vocabulary")
+    }
+
     /// A command line with its required flags, and more.
     fn command(more: &[&str]) -> Vec<String> {
         let sequence = folder("tum_camera");
@@ -1783,6 +1779,8 @@ mod tests {
             "rgbd",
             "--out",
             "run",
+            "--vocabulary",
+            "words",
         ];
         out.extend_from_slice(more);
         out.into_iter().map(str::to_owned).collect()
@@ -1834,6 +1832,7 @@ mod tests {
         );
         assert!((request.options.stereo.close_depth - 35.5).abs() < f64::EPSILON);
         assert!(request.record_features);
+        assert_eq!(request.vocabulary, Path::new("words"));
         let plain = parse(&command(&[])).unwrap();
         assert_eq!(
             (plain.first, plain.count, plain.record_features),
@@ -1872,20 +1871,25 @@ mod tests {
         }
         let short = ["--dataset".to_owned(), "tum".to_owned()];
         assert_eq!(parse(&short).unwrap_err().kind, ErrorKind::InvalidInput);
+        let mut unnamed = command(&[]);
+        unnamed.truncate(unnamed.len() - 2); // every run maps with a vocabulary
+        assert_eq!(
+            parse(&unnamed).unwrap_err().message,
+            "--vocabulary: missing"
+        );
     }
 
     /// Unknown datasets, modes a dataset does not record, negative counts, settings out of range
     /// and no sequence are refused.
     #[test]
     fn checks_requests() {
-        let mut good = Request::new(
+        let good = Request::new(
             "tum",
             &[folder("tum_camera")],
             Mode::Monocular,
             Path::new("run"),
+            &words(),
         );
-        good.options.relocalization.enabled = false; // no vocabulary: these check the request alone
-        good.options.loops.enabled = false;
         check(&good).unwrap();
         let mut bads = vec![
             Request {
@@ -1896,7 +1900,13 @@ mod tests {
                 mode: Mode::Stereo,
                 ..good.clone()
             },
-            Request::new("euroc", &[folder("euroc")], Mode::Rgbd, Path::new("run")),
+            Request::new(
+                "euroc",
+                &[folder("euroc")],
+                Mode::Rgbd,
+                Path::new("run"),
+                &words(),
+            ),
             Request {
                 count: Some(-1),
                 ..good.clone()
@@ -1928,9 +1938,7 @@ mod tests {
         let out = std::env::temp_dir().join(format!("slam_it_test_vo_rust_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&out);
         let _guard = Scratch(out.clone());
-        let mut request = Request::new("tum", &[folder("tum_camera")], Mode::Rgbd, &out);
-        request.options.relocalization.enabled = false;
-        request.options.loops.enabled = false;
+        let mut request = Request::new("tum", &[folder("tum_camera")], Mode::Rgbd, &out, &words());
         request.count = Some(0);
         let empty = run(&request).unwrap();
         assert_eq!(empty.timestamps, Vec::<f64>::new());
@@ -1957,9 +1965,7 @@ mod tests {
         assert!(text.contains("\"mapping\": {") && out.join("trajectory.txt").exists());
         request.count = Some(1);
         assert_eq!(run(&request).unwrap_err().kind, ErrorKind::InvalidInput);
-        let mut stereo = Request::new("euroc", &[folder("euroc")], Mode::Stereo, &out);
-        stereo.options.relocalization.enabled = false;
-        stereo.options.loops.enabled = false;
+        let mut stereo = Request::new("euroc", &[folder("euroc")], Mode::Stereo, &out, &words());
         stereo.count = Some(1);
         assert_eq!(run(&stereo).unwrap_err().kind, ErrorKind::InvalidInput);
         stereo.sequences = vec![folder("no_such_sequence")];
@@ -1995,9 +2001,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&out);
         let _guard = Scratch(out.clone());
         let both = [folder("tum_camera"), folder("tum_no_depth")];
-        let mut request = Request::new("tum", &both, Mode::Monocular, &out);
-        request.options.relocalization.enabled = false; // no vocabulary: no keyframe database
-        request.options.loops.enabled = false;
+        let mut request = Request::new("tum", &both, Mode::Monocular, &out, &words());
         request.count = Some(0);
         assert_eq!(run(&request).unwrap().sequence, "tum_camera+tum_no_depth");
         request.sequences[1] = folder("rgbd_dataset_freiburg1_fixture");
